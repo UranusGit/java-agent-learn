@@ -108,21 +108,22 @@ ChatMemory memory = TokenWindowChatMemory.builder()
 ### 4.1 完整 Main.java
 
 ```java
-package org.example;
+package org.demo01;
 
 import dev.langchain4j.chain.ConversationalChain;
 import dev.langchain4j.memory.ChatMemory;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
-import dev.langchain4j.model.ollama.OllamaChatModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
 
 import java.util.Scanner;
 
 public class ChatDemo {
 
     public static void main(String[] args) {
-        var model = OllamaChatModel.builder()
-                .baseUrl("http://localhost:11434")
-                .modelName("qwen2.5:7b")
+        var model = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
                 .temperature(0.7)
                 .build();
 
@@ -163,7 +164,7 @@ public class ChatDemo {
 
 ```json
 {
-  "model": "qwen2.5:7b",
+  "model": "deepseek-chat",
   "messages": [
     {"role": "user", "content": "我叫张三"},
     {"role": "assistant", "content": "好的，张三你好"},

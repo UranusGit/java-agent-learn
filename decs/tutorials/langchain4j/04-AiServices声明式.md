@@ -35,8 +35,10 @@ memory.add(AiMessage.from(answer));
 ### 2.1 定义接口 + 装配
 
 ```java
-package org.example;
+package org.demo01;
 
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
 import dev.langchain4j.service.UserMessageProvider;
@@ -50,13 +52,14 @@ public interface Assistant {
 // 装配
 public class Demo {
     public static void main(String[] args) {
-        var model = OllamaChatModel.builder()
-                .baseUrl("http://localhost:11434")
-                .modelName("qwen2.5:7b")
+        var model = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
                 .build();
 
         Assistant agent = AiServices.builder(Assistant.class)
-                .chatLanguageModel(model)
+                .chatModel(model)
                 .build();
 
         System.out.println(agent.chat("你好"));
@@ -206,7 +209,7 @@ public interface CustomerService {
 
 // 装配
 CustomerService service = AiServices.builder(CustomerService.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .chatMemoryProvider(userId ->
             MessageWindowChatMemory.builder()
                 .id(userId)
@@ -235,20 +238,21 @@ service.chat("user-002", "iPhone 15 多少钱？");
 ## 7. 流式输出（Streaming）
 
 ```java
-import dev.langchain4j.model.ollama.OllamaStreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import dev.langchain4j.service.TokenStream;
 
 public interface StreamingAssistant {
     TokenStream chat(String userMessage);
 }
 
-var streamingModel = OllamaStreamingChatModel.builder()
-        .baseUrl("http://localhost:11434")
-        .modelName("qwen2.5:7b")
+var streamingModel = OpenAiStreamingChatModel.builder()
+        .baseUrl("https://api.deepseek.com")
+        .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+        .modelName("deepseek-chat")
         .build();
 
 StreamingAssistant agent = AiServices.builder(StreamingAssistant.class)
-        .streamingChatLanguageModel(streamingModel)
+        .streamingChatModel(streamingModel)
         .build();
 
 TokenStream stream = agent.chat("讲个笑话");
@@ -309,7 +313,7 @@ interface SentimentAnalyzer {
 
 // 实现 = 配置
 var analyzer = AiServices.builder(SentimentAnalyzer.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .build();
 ```
 
@@ -326,9 +330,9 @@ var analyzer = AiServices.builder(SentimentAnalyzer.class)
 @Configuration
 class AiConfig {
     @Bean
-    SentimentAnalyzer sentimentAnalyzer(ChatLanguageModel model) {
+    SentimentAnalyzer sentimentAnalyzer(ChatModel model) {
         return AiServices.builder(SentimentAnalyzer.class)
-                .chatLanguageModel(model)
+                .chatModel(model)
                 .build();
     }
 }

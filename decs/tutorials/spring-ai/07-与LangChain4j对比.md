@@ -201,11 +201,11 @@ Spring AI Tool 内部可以用：
 <!-- pom.xml -->
 <dependency>
     <groupId>org.springframework.ai</groupId>
-    <artifactId>spring-ai-ollama-spring-boot-starter</artifactId>
+    <artifactId>spring-ai-starter-model-openai</artifactId>
 </dependency>
 <dependency>
     <groupId>dev.langchain4j</groupId>
-    <artifactId>langchain4j</artifactId>
+    <artifactId>langchain4j-open-ai</artifactId>
 </dependency>
 ```
 

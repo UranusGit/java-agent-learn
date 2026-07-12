@@ -73,12 +73,20 @@
 ```yaml
 spring:
   ai:
-    ollama:
-      base-url: http://localhost:11434
+    openai:
+      # Chat 走 DeepSeek
+      base-url: https://api.deepseek.com
+      api-key: ${DEEPSEEK_API_KEY}
       chat:
-        model: qwen2.5:7b
+        options:
+          model: deepseek-chat
+          temperature: 0.7
+      # Embedding 走本地 LM Studio
       embedding:
-        model: bge-m3   # 或 nomic-embed-text
+        base-url: http://127.0.0.1:1234
+        api-key: lm-studio
+        options:
+          model: text-embedding-bge-large-zh-v1.5
     vectorstore:
       chroma:
         client:

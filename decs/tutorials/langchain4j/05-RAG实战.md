@@ -131,7 +131,7 @@ docker run -d --name chroma \
 > **备选方案**：如果不想依赖 LM Studio，可用进程内 ONNX 版 `bge-small-zh-v1.5`（引入 `langchain4j-embeddings-bge-small-zh-v15` 依赖，类 `BgeSmallZhV15EmbeddingModel`）。本教程不展开。
 >
 > **LM Studio 准备**：
-> 1. 在 LM Studio 里下载需要的对话模型（如 `qwen/qwen3.5-9b`、`deepseek/deepseek-r1-0528-qwen3-8b`）
+> 1. 在 LM Studio 里下载需要的对话模型（如 `qwen2.5-7b-instruct`、`deepseek/deepseek-r1-distill-qwen-7b`）
 > 2. 下载 embedding 模型 `text-embedding-bge-large-zh-v1.5`
 > 3. 进入 Developer → Start Server（默认端口 `1234`）
 > 4. 在 Server 中加载对话模型和 embedding 模型

@@ -61,7 +61,7 @@
 ### 3.1 定义 Tool
 
 ```java
-package org.example;
+package org.demo01;
 
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.P;
@@ -87,10 +87,10 @@ public class TimeTools {
 ### 3.3 给 Agent 用
 
 ```java
-package org.example;
+package org.demo01;
 
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
-import dev.langchain4j.model.ollama.OllamaChatModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.service.AiServices;
 
 public class ToolDemo {
@@ -100,14 +100,15 @@ public class ToolDemo {
     }
 
     public static void main(String[] args) {
-        var model = OllamaChatModel.builder()
-                .baseUrl("http://localhost:11434")
-                .modelName("qwen2.5:7b")
+        var model = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
                 .temperature(0.0)   // Tool 调用建议低温度
                 .build();
 
         Assistant agent = AiServices.builder(Assistant.class)
-                .chatLanguageModel(model)
+                .chatModel(model)
                 .chatMemory(MessageWindowChatMemory.withMaxMessages(10))
                 .tools(new TimeTools())   // 注入 Tool
                 .build();
@@ -234,9 +235,10 @@ public EmployeeInfo queryEmployeeByName(
 ### 7.1 开启请求日志
 
 ```java
-var model = OllamaChatModel.builder()
-        .baseUrl("http://localhost:11434")
-        .modelName("qwen2.5:7b")
+var model = OpenAiChatModel.builder()
+        .baseUrl("https://api.deepseek.com")
+        .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+        .modelName("deepseek-chat")
         .logRequests(true)   // 看到发给 LLM 的 Tool 描述
         .logResponses(true)  // 看到 LLM 返回的 tool_calls
         .build();
@@ -314,7 +316,7 @@ public EmployeeInfo queryEmployee(@P("姓名") String name) {
 
 ```java
 Assistant agent = AiServices.builder(Assistant.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .tools(new TimeTools(), new CalcTools())
         .chatMemory(MessageWindowChatMemory.withMaxMessages(10))
         // .maxIterations(5)  // 限制最大循环次数（防死循环）

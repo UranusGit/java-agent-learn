@@ -96,13 +96,14 @@ curl https://api.deepseek.com/v1/chat/completions \
 
 ```java
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.chat.ChatModel;
 
-ChatLanguageModel model = OpenAiChatModel.builder()
+ChatModel model = OpenAiChatModel.builder()
         .baseUrl("https://api.deepseek.com")    // 注意：不带末尾斜杠
         .apiKey(System.getenv("DEEPSEEK_API_KEY"))
         .modelName("deepseek-chat")
         .temperature(0.7)
-        .maxTokens(1024)
+        .maxOutputTokens(1024)
         .build();
 
 String answer = model.chat("你好");
@@ -155,15 +156,15 @@ chatMemory = MessageWindowChatMemory.withMaxMessages(10);   // 通常足够
 
 ```java
 // 简单分类、判断 → 用最便宜模型
-ChatLanguageModel cheapModel = OpenAiChatModel.builder()
+ChatModel cheapModel = OpenAiChatModel.builder()
         .modelName("deepseek-chat")
-        .maxTokens(50)            // 短输出
+        .maxOutputTokens(50)            // 短输出
         .build();
 
 // 复杂生成 → 同模型但调参
-ChatLanguageModel bigModel = OpenAiChatModel.builder()
+ChatModel bigModel = OpenAiChatModel.builder()
         .modelName("deepseek-chat")
-        .maxTokens(2048)
+        .maxOutputTokens(2048)
         .build();
 ```
 
@@ -194,9 +195,9 @@ DeepSeek 后台可设置余额告警。**学习期建议**：
 ### 5.2 DeepSeek 的 JSON Mode
 
 ```java
-ChatLanguageModel model = OpenAiChatModel.builder()
+ChatModel model = OpenAiChatModel.builder()
         .baseUrl("https://api.deepseek.com")
-        .apiKey(apiKey)
+        .apiKey(System.getenv("DEEPSEEK_API_KEY"))
         .modelName("deepseek-chat")
         .responseFormat("json_object")   // 关键：强制 JSON 输出
         .build();
@@ -219,13 +220,13 @@ public interface Extractor {
     UserInfo extract(String text);
 }
 
-ChatLanguageModel model = OpenAiChatModel.builder()
+ChatModel model = OpenAiChatModel.builder()
         // ...
         .responseFormat("json_object")
         .build();
 
 Extractor extractor = AiServices.builder(Extractor.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .build();
 
 UserInfo u = extractor.extract("张三 25 北京");
@@ -245,8 +246,8 @@ UserInfo u = extractor.extract("张三 25 北京");
 ### 6.2 简单实现
 
 ```java
-public class CachedModel implements ChatLanguageModel {
-    private final ChatLanguageModel delegate;
+public class CachedModel implements ChatModel {
+    private final ChatModel delegate;
     private final Cache<String, String> cache = Caffeine.newBuilder()
             .maximumSize(1000)
             .expireAfterAccess(Duration.ofHours(1))
@@ -316,43 +317,63 @@ RetryConfig config = RetryConfig.custom()
 
 ---
 
-## 8. DeepSeek vs Ollama：什么时候用哪个
+## 8. DeepSeek vs LM Studio：什么时候用哪个
 
 | 场景 | 推荐 |
 |------|------|
-| 本地开发调试 | Ollama（免费） |
-| 学习新概念、跑 Demo | Ollama |
+| 学习新概念、跑 Demo | DeepSeek（开箱即用） |
 | 评估生产效果 | DeepSeek（质量高） |
 | Function Calling 测试 | DeepSeek（小模型 FC 准确率低） |
-| 处理隐私数据 | Ollama（数据不出本地） |
+| 处理隐私数据 | LM Studio（数据不出本地） |
 | 写测试用例 | DeepSeek（输出稳定） |
 | 长上下文任务 | DeepSeek（质量更高） |
+| Embedding 向量化 | LM Studio（免费，调用量大） |
+| 完全离线场景 | LM Studio |
 
-### 8.1 双模型切换架构（推荐）
+### 8.1 推荐组合：DeepSeek Chat + LM Studio Embedding
+
+这是本教程系列的默认组合，性价比最高：
 
 ```java
-// 开发环境用 Ollama，生产用 DeepSeek，配置切换
 @Configuration
 class AiConfig {
 
     @Bean
-    @Profile("dev")
-    ChatLanguageModel devModel() {
-        return OllamaChatModel.builder()
-                .baseUrl("http://localhost:11434")
-                .modelName("qwen2.5:7b")
-                .build();
-    }
-
-    @Bean
-    @Profile("prod")
-    ChatLanguageModel prodModel() {
+    ChatModel chatModel() {
         return OpenAiChatModel.builder()
                 .baseUrl("https://api.deepseek.com")
                 .apiKey(System.getenv("DEEPSEEK_API_KEY"))
                 .modelName("deepseek-chat")
                 .build();
     }
+
+    @Bean
+    EmbeddingModel embeddingModel() {
+        return OpenAiEmbeddingModel.builder()
+                .baseUrl("http://127.0.0.1:1234/v1")
+                .apiKey("lm-studio")
+                .modelName("text-embedding-bge-large-zh-v1.5")
+                .httpClientBuilder(new JdkHttpClientBuilder()
+                        .httpClientBuilder(HttpClient.newBuilder()
+                                .version(HttpClient.Version.HTTP_1_1))
+                        .readTimeout(Duration.ofSeconds(60)))
+                .build();
+    }
+}
+```
+
+### 8.2 可选：完全本地（不依赖 DeepSeek）
+
+把 `chatModel` 也指向 LM Studio：
+
+```java
+@Bean
+ChatModel chatModel() {
+    return OpenAiChatModel.builder()
+            .baseUrl("http://127.0.0.1:1234/v1")
+            .apiKey("lm-studio")
+            .modelName("qwen2.5-7b-instruct")  // LM Studio 加载的模型 id
+            .build();
 }
 ```
 
@@ -363,9 +384,9 @@ class AiConfig {
 DeepSeek 提供 `deepseek-reasoner`（R1），会在输出前**显式思考**。
 
 ```java
-ChatLanguageModel reasoner = OpenAiChatModel.builder()
+ChatModel reasoner = OpenAiChatModel.builder()
         .baseUrl("https://api.deepseek.com")
-        .apiKey(apiKey)
+        .apiKey(System.getenv("DEEPSEEK_API_KEY"))
         .modelName("deepseek-reasoner")
         .build();
 ```
@@ -415,7 +436,7 @@ DeepSeek 返回结构与 OpenAI 略有差异（如 `reasoning_content`）。
 1. DeepSeek 为什么便宜？质量会比 OpenAI 差吗？
 2. `baseUrl` 为什么不能带末尾斜杠？
 3. JSON Mode 解决了什么问题？怎么开启？
-4. 生产场景下，如何实现"开发用 Ollama、生产用 DeepSeek"切换？
+4. 生产场景下，DeepSeek Chat + LM Studio Embedding 的组合有什么优势？
 5. `deepseek-reasoner` 什么时候用，什么时候不用？
 
 ---
@@ -426,7 +447,7 @@ DeepSeek 返回结构与 OpenAI 略有差异（如 `reasoning_content`）。
 2. 用 `TokenUsage` 打印每次调用的 token 数和成本估算
 3. 测试 JSON Mode：写一个 `UserInfoExtractor` 接口
 4. 实现 `CachedModel` 装饰器，重复调用同一个 prompt 看是否走缓存
-5. 写一个 Spring `@Profile` 切换配置，dev 用 Ollama、prod 用 DeepSeek
+5. 写一个 Spring `@Bean` 配置，同时注入 DeepSeek Chat 和 LM Studio Embedding
 6. 用 `deepseek-reasoner` 解一道数学题，对比与 `deepseek-chat` 的速度差异
 
 完成后进入 [09-常见错误与排查手册](./09-常见错误与排查手册.md)。
