@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<body>
+<input id="prompt" placeholder="问点什么...">
+<button onclick="ask()">发送</button>
+<pre id="output"></pre>
+
+<script>
+    function ask() {
+        const prompt = document.getElementById('prompt').value;
+        const output = document.getElementById('output');
+        output.textContent = '';
+
+        const es = new EventSource(`/flux/chat?prompt=${encodeURIComponent(prompt)}`);
+        es.onmessage = (e) => {
+            output.textContent += e.data;
+        };
+        es.onerror = () => es.close();
+    }
+</script>
+</body>
+</html>
