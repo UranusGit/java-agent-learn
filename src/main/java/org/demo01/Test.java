@@ -2,7 +2,7 @@ package org.demo01;
 
 import dev.langchain4j.model.openai.OpenAiChatModel;
 
-public class Test01 {
+public class Test {
     public static void main(String[] args) {
         OpenAiChatModel model = OpenAiChatModel.builder()
                 .baseUrl("https://api.deepseek.com")
