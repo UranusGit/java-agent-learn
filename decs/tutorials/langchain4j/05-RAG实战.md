@@ -266,7 +266,7 @@ public class Test01 {
 - `300`：每块目标 300 token
 - `30`：相邻块之间重叠 30 token（避免在边界处割裂语义）
 
-**分块策略对比**（参考 `reference/01-RAG深度优化.md`）：
+**分块策略对比**（参考 `reference/理论基础/02-RAG深度优化.md`）：
 
 | 策略 | 适合 |
 |------|------|
@@ -488,7 +488,7 @@ segment.metadata().put("updated_at", "2026-07-01");
 2. 调整 `maxResults` 和 `minScore`
 3. 优化分块策略（chunk size、overlap）
 4. 引入 Query Rewriting
-5. 引入重排序（rerank，详见 `reference/01-RAG深度优化.md`）
+5. 引入重排序（rerank，详见 `reference/理论基础/02-RAG深度优化.md`）
 
 ### 7.2 答案不忠实上下文（幻觉）
 
@@ -534,7 +534,7 @@ String chat(String userMessage);
 - **答案 Faithfulness**：答案是否只基于检索到的内容（无幻觉）
 - **答案 Relevance**：答案是否切题
 
-详见 `reference/06-LLMOps.md` 的 RAGAS 章节。
+详见 `reference/生产化与运营/11-LLMOps.md` 的 RAGAS 章节。
 
 ---
 

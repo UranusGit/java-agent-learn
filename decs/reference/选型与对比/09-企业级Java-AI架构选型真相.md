@@ -4,7 +4,10 @@
 >
 > 本节是对 `10-SpringAI与LangChain4j分工模型.md` 的现实校正：第 10 篇描述的是理想分工模型，本篇描述的是**企业真实在做什么**，以及**未来 12-24 个月值得关注的方向**。读完先看本篇再看第 10 篇，避免把"理想"当"标准答案"。
 >
-> 调研日期：2026-07-13。所有版本号、GA 时间、官方立场基于公开资料，标注了来源。
+> 调研日期：2026-07-13。本仓库实际使用 **Spring AI 1.0.0 + Spring Boot 3.5.10 + JDK 21 + LangChain4j 1.0.1**（阶段 1-3 学习用），生产化阶段（阶段 5）建议升级到 **Spring AI 2.0.0 GA（2026-06-12 发布，基于 Spring Boot 4 + Jackson 3 + JSpecify）**。本文特性描述以 Spring AI 1.0 GA 为准，2.0 增量已在涉及处补充。所有版本号、官方立场基于公开资料，标注了来源。
+>
+> **相关文档**：
+> - [`13-SpringAI-vs-LangChain4j何时用何框架.md`](./13-SpringAI-vs-LangChain4j何时用何框架.md) —— **选型决策手册（基于本文 + Spring AI 2.0 事实更新）**
 
 ---
 
@@ -14,7 +17,7 @@
 |------|------|
 | 企业级 Java AI 项目是 Spring AI + LangChain4j **结合使用**的吗？ | **不是**。绝大多数企业项目二选一，混用是少数派。 |
 | "混合使用"是不是 SpringBoot 项目复杂 Agent 的**更好选择**？ | **不是**。复杂 Agent 优先用 **Anthropic Workflow 模式**（单框架内构建），不是混用两框架。 |
-| 现在最稳的 Java AI 技术栈是什么？ | **Spring Boot 4 + Spring AI 2.0 GA**（2026-06-12 发布），覆盖 80% 企业场景。 |
+| 现在最稳的 Java AI 技术栈是什么？ | **Spring Boot 3.5 + Spring AI 1.0 GA**（2025-05 发布），覆盖 80% 企业场景。本仓库实际在用。 |
 | LangChain4j 在企业里的定位？ | **独立 Agent 框架**，与 Quarkus/Plain Java 结合，是 Spring AI 之外的另一选择，不是 Spring AI 的"补充层"。 |
 | 真正的"复杂 Agent"在企业里怎么实现？ | **Anthropic 5 大 Workflow 模式**（Chain/Parallelization/Routing/Orchestrator-Workers/Evaluator-Optimizer）+ 必要时引入 LangGraph4j/Alibaba Graph。 |
 
@@ -45,9 +48,9 @@ Red Hat（Quarkus 母公司）的 Quarkus LangChain4j 文档明确表态：
 
 ### 2.2 关键证据：Spring 团队官方示例
 
-Spring AI 2.0 GA 发布时（2026-06-12）的官方 reference application `spring-ai-mcp-demo`、`spring-ai-rag-blueprint`、`spring-ai-agent-workflow` —— **全部只用 Spring AI**，没有一个示例混用 LangChain4j。
+Spring AI 1.0 GA（2025-05-20）发布以来的官方 reference application `spring-ai-mcp-demo`、`spring-ai-rag-blueprint`、`spring-ai-agent-workflow` —— **全部只用 Spring AI**，没有一个示例混用 LangChain4j。
 
-来源：[Spring AI 2.0 Release Notes](https://github.com/spring-projects/spring-ai/releases) （2026-06-12）
+来源：[Spring AI Release Notes](https://github.com/spring-projects/spring-ai/releases)
 
 ### 2.3 真实企业案例（2025-2026 公开分享）
 
@@ -59,6 +62,22 @@ Spring AI 2.0 GA 发布时（2026-06-12）的官方 reference application `sprin
 | 各大银行/保险 | 内部知识库 | Spring AI 单框架 | 走 Spring 系既定路线 |
 
 **没有任何公开案例**展示"Spring AI 做 Web 层 + LangChain4j 做 Agent 层"的两层架构。
+
+### 2.4 Spring AI 2.0 GA（2026-06-12）的增量影响
+
+> Spring AI 2.0 GA 已于 2026-06-12 发布，本文核心结论（企业不混用、单框架 + Workflow）**不受影响甚至被强化**。以下是需要补充的增量变化：
+
+| 维度 | 1.0 GA | 2.0 GA | 对结论的影响 |
+|------|--------|--------|------------|
+| Agent Loop | 需手写 | `ToolCallingAdvisor` 自动注册 + 递归迭代 | **LangChain4j"思考"优势缩水** |
+| 结构化输出 | `BeanOutputConverter` | + `StructuredOutputValidationAdvisor`（校验+自动重试） | **LangChain4j 类型映射优势缩水** |
+| MCP | client only | MCP Java SDK 2.0，client + server，`@McpTool` | **Spring AI 独占优势扩大** |
+| 会话持久化 | `MessageWindowChatMemory` | `spring-ai-session`（event-sourced，可重放） | **追平 LangChain4j** |
+| Spring Boot 基线 | 3.x | 4.x（+ Jackson 3 + JSpecify） | **升级成本需评估** |
+
+**结论强化**：2.0 GA 后，Spring AI 在企业 Spring Boot 项目中的优势进一步扩大，单框架选择更无悬念。**LangChain4j 仅在 Quarkus / 复杂状态机 / 无容器纯 Java 三个细分场景仍有明显优势**（详见第 13 篇 §2）。
+
+**升级建议**：阶段 1-3 可继续用 1.0 学习（API 大体一致），阶段 5 生产化时应升级到 2.0 获取 Agent Loop / MCP Server / 可重放会话等能力。
 
 ---
 
@@ -75,12 +94,12 @@ Spring AI 2.0 GA 发布时（2026-06-12）的官方 reference application `sprin
 
 ### 3.2 收益边际递减
 
-Spring AI 2.0 GA 已经覆盖了 80% 企业场景：
-- 声明式 Tool（`@Tool` + ToolCallingAdvisor）
-- 结构化输出（StructuredOutputValidationAdvisor）
-- RAG（QuestionAnswerAdvisor + VectorStore）
-- 工作流编排（spring-ai-agent-utils 社区扩展）
-- 会话记忆（spring-ai-session 事件溯源）
+Spring AI 1.0 GA 已经覆盖了 80% 企业场景：
+- 声明式 Tool（`@Tool` + ToolCallingManager）
+- 结构化输出（`BeanOutputConverter` / `StructuredOutputConverter`）
+- RAG（`QuestionAnswerAdvisor` + `VectorStore`）
+- 会话记忆（`ChatMemory` + `MessageChatMemoryAdvisor`）
+- MCP 集成（`spring-ai-mcp-client-spring-boot-starter`）
 
 **真正需要 LangChain4j 的场景**：复杂 ReAct 多步推理、LangGraph4j 状态机 —— 这些在企业里本就少，且能用 Workflow 替代。
 
@@ -129,8 +148,8 @@ String answer = switch (category) {
     default -> generalAgent.handle(query);
 };
 
-// 模式 4：Orchestrator-Workers（Spring AI 2.0 的 spring-ai-agent-utils）
-// OrchestratorAgent 自动决定要派多少 Worker、派给谁
+// 模式 4：Orchestrator-Workers
+// 用 ChatClient 决定派多少 Worker、派给谁，再用 Parallelization 并行执行
 
 // 模式 5：Evaluator-Optimizer（循环）
 for (int i = 0; i < maxIter; i++) {
@@ -141,7 +160,7 @@ for (int i = 0; i < maxIter; i++) {
 }
 ```
 
-**关键认知**：以上 5 种模式**全部可以用 Spring AI 单框架实现**，不需要 LangChain4j。
+**关键认知**：以上 5 种模式**全部可以用 Spring AI 1.0 单框架实现**，不需要 LangChain4j。
 
 ### 4.3 何时才需要"真正的 Agent"
 
@@ -153,20 +172,20 @@ for (int i = 0; i < maxIter; i++) {
 
 | 框架 | 主方 | 稳定性 | 编排能力 | Spring 集成 | 适用场景 |
 |------|------|--------|---------|------------|---------|
-| **Spring AI 2.0** | Broadcom/VMware | ✅ GA（2026-06） | 中（agent-utils） | 原生 | Spring Boot 企业项目首选 |
+| **Spring AI 1.0 / 2.0** | Broadcom/VMware | ✅ 1.0 GA（2025-05）/ ✅ 2.0 GA（2026-06） | 中→高（2.0：Advisor 链 + ToolCallingAdvisor + Workflow 模式） | 原生 | Spring Boot 企业项目首选（2.0 推荐） |
 | **LangChain4j** | 社区 + Red Hat | ✅ 稳定（1.x） | 高（AiServices/Graph） | 一般（需手工桥接） | Quarkus、纯 Java、Python 移植 |
 | **LangGraph4j** | 社区（side project） | ⚠️ Beta | 极高（状态机） | 弱 | 复杂多 Agent 状态机 |
 | **Spring AI Alibaba Graph** | Alibaba | ✅ 1.0 GA | 高（DAG） | 原生（Spring 系） | 国内生态、复杂工作流 |
 | **Embabel** | Rod Johnson（Spring 创始人） | ⚠️ Beta 0.3 | 高（GOAP/Utility AI） | 原生 | 探索式 Agent、实验性 |
-| **Koog** | JetBrains | ⚠️ Beta | 高（Graph + Checkpoint） | 弱 | Kotlin 项目、需持久化 |
+| **Koog** | JetBrains | ✅ 1.0 GA | 高（Graph + Checkpoint） | 弱 | Kotlin 项目、需持久化 |
 | **Google ADK Java** | Google | ⚠️ Pre-GA | 高（A2A-first） | 弱 | A2A 协议实验 |
-| **Semantic Kernel Java** | Microsoft | ✅ 1.0+ | 中 | 弱 | Azure 生态绑定 |
+| **Semantic Kernel Java** | Microsoft | ⚠️ 维护收缩 | 中 | 弱 | Azure 生态绑定（跟进不押注） |
 
 ### 5.1 选型决策矩阵
 
 | 你的场景 | 首选框架 | 第二选择 |
 |---------|---------|---------|
-| Spring Boot 企业项目（80% 场景） | **Spring AI 2.0** | Spring AI Alibaba（国内） |
+| Spring Boot 企业项目（80% 场景） | **Spring AI 1.0** | Spring AI Alibaba（国内） |
 | Quarkus 云原生项目 | **Quarkus LangChain4j** | - |
 | 复杂多 Agent 状态机 | **Spring AI Alibaba Graph** | LangGraph4j |
 | 探索式 Agent（路径无法预知） | **Embabel**（实验性） | Spring AI + 手写 ReAct |
@@ -180,8 +199,8 @@ for (int i = 0; i < maxIter; i++) {
 
 ### 6.1 MCP（Model Context Protocol）成为统一接入层
 
-- Anthropic 提出（2024-11），MCP Java SDK 2.0 已落地（2025-11-25 规范）
-- Spring AI 2.0 提供 `@McpTool` / `@McpResource` / `@McpPrompt`
+- Anthropic 提出（2024-11），规范持续迭代
+- Spring AI 1.0 通过 `spring-ai-mcp-client-spring-boot-starter` 提供客户端能力，`spring-ai-mcp-server-webmvc-spring-boot-starter` 提供 Server 能力
 - **趋势**：未来"工具/资源/Prompt"都按 MCP 协议暴露，框架无关
 - **影响**：Tool 实现可以跨框架复用，降低锁定
 
@@ -232,9 +251,9 @@ for (int i = 0; i < maxIter; i++) {
 
 基于以上调研，给三类 Java 工程师的优先级建议：
 
-### 方向 1（最高 ROI）：Spring AI 2.0 全栈 + Anthropic Workflow
+### 方向 1（最高 ROI）：Spring AI 1.0 全栈 + Anthropic Workflow
 
-- **学什么**：Spring AI 2.0 全部特性 + Anthropic 5 大 Workflow 模式 + MCP
+- **学什么**：Spring AI 1.0 全部特性 + Anthropic 5 大 Workflow 模式 + MCP
 - **适用**：80% 企业场景，简历最值钱
 - **投入**：2-3 个月
 - **产出**：能独立交付一个企业级 AI 应用
@@ -273,6 +292,8 @@ for (int i = 0; i < maxIter; i++) {
 
 **读法建议**：先把第 10 篇当"理解两框架定位差异"的教材；遇到真实项目选型时，参考本篇（第 11 篇）的结论。
 
+**关于版本**：第 10 篇代码示例使用 `AiServices.builder()` 和 `ChatClient.Builder` 等通用 API，在 Spring AI 1.0 和 LangChain4j 1.0 下均可运行，无需调整。
+
 ---
 
 ## 10. 自检清单
@@ -281,7 +302,7 @@ for (int i = 0; i < maxIter; i++) {
 
 - [ ] 企业级 Java AI 项目的主流做法是单框架还是混用？为什么？
 - [ ] Anthropic 5 大 Workflow 模式分别是什么？为什么 "Workflow > Agent"？
-- [ ] Spring AI 2.0 GA 覆盖了哪些企业场景？还差什么？
+- [ ] Spring AI 1.0 GA 覆盖了哪些企业场景？还差什么？
 - [ ] MCP / A2A 协议解决的是什么问题？什么时候会普及？
 - [ ] 在你当前的项目里，如果做 Agent 系统，首选什么技术栈？为什么？
 
@@ -290,6 +311,7 @@ for (int i = 0; i < maxIter; i++) {
 ## 11. 相关文档
 
 - `10-SpringAI与LangChain4j分工模型.md` —— 理论分工模型（本篇是其现实校正）
+- `13-SpringAI-vs-LangChain4j何时用何框架.md` —— **决策手册（基于本篇 + Spring AI 2.0 事实更新）**
 - `04-Java与AI融合架构.md` —— Java 与 AI 融合的整体架构
 - `09-心智模型与决策树.md` —— 何时用啥的决策树
 - `tutorials/spring-ai/07-与LangChain4j对比.md` —— 两框架核心差异对比
@@ -299,8 +321,8 @@ for (int i = 0; i < maxIter; i++) {
 ## 12. 参考资料（按重要度）
 
 1. **Anthropic《Building Effective Agents》**(2024-12-19) — Workflow vs Agent 金科玉律
-2. **Spring AI 2.0 Release Notes**(2026-06-12) — GA 特性清单
-3. **Quarkus LangChain4j Documentation**(2025 Q4) — Red Hat 官方立场
-4. **MCP Java SDK 2.0**(2025-11-25 规范) — 协议层标准
+2. **Spring AI 1.0 Release Notes**(2025-05-20) — GA 特性清单
+3. **Quarkus LangChain4j Documentation** — Red Hat 官方立场
+4. **MCP Java SDK** — 协议层标准
 5. **Spring AI Alibaba Graph 1.0** — 国内主流编排引擎
 6. **Embabel / Koog / Google ADK** — 探索性方向，跟进不押注

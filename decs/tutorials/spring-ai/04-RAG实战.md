@@ -350,7 +350,7 @@ SearchRequest req = SearchRequest.builder()
         .build();
 ```
 
-详细混合检索参考 `reference/01-RAG深度优化.md`。
+详细混合检索参考 `reference/理论基础/02-RAG深度优化.md`。
 
 ---
 
@@ -366,7 +366,7 @@ RelevanceAdvisor evaluator = RelevanceAdvisor.builder()
 
 ### 9.2 推荐用 RAGAS（更强）
 
-详见 `reference/06-LLMOps.md`。
+详见 `reference/生产化与运营/11-LLMOps.md`。
 
 ---
 

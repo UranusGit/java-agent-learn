@@ -1,21 +1,27 @@
 # 附录 - Spring AI 与 LangChain4j 分工模型
 
-> 一句话定位：**Spring AI 负责"接入"和"兜底"，LangChain4j 负责"思考"和"编排"。**
+> ⚠️ **本文部分论点已过时（2026-07 更新）**：Spring AI 2.0 GA（2026-06-12）后，`ToolCallingAdvisor` 自动注册 + 递归迭代（即原生 Agent Loop）让 Spring AI 在"思考/编排"上的短板大幅补齐。本文仍可作为**理解两框架设计哲学差异**的教材，但**不要把"两层分工架构"当作企业标准实践**——企业不混用（见第 11 篇），选型决策请参考第 13 篇。
 >
-> 这不是简单的"二选一"，而是大型 Java AI 项目里两个框架的**职责分工模型**。本节是对 `04-Java与AI融合架构.md` 第 12 节和 `spring-ai/07-与LangChain4j对比.md` 第 12 节的展开。
+> 一句话定位：**Spring AI 负责"接入"和"兜底"，LangChain4j 负责"思考"和"编排"**（⚠️ 此定位在 Spring AI 2.0 后已弱化，详见第 13 篇 §2）。
+>
+> 这不是简单的"二选一"，而是大型 Java AI 项目里两个框架的**职责分工模型**（⚠️ 理论范式，企业实战罕见）。本节是对 `04-Java与AI融合架构.md` 第 12 节和 `spring-ai/07-与LangChain4j对比.md` 第 12 节的展开。
+>
+> **相关文档**：
+> - [`11-企业级Java-AI架构选型真相.md`](./11-企业级Java-AI架构选型真相.md) —— 本文的现实校正（企业不混用）
+> - [`13-SpringAI-vs-LangChain4j何时用何框架.md`](./13-SpringAI-vs-LangChain4j何时用何框架.md) —— **决策手册（选型看这篇）**
 
 ---
 
 ## 1. 为什么要分工
 
-两个框架各自有"舒适区"：
+两个框架各自有"舒适区"（⚠️ Spring AI 2.0 GA 后部分边界已模糊）：
 
 | 框架 | 舒适区 | 不舒适区 |
 |------|--------|----------|
-| **Spring AI** | 接入 Spring 生态、Advisor 链、Web 层、Tool 注入业务 Bean | 复杂状态机、多 Agent 协作、ReAct 循环细节控制 |
-| **LangChain4j** | AiServices 声明式 Agent、ChatMemory 灵活装配、LangGraph4j 状态机 | Spring 容器集成、Web 鉴权限流审计、生产级横切关注点 |
+| **Spring AI** | 接入 Spring 生态、Advisor 链、Web 层、Tool 注入业务 Bean、**ToolCallingAdvisor 自动 Agent Loop（2.0）**、MCP Server（2.0 独占） | 复杂状态机多 Agent（需借 LangGraph4j 或 Alibaba Graph） |
+| **LangChain4j** | AiServices 声明式 Agent（接口驱动）、ChatMemory 灵活装配、LangGraph4j 状态机、Quarkus 生态、纯 Java 无容器 | Spring 容器集成、Web 鉴权限流审计、MCP Server、生产级可观测性 |
 
-**核心洞察**：两者的舒适区**几乎不重叠**，因此可以共存而不是竞争。
+**核心洞察**（⚠️ 已修正）：原结论是"舒适区不重叠，可以共存"——Spring AI 2.0 GA 后，**两者的舒适区大幅重叠**（Spring AI 已能做 Agent Loop 和结构化输出），共存理由减弱。**企业实战以单框架为主**（详见第 11、13 篇）。
 
 ---
 
@@ -387,22 +393,28 @@ public class EmployeeTools {
 
 ## 9. 演进路径建议
 
+> ⚠️ **2026-07 更新**：原"阶段 3 引入 LangChain4j"建议已过时。Spring AI 2.0 GA 后 LangChain4j 在"思考/编排"上的优势大幅缩水，企业实战更倾向于**单框架 + 编排引擎**而非"两层分工"。修正后的演进路径如下：
+
 ```
 阶段 1（MVP）
   └─ 单框架（Spring AI 或 LangChain4j）跑通核心功能
+     ※ 本仓库阶段 1 用 LangChain4j 入门是合理的（学习摩擦小）
 
 阶段 2（生产化）
-  └─ Spring AI 层加 Advisor 链（鉴权、限流、审计、降级）
-  └─ 简单 Agent 直接在 Spring AI 层用 ChatClient + Tool
+  └─ Spring AI 加 Advisor 链（鉴权、限流、审计、降级）
+  └─ 简单 Agent 直接用 ChatClient + ToolCallingAdvisor（2.0 自动 Agent Loop）
+  └─ 升级到 Spring AI 2.0（Spring Boot 4 + Jackson 3 + JSpecify）
 
-阶段 3（编排复杂化）
-  └─ 引入 LangChain4j 处理复杂 Agent（多步推理、多 Agent 协作）
-  └─ Spring AI 层通过 Bean 注入或 HTTP 调用 LangChain4j Agent
+阶段 3（编排复杂化，仅在 Workflow 模式 hold 不住时）
+  └─ 引入编排引擎：Spring AI Alibaba Graph（国内首选）或 LangGraph4j
+  └─ ❌ 不建议引入 LangChain4j 做"第二框架"（维护成本翻倍）
 
 阶段 4（团队规模化）
-  └─ 两层独立部署、独立扩缩容
-  └─ 接口契约化（OpenAPI / Protobuf）
+  └─ 单框架 + 编排引擎已能支撑绝大多数团队规模
+  └─ 跨进程 Agent 通信等 MCP / A2A 协议成熟后再考虑
 ```
+
+**核心修正**：原方案的"两层独立部署"在企业实战中**几乎没有案例**（见第 11 篇 §2-3）。
 
 ---
 
@@ -411,9 +423,10 @@ public class EmployeeTools {
 读完本节后，你应该能回答：
 
 - [ ] "接入"和"兜底"分别指什么？为什么 Spring AI 适合？
-- [ ] "思考"和"编排"分别指什么？为什么 LangChain4j 适合？
+- [ ] "思考"和"编排"分别指什么？为什么 LangChain4j 适合？（⚠️ Spring AI 2.0 后这条已弱化，详见第 13 篇 §2）
 - [ ] 两层之间同进程和跨进程两种通信方式各有什么取舍？
 - [ ] 哪些场景不该用分工模型（应单框架解决）？
+- [ ] **本文哪些论点在 Spring AI 2.0 GA 后已过时？为什么企业不采用"两层分工"架构？（见第 11、13 篇）**
 - [ ] 在你当前的项目里，哪些逻辑属于"接入/兜底"，哪些属于"思考/编排"？
 
 ---
@@ -423,3 +436,5 @@ public class EmployeeTools {
 - `04-Java与AI融合架构.md` —— Java 与 AI 融合的整体架构（本节是其第 12 节的展开）
 - `tutorials/spring-ai/07-与LangChain4j对比.md` —— 两框架核心差异对比（本节是其第 12 节的展开）
 - `09-心智模型与决策树.md` —— 何时用啥的决策树
+- `11-企业级Java-AI架构选型真相.md` —— 本文的现实校正（企业不混用）
+- `13-SpringAI-vs-LangChain4j何时用何框架.md` —— **决策手册（选型看这篇）**

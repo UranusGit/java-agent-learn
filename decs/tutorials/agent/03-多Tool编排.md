@@ -299,7 +299,7 @@ public class CollaborativeAgent {
 
 ### 5.3 复杂协作（用 AutoGen / CrewAI 风格）
 
-参考 `reference/07-多模态与多Agent.md`。
+参考 `reference/理论基础/04-多模态与多Agent.md`。
 
 ---
 
