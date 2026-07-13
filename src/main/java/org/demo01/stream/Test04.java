@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
 @RestController
-@RequestMapping("/flux")
+@RequestMapping("/demo01/flux")
 public class Test04 {
     @Autowired
     private Assistant agent;

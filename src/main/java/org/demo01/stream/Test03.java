@@ -13,7 +13,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.io.IOException;
 
 @RestController
-@RequestMapping("/langchain")
+@RequestMapping("/demo01/langchain")
 public class Test03 {
 
     @Autowired
