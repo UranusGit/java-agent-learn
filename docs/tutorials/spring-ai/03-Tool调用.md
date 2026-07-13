@@ -162,7 +162,7 @@ ChatClient chatClient(ChatClient.Builder builder, EmployeeTools employeeTools) {
 EmployeeTools tools = new EmployeeTools(new EmployeeService(...));
 
 Assistant agent = AiServices.builder(Assistant.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .tools(tools)
         .build();
 ```

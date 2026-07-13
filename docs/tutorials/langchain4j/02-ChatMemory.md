@@ -131,7 +131,7 @@ public class ChatDemo {
 
         // ConversationalChain 自动管理 memory
         ConversationalChain chain = ConversationalChain.builder()
-                .chatLanguageModel(model)
+                .chatModel(model)
                 .chatMemory(memory)
                 .build();
 

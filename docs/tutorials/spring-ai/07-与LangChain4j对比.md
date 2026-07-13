@@ -39,7 +39,7 @@ LangChain Python         Spring Boot / Spring Cloud
 | Tool | `@Tool`（dev.langchain4j） | `@Tool`（spring.ai.tool） |
 | Tool 参数 | `@P` | `@ToolParam` |
 | Tool 注入业务 | 手动 new | **Spring Bean** |
-| RAG | `ContentRetriever` | `QuestionAnswerAdvisor` |
+| RAG | `ContentRetriever` + `RetrievalAugmentor` | `RetrievalAugmentationAdvisor`（1.0.0+） |
 | 向量库 | `EmbeddingStore` | `VectorStore` |
 | 文档加载 | `DocumentLoader` + 各 parser | Tika 一站式 |
 | 结构化输出 | 接口返回类型 | `.entity(Class)` |
@@ -61,7 +61,7 @@ interface Assistant {
 }
 
 Assistant agent = AiServices.builder(Assistant.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .chatMemoryProvider(id -> ...)
         .tools(tools)
         .build();
@@ -93,7 +93,7 @@ LangChain4j 的痛点：
 ```java
 // 想加日志，要重新写 builder
 Assistant withLog = AiServices.builder(Assistant.class)
-        .chatLanguageModel(new LoggingModel(originalModel))  // 装饰器
+        .chatModel(new LoggingModel(originalModel))  // 装饰器
         .build();
 ```
 
@@ -243,7 +243,7 @@ Spring AI Tool 内部可以用：
 - [ ] 用 `ChatClient` 实现 LLM 调用
 - [ ] 用 `Advisor` 实现拦截（日志、限流、敏感词）
 - [ ] 用 `MessageChatMemoryAdvisor` 实现多轮对话
-- [ ] 用 `QuestionAnswerAdvisor` 实现 RAG
+- [ ] 用 `RetrievalAugmentationAdvisor` 实现 RAG（需要先引入 `spring-ai-rag` 依赖）
 - [ ] 写自定义 `@Tool` Bean，注入业务 Service
 - [ ] 用 `.entity(Class)` 实现结构化输出
 - [ ] 用 `Flux<String>` 实现流式输出

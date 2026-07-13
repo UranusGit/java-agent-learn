@@ -177,9 +177,9 @@ Prompt prompt = template.create(Map.of(
 ));
 ```
 
-### 4.3 `QuestionAnswerAdvisor` 内部就是这么做的
+### 4.3 `RetrievalAugmentationAdvisor` 内部就是这么做的
 
-回顾上一节，那个 `{question_answer_context}` 占位符就是 stuffed 后的文档。
+1.0.0 的 RAG Advisor `RetrievalAugmentationAdvisor` 默认就是把检索到的文档拼成 `{question_answer_context}` 占位符的内容。
 
 ---
 
@@ -192,7 +192,9 @@ SystemPromptTemplate sysTemplate = new SystemPromptTemplate(
     new ClassPathResource("prompts/system-customer-service.st")
 );
 
-SystemMessage systemMessage = sysTemplate.createMessage(Map.of(
+// 注意：1.0.0 中 createMessage(Map) 返回 Message（不是 SystemMessage）
+// SystemPromptTemplate 内部已经把模板渲染成 SystemMessage，类型转换是安全的
+Message systemMessage = sysTemplate.createMessage(Map.of(
     "company", "Acme",
     "tone", "专业"
 ));

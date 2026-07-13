@@ -82,17 +82,17 @@ public interface ItAgent {
 
 ```java
 RouterAgent router = AiServices.builder(RouterAgent.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .build();
 
 HrAgent hrAgent = AiServices.builder(HrAgent.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .tools(employeeTools, deptTools)
         .chatMemoryProvider(id -> MessageWindowChatMemory.withMaxMessages(20))
         .build();
 
 ItAgent itAgent = AiServices.builder(ItAgent.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .tools(k8sTools, prometheusTools)
         .chatMemoryProvider(id -> MessageWindowChatMemory.withMaxMessages(20))
         .build();

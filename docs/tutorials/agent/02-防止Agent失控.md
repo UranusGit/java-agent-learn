@@ -81,7 +81,7 @@ LLM 编造了一个不存在的工具
 
 ```java
 Assistant agent = AiServices.builder(Assistant.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .tools(myTools)
         // 限制 LLM 最多做 5 次"决策"
         // LangChain4j 不同版本 API 略有差异，以当前文档为准
@@ -97,24 +97,36 @@ Assistant agent = AiServices.builder(Assistant.class)
 
 ### 3.2 Spring AI
 
-Spring AI 没有直接的"迭代次数"配置，通过 Advisor 实现：
+Spring AI 没有直接的"迭代次数"配置，通过 Advisor 实现（基于 Spring AI 1.0.0 API）：
 
 ```java
 public class IterationLimitAdvisor implements CallAdvisor {
     private static final int MAX_ITERATIONS = 10;
 
     @Override
-    public AdvisedResponse aroundCall(AdvisedRequest req, CallAdvisorChain chain) {
-        Map<String, Object> ctx = req.adviseContext();
+    public String getName() { return "IterationLimitAdvisor"; }
+
+    @Override
+    public int getOrder() { return 0; }
+
+    @Override
+    public ChatClientResponse adviseCall(ChatClientRequest req, CallAdvisorChain chain) {
+        Map<String, Object> ctx = req.context();
         Integer count = (Integer) ctx.getOrDefault("iterCount", 0);
         if (count >= MAX_ITERATIONS) {
             throw new RuntimeException("达到最大迭代数：" + MAX_ITERATIONS);
         }
-        ctx.put("iterCount", count + 1);
-        return chain.nextAroundCall(req);
+        // ChatClientRequest 是不可变 record，修改 context 必须通过 mutate
+        ChatClientRequest newReq = req.mutate()
+                .context(new HashMap<>(ctx))  // 复制一份
+                .build();
+        newReq.context().put("iterCount", count + 1);
+        return chain.nextCall(newReq);
     }
 }
 ```
+
+> 📌 1.0.0 的 Advisor API：方法名是 `adviseCall`（不是 `aroundCall`），入参是 `ChatClientRequest`（不是 `AdvisedRequest`），共享上下文通过 `req.context()` 拿（不是 `req.adviseContext()`），链推进用 `chain.nextCall(req)`（不是 `chain.nextAroundCall(req)`）。详见 [spring-ai/02-Advisor链](../spring-ai/02-Advisor链.md)。
 
 ---
 
@@ -199,15 +211,23 @@ spring:
 
 ### 5.3 全局 token 上限（Spring AI Advisor）
 
+> Spring AI 1.0.0 API。
+
 ```java
 public class TokenLimitAdvisor implements CallAdvisor {
     private static final int MAX_TOTAL_TOKENS = 100_000;
     private final AtomicInteger totalUsed = new AtomicInteger(0);
 
     @Override
-    public AdvisedResponse aroundCall(AdvisedRequest req, CallAdvisorChain chain) {
-        AdvisedResponse resp = chain.nextAroundCall(req);
-        int used = resp.response().getMetadata().getUsage().getTotalTokens();
+    public String getName() { return "TokenLimitAdvisor"; }
+
+    @Override
+    public int getOrder() { return 100; }
+
+    @Override
+    public ChatClientResponse adviseCall(ChatClientRequest req, CallAdvisorChain chain) {
+        ChatClientResponse resp = chain.nextCall(req);
+        int used = resp.chatResponse().getMetadata().getUsage().getTotalTokens();
         int now = totalUsed.addAndGet(used);
         if (now > MAX_TOTAL_TOKENS) {
             throw new RuntimeException("Token 配额已用尽");
@@ -290,14 +310,22 @@ public class CostMonitor {
 
 ### 7.2 接入 Advisor
 
+> Spring AI 1.0.0 API。
+
 ```java
 public class CostAdvisor implements CallAdvisor {
     private final CostMonitor monitor;
 
     @Override
-    public AdvisedResponse aroundCall(AdvisedRequest req, CallAdvisorChain chain) {
-        AdvisedResponse resp = chain.nextAroundCall(req);
-        Usage usage = resp.response().getMetadata().getUsage();
+    public String getName() { return "CostAdvisor"; }
+
+    @Override
+    public int getOrder() { return 100; }
+
+    @Override
+    public ChatClientResponse adviseCall(ChatClientRequest req, CallAdvisorChain chain) {
+        ChatClientResponse resp = chain.nextCall(req);
+        Usage usage = resp.chatResponse().getMetadata().getUsage();
         monitor.record(usage.getPromptTokens(), usage.getCompletionTokens());
         return resp;
     }
@@ -370,8 +398,8 @@ ChatClient productionClient(ChatClient.Builder builder) {
                 new IterationLimitAdvisor(10),       // 最大迭代
                 new LoopDetectionAdvisor(),          // 循环检测
                 new LoggingAdvisor(),                // 日志
-                new MessageChatMemoryAdvisor(...),   // 记忆
-                new QuestionAnswerAdvisor(...)       // RAG
+                new MessageChatMemoryAdvisor(...),                // 记忆
+                new RetrievalAugmentationAdvisor(...)             // RAG（1.0.0 入口，来自 spring-ai-rag）
             )
             .build();
 }

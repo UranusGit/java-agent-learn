@@ -24,7 +24,7 @@ public class SimpleLogAdvisor implements CallAdvisor, StreamAdvisor {
     @Override
     public Flux<ChatClientResponse> adviseStream(ChatClientRequest request, StreamAdvisorChain chain) {
         long start = System.currentTimeMillis();
-        System.out.println("[REQ]：" + request.prompt().getUserMessage());
+        System.out.println("[REQ]：" + request.prompt().getUserMessage().getText());
 
         return chain.nextStream(request)
                 .doOnSubscribe(subscription -> System.out.println("开始消费了！！！！"))

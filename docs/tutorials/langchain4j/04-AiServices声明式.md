@@ -92,7 +92,7 @@ public interface Assistant {
 
 ```java
 Assistant agent = AiServices.builder(Assistant.class)
-        .chatLanguageModel(model)
+        .chatModel(model)
         .systemMessageProvider(chatMemoryId -> "你是海盗助手")
         .build();
 ```
