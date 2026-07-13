@@ -44,7 +44,7 @@
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-open-ai</artifactId>
-            <version>${langchain4j.version}</version>
+            <version>1.0.1</version>
         </dependency>
 
         <!-- 日志：Spring Boot starter 自带 logback-classic + logback-core（版本由 Spring Boot 统一管理，不要手动声明） -->

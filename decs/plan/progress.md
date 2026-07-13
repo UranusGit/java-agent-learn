@@ -93,13 +93,23 @@
 
 ---
 
-## 阶段 4：Agent + Tool 进阶（Week 5-6）
+## 阶段 4：Agent + Tool 进阶 + Anthropic Workflow 模式（Week 5-6）
 
-- [ ] 设计 3-5 个 Tool
-- [ ] LangChain4j 整合
-- [ ] Tool 失败兜底
-- [ ] Spring AI 重做
-- [ ] "生产环境防 Agent 失控"笔记
+> 主框架：**Spring AI 2.0**（LangChain4j 仅作对照）
+> 核心认知：**Workflow > Agent**，能用工作流解决不要用自主 Agent
+
+- [ ] 设计 3-5 个 Tool（Spring AI `@Tool` + ToolCallingAdvisor）
+- [ ] Tool 失败兜底（Advisor 捕获异常）
+- [ ] **Anthropic 5 大 Workflow 模式各 1 个示例**：
+  - [ ] Prompt Chaining（串联）
+  - [ ] Parallelization（并行/分段/投票）
+  - [ ] Routing（路由分流）
+  - [ ] Orchestrator-Workers（编排-工人）
+  - [ ] Evaluator-Optimizer（评估-优化）
+- [ ] `StructuredOutputValidationAdvisor` 结构化输出
+- [ ] LangChain4j `AiServices` 重做（对照）
+- [ ] 笔记 1：Workflow vs Agent 何时用哪个
+- [ ] 笔记 2：生产环境如何防 Agent 失控
 
 **完成日期**：______
 
@@ -107,14 +117,21 @@
 
 ## 阶段 5：生产化（Week 7-9）
 
+> 主框架：**Spring AI 2.0 单框架**
+
 - [ ] 流式输出（SSE）
-- [ ] 会话持久化（Redis）
+- [ ] 会话持久化（spring-ai-session 或 Redis）
 - [ ] 超时 + 重试 + 降级
 - [ ] token 计费监控
-- [ ] JSON 严格解析
-- [ ] 接入 Langfuse
-- [ ] 限流（Bucket4j）
-- [ ] 多模型路由
+- [ ] JSON 严格解析（StructuredOutputValidationAdvisor）
+- [ ] **Advisor 链**（至少 3 个）：
+  - [ ] 鉴权 Advisor
+  - [ ] 限流 Advisor（Bucket4j）
+  - [ ] 审计 Advisor
+- [ ] **可观测性**：Micrometer + OpenTelemetry GenAI Semantic Conventions
+- [ ] **MCP 接入**：至少 1 个 `@McpTool` 可用
+- [ ] 多模型路由（fallback）
+- [ ] （可选）Langfuse 全链路 trace
 
 **完成日期**：______
 
@@ -122,10 +139,29 @@
 
 ## 阶段 6：综合项目（持续）
 
+> **单框架（Spring AI 2.0）全栈交付**
+
 **方向选择**（三选一）：
 - [ ] A. 智能运维助手（K8s/Prom）
 - [ ] B. 企业知识库客服
-- [ ] C. 代码评审助手
+- [ ] C. 代码评审助手（用 Orchestrator-Workers + Evaluator-Optimizer 模式）
+
+**完成日期**：______
+
+---
+
+## 阶段 7（可选进阶）：编排引擎（Week 10-11）
+
+> ⚠️ 前置判断：先确认 Advisor 链 + Workflow 真的 hold 不住再上
+
+**二选一**：
+- [ ] A. Spring AI Alibaba Graph（推荐，国内生态）
+- [ ] B. LangGraph4j（社区驱动，实验性）
+
+任务：
+- [ ] 用编排引擎重写阶段 6 的复杂部分
+- [ ] Checkpoint + 断点续跑
+- [ ] 笔记：Workflow / 状态机 / 自主 Agent 的边界
 
 **完成日期**：______
 

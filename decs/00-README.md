@@ -53,7 +53,9 @@ desc/
     ├── 06-LLMOps.md
     ├── 07-多模态与多Agent.md
     ├── 08-架构师进阶.md
-    └── 09-心智模型与决策树.md
+    ├── 09-心智模型与决策树.md
+    ├── 10-SpringAI与LangChain4j分工模型.md   # 理论范式
+    └── 11-企业级Java-AI架构选型真相.md       # ⚠️ 现实校正（选型前必读）
 ```
 
 ---
@@ -105,6 +107,9 @@ desc/
 
 - ❌ 不要试图学会所有模型架构：会用比会改重要 10 倍
 - ❌ 不要陷在 Python 教程里：你是 Java 工程师，每个概念都用 Java 实现一遍才算掌握
-- ❌ 不要追新框架：每周都有新框架，盯死 LangChain4j + Spring AI
+- ❌ 不要追新框架：每周都有新框架，盯死 **Spring AI 2.0**（LangChain4j 仅作入门与对照）
 - ❌ 没跑通就上复杂特性（RAG/Agent）：基础不牢地动山摇
+- ❌ **不要一上来就搞"Spring AI + LangChain4j 混用"**：理论范式，企业不这么做（详见 `reference/11`）
+- ❌ **盲目追求自主 Agent**：能用 Workflow（确定性 DAG）解决的不要用 Agent
+- ❌ **过早押注 Beta 框架**（Embabel/Koog/Google ADK）：跟进不押注
 - ✅ 写文章输出：博客/笔记是最佳学习加速器
