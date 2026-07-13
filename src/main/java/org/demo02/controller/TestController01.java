@@ -11,7 +11,7 @@ import reactor.core.publisher.Flux;
 
 @RestController
 @RequestMapping("/demo02")
-public class TestController {
+public class TestController01 {
     @Autowired
     private ChatClient client;
 
