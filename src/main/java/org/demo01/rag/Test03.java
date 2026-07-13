@@ -31,19 +31,21 @@ public class Test03 {
                 .logRequests(true)
                 .build();
 
-        // 向量化：强制 HTTP/1.1，规避 JDK HTTP/2 与 LM Studio 的兼容性问题
+        // 强制 HTTP/1.1，规避 JDK HTTP/2 与 LM Studio 握手后挂起的问题
+        HttpClient.Builder httpBuilder = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(15));
+
         EmbeddingModel embeddingModel = OpenAiEmbeddingModel.builder()
+                .httpClientBuilder(new JdkHttpClientBuilder().httpClientBuilder(httpBuilder))
                 .baseUrl("http://127.0.0.1:1234/v1")
                 .apiKey("lm-studio")
                 .modelName("text-embedding-bge-large-zh-v1.5")
-                .httpClientBuilder(new JdkHttpClientBuilder()
-                        .httpClientBuilder(HttpClient.newBuilder()
-                                .version(HttpClient.Version.HTTP_1_1))
-                        .readTimeout(Duration.ofSeconds(60)))
+                .timeout(Duration.ofSeconds(60))
                 .build();
 
         // 向量库：从 Test01 持久化的 JSON 加载
-        EmbeddingStore<TextSegment> store = InMemoryEmbeddingStore.fromFile(Path.of("docs/embeddings.json"));
+        EmbeddingStore<TextSegment> store = InMemoryEmbeddingStore.fromFile(Path.of("docs/data/embeddings.json"));
 
 
         ContentRetriever retriever = EmbeddingStoreContentRetriever.builder()

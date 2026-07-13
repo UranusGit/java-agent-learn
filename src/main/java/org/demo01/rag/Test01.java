@@ -24,7 +24,7 @@ public class Test01 {
         // 加载文件
         TextDocumentParser parser = new TextDocumentParser(Charset.defaultCharset());
         Document doc = FileSystemDocumentLoader
-                .loadDocument(Path.of("docs/产品手册.txt"), parser);
+                .loadDocument(Path.of("docs/data/产品手册.txt"), parser);
 
         // 分块
         DocumentSplitter splitter = DocumentSplitters
@@ -35,15 +35,17 @@ public class Test01 {
         });
         System.out.println("分块数：" + segments.size());
 
-        // 向量化：强制 HTTP/1.1，规避 JDK HTTP/2 与 LM Studio 的兼容性问题
+        // 强制 HTTP/1.1，规避 JDK HTTP/2 与 LM Studio 握手后挂起的问题
+        HttpClient.Builder httpBuilder = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(15));
+
         EmbeddingModel embedModel = OpenAiEmbeddingModel.builder()
+                .httpClientBuilder(new JdkHttpClientBuilder().httpClientBuilder(httpBuilder))
                 .baseUrl("http://127.0.0.1:1234/v1")
                 .apiKey("lm-studio")
                 .modelName("text-embedding-bge-large-zh-v1.5")
-                .httpClientBuilder(new JdkHttpClientBuilder()
-                        .httpClientBuilder(HttpClient.newBuilder()
-                                .version(HttpClient.Version.HTTP_1_1))
-                        .readTimeout(Duration.ofSeconds(60)))
+                .timeout(Duration.ofSeconds(60))
                 .build();
 
         List<Embedding> embeddings = embedModel.embedAll(segments).content();
@@ -53,7 +55,7 @@ public class Test01 {
         store.addAll(embeddings, segments);
 
         // 持久化到文件，供 Test02 加载
-        Path indexFile = Path.of("docs/embeddings.json");
+        Path indexFile = Path.of("docs/data/embeddings.json");
         Files.writeString(indexFile, store.serializeToJson());
 
         System.out.println("索引完成，共 " + embeddings.size() + " 个向量，已写入 " + indexFile);
