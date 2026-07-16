@@ -247,9 +247,9 @@ ChatMemory chatMemory(SessionRepository sessionRepository) {
 
 @Bean
 MessageChatMemoryAdvisor memoryAdvisor(ChatMemory chatMemory) {
-    return MessageChatMemoryAdvisor.builder(chatMemory)
-            .conversationId("default")
-            .build();
+    // 注意：2.0 起 Builder 没有 conversationId(...) 方法
+    // conversationId 改为运行时通过 prompt().advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, "xxx")) 传入
+    return MessageChatMemoryAdvisor.builder(chatMemory).build();
 }
 
 @Bean
