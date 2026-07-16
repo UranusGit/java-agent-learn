@@ -27,7 +27,7 @@ desc/
 │   │   ├── 08-DeepSeek集成.md
 │   │   └── 09-常见错误与排查手册.md
 │   │
-│   ├── spring-ai/                            # Spring AI 系列（主线，最终交付栈）
+│   ├── spring-ai/                            # Spring AI 系列（1.0 基础，主线入门）
 │   │   ├── 01-快速起步.md
 │   │   ├── 02-Advisor链.md
 │   │   ├── 03-Tool调用.md
@@ -38,6 +38,20 @@ desc/
 │   │   ├── 08-升级到SpringAI2.0.md          # 阶段 5 Day 1-3
 │   │   ├── 09-MCP接入实战.md                 # 阶段 5 + 阶段 8.1
 │   │   └── 10-Anthropic五大Workflow模式.md   # 阶段 4 Week 5
+│   │
+│   ├── spring-ai-2.0/                        # ⭐ Spring AI 2.0 进阶（核心，最终交付栈）
+│   │   ├── 00-目录索引.md                    # 五级学习路线总览
+│   │   ├── 01-初级-2.0基础重塑.md            # L1：1.0 → 2.0 迁移
+│   │   ├── 02-初级-ToolCallingAdvisor.md     # L2：原生 Agent Loop
+│   │   ├── 03-中级-Advisor2.0与结构化校验.md # L3：自定义 Advisor + 自动校验
+│   │   ├── 04-中级-MCP与会话持久化.md        # L4：MCP + spring-ai-session
+│   │   ├── 05-进阶-五大Workflow模式Advisor实现.md  # ⭐ L5：核心篇
+│   │   ├── 06-进阶-组合实战代码评审助手.md    # L6：P3 实战
+│   │   ├── 07-高阶-可观测成本可靠性.md       # L7：OTel + 成本 + Resilience4j
+│   │   ├── 08-高阶-多租户与防失控.md          # L8：多租户 + 三重保护 + 审计
+│   │   ├── 09-无敌-编排引擎与多Agent.md      # L9：LangGraph4j / Alibaba Graph
+│   │   ├── 10-无敌-MCP生态与长期演进.md      # L10：MCP 发布 + A2A + 反模式
+│   │   └── 11-复现手册-流式与工具调用.md     # 📖 照着做的可复现手册
 │   │
 │   └── agent/                                # Agent 进阶系列（阶段 4）
 │       ├── 00-阶段总览.md
