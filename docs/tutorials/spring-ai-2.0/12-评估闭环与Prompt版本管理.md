@@ -4,7 +4,7 @@
 >
 > 没有评估闭环的 AI 工程等于盲改 —— 改一行 prompt 可能让 80% 的 case 通过变成 60%。
 >
-> 前置：[`./07-RAG工程化实战.md`](./07-RAG工程化实战.md)
+> 前置：[`./09-RAG工程化实战.md`](./09-RAG工程化实战.md)
 > 预计：1 天
 
 ---
@@ -868,9 +868,9 @@ GROUP BY query;
 
 ## 16. 相关文档
 
-- [`./07-RAG工程化实战.md`](./07-RAG工程化实战.md) —— RAG 系统是被测对象
-- [`./14-可观测性与成本治理.md`](./14-可观测性与成本治理.md) —— 在线评估与 trace 的深度集成
-- [`./18-自研vs框架的边界.md`](./18-自研vs框架的边界.md) —— 自研 eval 还是用 Langfuse
+- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— RAG 系统是被测对象
+- [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— 在线评估与 trace 的深度集成
+- [`./19-自研vs框架的边界.md`](./19-自研vs框架的边界.md) —— 自研 eval 还是用 Langfuse
 - [Langfuse 文档](https://langfuse.com/docs) —— 开源 LLM 评估平台
 - [OpenAI Evals](https://github.com/openai/evals) —— OpenAI 官方评估框架（思路参考）
 

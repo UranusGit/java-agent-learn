@@ -362,7 +362,7 @@ ReAct 的痛点：模型"边走边想"，容易陷入局部最优。Plan-and-Exe
 阶段 3：Replanner 看执行结果，决定是 replan 还是收尾
 ```
 
-详见 [`./09-多Agent编排实战.md`](./09-多Agent编排实战.md) 的 Planner-Executor 模式。
+详见 [`./10-多Agent编排实战.md`](./10-多Agent编排实战.md) 的 Planner-Executor 模式。
 
 ---
 
@@ -408,7 +408,7 @@ ChatClient client(ChatClient.Builder b) {
 
 ## 9. Prompt 模板化与版本化
 
-裸字符串写 prompt 是反模式（见 [`./11-评估闭环与Prompt版本管理.md`](./11-评估闭环与Prompt版本管理.md)）。
+裸字符串写 prompt 是反模式（见 [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md)）。
 
 ### 9.1 用 ST 模板
 
@@ -481,7 +481,7 @@ BaseAdvisor promptLogger() {
 
 ### 10.3 在 Langfuse / Phoenix 里看 Prompt 血缘
 
-详见 [`./14-可观测性与成本治理.md`](./14-可观测性与成本治理.md)。Prompt 每次改动都关联一次 eval run，方便回归。
+详见 [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md)。Prompt 每次改动都关联一次 eval run，方便回归。
 
 ---
 
@@ -544,8 +544,8 @@ BaseAdvisor promptLogger() {
 - [`./01-2.0基础重塑.md`](./01-2.0基础重塑.md) —— ChatClient 基础
 - [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) —— ReAct 的 Spring AI 实现
 - [`./03-Advisor链全解.md`](./03-Advisor链全解.md) —— Advisor 注入 prompt 的标准做法
-- [`./09-多Agent编排实战.md`](./09-多Agent编排实战.md) —— Plan-and-Execute 模式
-- [`./11-评估闭环与Prompt版本管理.md`](./11-评估闭环与Prompt版本管理.md) —— Prompt 版本化与评估
+- [`./10-多Agent编排实战.md`](./10-多Agent编排实战.md) —— Plan-and-Execute 模式
+- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— Prompt 版本化与评估
 - [Anthropic: Prompt Engineering](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/overview)
 - [OpenAI: Prompt Engineering Guide](https://platform.openai.com/docs/guides/prompt-engineering)
 - [Tree of Thoughts Paper](https://arxiv.org/abs/2305.10601)

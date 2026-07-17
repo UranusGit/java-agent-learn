@@ -4,7 +4,7 @@
 >
 > 一篇搞定：把 AI 能力开放给整个公司（甚至外部客户）所需的平台化 + 数据基础设施。
 >
-> 前置：[`./16-AI原生系统设计.md`](./16-AI原生系统设计.md) + [`./07-RAG工程化实战.md`](./07-RAG工程化实战.md)
+> 前置：[`./17-AI原生系统设计.md`](./17-AI原生系统设计.md) + [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md)
 > 预计：3 天
 
 ---
@@ -1041,11 +1041,11 @@ public class UserDataDeletionService {
 
 ## 20. 相关文档
 
-- [`./16-AI原生系统设计.md`](./16-AI原生系统设计.md) —— 系统设计基础
-- [`./07-RAG工程化实战.md`](./07-RAG工程化实战.md) —— RAG 数据基础
+- [`./17-AI原生系统设计.md`](./17-AI原生系统设计.md) —— 系统设计基础
+- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— RAG 数据基础
 - [`./05-MCP协议全解.md`](./05-MCP协议全解.md) —— MCP Hub 实现
-- [`./14-可观测性与成本治理.md`](./14-可观测性与成本治理.md) —— 平台可观测性 + 计费
-- [`./13-安全工程与红队.md`](./13-安全工程与红队.md) —— 多租户安全深入
+- [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— 平台可观测性 + 计费
+- [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— 多租户安全深入
 - [pgvector 文档](https://github.com/pgvector/pgvector)
 - [Milvus 文档](https://milvus.io/docs)
 - [Building LLM Apps for Production](https://www.oreilly.com/library/view/building-llm-apps/)

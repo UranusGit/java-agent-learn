@@ -2,7 +2,7 @@
 
 > AI 项目同时管"代码 + prompt + 模型 + 数据 + 实验"，传统 Git Flow 不够。本文给出一套适配 AI 项目特点的 Git 工作流。
 >
-> 前置：[`./26-CICD-for-AI.md`](./26-CICD-for-AI.md)
+> 前置：[`./27-CICD-for-AI.md`](./27-CICD-for-AI.md)
 > 预计：1 天
 
 ---
@@ -323,7 +323,7 @@ mlflow artifacts download  # 模型权重
 - **批量任务**：单独的 K8s Job，不阻塞主应用部署。
 - **增量同步**：CDC（Debezium）→ Kafka → Indexer service。
 
-详见 [`./17-大规模Agent平台与数据基础设施.md`](./17-大规模Agent平台与数据基础设施.md)。
+详见 [`./18-大规模Agent平台与数据基础设施.md`](./18-大规模Agent平台与数据基础设施.md)。
 
 ---
 
@@ -474,10 +474,10 @@ Prompt 仓库可以放宽：
 
 ## 14. 相关文档
 
-- [`./11-评估闭环与Prompt版本管理.md`](./11-评估闭环与Prompt版本管理.md) —— Prompt 版本化
-- [`./18-自研vs框架的边界.md`](./18-自研vs框架的边界.md) —— ADR 模板
-- [`./26-CICD-for-AI.md`](./26-CICD-for-AI.md) —— CI/CD 流水线
-- [`./25-AI工程的SRE实践.md`](./25-AI工程的SRE实践.md) —— 变更管理 + 回滚
+- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— Prompt 版本化
+- [`./19-自研vs框架的边界.md`](./19-自研vs框架的边界.md) —— ADR 模板
+- [`./27-CICD-for-AI.md`](./27-CICD-for-AI.md) —— CI/CD 流水线
+- [`./26-AI工程的SRE实践.md`](./26-AI工程的SRE实践.md) —— 变更管理 + 回滚
 - [Trunk-Based Development](https://trunkbaseddevelopment.com/)
 - [Conventional Commits](https://www.conventionalcommits.org/)
 - [GitHub CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)

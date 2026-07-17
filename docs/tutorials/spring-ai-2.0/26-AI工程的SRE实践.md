@@ -2,7 +2,7 @@
 
 > LLM 系统的 SRE 比传统 Web 难一倍：延迟分布厚尾、输出不确定、依赖第三方 API、prompt 改动会破坏行为。本文给出一套可落地的 SRE 框架。
 >
-> 前置：[`./14-可观测性与成本治理.md`](./14-可观测性与成本治理.md)
+> 前置：[`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md)
 > 预计：2 天
 
 ---
@@ -101,7 +101,7 @@ public class LlmGateway {
 
 - **应用层**：K8s HPA 按 QPS / 并发数扩。
 - **上游配额**：提前 1 周向 OpenAI / Anthropic 申请提额，否则扩了也白发。
-- **本地推理**：用 vLLM 自建推理集群做"溢出"，参考 [`./15-多模型路由与国产化.md`](./15-多模型路由与国产化.md)。
+- **本地推理**：用 vLLM 自建推理集群做"溢出"，参考 [`./16-多模型路由与国产化.md`](./16-多模型路由与国产化.md)。
 
 ---
 
@@ -131,7 +131,7 @@ PR 提交
 
 OpenAI / Anthropic 升级 model snapshot 会改行为。每次升级前：
 
-1. 跑完整 eval 集（[`./11-评估闭环与Prompt版本管理.md`](./11-评估闭环与Prompt版本管理.md)）。
+1. 跑完整 eval 集（[`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md)）。
 2. 对比 top-N 失败 case，看是新模型 bug 还是新行为。
 3. 灰度 1 周，监控 SLO。
 4. 全量后保留旧版本 fallback 1 个月。
@@ -160,7 +160,7 @@ OpenTelemetry 2024 推出 GenAI 标准 attribute：
 - `gen_ai.response.finish_reason`
 - `gen_ai.tool.name` / `gen_ai.tool.call.id`
 
-Spring AI 2.0 自动埋点（Micrometer + OTel），见 [`./14-可观测性与成本治理.md`](./14-可观测性与成本治理.md)。
+Spring AI 2.0 自动埋点（Micrometer + OTel），见 [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md)。
 
 ### 4.2 三层 trace
 
@@ -210,7 +210,7 @@ OTel 解决"调用链"，但 LLM 还需要"prompt 血缘 / eval 关联"。Langfu
 | Embedding 量化（INT8） | -75% 存储 | recall 掉点 |
 | Tool 结果缓存 | 工具调用 -80% | 数据陈旧 |
 
-详见 [`./14-可观测性与成本治理.md`](./14-可观测性与成本治理.md) §Prompt Cache。
+详见 [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) §Prompt Cache。
 
 ### 5.3 预算告警
 
@@ -330,7 +330,7 @@ if kl > 0.1:
 
 ### 7.5 Prompt Injection 攻击
 
-见 [`./13-安全工程与红队.md`](./13-安全工程与红队.md)。
+见 [`./14-安全工程与红队.md`](./14-安全工程与红队.md)。
 
 ---
 
@@ -427,11 +427,11 @@ if kl > 0.1:
 
 ## 12. 相关文档
 
-- [`./11-评估闭环与Prompt版本管理.md`](./11-评估闭环与Prompt版本管理.md) —— eval 闭环
-- [`./13-安全工程与红队.md`](./13-安全工程与红队.md) —— 安全 + 防失控
-- [`./14-可观测性与成本治理.md`](./14-可观测性与成本治理.md) —— 观测栈
-- [`./15-多模型路由与国产化.md`](./15-多模型路由与国产化.md) —— fallback 策略
-- [`./26-CICD-for-AI.md`](./26-CICD-for-AI.md) —— CI/CD 配套
+- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— eval 闭环
+- [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— 安全 + 防失控
+- [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— 观测栈
+- [`./16-多模型路由与国产化.md`](./16-多模型路由与国产化.md) —— fallback 策略
+- [`./27-CICD-for-AI.md`](./27-CICD-for-AI.md) —— CI/CD 配套
 - [Google SRE Book](https://sre.google/sre-book/table-of-contents/)
 - [OTel GenAI Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 - [Langfuse](https://langfuse.com/)

@@ -718,7 +718,7 @@ LLM 评估器永远说"不合格"。设 maxIterations=3 强制退出。
 
 ## 12. 相关文档
 
-- [`./09-多Agent编排实战.md`](./09-多Agent编排实战.md) —— 撑不住 Workflow 时升级
+- [`./10-多Agent编排实战.md`](./10-多Agent编排实战.md) —— 撑不住 Workflow 时升级
 - [`./03-Advisor链全解.md`](./03-Advisor链全解.md) —— Advisor 基础
 - [Anthropic Building Effective Agents](https://www.anthropic.com/research/building-effective-agents)
 

@@ -623,7 +623,7 @@ state.persistTo(stateRepo);
 
 - [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) —— 单 Agent 基础
 - [`./05-MCP协议全解.md`](./05-MCP协议全解.md) —— 跨进程 Agent 协作
-- [`./14-可观测性与成本治理.md`](./14-可观测性与成本治理.md) —— 多 Agent trace
+- [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— 多 Agent trace
 - [Spring AI Alibaba Graph 文档](https://java2ai.com/docs/dev/graph/overview/) —— 官方文档
 
 ---

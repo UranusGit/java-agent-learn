@@ -2,7 +2,7 @@
 
 > 医疗是 LLM 高价值但高风险的领域。本文以分诊、辅助诊断、电子病历处理为例，讲清医疗 Agent 的合规边界（HIPAA / 中国数据安全法）、技术架构、关键风险。
 >
-> 前置：[`./13-安全工程与红队.md`](./13-安全工程与红队.md) + [`./17-大规模Agent平台与数据基础设施.md`](./17-大规模Agent平台与数据基础设施.md)
+> 前置：[`./14-安全工程与红队.md`](./14-安全工程与红队.md) + [`./18-大规模Agent平台与数据基础设施.md`](./18-大规模Agent平台与数据基础设施.md)
 > 预计：2-3 天
 
 ---
@@ -478,11 +478,11 @@ public StructuredEmr validate(StructuredEmr e, String original) {
 
 ## 11. 相关文档
 
-- [`./07-RAG工程化实战.md`](./07-RAG工程化实战.md) —— 医学 RAG 基础
-- [`./13-安全工程与红队.md`](./13-安全工程与红队.md) —— Prompt Injection / 安全
-- [`./17-大规模Agent平台与数据基础设施.md`](./17-大规模Agent平台与数据基础设施.md) —— 数据治理
-- [`./15-多模型路由与国产化.md`](./15-多模型路由与国产化.md) —— 私有化部署
-- [`./23-向量模型选型与微调.md`](./23-向量模型选型与微调.md) —— 医学 embedding 微调
+- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— 医学 RAG 基础
+- [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— Prompt Injection / 安全
+- [`./18-大规模Agent平台与数据基础设施.md`](./18-大规模Agent平台与数据基础设施.md) —— 数据治理
+- [`./16-多模型路由与国产化.md`](./16-多模型路由与国产化.md) —— 私有化部署
+- [`./24-向量模型选型与微调.md`](./24-向量模型选型与微调.md) —— 医学 embedding 微调
 - [HIPAA Security Rule](https://www.hhs.gov/hipaa/for-professionals/security/index.html)
 - [NMPA 医疗器械分类](https://www.nmpa.gov.cn/)
 - [HuatuoGPT](https://github.com/FreedomIntelligence/HuatuoGPT)

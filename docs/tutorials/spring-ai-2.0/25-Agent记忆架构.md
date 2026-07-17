@@ -2,7 +2,7 @@
 
 > Spring AI 的 `MessageWindowChatMemory` 只是"会话窗口"，撑不起真正的 Agent 记忆。本文把人类记忆的五种类型映射到 AI 系统，给出工程化落地方案。
 >
-> 前置：[`./03-Advisor链全解.md`](./03-Advisor链全解.md) + [`./07-RAG工程化实战.md`](./07-RAG工程化实战.md)
+> 前置：[`./03-Advisor链全解.md`](./03-Advisor链全解.md) + [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md)
 > 预计：1.5 天
 
 ---
@@ -266,7 +266,7 @@ public ToolCallback synthesizeTool(String userIntent) {
 }
 ```
 
-⚠️ **生产慎用**：自动生成工具 = 把 prompt injection 风险面放大无数倍。必须配合 [`./13-安全工程与红队.md`](./13-安全工程与红队.md) 的红队测试。
+⚠️ **生产慎用**：自动生成工具 = 把 prompt injection 风险面放大无数倍。必须配合 [`./14-安全工程与红队.md`](./14-安全工程与红队.md) 的红队测试。
 
 ### 4.3 程序记忆的"工具市场"
 
@@ -379,7 +379,7 @@ ChatModel.call
 - **强一致**：用户主动操作（"删除我所有对话"）→ 必须跨三库事务。
 - **最终一致**：异步抽取 → 用 outbox + Kafka 解耦。
 
-详见 [`./16-AI原生系统设计.md`](./16-AI原生系统设计.md) Event Sourcing + CQRS。
+详见 [`./17-AI原生系统设计.md`](./17-AI原生系统设计.md) Event Sourcing + CQRS。
 
 ---
 
@@ -435,10 +435,10 @@ ChatModel.call
 ## 12. 相关文档
 
 - [`./03-Advisor链全解.md`](./03-Advisor链全解.md) —— Advisor 注入记忆的标准做法
-- [`./07-RAG工程化实战.md`](./07-RAG工程化实战.md) —— 语义记忆基础设施
-- [`./16-AI原生系统设计.md`](./16-AI原生系统设计.md) —— Event Sourcing 记忆
-- [`./17-大规模Agent平台与数据基础设施.md`](./17-大规模Agent平台与数据基础设施.md) —— 数据基础设施
-- [`./21-框架源码精读.md`](./21-框架源码精读.md) §5 —— ChatMemory 源码
+- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— 语义记忆基础设施
+- [`./17-AI原生系统设计.md`](./17-AI原生系统设计.md) —— Event Sourcing 记忆
+- [`./18-大规模Agent平台与数据基础设施.md`](./18-大规模Agent平台与数据基础设施.md) —— 数据基础设施
+- [`./22-框架源码精读.md`](./22-框架源码精读.md) §5 —— ChatMemory 源码
 - [MemGPT Paper](https://arxiv.org/abs/2310.08560)
 - [Letta (MemGPT) GitHub](https://github.com/letta-ai/letta)
 - [Generative Agents (Park et al., 2023)](https://arxiv.org/abs/2304.03442) —— Memory stream 设计原型

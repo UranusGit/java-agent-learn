@@ -2,7 +2,7 @@
 
 > 法律是 LLM 的天然主场（语言密集 + 引用严格），但幻觉在法律场景零容忍。本文以法条检索、合同审查、案例检索为例，讲清法律 Agent 的核心：**引用溯源 + 拒答策略 + 律师在回路**。
 >
-> 前置：[`./07-RAG工程化实战.md`](./07-RAG工程化实战.md) + [`./13-安全工程与红队.md`](./13-安全工程与红队.md)
+> 前置：[`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) + [`./14-安全工程与红队.md`](./14-安全工程与红队.md)
 > 预计：2 天
 
 ---
@@ -514,11 +514,11 @@ if (isCriminalCase(question)) {
 
 ## 12. 相关文档
 
-- [`./07-RAG工程化实战.md`](./07-RAG工程化实战.md) —— RAG 基础
-- [`./19-RAG高级篇.md`](./19-RAG高级篇.md) —— Hybrid Search / RRF
-- [`./13-安全工程与红队.md`](./13-安全工程与红队.md) —— Prompt Injection
-- [`./22-Prompt工程深入.md`](./22-Prompt工程深入.md) —— 结构化输出
-- [`./11-评估闭环与Prompt版本管理.md`](./11-评估闭环与Prompt版本管理.md) —— 引用指标评估
+- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— RAG 基础
+- [`./20-RAG高级篇.md`](./20-RAG高级篇.md) —— Hybrid Search / RRF
+- [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— Prompt Injection
+- [`./23-Prompt工程深入.md`](./23-Prompt工程深入.md) —— 结构化输出
+- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— 引用指标评估
 - [中国裁判文书网](https://wenshu.court.gov.cn/)
 - [北大法宝](https://www.pkulaw.com/)
 - [Westlaw](https://legal.thomsonreuters.com/en/westlaw)
