@@ -6,7 +6,6 @@ import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
 import org.springframework.ai.chat.client.advisor.api.StreamAdvisor;
 import org.springframework.ai.chat.client.advisor.api.StreamAdvisorChain;
-import org.springframework.util.ObjectUtils;
 import reactor.core.publisher.Flux;
 
 public class SimpleLogAdvisor implements CallAdvisor, StreamAdvisor {
@@ -28,7 +27,6 @@ public class SimpleLogAdvisor implements CallAdvisor, StreamAdvisor {
 
         return chain.nextStream(request)
                 .doOnSubscribe(subscription -> System.out.println("开始消费了！！！！"))
-                .filter(word -> !ObjectUtils.isEmpty(word.chatResponse().getResult().getOutput().getText()))
                 .doOnNext(chunk -> System.out.println(chunk.chatResponse().getResult().getOutput().getText()))
                 .doOnComplete(() -> {
                     long elapsed = System.currentTimeMillis() - start;
@@ -43,6 +41,6 @@ public class SimpleLogAdvisor implements CallAdvisor, StreamAdvisor {
 
     @Override
     public int getOrder() {
-        return 0; // 越小越先执行 before
+        return HIGHEST_PRECEDENCE + 150; // 越小越先执行 before
     }
 }
