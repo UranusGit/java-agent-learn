@@ -4,7 +4,7 @@
 >
 > Spring AI 2.0 本身不带多 Agent 框架，但生态里 `Spring AI Alibaba Graph` 是首选编排工具。
 >
-> 前置：[`./02-初级-ToolCallingAdvisor.md`](./02-初级-ToolCallingAdvisor.md) + [`./15-MCP-Server端实战.md`](./15-MCP-Server端实战.md)
+> 前置：[`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) + [`./05-MCP协议全解.md`](./05-MCP协议全解.md)
 > 预计：1.5 天
 
 ---
@@ -621,9 +621,9 @@ state.persistTo(stateRepo);
 
 ## 13. 相关文档
 
-- [`./02-初级-ToolCallingAdvisor.md`](./02-初级-ToolCallingAdvisor.md) —— 单 Agent 基础
-- [`./15-MCP-Server端实战.md`](./15-MCP-Server端实战.md) —— 跨进程 Agent 协作
-- [`./22-Agent可观测性完整栈.md`](./22-Agent可观测性完整栈.md) —— 多 Agent trace
+- [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) —— 单 Agent 基础
+- [`./05-MCP协议全解.md`](./05-MCP协议全解.md) —— 跨进程 Agent 协作
+- [`./14-可观测性与成本治理.md`](./14-可观测性与成本治理.md) —— 多 Agent trace
 - [Spring AI Alibaba Graph 文档](https://java2ai.com/docs/dev/graph/overview/) —— 官方文档
 
 ---

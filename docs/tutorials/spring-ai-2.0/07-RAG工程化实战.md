@@ -1188,8 +1188,8 @@ SearchRequest req = SearchRequest.builder()
 
 ## 14. 相关文档
 
-- [`./04-中级-MCP与会话持久化.md`](./04-中级-MCP与会话持久化.md) —— 会话持久化（与 RAG 共用向量库场景）
-- [`./14-评估闭环与Prompt版本管理.md`](./14-评估闭环与Prompt版本管理.md) —— 通用评估闭环（本文是 RAG 专用）
+- [`./05-MCP协议全解.md`](./05-MCP协议全解.md) —— 会话持久化（与 RAG 共用向量库场景）
+- [`./11-评估闭环与Prompt版本管理.md`](./11-评估闭环与Prompt版本管理.md) —— 通用评估闭环（本文是 RAG 专用）
 - [`../../reference/理论基础/02-RAG深度优化.md`](../../reference/理论基础/02-RAG深度优化.md) —— RAG 理论深度版
 - [Spring AI RAG Reference](https://docs.spring.io/spring-ai/reference/api/retrieval-augmented-generation.html)
 - [Spring AI ETL Pipeline](https://docs.spring.io/spring-ai/reference/api/etl-pipeline.html)

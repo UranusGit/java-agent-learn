@@ -2,7 +2,7 @@
 
 > 把 L1 提到的 `ToolCallingAdvisor` 彻底吃透。本文是 Agent 应用的基石。
 >
-> 前置：[`./01-初级-2.0基础重塑.md`](./01-初级-2.0基础重塑.md)
+> 前置：[`./01-2.0基础重塑.md`](./01-2.0基础重塑.md)
 > 预计：半天
 
 ---
@@ -458,7 +458,7 @@ LLM：
 
 **原因**：手动模式忘了加 `AdvisorParams.toolCallingAdvisorAutoRegister(false)`。
 
-**解决**：见 [`./11-复现手册-流式与工具调用.md`](./11-复现手册-流式与工具调用.md) §6。
+**解决**：见 [`./04-流式响应与Reactor深度.md`](./04-流式响应与Reactor深度.md) §6。
 
 ### 10.3 ToolContext 丢失
 
@@ -520,6 +520,6 @@ chatClient.prompt()
 - [ ] 熟练使用 `@Tool` / `@ToolParam` / `ToolContext` / `returnDirect`
 - [ ] 排查"工具被调两次"等常见错误
 
-> ⚠️ **自定义 `@Bean ChatClient` 的实战提醒**：本文 §4-§5 描述的「ChatClient 自动注册 ToolCallingAdvisor」仅在**没有自定义 ChatClient Bean** 时成立。一旦你写了 `@Bean ChatClient`，`ChatClientAutoConfiguration` 会被 `@ConditionalOnMissingBean` 短路，必须自己显式构造 `ToolCallingAdvisor` Bean 并加进 `defaultAdvisors`。完整复现过程（含流式下 `conversationId cannot be null` 500 错误的根因与修复）见 [`./11-复现手册-流式与工具调用.md` §15](./11-复现手册-流式与工具调用.md)。
+> ⚠️ **自定义 `@Bean ChatClient` 的实战提醒**：本文 §4-§5 描述的「ChatClient 自动注册 ToolCallingAdvisor」仅在**没有自定义 ChatClient Bean** 时成立。一旦你写了 `@Bean ChatClient`，`ChatClientAutoConfiguration` 会被 `@ConditionalOnMissingBean` 短路，必须自己显式构造 `ToolCallingAdvisor` Bean 并加进 `defaultAdvisors`。完整复现过程（含流式下 `conversationId cannot be null` 500 错误的根因与修复）见 [`./04-流式响应与Reactor深度.md` §15](./04-流式响应与Reactor深度.md)。
 
-完成后进入 [`./03-中级-Advisor2.0与结构化校验.md`](./03-中级-Advisor2.0与结构化校验.md)。
+完成后进入 [`./03-Advisor链全解.md`](./03-Advisor链全解.md)。
