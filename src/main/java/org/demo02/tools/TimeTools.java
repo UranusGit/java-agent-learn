@@ -10,6 +10,7 @@ import java.time.format.DateTimeFormatter;
 public class TimeTools {
     @Tool(description = "获取当前时间，格式为 ISO 标准格式")
     private String getTime() {
+        System.out.println("调用了TimeTool");
         return LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
     }
 }
