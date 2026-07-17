@@ -681,12 +681,28 @@ Cold Memory（对象存储）：归档，长期保留
 
 ### 13.2 ChatMemory JDBC 持久化
 
+Spring AI 2.0 把 ChatMemory 拆成两层：
+
+- **`ChatMemoryRepository`**：纯存储抽象（`saveAll` / `findByConversationId` / `deleteByConversationId`），`JdbcChatMemoryRepository` / `CassandraChatMemoryRepository` / `MongoChatMemoryRepository` / `JedisChatMemoryRepository` 等是它的实现。
+- **`ChatMemory`**：在 Repository 上加窗口/裁剪策略，`MessageWindowChatMemory`（默认 20 条）是它的标准实现。
+
+> 注意：**`ChatMemory` Bean 是上层**，单独 `@Bean ChatMemoryRepository` 不够，还要用 `MessageWindowChatMemory.builder().repository(repo).maxMessages(N).build()` 包一层，否则 advisor 拿不到 `ChatMemory`。Spring Boot starter 在 classpath 上有 JDBC starter 时会自动配置 `JdbcChatMemoryRepository` Bean，但 `MessageWindowChatMemory` 默认 `maxMessages=20`。
+
 ```java
+// 本代码仅作学习材料参考
 @Bean
-public ChatMemory chatMemory(JdbcTemplate jdbc) {
+public ChatMemoryRepository chatMemoryRepository(JdbcTemplate jdbc) {
     return JdbcChatMemoryRepository.builder()
             .jdbcTemplate(jdbc)
             .dialect(PostgresDialect.create())
+            .build();
+}
+
+@Bean
+public ChatMemory chatMemory(ChatMemoryRepository repository) {
+    return MessageWindowChatMemory.builder()
+            .repository(repository)
+            .maxMessages(20)
             .build();
 }
 ```
@@ -694,13 +710,18 @@ public ChatMemory chatMemory(JdbcTemplate jdbc) {
 ```sql
 CREATE TABLE spring_ai_chat_memory (
     conversation_id VARCHAR(36) NOT NULL,
-    messages JSONB NOT NULL,
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (conversation_id)
+    "timestamp"    BIGINT NOT NULL,
+    assistant_json JSONB NOT NULL,
+    user_json      JSONB NOT NULL,
+    PRIMARY KEY (conversation_id, "timestamp")
 );
 
-CREATE INDEX idx_memory_updated ON spring_ai_chat_memory(updated_at);
+CREATE INDEX idx_memory_conv ON spring_ai_chat_memory(conversation_id);
 ```
+
+> 2.0.0 引入 `sequence_id`/`"timestamp"` 列，支持基于 turn 边界的窗口裁剪（不再粗暴按消息条数截断）。具体表结构以官方 `JdbcChatMemoryRepositoryDialect` 实现为准。
+>
+> **重要限制**：JDBC / Cassandra / MongoDB 三个内置 Repository 实现目前**不支持持久化 ToolCall / ToolResponse 消息**（会被静默过滤）。如果你的 Agent 跨会话恢复后要继续推进工具调用，请用 Spring AI Session 项目（`spring-ai-session`，事件溯源、可重放）。
 
 ### 13.3 会话归档
 

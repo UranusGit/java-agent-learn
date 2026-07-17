@@ -11,9 +11,9 @@
 
 ## 0. 三句话讲清楚原理
 
-1. **自动模式**：`ChatClient` 默认自动注册 `ToolCallingAdvisor`（`Ordered.HIGHEST_PRECEDENCE + 300`），无论 `.call()` 还是 `.stream()` 都透明支持工具调用循环。
+1. **自动模式**：`ChatClient.builder().build()` 在内部**总是**把 `ToolCallingAdvisor`（order = `BaseAdvisor.HIGHEST_PRECEDENCE + 300`）注入 advisor 链，与你是否写 `@Bean ChatClient` 无关。官方原文："`ToolCallingAdvisor`, which is always auto-registered in the advisor chain (unless explicitly disabled)"。要全局关掉只能设 `spring.ai.chat.client.tool-calling.enabled=false`，单次调用关闭用 `.advisors(AdvisorParams.toolCallingAdvisorAutoRegister(false))`。
 2. **流式中的关键坑**：LLM 的一次 tool call 在流式响应里会被切成很多 chunk，**单看一个 chunk 看不到完整 tool call**。必须先聚合再判断（用 `ChatClientMessageAggregator`）。
-3. **手动模式**：当你想完全控制"几轮 tool 调用就停"或"每轮换不同 model options"时，关掉自动注册，自己写 `while` 循环。
+3. **手动模式**：当你想完全控制"几轮 tool 调用就停"或"每轮换不同 model options"时，用 `.advisors(AdvisorParams.toolCallingAdvisorAutoRegister(false))` 单次关闭，自己写 `while` 循环（官方"User-Controlled Tool Execution"模式）。
 
 ---
 
@@ -185,26 +185,48 @@ curl -N "http://127.0.0.1:8080/demo02/chat-stream?prompt=现在几点了&session
 
 ## Part C. 复现：两个真实的坑（2026-07-17 实战）
 
-### C.1 坑 1：自定义 ChatClient 下 ToolCallingAdvisor 不自动注册
+### C.1 坑 1（已勘误）：历史上误以为"自定义 ChatClient 短路了 ToolCallingAdvisor 自动注册"
 
-**症状**：自定义 `@Bean ChatClient` 后，`.stream()` 模式下 LLM 完全不调工具。
+> ⚠️ 本节是对早期版本错误说法的勘误，保留旧症状描述但**根因结论已重写**。如果你只看一节，请记住：**`ToolCallingAdvisor` 永远在 `ChatClient.builder().build()` 里被注入**，与 `@Bean ChatClient` 无关。
 
-**根因**：`ChatClientAutoConfiguration` 的 `ToolCallingAdvisor` 自动注册是 `@ConditionalOnMissingBean(ChatClient.class)`。一旦你写了 `@Bean ChatClient`，自动注册被短路。
+**曾经的说法**：自定义 `@Bean ChatClient` 后，`.stream()` 模式下 LLM 完全不调工具，被归因为"`ChatClientAutoConfiguration` 的 `ToolCallingAdvisor` 自动注册是 `@ConditionalOnMissingBean(ChatClient.class)`，写 `@Bean ChatClient` 后被短路"。
 
-**修复**：手动注册 `ToolCallingAdvisor` Bean 并加入 `defaultAdvisors(...)`：
+**官方文档校对后的正确结论**（2026-07-17 复核）：
+
+Spring AI 2.0 官方文档明确说："the `ToolCallingAdvisor`, which is **always auto-registered in the advisor chain (unless explicitly disabled)**"。自动注册是在 `DefaultChatClient.Builder.build()` 里做的，**与是否有自定义 `@Bean ChatClient` 无关**。也就是说：
+
+- `ChatClient.builder(model).defaultAdvisors(memoryAdvisor).build()` → 仍然会被 `build()` 注入 `ToolCallingAdvisor`。
+- 全局关闭只有一种方式：`spring.ai.chat.client.tool-calling.enabled=false`。
+- 单次调用关闭：`.advisors(AdvisorParams.toolCallingAdvisorAutoRegister(false))`。
+
+那么历史上观察到的"自定义 ChatClient 下工具不被调用"真实原因是什么？排查清单（按出现频率）：
+
+1. **`ChatModel` 自己处理了工具执行（2.0 已 deprecate）**：你绕过 `ChatClient` 直接调 `chatModel.stream(prompt)`，工具调用响应里 `hasToolCalls()=true` 但没有 advisor 驱动循环，永远停在第一轮。修复：走 `ChatClient`。
+2. **`ToolCallingManager` 没装配或工具没被注册**：自定义 `@Bean ChatClient` 时如果同时自定义了 `defaultTools`，运行期 `tools(...)` 会**完全覆盖** `defaultTools`，看起来工具"消失"了。这是覆盖语义，不是短路。
+3. **Provider 的 stop-reason 不被默认 checker 接受**：默认 `ToolExecutionEligibilityChecker` 只看 `chatResponse.hasToolCalls()`，但部分国产 provider 在工具调用的同时也会带 `stop_reason="length"`，被某些上游逻辑拦截。修复：自定义 `toolExecutionEligibilityChecker`。
+4. **Advisor 顺序错误**：`ToolCallingAdvisor.DEFAULT_ORDER = HIGHEST_PRECEDENCE + 300`，`MessageChatMemoryAdvisor.DEFAULT_ORDER = HIGHEST_PRECEDENCE + 200`。如果你显式给 memory advisor 设了更高的 order（数值更大），它会在 tool loop 内层，history 加载/写回的时机不对，工具循环时上下文丢失。
+5. **Memory advisor 在循环内但 `conversationHistoryEnabled=true`**：两者一起用会出现 history 重复。要么把 memory 放循环外（默认），要么 `ToolCallingAdvisor.builder().disableInternalConversationHistory()`。
+
+**显式构造 `ToolCallingAdvisor` 的正确动机**（不是"修复短路"，而是"获得扩展点"）：
 
 ```java
 @Bean
 public ToolCallingAdvisor toolCallingAdvisor(ToolCallingManager mgr) {
     return ToolCallingAdvisor.builder()
             .toolCallingManager(mgr)
+            .advisorOrder(BaseAdvisor.HIGHEST_PRECEDENCE + 300)
+            .conversationHistoryEnabled(true)
+            // 可选：自定义 stop-reason 判定
+            // .toolExecutionEligibilityChecker(resp -> resp.hasToolCalls() && !isLengthStop(resp))
             .build();
 }
 
 @Bean
 public ChatClient chatClient(ChatClient.Builder builder,
                               ToolCallingAdvisor toolCallingAdvisor,
-                              ...) {
+                              MessageChatMemoryAdvisor memoryAdvisor) {
+    // 即使这里只传 memoryAdvisor，build() 也会自动补一个 ToolCallingAdvisor；
+    // 显式传入是为了定制 order、checker 等扩展点。
     return builder
             .defaultAdvisors(memoryAdvisor, toolCallingAdvisor)
             .build();
@@ -523,7 +545,7 @@ BlockHound.install();   // 测试代码加
 1. Cold Flux 和 Hot Flux 区别？Spring AI 的 stream() 是哪种？
 2. `flatMap` / `concatMap` / `switchMap` 各自特点？
 3. `timeout(Duration)` 和 `take(Duration)` 区别？
-4. 自定义 ChatClient 下为什么 ToolCallingAdvisor 不自动注册？
+4. Spring AI 2.0 下如何关闭 ToolCallingAdvisor 的自动注册？为什么"自定义 `@Bean ChatClient` 短路自动注册"这个说法是错的？
 5. 流式下 conversationId NPE 的根因和修复？
 6. 为什么不能在 Flux 操作符内调阻塞 API？怎么解决？
 

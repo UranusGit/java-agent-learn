@@ -54,15 +54,16 @@ MCP（Model Context Protocol，Anthropic 2024-11 推出）
 2. **Resources**：可读取的数据（文件、DB 查询）—— 类似 GET，只读。
 3. **Prompts**：预定义的 prompt 模板 —— Claude Desktop 可快速调用。
 
-### 2.3 三种传输方式
+### 2.3 四种传输方式
 
-| 传输 | 适用场景 | 优劣 |
-|------|---------|------|
-| **stdio** | Claude Desktop 本地启动子进程 | 简单但只能本机 |
-| **SSE**（Server-Sent Events） | 远程服务 | 单向流，需长连接 |
-| **Streamable HTTP**（2.0 新） | 远程服务，推荐 | 双向、无状态、可扩缩容 |
+| 传输 | starter 关键字 | 适用场景 | 优劣 |
+|------|--------------|---------|------|
+| **stdio** | `spring-ai-starter-mcp-server`（不配 type） | Claude Desktop 本地启动子进程 | 简单但只能本机 |
+| **SSE**（Server-Sent Events） | `...-webmvc` / `...-webflux` + `type: SYNC/ASYNC` | 远程服务（旧） | 单向流，需长连接，扩缩容难 |
+| **Streamable HTTP**（2.0 推荐） | 同上 | 远程服务，推荐 | 双向、无状态、可扩缩容 |
+| **Stateless Streamable HTTP** | 同上 + 配置开 stateless | 无状态函数计算（Lambda / Cloud Run） | 无 session，请求即终止 |
 
-**2026 年现状**：Streamable HTTP 是官方推荐，SSE 在逐步淘汰。
+**2026 年现状**：Streamable HTTP 是 MCP 官方和 Spring AI 双方推荐；SSE 仍可用但官方文档已建议新项目走 Streamable HTTP。无状态变体适合 Serverless。
 
 ---
 
@@ -70,14 +71,28 @@ MCP（Model Context Protocol，Anthropic 2024-11 推出）
 
 ### 3.1 pom 依赖
 
+> ⚠️ Spring AI 2.0 starter 命名规范已统一为 `spring-ai-starter-*`（与 1.0 的 `spring-ai-*-spring-boot-starter` 不同）。MCP Server/Client 同样如此。MCP transport 模块（`mcp-spring-webmvc` / `mcp-spring-webflux`）在 2.0 从 `io.modelcontextprotocol.sdk` 迁移到了 `org.springframework.ai`，groupId 也要改。需要 MCP Java SDK 1.0.0+。
+
 ```xml
+<!-- 进程内最小 MCP Server（不需要 web） -->
 <dependency>
     <groupId>org.springframework.ai</groupId>
-    <artifactId>spring-ai-mcp-server-spring-boot-starter</artifactId>
+    <artifactId>spring-ai-starter-mcp-server</artifactId>
 </dependency>
+<!-- WebMVC 传输（Streamable HTTP / SSE，推荐远程部署用） -->
 <dependency>
     <groupId>org.springframework.ai</groupId>
-    <artifactId>spring-ai-mcp-server-webmvc-spring-boot-starter</artifactId>
+    <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+</dependency>
+```
+
+可选：
+
+```xml
+<!-- WebFlux 传输（响应式，适合流式优先的部署） -->
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-starter-mcp-server-webflux</artifactId>
 </dependency>
 ```
 
@@ -275,7 +290,16 @@ public class McpToolAuditAspect {
 ```xml
 <dependency>
     <groupId>org.springframework.ai</groupId>
-    <artifactId>spring-ai-mcp-client-spring-boot-starter</artifactId>
+    <artifactId>spring-ai-starter-mcp-client</artifactId>
+</dependency>
+```
+
+需要 WebFlux 异步客户端时再加：
+
+```xml
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-starter-mcp-client-webflux</artifactId>
 </dependency>
 ```
 

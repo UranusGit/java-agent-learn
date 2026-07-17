@@ -520,6 +520,14 @@ chatClient.prompt()
 - [ ] 熟练使用 `@Tool` / `@ToolParam` / `ToolContext` / `returnDirect`
 - [ ] 排查"工具被调两次"等常见错误
 
-> ⚠️ **自定义 `@Bean ChatClient` 的实战提醒**：本文 §4-§5 描述的「ChatClient 自动注册 ToolCallingAdvisor」仅在**没有自定义 ChatClient Bean** 时成立。一旦你写了 `@Bean ChatClient`，`ChatClientAutoConfiguration` 会被 `@ConditionalOnMissingBean` 短路，必须自己显式构造 `ToolCallingAdvisor` Bean 并加进 `defaultAdvisors`。完整复现过程（含流式下 `conversationId cannot be null` 500 错误的根因与修复）见 [`./04-流式响应与Reactor深度.md` §15](./04-流式响应与Reactor深度.md)。
+> ⚠️ **关于「自动注册」的官方语义**（基于 Spring AI 2.0 官方文档校对，2026-07-17）：`ChatClient.builder().build()` 在 `DefaultChatClient.Builder` 内部**总是**把 `ToolCallingAdvisor` 注入到 advisor 链，与你是否自定义 `@Bean ChatClient` 无关。官方原文："`ToolCallingAdvisor`, which is always auto-registered in the advisor chain (unless explicitly disabled)"。
+>
+> 关闭方式只有两种：
+> - 全局关闭：`spring.ai.chat.client.tool-calling.enabled=false`
+> - 单次调用关闭：`advisors(AdvisorParams.toolCallingAdvisorAutoRegister(false))`
+>
+> 因此历史上某些社区文章（包括早期版本的本系列）说"写 `@Bean ChatClient` 会短路 ToolCallingAdvisor 自动注册"是**错误归因**。早期你在自定义 ChatClient 下遇到的 `.stream()` 不调工具的真实原因通常是：(1) 自己覆盖了 `defaultAdvisors(...)` 但漏装了 `ToolCallingAdvisor`（实际上即使没装也会被 `build()` 兜底注入，问题更可能出在 tool 注册路径）；(2) ChatModel 自己处理了工具执行（2.0 已 deprecate）；(3) provider 的 stop-reason 不符合默认 `ToolExecutionEligibilityChecker`。遇到类似现象请从这三点排查，而不是去给 ChatClient 加 Bean。
+>
+> 如果你想显式控制工具循环（比如自定义观测、打断），可以手动构造 `ToolCallingAdvisor.builder().toolCallingManager(...).advisorOrder(...).build()`，参见 [`./04-流式响应与Reactor深度.md` §C](./04-流式响应与Reactor深度.md)。
 
 完成后进入 [`./03-Advisor链全解.md`](./03-Advisor链全解.md)。
