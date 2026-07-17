@@ -520,4 +520,6 @@ chatClient.prompt()
 - [ ] 熟练使用 `@Tool` / `@ToolParam` / `ToolContext` / `returnDirect`
 - [ ] 排查"工具被调两次"等常见错误
 
+> ⚠️ **自定义 `@Bean ChatClient` 的实战提醒**：本文 §4-§5 描述的「ChatClient 自动注册 ToolCallingAdvisor」仅在**没有自定义 ChatClient Bean** 时成立。一旦你写了 `@Bean ChatClient`，`ChatClientAutoConfiguration` 会被 `@ConditionalOnMissingBean` 短路，必须自己显式构造 `ToolCallingAdvisor` Bean 并加进 `defaultAdvisors`。完整复现过程（含流式下 `conversationId cannot be null` 500 错误的根因与修复）见 [`./11-复现手册-流式与工具调用.md` §15](./11-复现手册-流式与工具调用.md)。
+
 完成后进入 [`./03-中级-Advisor2.0与结构化校验.md`](./03-中级-Advisor2.0与结构化校验.md)。
