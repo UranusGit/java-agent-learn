@@ -2,36 +2,20 @@ package org.demo02.advisor;
 
 import org.springframework.ai.chat.client.ChatClientRequest;
 import org.springframework.ai.chat.client.ChatClientResponse;
-import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
-import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
-import org.springframework.ai.chat.client.advisor.api.StreamAdvisor;
-import org.springframework.ai.chat.client.advisor.api.StreamAdvisorChain;
-import reactor.core.publisher.Flux;
+import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
 
-public class SimpleLogAdvisor implements CallAdvisor, StreamAdvisor {
+public class SimpleLogAdvisor implements BaseAdvisor {
     @Override
-    public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
-        long start = System.currentTimeMillis();
+    public ChatClientRequest before(ChatClientRequest request, AdvisorChain chain) {
         System.out.println("[REQ]：" + request.prompt().getUserMessage().getText());
-
-        ChatClientResponse response = chain.nextCall(request);
-        long elapsed = System.currentTimeMillis() - start;
-        System.out.println("[RESP]：" + elapsed + " ms");
-        return response;
+        return request;
     }
 
     @Override
-    public Flux<ChatClientResponse> adviseStream(ChatClientRequest request, StreamAdvisorChain chain) {
-        long start = System.currentTimeMillis();
-        System.out.println("[REQ]：" + request.prompt().getUserMessage().getText());
-
-        return chain.nextStream(request)
-                .doOnSubscribe(subscription -> System.out.println("开始消费了！！！！"))
-                .doOnNext(chunk -> System.out.println(chunk.chatResponse().getResult().getOutput().getText()))
-                .doOnComplete(() -> {
-                    long elapsed = System.currentTimeMillis() - start;
-                    System.out.println("[RESP]：" + elapsed + " ms");
-                });
+    public ChatClientResponse after(ChatClientResponse response, AdvisorChain chain) {
+//        System.out.println("[RESP]：" + response.chatResponse().getResult().getOutput().getText());
+        return response;
     }
 
     @Override

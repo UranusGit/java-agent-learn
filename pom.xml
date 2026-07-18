@@ -51,7 +51,8 @@
             <version>${langchain4j.version}</version>
         </dependency>
 
-        <!-- 日志：Spring Boot starter 自带 logback-classic + logback-core（版本由 Spring Boot 统一管理，不要手动声明） -->
+        <!-- 仅使用 WebFlux：必须移除 spring-boot-starter-web，否则 MVC 优先生效，
+             SSE 场景下客户端断开的 cancel 信号无法传播到响应式链路。 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
@@ -68,6 +69,11 @@
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-tool-search-advisor</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
         </dependency>
     </dependencies>
 

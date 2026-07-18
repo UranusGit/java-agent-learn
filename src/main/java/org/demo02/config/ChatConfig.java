@@ -1,6 +1,9 @@
 package org.demo02.config;
 
+import org.demo02.advisor.PiiMaskAdvisor;
 import org.demo02.advisor.SimpleLogAdvisor;
+import org.demo02.advisor.StreamingAwareAdvisor;
+import org.demo02.advisor.TimingAdvisor;
 import org.demo02.tools.TimeTools;
 import org.demo02.tools.WeatherTools;
 import org.springframework.ai.chat.client.ChatClient;
@@ -27,6 +30,9 @@ public class ChatConfig {
                 .defaultAdvisors(
                         MessageChatMemoryAdvisor.builder(memory).order(0).build(),
                         new SimpleLogAdvisor(),
+                        new StreamingAwareAdvisor(),
+                        new PiiMaskAdvisor(),
+                        new TimingAdvisor(),
                         ToolSearchToolCallingAdvisor.builder().toolIndex(new RegexToolIndex()).maxResults(5).build()
                 ).build();
     }
