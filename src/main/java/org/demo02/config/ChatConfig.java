@@ -28,7 +28,7 @@ public class ChatConfig {
         return builder.defaultSystem("你是一个友好的助手")
                 .defaultTools(timeTools, weatherTools)
                 .defaultAdvisors(
-                        MessageChatMemoryAdvisor.builder(memory).order(0).build(),
+                        MessageChatMemoryAdvisor.builder(memory).build(),
                         new SimpleLogAdvisor(),
                         new StreamingAwareAdvisor(),
                         new PiiMaskAdvisor(),
