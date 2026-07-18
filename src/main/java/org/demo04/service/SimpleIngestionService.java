@@ -22,8 +22,6 @@ public class SimpleIngestionService {
 
         // 2. 切分（用框架自带的 TokenTextSplitter，先不管参数）
         List<Document> chunks = TokenTextSplitter.builder().build().split(pages);
-        chunks.stream()
-                .forEach(document -> System.out.println(document.getText()));
 
         // 3. 向量化 + 入库（VectorStore 内部会调 EmbeddingModel）
         vectorStore.add(chunks);

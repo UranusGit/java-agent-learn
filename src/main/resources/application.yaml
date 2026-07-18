@@ -1,4 +1,17 @@
 spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/rag
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      username: root
+      password: root
   ai:
     openai:
       api-key: sk-ccde7d540ae74f54a1f28c7d46ab8d02
@@ -12,6 +25,14 @@ spring:
         base-url: http://127.0.0.1:1234/v1
         api-key: sk-1234
         model: text-embedding-bge-large-zh-v1.5
+    vectorstore:
+      pgvector:
+        table-name: vector_store
+        dimensions: 1024
+        distance-type: cosine_distance
+        index-type: hnsw
+        initialize-schema: true
+        schema-name: test01
     mcp:
       client:
         enabled: false
@@ -24,3 +45,7 @@ spring:
           connections:
             time-tool:
               url: http://127.0.0.1:8081/mcp
+logging:
+  level:
+    org.springframework.ai: info
+    org.springframework.jdbc.core: warn

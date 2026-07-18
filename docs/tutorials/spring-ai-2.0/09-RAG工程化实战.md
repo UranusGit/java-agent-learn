@@ -321,15 +321,16 @@ rm -rf /Volumes/data/software/docker/containers/postgres/*
 
 # 3. 用 pgvector 镜像重起（同样的容器名 + 同样的挂载目录 + 同样的端口）
 docker run -d \
-  --name postgres \
-  --restart unless-stopped \
-  -e POSTGRES_DB=rag \
-  -e POSTGRES_USER=rag \
-  -e POSTGRES_PASSWORD=rag_pwd \
-  -e TZ=Asia/Shanghai \
-  -p 5432:5432 \
-  -v /Volumes/data/software/docker/containers/postgres:/var/lib/postgresql/data \
-  pgvector/pgvector:pg16
+--name postgres \
+--restart unless-stopped \
+-e POSTGRES_DB=rag \
+-e POSTGRES_USER=postgres \
+-e POSTGRES_PASSWORD=postgres \
+-e TZ=Asia/Shanghai \
+-e PGDATA=/var/lib/postgresql/data/pgdata \
+-p 5432:5432 \
+-v /Volumes/data/software/docker/containers/postgres:/var/lib/postgresql/data \
+pgvector/pgvector:pg17
 ```
 
 **首次启动（没有旧容器）**，直接跑第三步即可。
@@ -353,8 +354,8 @@ docker run -d \
   --restart unless-stopped \
   -p 6379:6379 \
   -v /Volumes/data/software/docker/containers/redis:/data \
-  redis:7-alpine \
-  redis-server --appendonly yes
+  redis:8.8.0 \
+  redis-server --appendonly yes   --requirepass root
 ```
 
 `redis-server --appendonly yes` 开启 AOF 持久化（重启不丢缓存）。生产要加密码：把最后两行换成
@@ -401,7 +402,7 @@ docker exec -it redis redis-cli ping
 Spring AI 应用第一次跑起来会自动建 `vector_store` 表。**应用启动过一次后**再补这条索引（用于第 5 章 `similarity()` 加速）：
 
 ```bash
-docker exec -it postgres psql -U rag -d rag -c \
+docker exec -it postgres psql -U postgres -d rag -c \
     "CREATE INDEX IF NOT EXISTS idx_vector_store_content_trgm ON vector_store USING gin (content gin_trgm_ops);"
 ```
 
