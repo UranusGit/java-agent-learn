@@ -446,7 +446,7 @@ CREATE TABLE mcp_subscription (
 );
 ```
 
-详见 [`./05-MCP协议全解.md`](./05-MCP协议全解.md) §9。
+详见 [`./07-MCP-Server高阶与生态.md`](./07-MCP-Server高阶与生态.md) §3（MCP Hub）。
 
 ---
 
@@ -1045,7 +1045,7 @@ public class UserDataDeletionService {
 
 - [`./17-AI原生系统设计.md`](./17-AI原生系统设计.md) —— 系统设计基础
 - [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— RAG 数据基础
-- [`./05-MCP协议全解.md`](./05-MCP协议全解.md) —— MCP Hub 实现
+- [`./07-MCP-Server高阶与生态.md`](./07-MCP-Server高阶与生态.md) —— MCP Hub 实现（§3）
 - [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— 平台可观测性 + 计费
 - [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— 多租户安全深入
 - [pgvector 文档](https://github.com/pgvector/pgvector)

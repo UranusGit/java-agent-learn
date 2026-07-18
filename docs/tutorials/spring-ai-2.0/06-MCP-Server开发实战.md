@@ -1,21 +1,32 @@
-# 06 MCP Server 开发实战（Java 工程师必修）
+# 06 MCP Server 开发实战
 
-> 本文是 MCP 主题的中篇。05 讲了协议入门（怎么用现成 MCP Server），本文讲**怎么自己开发**生产级 MCP Server，07 讲高阶（HTTP API → MCP / Hub / 跨语言 / 性能安全测试）。
+> 这是 MCP 三部曲的中篇。
 >
-> **定位**：让一个有 Spring Boot 经验的 Java 工程师，从零基础到能独立交付生产级 MCP Server。
+> 读完这一篇你能做到：**自己从零写一个 MCP Server**，暴露 Tools / Resources / Prompts / Completions 四类能力，并加上鉴权、限流、可观测性。
 >
-> 前置：[`./05-MCP协议全解.md`](./05-MCP协议全解.md) + [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md)
+> 三部曲路线：
+> - [05 = 入门 + Client 通关](./05-MCP协议全解.md)：先用起来
+> - **06（本文）= Server 开发实战**：自己造一个 Server
+> - [07 = 端到端整合 + 生态进阶](./07-MCP-Server高阶与生态.md)：把 05 的 Client 和本文的 Server 拼起来跑通完整链路
+>
+> 前置：[05-MCP协议全解.md](./05-MCP协议全解.md) + [02-Tool与AgentLoop.md](./02-Tool与AgentLoop.md)
+>
+> **本文只讲 Server 端**。Server 写好后怎么被 Client 调用、怎么和 ChatClient 整合、跨进程链路怎么调试 → 见 [07 篇 §1](./07-MCP-Server高阶与生态.md)。
+>
 > 预计：2-3 天
 
 ---
 
-## 0. 认知地图
+## 0. 这篇怎么读
+
+如果你完全没接触过 MCP，**先读 [05 篇](./05-MCP协议全解.md)** 当一次 Client 用户，再回来造 Server。否则你会不知道自己写的 Server 谁来用。
 
 ```
 L1 入门：跑起来
   ├── 三种实现风格（注解 / Provider / 原生）
   ├── Hello World（5 分钟）
   ├── WebMVC vs WebFlux 传输
+  ├── 用 05 的 Client 验证（§2.6）
   └── Inspector 调试
         ↓
 L2 进阶：API 表面全扫
@@ -29,7 +40,7 @@ L3 生产化：能上线
   ├── 可观测性（OTel GenAI）
   └── 错误处理与失败传播
         ↓
-进 07 篇：架构与生态
+进 07 篇：端到端整合 + 架构与生态
 ```
 
 **心法**：写一个能跑的 MCP Server 半小时；写一个**生产级**的 MCP Server 是另一个量级的事——本文要把这中间的鸿沟填平。
@@ -156,27 +167,19 @@ List<SyncToolSpecification> hrTools(HrService svc) {
 
 ## 2. Hello World：5 分钟跑起来
 
+> 这个简化版 Server 也是 [05 篇](./05-MCP协议全解.md) §4 "5 分钟第一个 MCP Client" 的对接目标。如果你按 05→06 顺序学，这里写完就能回到 05 验证。
+
 ### 2.1 项目结构
 
 ```
-geo-mcp-server/
+time-mcp-server/
 ├── pom.xml
-├── src/main/java/org/demo02/mcp/geo/
-│   ├── GeoMcpApplication.java
-│   ├── tools/
-│   │   ├── GeoSearchTools.java     ← POI 搜索
-│   │   ├── GeoCodingTools.java     ← 地址 ↔ 坐标
-│   │   └── RouteTools.java         ← 路径规划
-│   ├── client/
-│   │   └── BaiduMapClient.java     ← 百度地图 HTTP API 封装
-│   ├── config/
-│   │   ├── McpServerConfig.java
-│   │   └── SecurityConfig.java
-│   └── security/
-│       └── TokenAuthFilter.java
-└── src/main/resources/
-    └── application.yaml
+└── src/main/java/org/demo02/mcp/time/
+    ├── TimeMcpApplication.java
+    └── TimeTools.java
 ```
+
+完整企业级示例（geo-mcp-server，含鉴权 / 限流 / 可观测）见 §12。
 
 ### 2.2 pom.xml
 
@@ -193,7 +196,7 @@ geo-mcp-server/
     </parent>
 
     <groupId>org.demo02</groupId>
-    <artifactId>geo-mcp-server</artifactId>
+    <artifactId>time-mcp-server</artifactId>
     <version>0.1.0</version>
 
     <properties>
@@ -202,34 +205,14 @@ geo-mcp-server/
     </properties>
 
     <dependencies>
-        <!-- MCP Server (WebMVC 传输，支持 Streamable HTTP + SSE) -->
+        <!-- MCP Server（WebMVC 传输：支持 Streamable HTTP + SSE） -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
         </dependency>
-
-        <!-- 业务用 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-security</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-actuator</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-tracing-bridge-otel</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
         </dependency>
     </dependencies>
 
@@ -247,7 +230,7 @@ geo-mcp-server/
 </project>
 ```
 
-> ⚠️ 2.0 starter 命名规范：`spring-ai-starter-mcp-server`（不带 `spring-boot-starter` 后缀）。详见 05 篇 §3.1。
+> ⚠️ 2.0 starter 命名规范：`spring-ai-starter-mcp-server-*`（不带 `spring-boot-starter` 后缀）。
 
 ### 2.3 application.yaml
 
@@ -257,96 +240,77 @@ server:
 
 spring:
   application:
-    name: geo-mcp-server
+    name: time-mcp-server
   ai:
     mcp:
       server:
-        name: geo-mcp-server
+        name: time-mcp-server
         version: 0.1.0
-        # 注意：
+        # 注意两个配置项的区别：
         #  - type 选 Server API 类型（SYNC / ASYNC），决定注入 McpSyncServerExchange 还是 McpAsyncServerExchange。
         #    它不选传输方式，没有 WEBMVC / WEBFLUX 这种取值。
         #  - protocol 选传输（STREAMABLE / SSE / STATELESS）；2.0 推荐 STREAMABLE，SSE 自 2.0.0 起标记 @Deprecated。
-        #  - 注解扫描默认开启，显式声明更清晰。
         type: SYNC
         protocol: STREAMABLE
         annotation-scanner:
-          enabled: true
-        # 保持心跳，避免长连接被中间网关掐断
-        keep-alive-interval: 30s
-
-baidu:
-  map:
-    api-key: ${BAIDU_MAP_API_KEY}
-    base-url: https://api.map.baidu.com
-
-management:
-  tracing:
-    sampling:
-      probability: 1.0
-  endpoints:
-    web:
-      exposure:
-        include: health,info,prometheus
+          enabled: true       # 默认开启，扫描 @McpTool/@McpResource/@McpPrompt/@McpComplete
+        keep-alive-interval: 30s   # Streamable HTTP 心跳，避免代理超时
 ```
 
-### 2.4 主程序 + 第一个工具
+### 2.4 主程序
 
 ```java
 // 本代码仅作学习材料参考
-package org.demo02.mcp.geo;
+package org.demo02.mcp.time;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class GeoMcpApplication {
+public class TimeMcpApplication {
     public static void main(String[] args) {
-        SpringApplication.run(GeoMcpApplication.class, args);
+        SpringApplication.run(TimeMcpApplication.class, args);
     }
 }
 ```
 
+### 2.5 第一个工具
+
 ```java
 // 本代码仅作学习材料参考
-package org.demo02.mcp.geo.tools;
+package org.demo02.mcp.time;
 
-import org.demo02.mcp.geo.client.BaiduMapClient;
-import org.demo02.mcp.geo.dto.Poi;
 import org.springframework.ai.mcp.annotation.McpTool;
-import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 @Component
-public class GeoSearchTools {
+public class TimeTools {
 
-    private final BaiduMapClient client;
-
-    public GeoSearchTools(BaiduMapClient client) {
-        this.client = client;
+    @McpTool(description = "获取服务器当前时间，格式 yyyy-MM-dd HH:mm:ss")
+    public String currentTime() {
+        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
     }
 
-    @McpTool(description = """
-            根据关键词搜索地点（POI）。
-            适合"找附近的咖啡店"、"找 XX 医院"这类查询。
-            """)
-    public List<Poi> searchPoi(
-            @McpToolParam(description = "搜索关键词，如 '咖啡店'") String keyword,
-            @McpToolParam(description = "城市名，如 '北京'") String city,
-            @McpToolParam(description = "返回数量，默认 10", required = false) Integer limit
+    @McpTool(description = "把时间字符串转换成另一种格式")
+    public String formatTime(
+            @McpToolParam(description = "原始时间，如 2026-07-18 14:00:00") String input,
+            @McpToolParam(description = "目标格式，如 yyyy/MM/dd") String pattern
     ) {
-        return client.searchPoi(keyword, city, limit == null ? 10 : limit);
+        LocalDateTime t = LocalDateTime.parse(input, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        return t.format(DateTimeFormatter.ofPattern(pattern));
     }
 }
 ```
 
 > ⚠️ 2.0 不需要为 MCP Server 工具写任何 `ToolCallbackProvider` / `MethodToolCallbackProvider` Bean。
-> `spring.ai.mcp.server.annotation-scanner.enabled=true` 开启后，`@McpTool` / `@McpResource` / `@McpPrompt` / `@McpComplete` 会被自动扫描并注册到 MCP Server。
-> 如果之前为了"加Observation/拦截器"而保留 `McpServerConfig`，2.0 可以删除 Bean，相关定制通过 `McpSyncServerCustomizer` / `McpAsyncServerCustomizer` 完成。
+> `spring.ai.mcp.server.annotation-scanner.enabled=true` 开启后，`@McpTool` 等注解会被自动扫描并注册到 MCP Server。
 
-### 2.5 启动 + Inspector 验证
+### 2.6 启动 + 三种验证
+
+#### 验证 A：用 Inspector 看工具列表
 
 ```bash
 mvn spring-boot:run
@@ -355,15 +319,31 @@ mvn spring-boot:run
 npx @modelcontextprotocol/inspector http://localhost:8081
 ```
 
-打开 Inspector UI → Tools → 应该看到 `searchPoi`。
+打开 Inspector UI → Tools → 应该看到 `currentTime` 和 `formatTime`。
 
-**测试调用**：
+#### 验证 B：用 curl 探活
 
-```json
-{ "keyword": "咖啡店", "city": "北京", "limit": 5 }
+```bash
+# MCP 协议是 JSON-RPC，单次 curl 不够完整，但能确认 Server 在跑
+curl -i http://localhost:8081/mcp
+# 期望：HTTP 200 或 400（带 method not allowed 之类），不是 Connection refused
 ```
 
-成功返回 5 个 POI。
+#### 验证 C（推荐）：用 05 篇的 Client 连过来
+
+回到 [05 篇 §4](./05-MCP协议全解.md)，按那篇的 yaml 配置 Client 连 `http://localhost:8081/mcp`。如果你在 05 已经写过 Client，**这一步直接 reuse，把 `url` 改成本 Server 的地址即可**。
+
+期望日志：
+
+```
+已注册 MCP 工具：
+  - currentTime: 获取服务器当前时间，格式 yyyy-MM-dd HH:mm:ss
+  - formatTime: 把时间字符串转换成另一种格式
+```
+
+然后用 `chatClient.prompt().user("现在几点").call()` 调到 `currentTime` 工具。
+
+**端到端整合的完整链路（多租户、跨进程 trace、调试技巧）见 [07 篇 §1](./07-MCP-Server高阶与生态.md)。**
 
 ---
 
@@ -422,7 +402,7 @@ spring:
 npx @modelcontextprotocol/inspector http://localhost:8081
 
 # stdio MCP Server
-npx @modelcontextprotocol/inspector -- java -jar target/geo-mcp-server.jar
+npx @modelcontextprotocol/inspector -- java -jar target/time-mcp-server.jar
 ```
 
 ### 4.2 Inspector 能做什么
@@ -498,6 +478,8 @@ chatClient.prompt()
 ```
 
 `ToolContext` / `McpMeta` 都不算 LLM 的参数——LLM 看不到，但工具方法能用。**这是多租户 MCP Server 的核心**。
+
+> 完整的"ChatClient → MCP Client → MCP Server"上下文透传链路见 [07 篇 §1.5](./07-MCP-Server高阶与生态.md)。
 
 #### 复杂对象返回
 
@@ -738,7 +720,7 @@ public void addDynamicTool(ToolCallback tool) {
 
 ### 7.3 何时该开 listChanged
 
-- 工具是按订阅动态注入（见 07 篇 MCP Hub）
+- 工具是按订阅动态注入（见 [07 篇](./07-MCP-Server高阶与生态.md) MCP Hub）
 - 工具来自配置中心，运行时刷新
 - 多租户按权限动态暴露
 
@@ -950,7 +932,7 @@ CREATE TABLE mcp_quota (
 
 每次 tool call 前后更新 `used_today`。超额抛 `RequestNotPermitted`。
 
-详见 [`./18-大规模Agent平台与数据基础设施.md`](./18-大规模Agent平台与数据基础设施.md) §MCP Hub 计费。
+详见 [18-大规模Agent平台与数据基础设施.md](./18-大规模Agent平台与数据基础设施.md) §MCP Hub 计费。
 
 ---
 
@@ -1088,7 +1070,7 @@ public Object searchPoi(String keyword) {
 }
 ```
 
-**为什么**：参考 Claude Code 设计——LLM 看到 stderr 会调整策略（`04-流式响应与Reactor深度.md` 也讲过）。
+**为什么**：参考 Claude Code 设计——LLM 看到 stderr 会调整策略（[04-流式响应与Reactor深度.md](./04-流式响应与Reactor深度.md) 也讲过）。
 
 ### 11.4 全局异常处理器
 
@@ -1149,9 +1131,9 @@ public List<Poi> searchPoi(String keyword) {
 
 ---
 
-## 12. 完整 geo-mcp-server 示例（结构清单）
+## 12. 完整企业级示例：geo-mcp-server
 
-完整的 8 个文件结构：
+简化版 `time-mcp-server`（§2）只用来跑通链路。企业级示例的结构清单：
 
 ```
 geo-mcp-server/
@@ -1186,7 +1168,9 @@ geo-mcp-server/
     └── application.yaml
 ```
 
-L1-L3 的所有要素都在里面。
+各模块代码前面 §5-§11 都已展开。把 §2 的简化版按这个结构补全，就是一个生产级 MCP Server。
+
+> **客户端怎么连 geo-mcp-server**：见 [07 篇 §1 端到端整合实战](./07-MCP-Server高阶与生态.md)，那里有完整的两个进程配置 + ChatClient 调用 + 多租户 + 调试技巧。
 
 ---
 
@@ -1212,18 +1196,20 @@ L1-L3 的所有要素都在里面。
 
 ## 14. L1-L3 实战任务
 
-1. 用风格 A 跑通 Hello World，Inspector 验证。
-2. 把风格 A 改成风格 B（显式 Provider），对比代码量。
-3. 给 `searchPoi` 加 Resource 版本（`geo://search/{keyword}`），对比 Tool vs Resource。
-4. 写一个 `@McpPrompt` 让 Claude Desktop 能一键调用"行程规划"。
-5. 写一个 `@McpComplete` 给区域代码自动补全。
-6. 加 Bearer Token 鉴权，Inspector 不带 token 应该 401。
-7. 用 Resilience4j Bulkhead 限制单 tenant 5 并发，压测验证。
-8. 接入 OAuth 2.1（用 Keycloak 做 IdP）。
-9. 给所有 tool 加 `@Observed` + Prometheus，Grafana 看板。
-10. 写一个全局异常处理器，把内部错误转换为 MCP 标准错误码。
-11. （进阶）实现动态工具：运行时根据配置加 / 删工具，触发 `listChanged`。
-12. （选做）对比 WebMVC 和 WebFlux 版本的性能（JMeter 压测）。
+1. 用风格 A 跑通 Hello World（§2），Inspector 验证。
+2. 用 [05 篇](./05-MCP协议全解.md)的 Client 连过来（§2.6 验证 C）。
+3. 把风格 A 改成风格 B（显式 Provider），对比代码量。
+4. 给 `searchPoi` 加 Resource 版本（`geo://search/{keyword}`），对比 Tool vs Resource。
+5. 写一个 `@McpPrompt` 让 Claude Desktop 能一键调用"行程规划"。
+6. 写一个 `@McpComplete` 给区域代码自动补全。
+7. 加 Bearer Token 鉴权，Inspector 不带 token 应该 401。
+8. 用 Resilience4j Bulkhead 限制单 tenant 5 并发，压测验证。
+9. 接入 OAuth 2.1（用 Keycloak 做 IdP）。
+10. 给所有 tool 加 `@Observed` + Prometheus，Grafana 看板。
+11. 写一个全局异常处理器，把内部错误转换为 MCP 标准错误码。
+12. （进阶）实现动态工具：运行时根据配置加 / 删工具，触发 `listChanged`。
+13. （选做）对比 WebMVC 和 WebFlux 版本的性能（JMeter 压测）。
+14. **必做**：跑通 [07 篇 §1 端到端整合](./07-MCP-Server高阶与生态.md)，把本文 Server 接到 Client 完整链路。
 
 ---
 
@@ -1242,20 +1228,27 @@ L1-L3 的所有要素都在里面。
 
 ---
 
-## 16. 相关文档
+## 16. 下一步
 
-- [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) —— @Tool 注解基础
-- [`./05-MCP协议全解.md`](./05-MCP协议全解.md) —— 协议入门
-- [`./07-MCP-Server高阶与生态.md`](./07-MCP-Server高阶与生态.md) —— 高阶（HTTP API → MCP / Hub / 跨语言 / 性能安全测试）
-- [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— MCP 安全深入
-- [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— OTel + 可观测
-- [`./18-大规模Agent平台与数据基础设施.md`](./18-大规模Agent平台与数据基础设施.md) —— MCP Hub 多租户
-- [`./32-多源检索Agent与MCP生态整合.md`](./32-多源检索Agent与MCP生态整合.md) —— 综合压轴
+- **必做**：[07 篇 §1 端到端整合实战](./07-MCP-Server高阶与生态.md) —— 把本文 Server 和 [05 篇](./05-MCP协议全解.md) Client 拼起来跑通完整链路
+- **进阶**：[07 篇](./07-MCP-Server高阶与生态.md)其余章节 —— HTTP API → MCP / Hub / 跨语言 / 性能安全测试
+
+---
+
+## 17. 相关文档
+
+- [02-Tool与AgentLoop.md](./02-Tool与AgentLoop.md) —— @Tool 注解基础
+- [05-MCP协议全解.md](./05-MCP协议全解.md) —— 入门 + Client 通关（先读）
+- [07-MCP-Server高阶与生态.md](./07-MCP-Server高阶与生态.md) —— 端到端整合 + 高阶与生态
+- [14-安全工程与红队.md](./14-安全工程与红队.md) —— MCP 安全深入
+- [15-可观测性与成本治理.md](./15-可观测性与成本治理.md) —— OTel + 可观测
+- [18-大规模Agent平台与数据基础设施.md](./18-大规模Agent平台与数据基础设施.md) —— MCP Hub 多租户
+- [32-多源检索Agent与MCP生态整合.md](./32-多源检索Agent与MCP生态整合.md) —— 综合压轴
 - [MCP Java SDK](https://github.com/modelcontextprotocol/java-sdk)
-- [Spring AI MCP Reference](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot.html)
+- [Spring AI MCP Server Reference](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot.html)
 - [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 - [OTel GenAI Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 
 ---
 
-回到 [`./00-目录索引.md`](./00-目录索引.md)。
+回到 [00-目录索引.md](./00-目录索引.md)。
