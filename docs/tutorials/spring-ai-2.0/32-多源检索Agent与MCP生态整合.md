@@ -280,7 +280,7 @@ public class AgenticSearchService {
 
         String result = cb.get().call(
                 "{\"query\": \"" + JsonUtil.escape(query) + "\", \"topK\": 10}",
-                ToolContext.builder().build());
+                new ToolContext(Map.of()));   // 2.0 ToolContext 没有 builder()，直接 new + Map
         return JsonUtil.parseSearchResults(result);
     }
 

@@ -686,7 +686,7 @@ Spring AI 2.0 把 ChatMemory 拆成两层：
 - **`ChatMemoryRepository`**：纯存储抽象（`saveAll` / `findByConversationId` / `deleteByConversationId`），`JdbcChatMemoryRepository` / `CassandraChatMemoryRepository` / `MongoChatMemoryRepository` / `JedisChatMemoryRepository` 等是它的实现。
 - **`ChatMemory`**：在 Repository 上加窗口/裁剪策略，`MessageWindowChatMemory`（默认 20 条）是它的标准实现。
 
-> 注意：**`ChatMemory` Bean 是上层**，单独 `@Bean ChatMemoryRepository` 不够，还要用 `MessageWindowChatMemory.builder().repository(repo).maxMessages(N).build()` 包一层，否则 advisor 拿不到 `ChatMemory`。Spring Boot starter 在 classpath 上有 JDBC starter 时会自动配置 `JdbcChatMemoryRepository` Bean，但 `MessageWindowChatMemory` 默认 `maxMessages=20`。
+> 注意：**`ChatMemory` Bean 是上层**，单独 `@Bean ChatMemoryRepository` 不够，还要用 `MessageWindowChatMemory.builder().chatMemoryRepository(repo).maxMessages(N).build()` 包一层，否则 advisor 拿不到 `ChatMemory`。Spring Boot starter 在 classpath 上有 JDBC starter 时会自动配置 `JdbcChatMemoryRepository` Bean，但 `MessageWindowChatMemory` 默认 `maxMessages=20`。
 
 ```java
 // 本代码仅作学习材料参考
@@ -701,7 +701,7 @@ public ChatMemoryRepository chatMemoryRepository(JdbcTemplate jdbc) {
 @Bean
 public ChatMemory chatMemory(ChatMemoryRepository repository) {
     return MessageWindowChatMemory.builder()
-            .repository(repository)
+            .chatMemoryRepository(repository)
             .maxMessages(20)
             .build();
 }

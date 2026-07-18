@@ -56,14 +56,18 @@ MCP（Model Context Protocol，Anthropic 2024-11 推出）
 
 ### 2.3 四种传输方式
 
-| 传输 | starter 关键字 | 适用场景 | 优劣 |
-|------|--------------|---------|------|
-| **stdio** | `spring-ai-starter-mcp-server`（不配 type） | Claude Desktop 本地启动子进程 | 简单但只能本机 |
-| **SSE**（Server-Sent Events） | `...-webmvc` / `...-webflux` + `type: SYNC/ASYNC` | 远程服务（旧） | 单向流，需长连接，扩缩容难 |
-| **Streamable HTTP**（2.0 推荐） | 同上 | 远程服务，推荐 | 双向、无状态、可扩缩容 |
-| **Stateless Streamable HTTP** | 同上 + 配置开 stateless | 无状态函数计算（Lambda / Cloud Run） | 无 session，请求即终止 |
+| 传输 | 配置项 `spring.ai.mcp.server.protocol` | 适用场景 | 优劣 |
+|------|---------------------------------------|---------|------|
+| **stdio** | 配置 `spring.ai.mcp.server.stdio=true` | Claude Desktop 本地启动子进程 | 简单但只能本机 |
+| **SSE**（Server-Sent Events） | `SSE` | 远程服务（**2.0 已弃用**） | 单向流，需长连接，扩缩容难 |
+| **Streamable HTTP**（2.0 推荐） | `STREAMABLE` | 远程服务，**推荐** | 双向、可扩缩容，官方与 Spring AI 共同推荐 |
+| **Stateless Streamable HTTP** | `STATELESS` | 无状态函数计算（Lambda / Cloud Run） | 无 session，请求即终止 |
 
-**2026 年现状**：Streamable HTTP 是 MCP 官方和 Spring AI 双方推荐；SSE 仍可用但官方文档已建议新项目走 Streamable HTTP。无状态变体适合 Serverless。
+> ⚠️ 注意区分两个配置项：
+> - `spring.ai.mcp.server.protocol`：选传输方式（`SSE` / `STREAMABLE` / `STATELESS`）
+> - `spring.ai.mcp.server.type`：选 Server API 类型（`SYNC` / `ASYNC`），决定注入 `McpSyncServerExchange` 还是 `McpAsyncServerExchange`。**与传输方式无关**。
+
+**2026 年现状**：Streamable HTTP 是 MCP 官方和 Spring AI 双方推荐；**SSE 自 2.0.0 起标记 `@Deprecated`**，仅作为过渡兼容，新项目不要用。无状态变体适合 Serverless。
 
 ---
 
@@ -71,10 +75,10 @@ MCP（Model Context Protocol，Anthropic 2024-11 推出）
 
 ### 3.1 pom 依赖
 
-> ⚠️ Spring AI 2.0 starter 命名规范已统一为 `spring-ai-starter-*`（与 1.0 的 `spring-ai-*-spring-boot-starter` 不同）。MCP Server/Client 同样如此。MCP transport 模块（`mcp-spring-webmvc` / `mcp-spring-webflux`）在 2.0 从 `io.modelcontextprotocol.sdk` 迁移到了 `org.springframework.ai`，groupId 也要改。需要 MCP Java SDK 1.0.0+。
+> ⚠️ Spring AI 2.0 starter 命名规范已统一为 `spring-ai-starter-*`（与 1.0 的 `spring-ai-*-spring-boot-starter` 不同）。MCP Server/Client 同样如此。MCP 相关模块在 2.0 从 `io.modelcontextprotocol.sdk` 迁移到了 `org.springframework.ai`，groupId 也要改。底层 MCP SDK 已内联进 Spring AI BOM，**不需要再单独声明 MCP Java SDK 依赖**。
 
 ```xml
-<!-- 进程内最小 MCP Server（不需要 web） -->
+<!-- 进程内最小 MCP Server（stdio 传输，给 Claude Desktop 用） -->
 <dependency>
     <groupId>org.springframework.ai</groupId>
     <artifactId>spring-ai-starter-mcp-server</artifactId>
@@ -105,8 +109,19 @@ spring:
       server:
         name: demo02-mcp-server
         version: 1.0.0
-        type: WEBMVC
-        sse-message-endpoint: /mcp/message
+        # 传输协议：STREAMABLE / SSE / STATELESS（2.0 推荐用 STREAMABLE）
+        # 注意：stdio 不写在这里，stdio 见下面 stdio: true
+        protocol: STREAMABLE
+        # Server API 类型：SYNC（默认，注入 McpSyncServerExchange）
+        #             或 ASYNC（注入 McpAsyncServerExchange）
+        type: SYNC
+        # 开启注解扫描（默认开启），扫描 @McpTool/@McpResource/@McpPrompt/@McpComplete
+        annotation-scanner:
+          enabled: true
+        # Streamable HTTP 心跳，避免代理超时断连
+        keep-alive-interval: 30s
+        # 仅当走 stdio 传输时开启
+        # stdio: true
 ```
 
 ### 3.3 第一个工具
@@ -120,24 +135,23 @@ public class TimeMcpServer {
     public static void main(String[] args) {
         SpringApplication.run(TimeMcpServer.class, args);
     }
-
-    @Bean
-    public ToolCallbackProvider timeTools() {
-        return MethodToolCallbackProvider.builder()
-                .toolObjects(new TimeTools())
-                .build();
-    }
+    // 不需要手写 ToolCallbackProvider Bean：
+    // 开启 annotation-scanner 后，容器里所有 @McpTool 方法会自动注册到 MCP Server。
 }
 
+@Component
 public class TimeTools {
-    @Tool(description = "获取服务器当前时间")
+
+    @McpTool(description = "获取服务器当前时间")
     public String currentTime() {
         return new Date().toString();
     }
 }
 ```
 
-**注意**：和 02 篇的 `@Tool` 是同一个注解 —— **你写的工具可以同时被 ChatClient（进程内）和 MCP Client（跨进程）使用**。
+**关键变化**：
+- **MCP Server 场景必须用 `@McpTool`，而不是 `@Tool`**。两者都是工具注解但扫描机制不同：`@Tool` 配合 `MethodToolCallbackProvider` 给进程内 ChatClient 用；`@McpTool` 由 MCP 注解扫描器自动注册到 MCP Server，跨进程暴露。
+- 不需要再手写 `MethodToolCallbackProvider` Bean（除非你要把同一批 `@Tool` 工具同时暴露给进程内 ChatClient）。
 
 ### 3.4 启动 + 验证
 
@@ -159,16 +173,16 @@ public class HrTools {
 
     private final HrService hrService;
 
-    @Tool(description = "根据工号查询员工信息，返回姓名、部门、岗位、入职时间")
+    @McpTool(description = "根据工号查询员工信息，返回姓名、部门、岗位、入职时间")
     public Employee getEmployee(
-            @ToolParam(description = "工号，如 E001") String employeeId
+            @McpToolParam(description = "工号，如 E001") String employeeId
     ) {
         return hrService.findById(employeeId);
     }
 
-    @Tool(description = "根据姓名模糊查询员工列表")
+    @McpTool(description = "根据姓名模糊查询员工列表")
     public List<Employee> searchEmployees(
-            @ToolParam(description = "姓名关键字") String nameKeyword
+            @McpToolParam(description = "姓名关键字") String nameKeyword
     ) {
         return hrService.searchByName(nameKeyword);
     }
@@ -180,14 +194,14 @@ public class HrTools {
 @Component
 public class OrderTools {
 
-    @Tool(description = "提交退款申请")
+    @McpTool(description = "提交退款申请")
     public String submitRefund(
-            @ToolParam(description = "订单号") String orderId,
-            @ToolParam(description = "退款原因") String reason,
-            @ToolParam(description = "退款金额") double amount,
-            ToolContext context
+            @McpToolParam(description = "订单号") String orderId,
+            @McpToolParam(description = "退款原因") String reason,
+            @McpToolParam(description = "退款金额") double amount,
+            McpMeta meta   // MCP 注入的元信息，从客户端 ToolContext/Headers 透传过来
     ) {
-        String userId = (String) context.getContext().get("userId");
+        String userId = (String) meta.get("userId");
         if (!authService.canRefund(userId, amount)) {
             throw new SecurityException("No permission to refund " + amount);
         }
@@ -195,17 +209,8 @@ public class OrderTools {
     }
 }
 
-@Configuration
-public class McpToolConfig {
-
-    @Bean
-    public ToolCallbackProvider companyTools(
-            HrTools hr, OrderTools order, OpsTools ops) {
-        return MethodToolCallbackProvider.builder()
-                .toolObjects(hr, order, ops)
-                .build();
-    }
-}
+// 不需要 McpToolConfig 手写 ToolCallbackProvider Bean：
+// annotation-scanner 默认开启，会自动收集容器内所有 @McpTool 方法并注册到 MCP Server。
 ```
 
 ---
@@ -249,9 +254,9 @@ class McpTokenFilter extends OncePerRequestFilter {
 **2. 工具层：敏感工具单独鉴权**
 
 ```java
-@Tool(description = "提交退款申请")
-public String submitRefund(..., ToolContext context) {
-    String userId = (String) context.getContext().get("userId");
+@McpTool(description = "提交退款申请")
+public String submitRefund(..., McpMeta meta) {
+    String userId = (String) meta.get("userId");
     if (!authService.canRefund(userId, amount)) {
         throw new SecurityException("No permission");
     }
@@ -267,7 +272,7 @@ public String submitRefund(..., ToolContext context) {
 public class McpToolAuditAspect {
 
     @Around("@annotation(tool)")
-    public Object audit(ProceedingJoinPoint pjp, Tool tool) throws Throwable {
+    public Object audit(ProceedingJoinPoint pjp, McpTool tool) throws Throwable {
         long start = System.currentTimeMillis();
         try {
             Object result = pjp.proceed();
@@ -310,12 +315,27 @@ spring:
   ai:
     mcp:
       client:
-        sse:
+        enabled: true
+        name: demo01-mcp-client
+        version: 1.0.0
+        type: SYNC           # 或 ASYNC，决定注入 McpSyncClient / McpAsyncClient
+        request-timeout: 20s
+        initialized: true    # 启动时主动 initialize
+        # 推荐：Streamable HTTP 传输（2.0 起 SSE 已弃用）
+        streamable-http:
           connections:
             company-hr:
-              url: https://hr.internal.company.com/mcp/sse
+              url: https://hr.internal.company.com/mcp
             company-ops:
-              url: https://ops.internal.company.com/mcp/sse
+              url: https://ops.internal.company.com/mcp
+              endpoint: /mcp  # 默认就是 /mcp，按需调整
+        # 过渡期：仍需对接老 SSE Server 时（兼容保留）
+        sse:
+          connections:
+            company-legacy:
+              url: https://legacy.internal.company.com/mcp/sse
+              sse-endpoint: /sse
+        # 本机 stdio 子进程
         stdio:
           servers-configuration: classpath:mcp-local-servers.json
 ```
@@ -325,14 +345,34 @@ spring:
 ```java
 @Bean
 ChatClient chatClient(ChatClient.Builder builder,
-                      ToolCallbackProvider mcpToolProvider) {
+                      List<McpToolCallbackProvider> mcpToolProviders,
+                      List<McpSyncClient> mcpSyncClients) {
+    // spring-ai-starter-mcp-client 自动为每个连接的 MCP Server 注册一个 McpToolCallbackProvider
+    // 把所有 provider 的 ToolCallback 平铺后塞给 ChatClient
+    List<ToolCallback> all = mcpToolProviders.stream()
+            .map(McpToolCallbackProvider::getToolCallbacks)
+            .flatMap(Arrays::stream)
+            .toList();
     return builder
-            .defaultTools(mcpToolProvider)   // 自动包含所有连接的 MCP Server 工具
+            .defaultTools(all.toArray(new ToolCallback[0]))
             .build();
 }
 ```
 
 **这是 MCP 最神奇的地方**：你的 ChatClient 突然就有了 HR、Ops、Order 所有能力，跨进程、跨语言、跨团队。
+
+### 6.4 Client 侧常用扩展点
+
+| 接口 | 作用 |
+|------|------|
+| `McpSyncClientCustomizer` / `McpAsyncClientCustomizer` | 在 client 创建后做定制（加 header、改 clientInfo 等） |
+| `McpToolFilter` | 过滤/改名从 MCP Server 拿到的工具 |
+| `McpToolNamePrefixGenerator` | 给来自不同 Server 的工具加前缀，避免命名冲突（默认实现 `DefaultMcpToolNamePrefixGenerator`） |
+| `ToolContextToMcpMetaConverter` | 把 ChatClient 调用时的 `ToolContext` 转成 MCP 的 `McpMeta`，反过来透传给 Server |
+| `TransportContextExtractor` | 从 HTTP 请求中抽取鉴权/租户信息塞进 `McpTransportContext` |
+
+Client 端还可在 Bean 方法上加以下注解订阅 Server 事件：
+`@McpLogging`（接收 Server 日志）、`@McpSampling`（Server 反向请求 LLM 采样）、`@McpElicitation`（Server 反向请求用户输入）、`@McpProgress`（进度通知）、`@McpToolListChanged` / `@McpResourceListChanged` / `@McpPromptListChanged`（列表变更通知）。
 
 ---
 
@@ -351,12 +391,15 @@ public class CompanyResources {
                 .collect(Collectors.joining("\n"));
     }
 
+    // URI 模板变量 {id} 通过"同名方法参数"自动绑定，不需要任何注解
     @McpResource(uri = "company://employees/{id}", description = "单个员工详情")
-    public String employeeById(@McpUriVariable String id) {
+    public String employeeById(String id) {
         return employeeRepo.findById(id).toString();
     }
 }
 ```
+
+> ⚠️ 2.0 已**没有** `@McpUriVariable` 注解。URI 模板里的 `{var}` 按**方法参数名**匹配绑定，方法参数直接用同名 `String`（或 `Map<String, String>` 收所有变量）即可。
 
 **Resources vs Tools 怎么选**：
 
@@ -375,17 +418,34 @@ public class CompanyResources {
 @Component
 public class CompanyPrompts {
 
-    @McpPrompt(description = "生成员工绩效评估草稿")
+    // 参数说明通过 @McpArg 注解直接写在方法参数上；@McpPrompt 只保留 name / title / description / metaProvider。
+    @McpPrompt(name = "performanceReview", description = "生成员工绩效评估草稿")
     public String performanceReview(
-            @McpPromptArg(description = "员工姓名") String name,
-            @McpPromptArg(description = "评估周期") String period
-    ) {
+            @McpArg(name = "name",   description = "员工姓名")                       String name,
+            @McpArg(name = "period", description = "评估周期", required = true)       String period) {
         return "请为员工 %s 生成 %s 的绩效评估草稿...".formatted(name, period);
     }
 }
 ```
 
 Claude Desktop 用户在对话框上方会看到"绩效评估"按钮。
+
+> ⚠️ 2.0 已**没有** `@McpPromptArg` 注解。Prompt 参数描述通过 `@McpArg(name=..., description=..., required=...)` 注解直接写在方法参数上（与 `@McpToolParam` 风格一致）。`@McpPrompt` 本身只保留 `name`、`title`、`description`、`metaProvider` 四个属性。
+
+### 8.1 Completions：补全提示（2.0 新增）
+
+`@McpComplete` 暴露资源 URI 或 prompt 参数的自动补全，给客户端更好的输入体验。
+
+```java
+@Component
+public class CompanyCompletions {
+
+    @McpComplete(uri = "company://employees/{id}")
+    public List<String> completeEmployeeId(String partialId) {
+        return employeeRepo.suggestIds(partialId);
+    }
+}
+```
 
 ---
 
@@ -554,7 +614,7 @@ location /mcp/ {
 
 1. MCP 三类能力（Tools / Resources / Prompts）分别解决什么问题？
 2. stdio / SSE / Streamable HTTP 各自适用场景？
-3. 为什么 @Tool 注解可以同时用于进程内和 MCP Server？
+3. 为什么 MCP Server 必须用 `@McpTool` 而不是 `@Tool`？两者的扫描与注册机制有什么区别？
 4. MCP Server 上线前必须做的三件事是什么？
 5. MCP Hub 的权限模型怎么设计？
 6. MCP 相比直接 REST API 的核心优势？A2A 解决什么？
