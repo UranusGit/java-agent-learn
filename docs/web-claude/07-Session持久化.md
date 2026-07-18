@@ -10,7 +10,36 @@
 
 ---
 
-## 0. 设计要点（来自调研笔记 §2.5）
+## 本章五步地图
+
+| 步 | 节 | 你要带走什么 |
+|----|----|---------|
+| ① 痛点 | §1 | 03 章的 DB-only 持久化重启就丢历史；缺 DAG 无法 fork / compact |
+| ② 最小实现 | §2–§6 | JsonlSessionStore + CompactBoundary + DB/JSONL 双写 + WS 接入 |
+| ③ 验证 | §7 | 关浏览器 → 重启服务 → 重开 → 上下文还在 |
+| ④ 对照 | §8 | 与 03 章"DB-only"的恢复能力对比 |
+| ⑤ 避坑 | §10 | 双写不一致 / JSONL 追加性能 / 孤儿 tool_result |
+
+---
+
+## 1. 痛点：03 章的持久化只够"演示"，不够"长程"
+
+03 章的持久化策略：
+- **只存最后一条 assistant 消息**——历史 turn 完全没存
+- **DB 单表**——没有 DAG 结构，无法支持 fork / 重试 / 压缩
+- **重启就忘**——服务一关上下文全清
+
+这导致几个直接后果：
+- 用户刷新页面 → 上次对话消失
+- 服务重启发布 → 所有 session 状态清零
+- 想做长程任务（11 章） → 完全没法跨 session 续接
+- 想做上下文压缩（14 章） → 没法分清"压缩前 / 压缩后"
+
+> Claude Code 的源码里有一套叫"JSONL DAG + DB 索引"的设计：每条消息是一行 JSON，`parentUuid` 串成 DAG；压缩时插入 boundary 标记；DB 只存索引方便查询，**真内容在对象存储的 JSONL 文件里**。本章就是把它移植到 Spring。
+>
+> 别看复杂，**这套机制是后面 14 章上下文压缩、11 章长程任务、18 章错误恢复的共同基础**。这一章不打好，后面三章都没法做。
+
+## 2. 设计要点（来自调研笔记 §2.5）
 
 - **存储格式**：JSONL，每行一条消息；
 - **DAG**：通过 `parentUuid` 串联；
@@ -20,7 +49,7 @@
 
 ---
 
-## 1. 存储路径设计
+## 3. 存储路径设计
 
 ```
 S3 bucket:
@@ -38,7 +67,7 @@ S3 bucket:
 
 ---
 
-## 2. JsonlSessionStore
+## 4. JsonlSessionStore
 
 新建 `src/main/java/org/demo02/webclaude/session/JsonlSessionStore.java`：
 
@@ -156,7 +185,7 @@ public class JsonlSessionStore {
 
 ---
 
-## 3. Compact Boundary
+## 5. Compact Boundary
 
 新建 `src/main/java/org/demo02/webclaude/agent/CompactBoundary.java`：
 
@@ -216,7 +245,7 @@ public class CompactBoundary {
 
 ---
 
-## 4. SessionService 整合
+## 6. SessionService 整合
 
 新建 `src/main/java/org/demo02/webclaude/session/SessionService.java`：
 
@@ -272,7 +301,7 @@ public class SessionService {
 
 ---
 
-## 5. 启用 @EnableScheduling
+## 7. 启用 @EnableScheduling
 
 修改 `WebClaudeApplication.java`：
 
@@ -285,7 +314,7 @@ public class WebClaudeApplication { ... }
 
 ---
 
-## 6. WebSocket 接入持久化
+## 8. WebSocket 接入持久化
 
 修改 `SessionWebSocketHandler.handleTextMessage`，在每条消息 yield 时调用 `appendMessage`：
 
@@ -308,9 +337,9 @@ agentLoop.runWithTools(sid, history, text, turnAbort, tools, perm, ctx, null)
 
 ---
 
-## 7. 测试持久化
+## 9. 验证：测试持久化
 
-### 7.1 流程
+### 9.1 流程
 
 1. 创建新 session；
 2. 与 Agent 对话几轮（"我叫小张，记住"）；
@@ -321,7 +350,7 @@ agentLoop.runWithTools(sid, history, text, turnAbort, tools, perm, ctx, null)
 
 **检查点 07-1**：Agent 回答"小张"，说明历史恢复成功。
 
-### 7.2 验证 JSONL
+### 9.2 验证 JSONL
 
 打开 MinIO 控制台 → web-claude bucket → `sessions/{tenant}/{session}/main.jsonl`，下载查看：
 - 每行一条 JSON；
@@ -330,7 +359,34 @@ agentLoop.runWithTools(sid, history, text, turnAbort, tools, perm, ctx, null)
 
 ---
 
-## 8. Lazy Materialization（优化）
+## 10. 对照：与 03 章 DB-only 的恢复能力差异
+
+| 维度 | 03 章 DB-only | 07 章 JSONL + DB 双写 |
+|------|--------------|----------------------|
+| 关浏览器再开 | ❌ 历史只剩最后一条 | ✅ 完整恢复 |
+| 服务重启 | ❌ 上下文丢 | ✅ 重启后续接 |
+| DAG 结构 | ❌ 单链表 | ✅ 支持 fork / 重试 |
+| Compact 支持 | ❌ 无 | ✅ boundary 标记 |
+| 长会话性能 | 一般（单表） | ✅ JSONL append-only |
+| 索引查询 | ✅ DB 索引 | ✅ DB 索引 |
+| 完整历史 | ❌ 只存最后一条 | ✅ JSONL 全量 |
+
+## 11. 避坑：JSONL 持久化常踩的雷
+
+| 雷 | 现象 | 规避 |
+|----|------|------|
+| 双写不一致（DB 成功 JSONL 失败） | 查询有 / 重启丢 | 18 章 §6 加对账任务 |
+| JSONL 追加性能差（每次 read-all + write-all） | 长 session 写越来越慢 | 用 S3 multipart upload 或本地文件 + 定期上传 |
+| `flushAll` 单线程 | 高并发下队列堆积 | 按 session 并行 flush，加线程池 |
+| `loadAll` 撑爆内存 | 长 session OOM | 本章 §8 Lazy Materialization |
+| 孤儿 tool_result（进程崩溃） | 模型重连报错 | §9 启动时扫描恢复 |
+| Compact boundary 误判 | 拼接错乱 | 严格按 `transition == compact_start/end` 判断 |
+| Message 序列化丢字段 | Jackson 抽象类反序列化失败 | `@JsonTypeInfo` + `@JsonSubTypes` 必须配齐 |
+| parentUuid 错指 | DAG 重建死循环 | 写入前校验 parent 存在 |
+
+---
+
+## 12. Lazy Materialization（优化）
 
 v1：`loadAll` 一次性读全部，长 session 会撑爆内存。
 
@@ -341,7 +397,7 @@ v2 优化（本章只描述思路）：
 
 ---
 
-## 9. recoverOrphanedParallelToolResults（健壮性）
+## 13. recoverOrphanedParallelToolResults（健壮性）
 
 进程崩溃时，可能出现"父亲已写但孩子未写"的孤儿。启动时扫描修复：
 
@@ -357,7 +413,7 @@ public void recoverOrphans() {
 
 ---
 
-## 10. 本章产出
+## 14. 本章产出
 
 ```
 后端：
@@ -368,6 +424,6 @@ public void recoverOrphans() {
   ✅ 启动时孤儿恢复
 ```
 
-## 11. 下一步
+## 15. 下一步
 
 进入 [08-WebSocket重连](./08-WebSocket重连.md)，让前端断网重连时不丢消息。

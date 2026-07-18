@@ -12,7 +12,19 @@
 
 ---
 
-## 0. 问题本质
+## 本章五步地图
+
+| 步 | 节 | 你要带走什么 |
+|----|----|---------|
+| ① 痛点 | §1 | 单向执行的 Agent 跑复杂任务必败——不能问就猜 |
+| ② 最小实现 | §2–§11 | AskUser 工具 + QuestionBus（挂起-恢复）+ 5 种 question kind + 超时降级 + 改主意 + 部分回答 + 多 question 并发 |
+| ③ 验证 | §14 | 让 Agent 在不确定时主动问，问完接着跑 |
+| ④ 对照 | §14 | 与"单向执行"的任务完成率差异 |
+| ⑤ 避坑 | §14 | 问题轰炸 / 永久挂起 / 答非所问 / 多端冲突 |
+
+---
+
+## 1. 问题本质
 
 ### 0.1 单向 vs 收敛
 
@@ -49,7 +61,7 @@ agent：明白了。开始。
 
 ---
 
-## 1. AskUser 工具
+## 2. AskUser 工具
 
 ### 1.1 设计决策
 
@@ -210,7 +222,7 @@ public class AskUserTool implements Tool {
 
 ---
 
-## 2. QuestionBus：挂起-恢复的中枢
+## 3. QuestionBus：挂起-恢复的中枢
 
 ```java
 // 本代码仅作学习材料参考
@@ -273,7 +285,7 @@ public class QuestionBus {
 
 ---
 
-## 3. 数据模型
+## 4. 数据模型
 
 新增 `V10__pending_questions.sql`：
 
@@ -302,7 +314,7 @@ CREATE TABLE pending_questions (
 
 ---
 
-## 4. Agent Loop 的挂起-恢复
+## 5. Agent Loop 的挂起-恢复
 
 ### 4.1 关键设计：question = 特殊 end_turn
 
@@ -398,7 +410,7 @@ public void recoverPendingQuestions() {
 
 ---
 
-## 5. Answer 模型
+## 6. Answer 模型
 
 ```java
 // 本代码仅作学习材料参考
@@ -429,7 +441,7 @@ public record Answer(
 
 ---
 
-## 6. 前端：QuestionCard
+## 7. 前端：QuestionCard
 
 ### 6.1 REST 接口
 
@@ -549,7 +561,7 @@ QuestionCard 直接渲染在活动流（17 章）的 decision 事件位置：
 
 ---
 
-## 7. 教 Agent 何时问
+## 8. 教 Agent 何时问
 
 ### 7.1 System Prompt 指令
 
@@ -594,7 +606,7 @@ system prompt 末尾：
 
 ---
 
-## 8. 超时降级
+## 9. 超时降级
 
 ### 8.1 默认决策
 
@@ -635,7 +647,7 @@ if (ctx.isTaskMode() && defaultDecision == null) {
 
 ---
 
-## 9. 改主意
+## 10. 改主意
 
 用户提交答案后想改：
 
@@ -661,7 +673,7 @@ UI 提示：
 
 ---
 
-## 10. 部分回答
+## 11. 部分回答
 
 agent 一次问 5 个字段，用户答了 3 个：
 
@@ -684,7 +696,7 @@ agent 可以：用合理默认补全跳过的、或者再问一次。
 
 ---
 
-## 11. 多 question 并发
+## 12. 多 question 并发
 
 agent 一次调多个 AskUser（比如 5 个独立问题）：
 
@@ -700,7 +712,22 @@ agent 一次调多个 AskUser（比如 5 个独立问题）：
 
 ---
 
-## 12. 审批权限
+## 13. 避坑：AskUser 常踩的雷
+
+| 雷 | 现象 | 规避 |
+|----|------|------|
+| 问题轰炸 | Agent 动不动就问，体验差 | §8 system prompt 强约束 + 每 turn ≤1 |
+| 永久挂起 | 用户没答任务永远停 | §9 超时降级（默认 5min） |
+| 答非所问 | Agent 没理解 answer | 强类型 Answer schema + 校验 |
+| 多端冲突 | tab A 答 X，tab B 答 Y | 第一个有效 answer 胜出，其他 broadcast 失效 |
+| 离线时丢问题 | 用户关浏览器问题没收到 | 22 章 question 持久化 + 推送 |
+| 问题文本不清晰 | 用户看不懂答不了 | §8 强制问句模板 + 上下文摘要 |
+| 用户改主意但 Agent 已执行 | 旧决策影响已产生 | §10 改主意必须可回滚 |
+| Agent 不问瞎猜 | 模型自信地选错 | §8 信心阈值 + 强制问规则 |
+| 同一问题反复问 | Agent 忘了用户答过 | answer 持久化进 history |
+| AskUser 被滥用做审批 | 把权限审批也走 question | 审批走 §12 + 20 章，不用 AskUser |
+
+## 14. 审批权限
 
 某些角色不应被 agent 问（避免信息泄漏）：
 
@@ -713,7 +740,7 @@ permission rule:
 
 ---
 
-## 13. 审计
+## 15. 审计
 
 所有 question + answer 进 DB（pending_questions 表），可查：
 - 谁在什么时候问了什么；
@@ -725,7 +752,7 @@ permission rule:
 
 ---
 
-## 14. 与已有章节的关系
+## 16. 与已有章节的关系
 
 | 章节 | 关系 |
 |------|------|

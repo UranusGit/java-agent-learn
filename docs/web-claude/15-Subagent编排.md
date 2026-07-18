@@ -5,7 +5,19 @@
 
 ---
 
-## 0. 为什么需要 Subagent
+## 本章五步地图
+
+| 步 | 节 | 你要带走什么 |
+|----|----|---------|
+| ① 痛点 | §1 | 11 章长程任务一个 session 一个 feature——慢 |
+| ② 最小实现 | §2–§7 | 4 种编排模式 + Delegate 工具 + DAG 调度 + 错误传播 |
+| ③ 验证 | §12 / §16 | 5 个 feature 并行跑，对照串行时长缩短 3-4 倍 |
+| ④ 对照 | §11 | 与 11 章串行 single-agent 的速度差异 |
+| ⑤ 避坑 | §14 | subagent 越权 / DAG 死锁 / 配额超支 / 上下文继承泄漏 |
+
+---
+
+## 1. 为什么需要 Subagent
 
 ### 0.1 单 agent 模式的瓶颈
 
@@ -51,7 +63,7 @@ Orchestrator
 
 ---
 
-## 1. 四种编排模式
+## 2. 四种编排模式
 
 ### 1.1 模式 A：顺序委派（最简单）
 
@@ -103,7 +115,7 @@ Coder → Tester → Reviewer → (commit)
 
 ---
 
-## 2. 数据模型
+## 3. 数据模型
 
 ### 2.1 subagent 表
 
@@ -144,7 +156,7 @@ CREATE TABLE subagent_dependencies (
 
 ---
 
-## 3. 委派工具：Delegate
+## 4. 委派工具：Delegate
 
 新增工具 `Delegate`，主 agent 调用：
 
@@ -230,7 +242,7 @@ public class DelegateTool implements Tool {
 
 ---
 
-## 4. 子 Agent 的运行时
+## 5. 子 Agent 的运行时
 
 ### 4.1 上下文隔离
 
@@ -279,7 +291,7 @@ public class DelegateTool implements Tool {
 
 ---
 
-## 5. 结果聚合
+## 6. 结果聚合
 
 ### 5.1 同步聚合（模式 A）
 
@@ -324,7 +336,7 @@ subagentEventBus.subscribe(parentSessionId, event -> {
 
 ---
 
-## 6. DAG 调度器
+## 7. DAG 调度器
 
 ### 6.1 拓扑排序
 
@@ -374,7 +386,7 @@ public class SubagentScheduler {
 
 ---
 
-## 7. 错误传播
+## 8. 错误传播
 
 | 子 agent 失败类型 | 处理 |
 |------------------|------|
@@ -386,7 +398,7 @@ public class SubagentScheduler {
 
 ---
 
-## 8. 与 harness 多角色的整合（13 章）
+## 9. 与 harness 多角色的整合（13 章）
 
 13 章 Layer 5 定义了 5 角色（Planner / Coder / Tester / Reviewer / Cleaner）。本章是它们的**运行时实现**：
 
@@ -402,7 +414,7 @@ public class SubagentScheduler {
 
 ---
 
-## 9. 可观测性（接 17 章）
+## 10. 可观测性（接 17 章）
 
 每个 subagent 都推送事件到主 session 的事件流：
 
@@ -417,7 +429,7 @@ public class SubagentScheduler {
 
 ---
 
-## 10. 前端：子 Agent 视图
+## 11. 前端：子 Agent 视图
 
 ### 10.1 拓扑图
 
@@ -445,7 +457,7 @@ function SubagentTopology({ subagents }: { subagents: Subagent[] }) {
 
 ---
 
-## 11. 加速效果评估
+## 12. 验证：加速效果评估
 
 ### 11.1 100 feature 任务示例
 
@@ -468,7 +480,7 @@ function SubagentTopology({ subagents }: { subagents: Subagent[] }) {
 
 ---
 
-## 12. 配额与成本
+## 13. 配额与成本
 
 每个 subagent 占用：
 - 1 个沙箱（容器）；
@@ -484,7 +496,22 @@ ALTER TABLE tenant_quotas ADD COLUMN max_subagents_per_session INT DEFAULT 20;
 
 ---
 
-## 13. 安全
+## 14. 避坑：Subagent 编排常踩的雷
+
+| 雷 | 现象 | 规避 |
+|----|------|------|
+| subagent 越权改主 agent 文件 | 主 agent 状态被破坏 | 子 agent 独立 worktree + 只读父上下文 |
+| DAG 死锁 | feature 互相依赖都跑不动 | 启动前拓扑排序 + 检查环 |
+| 并发太多打爆模型 API | 429 风暴 | 全局并发上限 + 令牌桶 |
+| subagent 配额超支 | 一个任务扣光租户额度 | 每子 agent 单独预算 |
+| 上下文继承泄漏敏感信息 | 子 agent 看到不该看的 | Delegate 时显式标 context visibility |
+| subagent 失败无人知 | 错误吞掉 | §8 错误传播必须有，失败上抛或重试 |
+| 无限递归 Delegate | subagent 再 Delegate | 最大嵌套深度限制 |
+| 结果聚合丢字段 | 主 agent 收到的 summary 不全 | 用 schema 强制 + 必填字段校验 |
+| subagent 各跑各的没协调 | 文件冲突 / 决策矛盾 | 13 章 Multi-Agent Topology 协议 |
+| 同 task 多次 Delegate | 重复执行浪费 | task_id 幂等 + 已完成跳过 |
+
+## 15. 安全
 
 - 子 agent 沙箱独立，不能访问主 agent 的 secrets；
 - 子 agent 的权限规则**继承**主 session，但**收紧**（默认 deny 更多）；
@@ -492,7 +519,7 @@ ALTER TABLE tenant_quotas ADD COLUMN max_subagents_per_session INT DEFAULT 20;
 
 ---
 
-## 14. 测试
+## 16. 验证：测试
 
 ### 14.1 单测
 

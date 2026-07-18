@@ -17,6 +17,18 @@
 
 ---
 
+## 本章五步地图
+
+| 步 | 节 | 你要带走什么 |
+|----|----|---------|
+| ① 痛点 | §1 | 03 章的 `StringBuilder` 字段在并发下会串字；只有"完成"一个停止条件 |
+| ② 最小实现 | §2–§5 | AgentLoopV2（thread-safe）+ AbortHandle（3 层级联）+ 5 终止条件 + 前端取消按钮 |
+| ③ 验证 | §6 | 流式中点取消，立即停；关浏览器 WS 断但任务还在 |
+| ④ 对照 | §0（章末汇总）| 与 03 章的 State / 终止 / 中断对比表 |
+| ⑤ 避坑 | §8 | 浏览器关闭 ≠ 取消任务；transition 字符串约定；abort 级联死循环 |
+
+---
+
 ## 0. 与 03 章的差异
 
 | 维度 | 03 章 | 04 章 |
@@ -29,9 +41,19 @@
 
 ---
 
-## 1. State 重构
+## 1. 痛点：03 章的 AgentLoop 在生产里会出三件事
 
-### 1.1 不可变 + per-call builder
+读完 03 章你会发现它的"骨架"其实是"独木桥"：
+
+1. **`StringBuilder buffer` 是字段不是局部变量**。两个请求并发跑同一个 `AgentLoop` Bean，A 的回复会拼到 B 的回复里——肉眼看不出错但答非所问。这是 03 章故意留的雷，本章必须修。
+2. **只有"流式完成"一个停止条件**。模型卡死、超预算、用户想停——都没法主动终止。一次失败的请求会一直占着资源直到模型自己出完。
+3. **没有中断机制**。用户点了"取消"按钮，前端什么都做不了——只能干等模型说完。这在长输出（写代码、长文）场景下是体验灾难。
+
+> 还有一个**故意留的悬念**：03 章关浏览器时 `afterConnectionClosed` 是空的。本章要正面回答"关浏览器 ≠ 取消任务"——这是后面长程任务的语义基础。
+
+## 2. State 重构
+
+### 2.1 不可变 + per-call builder
 
 新建 `src/main/java/org/demo02/webclaude/agent/AgentLoopV2.java`（保留原 AgentLoop 作为参考，新版本替换使用）：
 
@@ -166,7 +188,7 @@ public class AgentLoopV2 {
 }
 ```
 
-### 1.2 AbortHandle
+### 2.2 AbortHandle
 
 新建 `src/main/java/org/demo02/webclaude/agent/AbortHandle.java`：
 
@@ -213,7 +235,7 @@ public class AbortHandle {
 
 ---
 
-## 2. 5 个终止条件
+## 3. 5 个终止条件
 
 修改 `AgentLoopV2.onComplete` 上方的判断，整合 5 个条件：
 
@@ -238,7 +260,7 @@ private boolean shouldTerminate(State state, Throwable error) {
 
 ---
 
-## 3. WebSocket 接入中断
+## 4. WebSocket 接入中断
 
 修改 `SessionWebSocketHandler`，支持 abort 事件：
 
@@ -295,7 +317,7 @@ public void afterConnectionClosed(WebSocketSession session, CloseStatus status) 
 
 ---
 
-## 4. 前端：中断按钮
+## 5. 前端：中断按钮
 
 修改 `ChatPanel.tsx`：
 
@@ -311,9 +333,9 @@ const abort = () => {
 
 ---
 
-## 5. 测试中断
+## 6. 验证：测试中断
 
-### 5.1 流程
+### 6.1 流程
 
 1. 发送一个会触发长输出的问题（"写一篇 1000 字的故事"）；
 2. 在流式过程中点"取消"；
@@ -321,7 +343,7 @@ const abort = () => {
 
 **检查点 04-1**：取消按钮能立即停止流式输出。
 
-### 5.2 边界测试
+### 6.2 边界测试
 
 | 场景 | 预期 |
 |------|------|
@@ -354,7 +376,7 @@ fallback_exhausted  ← 终止条件 4（09 章模型降级）
 
 ---
 
-## 7. 本章产出
+## 8. 本章产出
 
 ```
 后端：
@@ -366,6 +388,19 @@ fallback_exhausted  ← 终止条件 4（09 章模型降级）
   ✅ 取消按钮
 ```
 
-## 8. 下一步
+## 7. 避坑：本章容易踩的雷
+
+| 雷 | 现象 | 规避 |
+|----|------|------|
+| `AbortHandle.parent` 成环 | abort 调用栈溢出 | 构造时检查 parent 链不重复 |
+| transition 用中文 / 含空格 | 前端 switch case 匹配不上 | 统一用 snake_case 英文常量 |
+| WS 关闭时立即 abort L3 | 用户切 tab 任务就被取消 | **不要**在 `afterConnectionClosed` 级联 abort |
+| abort 后没 sink.complete() | Flux 永远不结束，订阅泄漏 | `markAborted()` 后**必须** `sink.complete()` |
+| `onChunk` 里检查 abort 太晚 | 已读完一大段才停 | 在每个 chunk 入口就检查 |
+| AtomicReference<StringBuilder> | 不必要的封装，直接局部变量也行 | 这个是为了教学演示，生产可简化 |
+
+---
+
+## 9. 下一步
 
 进入 [05-工具系统与权限](./05-工具系统与权限.md)，让 Agent 能调用 Read/Write/Bash 等工具，并加上权限中间件。

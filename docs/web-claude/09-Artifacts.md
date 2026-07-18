@@ -17,7 +17,32 @@
 
 ---
 
-## 0. 设计要点
+## 本章五步地图
+
+| 步 | 节 | 你要带走什么 |
+|----|----|---------|
+| ① 痛点 | §1 | 没这一章，Agent 写的代码用户得 SSH 进容器才能看——这不算"网页版" |
+| ② 最小实现 | §2–§4 | ArtifactService（S3 上传）+ WS 广播 + ArtifactPanel（多类型渲染）|
+| ③ 验证 | §5 | 让 Agent 写 hello.py / README.md / index.html，右侧面板各自渲染 |
+| ④ 对照 | §6 | 与"纯文本对话"的体验差异 |
+| ⑤ 避坑 | §7 | iframe XSS / SVG 内联 / Markdown rehype-raw / 签名 URL |
+
+---
+
+## 1. 痛点：05/06 章的 Agent 能写文件，但用户看不到
+
+05/06 章结束时 Agent 已经能 `Write("hello.py", ...)`，但**用户只能通过对话气泡里 Agent 的口头描述知道写了什么**——文件实际在沙箱容器里，用户看不见。
+
+这导致 Agent 类产品最尴尬的局面：
+- 用户问"帮我写个网站"，Agent 说"写好了"，用户**看不到效果**
+- 用户问"画个流程图"，Agent 说"画好了"，用户**得自己 SSH 进容器**才能看
+- 用户问"重写下这个 React 组件"，Agent 改完用户**没有 diff 可看**
+
+> "网页版 Claude" 相对 "CLI Claude" 最大的体验优势就是 **Artifacts**：右侧面板实时渲染 Agent 产出的代码 / 文档 / 图表 / 网页。这一章就是这个能力。
+>
+> 注意：本章的 §7 安全只是**最小化提示**。完整 Web 安全方案（DOMPurify、CSP、SRI 等）在 23 章。
+
+## 2. 设计要点
 
 - 类型：code / markdown / html / svg / mermaid / image；
 - 捕获：Write/Edit 工具完成后 → 检测文件类型 → 上传 S3 → 推送 artifact 事件；
@@ -25,9 +50,9 @@
 
 ---
 
-## 1. 后端：ArtifactService
+## 3. 后端：ArtifactService
 
-### 1.1 表结构
+### 3.1 表结构
 
 新增 `V3__artifacts.sql`：
 
@@ -48,7 +73,7 @@ CREATE TABLE artifacts (
 CREATE INDEX idx_artifacts_session ON artifacts(session_id);
 ```
 
-### 1.2 服务实现
+### 3.2 服务实现
 
 新建 `src/main/java/org/demo02/webclaude/artifact/ArtifactService.java`：
 
@@ -112,7 +137,7 @@ public class ArtifactService {
 }
 ```
 
-### 1.3 接入 WriteTool
+### 3.3 接入 WriteTool
 
 修改 `WriteTool.apply`，在写完文件后调用 `ArtifactService.capture` 并推 WS：
 
@@ -142,7 +167,7 @@ public CompletableFuture<ToolResult> apply(Map<String, Object> input, ToolContex
 }
 ```
 
-### 1.4 WS 广播
+### 3.4 WS 广播
 
 ```java
 // 本代码仅作学习材料参考
@@ -165,7 +190,7 @@ public void broadcastArtifact(UUID sessionId, ArtifactService.Artifact art) {
 }
 ```
 
-### 1.5 REST 接口
+### 3.5 REST 接口
 
 新建 `src/main/java/org/demo02/webclaude/artifact/ArtifactController.java`：
 
@@ -189,7 +214,7 @@ public class ArtifactController {
 
 ---
 
-## 2. 前端：ArtifactPanel
+## 4. 前端：ArtifactPanel
 
 `src/components/ArtifactPanel.tsx`：
 
@@ -291,7 +316,7 @@ function guessLang(name: string): string {
 
 > Monaco 编辑器要在线拉内容，需要再封一个 PromiseEditor，思路同 PromiseText。
 
-### 2.2 接入 App
+### 4.2 接入 App
 
 修改 `App.tsx`：
 
@@ -315,16 +340,16 @@ return (
 
 ---
 
-## 3. 测试 Artifacts
+## 5. 验证：测试 Artifacts
 
-### 3.1 流程
+### 5.1 流程
 
 1. 让 Agent "写一个 hello.py"；
 2. 看到 artifact 事件；
 3. 右侧面板出现 hello.py 标签；
 4. 点开看到 Monaco 渲染。
 
-### 3.2 各类型测试
+### 5.2 各类型测试
 
 让 Agent 依次写：
 - `README.md` → markdown 渲染；
@@ -335,7 +360,35 @@ return (
 
 ---
 
-## 4. 安全注意
+## 6. 对照：与"纯文本对话"的体验差异
+
+| 维度 | 05/06 章（无 artifact） | 09 章（有 artifact） |
+|------|------------------------|---------------------|
+| 用户能否看到产出 | ❌ 只能听 Agent 说 | ✅ 右侧实时渲染 |
+| 代码 | 文本气泡 | ✅ Monaco 高亮 |
+| Markdown | 原始 md 文本 | ✅ 渲染后版式 |
+| HTML | 看不到效果 | ✅ iframe 实时预览 |
+| SVG | 看不到 | ✅ 图片预览 |
+| Mermaid | 看不到 | ✅ 流程图渲染 |
+| 可分享 | ❌ | ⚠️ v1 简化（23 章做签名 URL） |
+
+## 7. 避坑：Artifacts 渲染常踩的雷
+
+| 雷 | 现象 | 规避 |
+|----|------|------|
+| HTML artifact 用 same-origin iframe | 跑父页 cookie / 改你 DOM | `sandbox="allow-scripts"`（不带 allow-same-origin）|
+| SVG 直接 inline 渲染 | XSS（SVG 内嵌 script） | 用 `<img src>` 渲染；要 inline 先 DOMPurify |
+| Markdown 用 rehype-raw | 嵌入任意 HTML | 禁 rehype-raw + 启 rehype-sanitize |
+| Mermaid 默认配置 | 用户输入触发 XSS | `securityLevel: 'strict'` |
+| artifact URL 长期有效 | 链接泄漏后任何人可看 | 生产用短期签名 URL（v1 是简化版）|
+| Monaco 体积太大（>2MB） | 首屏白屏 | 懒加载（路由进入再 dynamic import）|
+| iframe blob URL | 内存泄漏 / 跨 tab 复用难 | 用 S3 URL，不要 blob: |
+| 大文件（>10MB）一次性 fetch | 浏览器卡死 | 分块加载 / 限制 artifact 大小 |
+| 写同一文件多个版本 | 用户看不到旧版 | 加 `version` 字段，UI 支持版本切换 |
+
+> 本章 §8 是最小化安全提示，完整方案在 **[23 章](./23-Web安全与可分享性.md)**。
+
+## 8. 安全注意
 
 - HTML artifact 必须 `sandbox="allow-scripts"`（不允许 same-origin）；
 - iframe 内不允许访问父页面的 cookie/localStorage；
@@ -347,7 +400,7 @@ return (
 
 ---
 
-## 5. v2 升级路径
+## 9. v2 升级路径
 
 - React 组件实时渲染（沙箱执行）：用 Sandpack 或自研 iframe + esbuild.wasm；
 - 多版本 diff（同一逻辑 artifact 的不同版本）；
@@ -355,7 +408,7 @@ return (
 
 ---
 
-## 6. 本章产出
+## 10. 本章产出
 
 ```
 后端：
@@ -369,6 +422,6 @@ return (
   ✅ WS 接入 artifact 事件
 ```
 
-## 7. 下一步
+## 11. 下一步
 
 进入 [10-集成ai-serving](./10-集成ai-serving.md)，把单租户 MVP 接入企业级 AI 网关与多租户基础设施。

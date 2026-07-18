@@ -12,6 +12,18 @@
 
 ---
 
+## 本章五步地图
+
+| 步 | 节 | 你要带走什么 |
+|----|----|---------|
+| ① 痛点 | §0 | 前 20 章 useState + inline style + 单文件 App.tsx 在真实产品里会爆雷 |
+| ② 最小实现 | §1–§13 | 目录结构 / 路由 / 状态分层 / 代码分割 / ErrorBoundary / 移动端 / 键盘 / i18n / 主题 / 流式渲染 / a11y |
+| ③ 验证 | §12 | 性能基准（首屏 / bundle / Lighthouse）|
+| ④ 对照 | §14 | 与"前 20 章 demo 写法"的差异 |
+| ⑤ 避坑 | §13 | 大依赖首屏 / ErrorBoundary 漂白 / 移动端误触 / i18n 占位符 |
+
+---
+
 ## 0. 为什么单独成章
 
 前 20 章为了讲解机制，前端代码大多是 `useState` + 写死 inline style + 单文件 App.tsx。这种写法在 demo 阶段够用，但放到真实 Web 产品会立刻爆雷：
@@ -816,6 +828,41 @@ const throttled = useMemo(() => throttle(setText, 50), []);
   ✅ a11y 基础
 ```
 
-## 15. 下一步
+---
+
+## 15. 对照：与前 20 章 demo 写法的差异
+
+| 维度 | demo 写法（前 20 章）| 工程化（本章）|
+|------|------------------|--------------|
+| 状态 | 各组件 useState | Zustand 全局 + React Query 缓存 |
+| 路由 | 单页 hash | React Router 6 + 懒加载 |
+| 错误 | 整页白屏 | 三层 ErrorBoundary 兜底 |
+| 首屏 | 一次加载 10s+ | manualChunks + Suspense |
+| 移动端 | padding 写死 | 断点 + 触摸优化 |
+| 多语言 | 中文写死 | i18n zh/en |
+| 主题 | 写死浅色 | 深浅跟随系统 |
+| 键盘 | 鼠标党 | 快捷键 + 命令面板 |
+| 可访问性 | 无 | a11y 焦点 + aria |
+
+**结论**：每条单独看都"小"，组合起来就是把 demo 升级为产品的门槛。
+
+---
+
+## 16. 避坑：前端工程化常踩的雷
+
+| 雷 | 现象 | 规避 |
+|----|------|------|
+| 大依赖首屏炸 | Monaco / mermaid 同步加载 | §5 manualChunks + 懒加载 |
+| ErrorBoundary 漂白 | 边界捕获后没 resetKey | 加 key 重置组件树 |
+| Suspense 瀑布 | 嵌套 Suspense 串行 | 提前 prefetch + fallback |
+| 移动端误触 | 按钮点击区域 < 44px | §7 触摸优化 + hit area |
+| i18n 占位符错位 | `{name}` 与中英文语序冲突 | 用 ICU MessageFormat |
+| 主题闪烁 | 首次刷新白闪 | `<script>` 内联 readSystemTheme |
+| 键盘冲突 | 全局快捷键拦截到输入框 | §8 input/textarea/contenteditable 排除 |
+| 懒加载 SSR 错位 | React.lazy 在 SSR 报错 | 用 IsomorphicLazy / 动态 import 客户端 |
+
+---
+
+## 17. 下一步
 
 进入 [22-跨标签页与实时协作](./22-跨标签页与实时协作.md)，让多标签页 / 多人能同时观察同一 session，且状态一致。

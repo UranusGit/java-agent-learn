@@ -12,6 +12,18 @@
 
 ---
 
+## 本章五步地图
+
+| 步 | 节 | 你要带走什么 |
+|----|----|---------|
+| ① 痛点 | §0 | Web 特有攻击面（URL / 粘贴 / 拖拽 / artifact XSS / 分享链接）|
+| ② 最小实现 | §1–§8 | 输入侧拦截 + artifact sandbox + CORS/Cookie/CSRF + 公共分享链接 + SRI + 前端监控 + CSP + 扩展防御 |
+| ③ 验证 | §9 | Web 安全自检清单 |
+| ④ 对照 | §10 | 与"09 章基本 artifact 渲染"的差异 |
+| ⑤ 避坑 | §10 | rehype-raw / iframe sandbox 漏洞 / token 进 URL / 分享链接遍历 |
+
+---
+
 ## 0. Web 项目特有的攻击面
 
 | 攻击面 | 后果 | 来源 |
@@ -754,7 +766,41 @@ public WebFilter cspFilter() {
 
 ---
 
-## 10. 本章产出
+## 10. 对照：与"09 章基本 artifact 渲染"的差异
+
+| 维度 | 09 章 | 本章 |
+|------|-------|------|
+| 输入拦截 | 无 | URL / 粘贴 / 拖拽白名单 |
+| artifact XSS | 基本 iframe | sandbox + postMessage 验源 + DOMPurify |
+| Markdown | 默认渲染 | rehype-sanitize 白名单 |
+| 分享 | 无 | 公共链接加密 + 撤销 |
+| 监控 | 无 | Sentry + Web Vitals |
+| CSP | 无 | 严格 CSP + Permissions-Policy |
+| CDN | 直接加载 | SRI + 自托管 |
+| 浏览器扩展 | 无 | DOM 加签 + 检测 |
+
+**结论**：09 章把 artifact "渲染出来"就完了，本章把它放到"真实 Web 环境"必须做的所有安全加固补齐。
+
+---
+
+## 11. 避坑：Web 安全常踩的雷
+
+| 雷 | 现象 | 规避 |
+|----|------|------|
+| rehype-raw 留口子 | 允许 raw HTML 后 sanitize 未启用 | 必须配套 rehype-sanitize |
+| iframe sandbox="allow-scripts allow-same-origin" | 同时开 = 沙箱失效 | 二选一，绝不共存 |
+| JWT 进 URL query | 日志 / Referer 泄露 | 走 cookie HttpOnly 或 header |
+| 分享链接可遍历 | 短 ID 被枚举 | 用 32 字节随机 token + rate limit |
+| postMessage "*" | 任意来源接收 | 严格 origin 白名单 |
+| CSP report-only 永久挂 | 上线没切 enforce | 灰度后切 enforce + 监控违规 |
+| Cookie SameSite=None 漏 Secure | 浏览器拒绝 | Secure 必带 |
+| SVG inline 渲染 | `<script>` 执行 | 改 `<img>` 引用 + DOMPurify |
+| SRI 哈希过期 | CDN 升级后 hash 不匹配 | 锁版本 + 自动化更新 hash |
+| 扩展签名可被绕过 | 高级扩展仍能改 DOM | 检测 + 警告用户，不能 100% 防 |
+
+---
+
+## 12. 本章产出
 
 ```
 输入侧：
@@ -789,6 +835,6 @@ public WebFilter cspFilter() {
   ✅ Permissions-Policy
 ```
 
-## 11. 下一步
+## 13. 下一步
 
 进入 [24-智能体安全](./24-智能体安全.md)，从 Agent 层面解决 prompt injection / 凭据泄露 / 沙箱逃逸 / 越权调用问题。

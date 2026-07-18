@@ -6,7 +6,21 @@
 
 ---
 
-## 0. 为什么单独拉一章
+## 本章五步地图
+
+| 步 | 节 | 你要带走什么 |
+|----|----|---------|
+| ① 痛点 | §1 | 11 章跑通但靠 Agent 自觉——它会作弊、跨 feature、谎报完成 |
+| ② 五层模型 | §2–§6 | Initializer / Scaffold / Guardrails / Protocol / Multi-Agent |
+| ③ 验证 | §9 | 用五层组件跑一遍 todo app，对照 11 章的差异 |
+| ④ 对照 | §0（章末）| 11 章扁平化 vs 13 章 Harness 化的可靠性差距 |
+| ⑤ 避坑 | §11 | 测试作弊 / 跨 feature / progress 漂移 / agent 自评 |
+
+> **本文是"工程设计文档"型**——本章不给完整代码（Harness 是个体系，代码分散在 11 / 14 / 15 / 18 / 20 等章），而是给"五层模型 + 每层的设计原则 + 验收清单"。读完知道每层管什么、怎么验收就够了。
+
+---
+
+## 1. 为什么单独拉一章
 
 11 章实现的是 "feature_list + Cron + 自动续跑" 这条**最具体的执行路径**。但 Anthropic 的 Harness 范式抽象层级更高，它包含五个相互独立、可组合的工程组件：
 
@@ -35,7 +49,7 @@ Harness 工程就是为了堵这些漏洞。
 
 ---
 
-## 1. Harness 工程的五层模型
+## 2. Harness 工程的五层模型
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -60,7 +74,7 @@ Harness 工程就是为了堵这些漏洞。
 
 ---
 
-## 2. Layer 1：Initializer Agent
+## 3. Layer 1：Initializer Agent
 
 ### 2.1 职责
 
@@ -98,7 +112,7 @@ workspace/
 
 ---
 
-## 3. Layer 2：Scaffold Artifacts
+## 4. Layer 2：Scaffold Artifacts
 
 ### 3.1 feature_list.json（核心）
 
@@ -218,7 +232,7 @@ exit $SMOKE_EXIT
 
 ---
 
-## 4. Layer 3：Guardrails（强约束）
+## 5. Layer 3：Guardrails（强约束）
 
 ### 4.1 为什么需要
 
@@ -343,7 +357,7 @@ public class TestVerifier {
 
 ---
 
-## 5. Layer 4：Session Protocol（协议）
+## 6. Layer 4：Session Protocol（协议）
 
 ### 5.1 起步流程（Coding Agent 每个 session 开头必须做）
 
@@ -395,7 +409,7 @@ session.end_turn
 
 ---
 
-## 6. Layer 5：Multi-Agent Topology
+## 7. Layer 5：Multi-Agent Topology
 
 ### 6.1 单 agent 模式（11 章做法，harness 文章里也提到了它的局限）
 
@@ -480,7 +494,7 @@ session.end_turn
 
 ---
 
-## 7. 与 11 章的关系
+## 8. 与 11 章的关系
 
 11 章 = 本章 **Layer 1 + Layer 2 + 部分 Layer 4** 的最简实现。
 
@@ -503,7 +517,7 @@ session.end_turn
 
 ---
 
-## 8. 设计文档与代码的关系
+## 9. 设计文档与代码的关系
 
 | 文档 | 实现层 |
 |------|--------|
@@ -514,7 +528,7 @@ session.end_turn
 
 ---
 
-## 9. Harness 的可观测性
+## 10. 验证：Harness 的可观测性
 
 ### 9.1 关键指标
 
@@ -536,7 +550,22 @@ harness_multiagent_message_lag        # 多 agent 模式下消息处理延迟
 
 ---
 
-## 10. 本章产出
+## 11. 避坑：Harness 工程常踩的雷
+
+| 雷 | 现象 | 规避 |
+|----|------|------|
+| Agent 删测试作弊 | feature 看似过实则没过 | Layer 3 TestVerifier（独立跑测试，不信 agent）|
+| 一个 session 跨 feature | feature 间互相污染 | Layer 4 Protocol：每 session 显式宣告当前 feature |
+| progress.txt 漂移 | 多 session 改写不一致 | 单 writer + 乐观锁 / append-only event log |
+| Agent 自评"完成" | 没人验收就上报 done | Layer 5 Reviewer agent + 人工 gate |
+| Guardrail 太严 | Agent 动不了 | 区分 hard（不可破）/ soft（warning）|
+| Multi-agent 抢同一文件 | 互相覆盖 | 每子 agent 独占 worktree |
+| Initializer 拆错粒度 | feature 互相依赖，没法并行 | Layer 1 加依赖分析 |
+| Protocol 太僵化 | Agent 状态机死循环 | 加 fallback 状态 + max retry |
+| Scaffold 文件结构变 | Coding agent 误认旧结构 | Layer 2 用 schema 校验 |
+| 测试假阳性 | mock 了真实依赖 | Layer 3 强制 integration test |
+
+## 12. 本章产出
 
 ```
 概念：
@@ -552,7 +581,7 @@ harness_multiagent_message_lag        # 多 agent 模式下消息处理延迟
   ✅ 多 agent 消息总线
 ```
 
-## 11. 下一步
+## 13. 下一步
 
 - 若已完成 11 章 → 回去补 §3-5 的护栏与协议状态机；
 - 若刚起步 → 先把 02-11 章跑通，再回头加 harness 完整模型；

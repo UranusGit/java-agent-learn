@@ -18,7 +18,32 @@
 
 ---
 
-## 0. ai-serving 提供的接口（假设）
+## 本章五步地图
+
+| 步 | 节 | 你要带走什么 |
+|----|----|---------|
+| ① 痛点 | §1 | 09 章是单租户、本地模型——上生产必须接企业 AI 网关 |
+| ② 最小实现 | §2–§7 | 多租户上下文 + InferenceClient + 成本上报 + OTel + 限流配额 |
+| ③ 验证 | §8 | 两租户互相看不到对方 session；token 用量出现在 ai-serving 后台 |
+| ④ 对照 | §9 | 与 09 章"单租户单模型"的能力差异 |
+| ⑤ 避坑 | §10 | JWT 透传链路 / 配额误扣 / 跨服务 trace 断 |
+
+---
+
+## 1. 痛点：09 章是"个人玩具"，本章是"企业产品"
+
+读完 09 章你的平台能"用"——但只能你自己用。一旦给别人用立刻爆雷：
+
+- **单租户**：所有人共用一个 session 列表，A 看到 B 的对话
+- **直连模型**：每个用户自己出 OpenAI key——不现实
+- **无成本治理**：一个用户跑出 $1000 账单没人知道
+- **无可观测**：模型调用的 trace、latency、error rate 全没有
+
+> 企业的 AI 网关（ai-serving）就是为了解决这四件事。本章不重造轮子，**只把 web-claude 这边接进去**——前置阅读是 ai-serving 五章。
+>
+> 这一章是后面 11 章（长程任务）、15 章（Subagent）、27 章（生产部署）的**租户基础**。所有跨 session 的能力都假设有这一章的多租户上下文。
+
+## 2. ai-serving 提供的接口（假设）
 
 - `POST /v1/chat/completions` —— 推理网关入口（OpenAI 兼容）；
 - `GET /v1/tenants/{id}/quota` —— 查询租户配额；
@@ -30,7 +55,7 @@
 
 ---
 
-## 1. 多租户上下文
+## 3. 多租户上下文
 
 ### 1.1 JWT 鉴权
 
@@ -115,7 +140,7 @@ public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
 
 ---
 
-## 2. 推理网关客户端
+## 4. 推理网关客户端
 
 新建 `src/main/java/org/demo02/webclaude/inference/InferenceClient.java`：
 
@@ -158,7 +183,7 @@ public class InferenceClient {
 
 ---
 
-## 3. 改造 AgentLoop 用 InferenceClient
+## 5. 改造 AgentLoop 用 InferenceClient
 
 替换 `AgentLoopV2` 中直接调 `ChatClient` 的部分：
 
@@ -187,7 +212,7 @@ public Flux<State> run(UUID sessionId, List<Message> history, String userInput,
 
 ---
 
-## 4. 成本上报
+## 6. 成本上报
 
 ```java
 // 本代码仅作学习材料参考
@@ -206,7 +231,7 @@ public class UsageReporter {
 
 ---
 
-## 5. OTel Tracing
+## 7. OTel Tracing
 
 ### 5.1 依赖
 
@@ -234,7 +259,7 @@ public CompletableFuture<ToolResult> apply(...) { ... }
 
 ---
 
-## 6. 限流与配额
+## 8. 限流与配额
 
 ### 6.1 推理网关侧
 
@@ -265,7 +290,7 @@ public class TenantRateLimiter {
 
 ---
 
-## 7. 测试集成
+## 9. 验证：测试集成
 
 ### 7.1 流程
 
@@ -288,7 +313,34 @@ public class TenantRateLimiter {
 
 ---
 
-## 8. 本章产出
+## 10. 对照：与 09 章单租户单模型的能力差异
+
+| 维度 | 09 章 | 10 章 |
+|------|-------|-------|
+| 租户 | 单一 | ✅ 多租户隔离 |
+| 模型调用 | 直连 OpenAI | ✅ 推理网关 |
+| 成本归集 | 无 | ✅ 按租户累计 |
+| trace | 无 | ✅ OTel 跨服务 |
+| 配额 | 无 | ✅ 限流 + 配额 |
+| 上生产 | ❌ | ✅（27 章补部署） |
+
+## 11. 避坑：接入 ai-serving 常踩的雷
+
+| 雷 | 现象 | 规避 |
+|----|------|------|
+| JWT 没透传到下游 | trace 断 / 配额错算 | InferenceClient 强制注入 Authorization + traceparent |
+| 配额超限不退回 | retry 多扣 | 失败请求的 usage 不上报；幂等 key 去重 |
+| tenantId 从前端传 | 用户改 header 越权 | 必须从 JWT claim 取，不信 header |
+| 跨服务 trace 不一致 | Jaeger 看不到全链路 | W3C Trace Context + baggage 标准化 |
+| 网关超时短 | 长输出截断 | 流式 chunk 模式 + 调整网关超时 |
+| `--header "Authorization: ..."` 进日志 | 凭据泄漏 | 日志脱敏过滤器 |
+| 限流粒度太粗（全租户共享）| 大客户挤掉小客户 | 按租户 + 按 user 两级令牌桶 |
+| 成本精度丢 | 浮点累计误差 | 用 `BigDecimal` 不要 `double` |
+| 模型 fallback 失败 | 主备都没了用户卡死 | 14 / 18 章深度实现 |
+
+---
+
+## 12. 本章产出
 
 ```
 后端：
@@ -299,7 +351,7 @@ public class TenantRateLimiter {
   ✅ OTel tracing 接入
 ```
 
-## 9. Web 项目专项升级（23 章预告）
+## 13. Web 项目专项升级（23 章预告）
 
 本章的 JWT / 鉴权是最小实现，生产 Web 项目要补：
 
@@ -311,6 +363,6 @@ public class TenantRateLimiter {
 | Refresh Token 轮转 | 23 §3 | JWT 长时风险大 |
 | 跨租户 share token | 23 §4 | 同事只读 review |
 
-## 10. 下一步
+## 14. 下一步
 
 进入 [11-长程任务](./11-长程任务.md)，实现 Initializer + Coding Agent 模式，跑通跨 session 自动续跑。
