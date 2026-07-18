@@ -872,38 +872,40 @@ void should_never_leak_secrets_in_error() {
 
 ## 附录 A：McpServerFeatures 全 API 速查
 
-> 2.0 已把底层 MCP Java SDK 内联进 Spring AI BOM，包路径统一为 `org.springframework.ai.mcp.*`。**不需要再单独声明 `io.modelcontextprotocol.sdk` 依赖**。下文 `McpServer.*` / `McpSchema.*` / `McpServerFeatures.*` 等类，在 2.0 的实际包路径是：
-> - `org.springframework.ai.mcp.server.McpServer` / `McpSyncServer` / `McpAsyncServer`
-> - `org.springframework.ai.mcp.spec.McpSchema`（含 `McpSchema.Tool` / `McpSchema.CallToolResult` / `McpSchema.TextContent` 等）
-> - `org.springframework.ai.mcp.server.McpServerFeatures`（含各种 `*Registration`、`ServerCapabilities`、`*RequestHandler`）
-> - `org.springframework.ai.mcp.server.McpSyncServerExchange` / `McpAsyncServerExchange`
+> 2.0 把 MCP Java SDK 作为普通依赖引用（`io.modelcontextprotocol.sdk:mcp:2.0.0`，通过 `spring-ai-bom` 管理版本）。Spring AI 自身只在 `org.springframework.ai.mcp.*` 包内提供少量桥接类（`SyncMcpToolCallback` / `AsyncMcpToolCallback` / `SyncMcpToolCallbackProvider` / `AsyncMcpToolCallbackProvider` / `ToolContextToMcpMetaConverter` / `McpToolUtils` 等）和注解（`org.springframework.ai.mcp.annotation.*`）。
 >
-> 老教程里看到的 `io.modelcontextprotocol.*` 包路径在 2.0 项目里**不需要再写**——除非你显式要用裸 SDK 自己组装 server，那时才直接走 Spring AI 内联的那一版。
+> 下面这些**协议层类**直接来自 MCP SDK，包路径仍是 SDK 自己的，**没有迁移到 `org.springframework.ai.mcp.*`**：
+> - `io.modelcontextprotocol.server.McpServer` / `McpSyncServer` / `McpAsyncServer`
+> - `io.modelcontextprotocol.spec.McpSchema`（含 `McpSchema.Tool` / `McpSchema.CallToolResult` / `McpSchema.TextContent` 等）
+> - `io.modelcontextprotocol.server.McpServerFeatures`（含各种 `*Specification`、`ServerCapabilities`）
+> - `io.modelcontextprotocol.server.McpSyncServerExchange` / `McpAsyncServerExchange`
 
 ### A.1 Server 端核心类
 
 | 类 | 用途 |
 |---|------|
 | `McpSyncServer` / `McpAsyncServer` | Server 主入口，处理 JSON-RPC |
-| `McpServerFeatures.SyncToolRegistration` | 注册一个工具（同步） |
-| `McpServerFeatures.AsyncToolRegistration` | 注册一个工具（异步） |
-| `McpServerFeatures.SyncResourceRegistration` / `AsyncResourceRegistration` | 注册一个 Resource |
-| `McpServerFeatures.SyncPromptRegistration` / `AsyncPromptRegistration` | 注册一个 Prompt |
-| `McpServerFeatures.ServerCapabilities` | 声明 Server 支持的能力 |
+| `McpServerFeatures.SyncToolSpecification` | 注册一个工具（同步） |
+| `McpServerFeatures.AsyncToolSpecification` | 注册一个工具（异步） |
+| `McpServerFeatures.SyncResourceSpecification` / `AsyncResourceSpecification` | 注册一个 Resource |
+| `McpServerFeatures.SyncPromptSpecification` / `AsyncPromptSpecification` | 注册一个 Prompt |
+| `McpSchema.ServerCapabilities` | 声明 Server 支持的能力 |
 
 ### A.2 注册一个工具（风格 C：原生 SDK）
 
 ```java
 // 本代码仅作学习材料参考
-// 包路径是 2.0 的 org.springframework.ai.mcp.*，不是老的 io.modelcontextprotocol.*
-import org.springframework.ai.mcp.server.McpServer;
-import org.springframework.ai.mcp.server.McpSyncServer;
-import org.springframework.ai.mcp.server.McpServerFeatures;
-import org.springframework.ai.mcp.server.McpServerFeatures.ServerCapabilities;
-import org.springframework.ai.mcp.server.McpServerFeatures.SyncToolSpecification;
-import org.springframework.ai.mcp.spec.McpSchema;
-import org.springframework.ai.mcp.spec.McpSchema.CallToolResult;
-import org.springframework.ai.mcp.spec.McpSchema.TextContent;
+// 包路径来自 MCP Java SDK（io.modelcontextprotocol.*），2.0 没有把它内联到 Spring AI 自己的包。
+import io.modelcontextprotocol.server.McpServer;
+import io.modelcontextprotocol.server.McpSyncServer;
+import io.modelcontextprotocol.server.McpServerFeatures;
+import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
+import io.modelcontextprotocol.spec.McpSchema;
+import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
+import io.modelcontextprotocol.spec.McpSchema.TextContent;
+import io.modelcontextprotocol.spec.McpSchema.ServerCapabilities;
+import java.util.List;
+import java.util.Map;
 
 McpSyncServer server = McpServer.sync(transport)
     .serverInfo("my-server", "1.0.0")
@@ -914,10 +916,13 @@ McpSyncServer server = McpServer.sync(transport)
         .logging()
         .build())
     .tool(
-        new Tool("currentTime", "Get current time", schemaForNoArgs()),
-        (exchange, args) -> new CallToolResult(List.of(
+        // Tool 最短必填是 name + inputSchema；其余字段走 builder 链
+        McpSchema.Tool.builder("currentTime", Map.of("type", "object", "properties", Map.of()))
+            .description("Get current time")
+            .build(),
+        (exchange, req) -> new CallToolResult(List.of(
             new TextContent(new Date().toString())
-        ))
+        ), false)
     )
     .build();
 ```

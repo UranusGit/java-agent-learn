@@ -634,18 +634,20 @@ Map<String, Object> standardMetadata = Map.of(
 
 ```java
 // pgvector
+// 注意：PgDistanceType / PgIndexType 是 PgVectorStore 的内部枚举，必须加 PgVectorStore. 前缀。
 @Bean
 public VectorStore vectorStore(JdbcTemplate jdbc, EmbeddingModel embedding) {
     return PgVectorStore.builder(jdbc, embedding)
             .dimensions(1024)
-            .distanceType(PgDistanceType.COSINE_DISTANCE)
-            .indexType(IndexType.HNSW)
+            .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
+            .indexType(PgVectorStore.PgIndexType.HNSW)
             .build();
 }
 
 // Milvus
+// 注意：Milvus 客户端类型是 io.milvus.client.MilvusServiceClient（不是 MilvusClient）。
 @Bean
-public VectorStore vectorStore(MilvusClient client, EmbeddingModel embedding) {
+public VectorStore vectorStore(MilvusServiceClient client, EmbeddingModel embedding) {
     return MilvusVectorStore.builder(client, embedding)
             .collectionName("documents")
             .databaseName("default")
@@ -683,7 +685,7 @@ Cold Memory（对象存储）：归档，长期保留
 
 Spring AI 2.0 把 ChatMemory 拆成两层：
 
-- **`ChatMemoryRepository`**：纯存储抽象（`saveAll` / `findByConversationId` / `deleteByConversationId`），`JdbcChatMemoryRepository` / `CassandraChatMemoryRepository` / `MongoChatMemoryRepository` / `JedisChatMemoryRepository` 等是它的实现。
+- **`ChatMemoryRepository`**：纯存储抽象（`saveAll` / `findByConversationId` / `deleteByConversationId`），`JdbcChatMemoryRepository` / `CassandraChatMemoryRepository` / `MongoChatMemoryRepository` / `Neo4jChatMemoryRepository` / `RedisChatMemoryRepository` 等是它的实现。
 - **`ChatMemory`**：在 Repository 上加窗口/裁剪策略，`MessageWindowChatMemory`（默认 20 条）是它的标准实现。
 
 > 注意：**`ChatMemory` Bean 是上层**，单独 `@Bean ChatMemoryRepository` 不够，还要用 `MessageWindowChatMemory.builder().chatMemoryRepository(repo).maxMessages(N).build()` 包一层，否则 advisor 拿不到 `ChatMemory`。Spring Boot starter 在 classpath 上有 JDBC starter 时会自动配置 `JdbcChatMemoryRepository` Bean，但 `MessageWindowChatMemory` 默认 `maxMessages=20`。
@@ -694,7 +696,7 @@ Spring AI 2.0 把 ChatMemory 拆成两层：
 public ChatMemoryRepository chatMemoryRepository(JdbcTemplate jdbc) {
     return JdbcChatMemoryRepository.builder()
             .jdbcTemplate(jdbc)
-            .dialect(PostgresDialect.create())
+            .dialect(new PostgresChatMemoryRepositoryDialect())
             .build();
 }
 

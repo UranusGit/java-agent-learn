@@ -246,6 +246,7 @@ facts.filter(f -> f.confidence() > 0.7)
 
 ```java
 // 本代码仅作学习材料参考（实验性）
+// Spring AI 2.0 没有 DynamicToolCallback；动态工具用 FunctionToolCallback.builder() 构造
 public ToolCallback synthesizeTool(String userIntent) {
     ToolDefinition def = client.prompt()
             .system("""
@@ -256,13 +257,16 @@ public ToolCallback synthesizeTool(String userIntent) {
             .call()
             .entity(ToolDefinition.class);
 
-    return new DynamicToolCallback(def, args -> {
+    return FunctionToolCallback.builder(def.name(), (String args) -> {
         // 这个工具"实际行为"可以是调 LLM 实现（self-implementing）
         return client.prompt()
                 .system("You are tool: " + def.name())
                 .user("Args: " + args)
                 .call().content();
-    });
+    })
+    .description(def.description())
+    .inputType(String.class)
+    .build();
 }
 ```
 
