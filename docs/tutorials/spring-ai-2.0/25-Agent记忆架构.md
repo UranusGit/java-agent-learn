@@ -170,7 +170,7 @@ public class EpisodicMemoryAdvisor implements BaseAdvisor {
     }
 
     @Override public String getName() { return "EpisodicMemoryAdvisor"; }
-    @Override public int getOrder() { return Ordered.HIGHEST_PRECEDENCE + 250; }
+    @Override public int getOrder() { return HIGHEST_PRECEDENCE + 250; }
 }
 ```
 
@@ -327,7 +327,7 @@ public class ProfileAdvisor implements BaseAdvisor {
     }
 
     @Override public String getName() { return "ProfileAdvisor"; }
-    @Override public int getOrder() { return Ordered.HIGHEST_PRECEDENCE + 100; }
+    @Override public int getOrder() { return HIGHEST_PRECEDENCE + 100; }
 }
 ```
 

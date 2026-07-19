@@ -471,7 +471,7 @@ BaseAdvisor promptLogger() {
             return r;
         }
         @Override public String getName() { return "PromptLogger"; }
-        @Override public int getOrder() { return Ordered.HIGHEST_PRECEDENCE; }
+        @Override public int getOrder() { return HIGHEST_PRECEDENCE; }
     };
 }
 ```

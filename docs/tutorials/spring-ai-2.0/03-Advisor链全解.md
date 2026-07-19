@@ -87,7 +87,7 @@ public class SimpleLogAdvisor implements BaseAdvisor {
     public String getName() { return "SimpleLogAdvisor"; }
 
     @Override
-    public int getOrder() { return 0; }  // 显式给 order
+    public int getOrder() { return HIGHEST_PRECEDENCE; }  // 显式给 order
 }
 ```
 
@@ -124,7 +124,7 @@ public class StreamingAwareAdvisor implements CallAdvisor, StreamAdvisor {
     public String getName() { return "StreamingAwareAdvisor"; }
 
     @Override
-    public int getOrder() { return 100; }
+    public int getOrder() { return HIGHEST_PRECEDENCE + 100; }
 }
 ```
 
@@ -246,7 +246,7 @@ public class TimingAdvisor implements CallAdvisor, StreamAdvisor {
     public String getName() { return "TimingAdvisor"; }
 
     @Override
-    public int getOrder() { return Ordered.HIGHEST_PRECEDENCE + 100; }
+    public int getOrder() { return HIGHEST_PRECEDENCE + 100; }
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
@@ -290,7 +290,7 @@ public class PromptEnhanceAdvisor implements BaseAdvisor {
     }
 
     @Override public String getName() { return "PromptEnhanceAdvisor"; }
-    @Override public int getOrder() { return -2147483400; }   // Memory 内、Tool 外
+    @Override public int getOrder() { return HIGHEST_PRECEDENCE + 248; }   // Memory 内、Tool 外
 }
 ```
 
@@ -311,7 +311,7 @@ public class PiiMaskAdvisor implements BaseAdvisor {
     }
 
     @Override public String getName() { return "PiiMaskAdvisor"; }
-    @Override public int getOrder() { return -2147483350; }   // Tool 内层
+    @Override public int getOrder() { return HIGHEST_PRECEDENCE + 298; }   // Tool 内层
 }
 ```
 

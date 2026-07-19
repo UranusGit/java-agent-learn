@@ -94,7 +94,7 @@ public class PromptChainingAdvisor implements BaseAdvisor {
     }
 
     @Override public String getName() { return "PromptChainingAdvisor"; }
-    @Override public int getOrder() { return -2147483400; }
+    @Override public int getOrder() { return HIGHEST_PRECEDENCE + 248; }
 }
 ```
 
@@ -206,7 +206,7 @@ public class ParallelizationAdvisor implements BaseAdvisor {
     }
 
     @Override public String getName() { return "ParallelizationAdvisor"; }
-    @Override public int getOrder() { return -2147483400; }
+    @Override public int getOrder() { return HIGHEST_PRECEDENCE + 248; }
 }
 ```
 
@@ -313,7 +313,7 @@ public class RoutingAdvisor implements BaseAdvisor {
     }
 
     @Override public String getName() { return "RoutingAdvisor"; }
-    @Override public int getOrder() { return -2147483400; }
+    @Override public int getOrder() { return HIGHEST_PRECEDENCE + 248; }
 }
 ```
 
@@ -435,7 +435,7 @@ public class OrchestratorWorkersAdvisor implements BaseAdvisor {
     }
 
     @Override public String getName() { return "OrchestratorWorkersAdvisor"; }
-    @Override public int getOrder() { return -2147483400; }
+    @Override public int getOrder() { return HIGHEST_PRECEDENCE + 248; }
 }
 ```
 
@@ -524,7 +524,7 @@ public class EvaluatorOptimizerAdvisor implements BaseAdvisor {
     public record EvalResult(boolean pass, String feedback) {}
 
     @Override public String getName() { return "EvaluatorOptimizerAdvisor"; }
-    @Override public int getOrder() { return -2147483400; }
+    @Override public int getOrder() { return HIGHEST_PRECEDENCE + 248; }
 }
 ```
 

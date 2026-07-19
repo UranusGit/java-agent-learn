@@ -684,7 +684,7 @@ public class OnlineEvalAdvisor implements BaseAdvisor {
         return req;
     }
     @Override public String getName() { return "OnlineEvalAdvisor"; }
-    @Override public int getOrder() { return Integer.MAX_VALUE; }  // 最内层
+    @Override public int getOrder() { return LOWEST_PRECEDENCE; }  // 最内层
 }
 ```
 
