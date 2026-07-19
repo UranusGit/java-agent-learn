@@ -392,6 +392,39 @@ curl "http://127.0.0.1:8080/demo02/agent/route?q=登录一直闪退怎么办"
 
 ### 3.5 看看图长什么样
 
+
+
+```mermaid
+---
+title: customer-service-router
+---
+flowchart TD
+	__START__((start))
+	__END__((stop))
+	router("router")
+	billing("billing")
+	sales("sales")
+	tech("tech")
+	condition1{"check state"}
+	__START__:::__START__ --> router:::router
+	router:::router -.-> condition1:::condition1
+	condition1:::condition1 -.-> billing:::billing
+	%%	router:::router -.-> billing:::billing
+	condition1:::condition1 -.-> tech:::tech
+	%%	router:::router -.-> tech:::tech
+	condition1:::condition1 -.-> sales:::sales
+	%%	router:::router -.-> sales:::sales
+	billing:::billing --> __END__:::__END__
+	tech:::tech --> __END__:::__END__
+	sales:::sales --> __END__:::__END__
+
+	classDef __START__ fill:black,stroke-width:1px,font-size:xx-small;
+	classDef __END__ fill:black,stroke-width:1px,font-size:xx-small;
+	
+```
+
+
+
 ```java
 // 任意位置注入 CompiledGraph，输出 Mermaid 文本
 String mermaid = routerGraph.getGraph(

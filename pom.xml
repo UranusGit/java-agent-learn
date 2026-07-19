@@ -105,6 +105,22 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
+
+        <dependency>
+            <groupId>com.alibaba.cloud.ai</groupId>
+            <artifactId>spring-ai-alibaba-graph-core</artifactId>
+            <version>2.0.0-M1.1</version>
+            <exclusions>
+                <!-- graph-core M1.1 硬编码 mcp 0.14.0，与 spring-ai-mcp 2.0.0 期望的 mcp 2.0.0 冲突
+                     （缺 McpSchema$ElicitFormRequest 等 elicitation 类，
+                     McpClientAutoConfiguration 启动期 NoClassDefFoundError）。
+                     排除后让 spring-ai-mcp 自带的 mcp 2.0.0 胜出。 -->
+                <exclusion>
+                    <groupId>io.modelcontextprotocol.sdk</groupId>
+                    <artifactId>mcp</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
     </dependencies>
 
     <build>

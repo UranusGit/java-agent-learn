@@ -45,7 +45,7 @@ public class ChatConfig {
                     .get();
 
             String userJson = mcpClient.readResource(
-                    McpSchema.ReadResourceRequest.builder("user://user-list").build()
+                    new McpSchema.ReadResourceRequest("user://user-list")
             ).map(result -> result.contents().stream()
                     .filter(McpSchema.TextResourceContents.class::isInstance)
                     .map(McpSchema.TextResourceContents.class::cast)
@@ -54,10 +54,10 @@ public class ChatConfig {
                     .orElse("")
             ).block();
 
-            McpSchema.TextContent content = (McpSchema.TextContent) mcpClient.getPrompt(McpSchema.GetPromptRequest.builder("planRoute")
-                            .arguments(Map.of("name", "北京", "to", "上海"))
-                            .build()
-                    )
+            McpSchema.TextContent content = (McpSchema.TextContent) mcpClient
+                    .getPrompt(
+                            new McpSchema.GetPromptRequest(
+                                    "planRoute",Map.of("name", "北京", "to", "上海")))
                     .block().messages().get(0).content();
             System.out.println(content.text());
 

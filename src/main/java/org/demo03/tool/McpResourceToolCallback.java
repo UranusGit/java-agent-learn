@@ -30,7 +30,7 @@ public class McpResourceToolCallback implements ToolCallback {
     @Override
     public String call(String toolInput) {
         McpSchema.ReadResourceResult result = mcpClient.readResource(
-                McpSchema.ReadResourceRequest.builder(resourceUri).build()
+                new McpSchema.ReadResourceRequest(resourceUri)
         ).block();
         return result.contents().stream()
                 .filter(McpSchema.TextResourceContents.class::isInstance)

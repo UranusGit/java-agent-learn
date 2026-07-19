@@ -8,6 +8,9 @@ spring:
         base-url: https://api.deepseek.com
         model: deepseek-v4-flash
         temperature: 0.7
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
 logging:
   level:
     org.springframework.ai: info
