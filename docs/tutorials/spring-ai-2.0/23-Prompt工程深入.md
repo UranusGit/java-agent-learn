@@ -396,7 +396,7 @@ import org.springframework.ai.chat.client.advisor.StructuredOutputValidationAdvi
 ChatClient client(ChatClient.Builder b) {
     return b.defaultAdvisors(
             StructuredOutputValidationAdvisor.builder()
-                    .maxAttempts(3)
+                    .maxRepeatAttempts(3)
                     .build()
     ).build();
 }
@@ -412,23 +412,24 @@ ChatClient client(ChatClient.Builder b) {
 
 ### 9.1 用 ST 模板
 
-Spring AI 2.0 内置 `StringTemplate` 风格的 `TextTemplate`：
+Spring AI 2.0 内置 `StringTemplate` 风格的 `StTemplateRenderer`（位于 `spring-ai-template-st` 模块）：
 
 ```java
 // 本代码仅作学习材料参考
 import org.springframework.ai.template.st.StTemplateRenderer;
+import org.springframework.ai.template.TemplateRenderer;
 
-TextTemplate tpl = TextTemplate.builder()
-        .renderer(StTemplateRenderer.builder().build())
-        .template("""
-                你是 {role}。
-                任务：{task}
-                约束：{constraint}
-                """)
-        .build();
+TemplateRenderer renderer = StTemplateRenderer.builder().build();
 
-String rendered = tpl.render(Map.of(
-        "role", "客服", "task", "解答退款问题", "constraint", "不超过 200 字"));
+// 直接渲染字符串，返回渲染后的文本
+String rendered = renderer.apply("""
+        你是 {role}。
+        任务：{task}
+        约束：{constraint}
+        """, Map.of(
+        "role", "客服",
+        "task", "解答退款问题",
+        "constraint", "不超过 200 字"));
 ```
 
 ### 9.2 用 PromptRepo（外部化）

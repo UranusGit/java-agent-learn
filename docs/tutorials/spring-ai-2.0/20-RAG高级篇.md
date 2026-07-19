@@ -650,7 +650,10 @@ public class AdaptiveRetrievalAdvisor implements BaseAdvisor {
     @Override
     public ChatClientRequest before(ChatClientRequest req, AdvisorChain chain) {
         String query = req.prompt().getUserMessage().getText();
-        var decision = decider.decide(query, req.history());
+        // ChatClientRequest 没有 history()，会话历史从 prompt 的 instructions 里取
+        // （如果上游 ChatMemoryAdvisor 已经把历史拼进去了），或从 context 里取（自定义 key）。
+        List<Message> history = req.prompt().getInstructions();
+        var decision = decider.decide(query, history);
 
         req.context().put("retrieval_decision", decision);
         if (decision == RetrievalDecider.Decision.NO_RETRIEVAL) {

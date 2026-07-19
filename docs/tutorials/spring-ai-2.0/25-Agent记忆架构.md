@@ -146,7 +146,7 @@ public class EpisodicMemoryAdvisor implements BaseAdvisor {
 
         return req.mutate()
                 .prompt(req.prompt().mutate()
-                        .userMessage(new UserMessage(
+                        .messages(new UserMessage(
                                 "相关历史：\n" + episodeContext + "\n\n当前问题：" + query))
                         .build())
                 .build();
@@ -155,8 +155,11 @@ public class EpisodicMemoryAdvisor implements BaseAdvisor {
     @Override
     public ChatClientResponse after(ChatClientResponse resp, AdvisorChain chain) {
         // 把这次对话存为 episode
+        // 注意：ChatClientResponse 没有chatClientRequest() 方法，
+        // 输入侧的信息必须在 before 阶段用 ThreadLocal 或 context 缓存，after 才能拿到。
         String userId = (String) resp.context().get("userId");
-        String text = resp.chatClientRequest().prompt().getUserMessage().getText()
+        String userQuery = (String) resp.context().getOrDefault("__last_user_query", "");
+        String text = userQuery
                 + "\n=> " + resp.chatResponse().getResult().getOutput().getText();
         vs.add(List.of(Document.builder()
                 .text(text)
@@ -318,7 +321,8 @@ public class ProfileAdvisor implements BaseAdvisor {
         // 异步从对话更新画像（用 LLM 抽取偏好）
         String userId = (String) resp.context().get("userId");
         CompletableFuture.runAsync(() ->
-                store.updateFrom(userId, resp.chatResponse().getText()));
+                store.updateFrom(userId,
+                        resp.chatResponse().getResult().getOutput().getText()));
         return resp;
     }
 

@@ -8,6 +8,10 @@ spring:
         base-url: https://api.deepseek.com
         model: deepseek-v4-flash
         temperature: 0.7
+      embedding:
+        base-url: http://127.0.0.1:1234/v1
+        api-key: sk-1234
+        model: text-embedding-bge-large-zh-v1.5
 logging:
   level:
     org.springframework.ai: info

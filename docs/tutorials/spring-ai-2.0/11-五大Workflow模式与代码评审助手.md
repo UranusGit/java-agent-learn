@@ -47,7 +47,16 @@ Step 1 → Step 2 → Step 3 → ... → Output
 
 ```java
 // org.demo02.toolkit.workflow.PromptChainingAdvisor
-// 本代码仅作学习材料参考
+package org.demo02.toolkit.workflow;
+
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
+import org.springframework.ai.chat.messages.UserMessage;
+
+import java.util.List;
+import java.util.function.Function;
 
 public class PromptChainingAdvisor implements BaseAdvisor {
 
@@ -67,14 +76,14 @@ public class PromptChainingAdvisor implements BaseAdvisor {
                 // 任何一步返回 null 即终止链（gate check）
                 return req.mutate()
                         .prompt(req.prompt().mutate()
-                                .userMessage(new UserMessage("[CHAIN TERMINATED]"))
+                                .messages(new UserMessage("[CHAIN TERMINATED]"))
                                 .build())
                         .build();
             }
         }
         return req.mutate()
                 .prompt(req.prompt().mutate()
-                        .userMessage(new UserMessage(current))
+                        .messages(new UserMessage(current))
                         .build())
                 .build();
     }
@@ -151,7 +160,19 @@ Input → ┌─ LLM Run 1 ─┐
 
 ```java
 // org.demo02.toolkit.workflow.ParallelizationAdvisor
-// 本代码仅作学习材料参考
+package org.demo02.toolkit.workflow;
+
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
+import org.springframework.ai.chat.messages.UserMessage;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.List;
+import java.util.function.Function;
 
 public class ParallelizationAdvisor implements BaseAdvisor {
 
@@ -179,7 +200,7 @@ public class ParallelizationAdvisor implements BaseAdvisor {
 
         return req.mutate()
                 .prompt(req.prompt().mutate()
-                        .userMessage(new UserMessage(aggregated))
+                        .messages(new UserMessage(aggregated))
                         .build())
                 .build();
     }
@@ -252,7 +273,16 @@ Input → [Router] → ┌─ Path A
 
 ```java
 // org.demo02.toolkit.workflow.RoutingAdvisor
-// 本代码仅作学习材料参考
+package org.demo02.toolkit.workflow;
+
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
+import org.springframework.ai.chat.messages.UserMessage;
+
+import java.util.Map;
+import java.util.function.Function;
 
 public class RoutingAdvisor implements BaseAdvisor {
 
@@ -277,7 +307,7 @@ public class RoutingAdvisor implements BaseAdvisor {
 
         return req.mutate()
                 .prompt(req.prompt().mutate()
-                        .userMessage(new UserMessage(result))
+                        .messages(new UserMessage(result))
                         .build())
                 .build();
     }
@@ -343,7 +373,20 @@ Input → [Orchestrator LLM]
 
 ```java
 // org.demo02.toolkit.workflow.OrchestratorWorkersAdvisor
-// 本代码仅作学习材料参考
+package org.demo02.toolkit.workflow;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
+import org.springframework.ai.chat.messages.UserMessage;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.List;
+import java.util.function.Function;
 
 public class OrchestratorWorkersAdvisor implements BaseAdvisor {
 
@@ -386,7 +429,7 @@ public class OrchestratorWorkersAdvisor implements BaseAdvisor {
 
         return req.mutate()
                 .prompt(req.prompt().mutate()
-                        .userMessage(new UserMessage(aggregated))
+                        .messages(new UserMessage(aggregated))
                         .build())
                 .build();
     }
@@ -430,7 +473,16 @@ Input → [Generator] → Output → [Evaluator] → pass?
 
 ```java
 // org.demo02.toolkit.workflow.EvaluatorOptimizerAdvisor
-// 本代码仅作学习材料参考
+package org.demo02.toolkit.workflow;
+
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
+import org.springframework.ai.chat.messages.UserMessage;
+
+import java.util.function.BiFunction;
+import java.util.function.Function;
 
 public class EvaluatorOptimizerAdvisor implements BaseAdvisor {
 
@@ -464,7 +516,7 @@ public class EvaluatorOptimizerAdvisor implements BaseAdvisor {
         String finalOutput = currentOutput;
         return req.mutate()
                 .prompt(req.prompt().mutate()
-                        .userMessage(new UserMessage(finalOutput))
+                        .messages(new UserMessage(finalOutput))
                         .build())
                 .build();
     }

@@ -221,10 +221,13 @@ Spring AI 2.0 的 starter 自动把所有 MCP Server 注册成一个 `ToolCallba
 
 ```java
 // 本代码仅作学习材料参考
+// 注意：Spring AI 2.0 自带的 RAG Advisor 是 QuestionAnswerAdvisor
+// （包路径 org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor），
+// 不是早期的 RetrievalAugmentationAdvisor。
 @Bean
 ChatClient agenticSearchClient(ChatClient.Builder builder,
                                 ToolCallbackProvider mcpTools,
-                                RetrievalAugmentationAdvisor ragAdvisor) {
+                                QuestionAnswerAdvisor ragAdvisor) {
     return builder
             .defaultSystem("你是多源检索助手。综合多个搜索源的结果回答，必须引用来源。")
             .defaultTools(mcpTools)   // 自动包含所有 MCP Server 的 search 工具

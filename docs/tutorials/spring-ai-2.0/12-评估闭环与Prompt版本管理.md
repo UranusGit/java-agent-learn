@@ -659,7 +659,9 @@ public class OnlineEvalAdvisor implements BaseAdvisor {
     public ChatClientResponse after(ChatClientResponse resp, AdvisorChain chain) {
         if (Math.random() < sampleRate) {
             String answer = resp.chatResponse().getResult().getOutput().getText();
-            String question = resp.context().userMessage().getText();
+            // ChatClientResponse.context() 返回 Map，不能直接拿 userMessage。
+            // 在 before 阶段把 user query 存进 context（key 自定义），after 才能拿到。
+            String question = (String) resp.context().getOrDefault("__last_user_query", "");
             double score = quickJudge(question, answer);
             meters.timer("ai.eval.online").record(Duration.ofMillis(0));
             meters.gauge("ai.eval.online.score", score);
@@ -675,7 +677,12 @@ public class OnlineEvalAdvisor implements BaseAdvisor {
         catch (NumberFormatException e) { return 0.5; }
     }
 
-    @Override public ChatClientRequest before(ChatClientRequest req, AdvisorChain chain) { return req; }
+    @Override
+    public ChatClientRequest before(ChatClientRequest req, AdvisorChain chain) {
+        // 把 user query 缓存进 context，给 after 阶段用
+        req.context().put("__last_user_query", req.prompt().getUserMessage().getText());
+        return req;
+    }
     @Override public String getName() { return "OnlineEvalAdvisor"; }
     @Override public int getOrder() { return Integer.MAX_VALUE; }  // 最内层
 }
