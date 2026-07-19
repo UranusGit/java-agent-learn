@@ -1,4 +1,4 @@
-package org.demo05.advisor;
+package org.demo06.advisor;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClientRequest;
