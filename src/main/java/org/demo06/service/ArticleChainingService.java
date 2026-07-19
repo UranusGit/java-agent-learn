@@ -1,6 +1,6 @@
 package org.demo06.service;
 
-import org.demo06.workflows.chaining.ChainingService;
+import org.demo06.workflows.ChainingService;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
 

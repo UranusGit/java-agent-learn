@@ -1,4 +1,4 @@
-package org.demo06.workflows.chaining;
+package org.demo06.workflows;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -14,6 +14,7 @@ public abstract class ChainingService {
         this.chatClient = chatClient;
     }
 
+    /** 子类声明步骤链。每步入参 (上一步输出, sessionId)，出参是本步输出。 */
     protected abstract List<BiFunction<String, String, String>> steps();
 
     public String run(String input, String sessionId) {
@@ -27,11 +28,11 @@ public abstract class ChainingService {
         return payload;
     }
 
-    protected String call(String systemPrompt, String userText, String sessionId) {
+    protected String call(String system, String prompt, String sid) {
         return chatClient.prompt()
-                .system(systemPrompt)
-                .user(userText)
-                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
+                .system(system)
+                .user(prompt)
+                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sid))
                 .call()
                 .content();
     }
