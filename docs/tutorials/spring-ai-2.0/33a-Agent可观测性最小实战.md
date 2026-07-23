@@ -1,129 +1,39 @@
-# 33a Agent 可观测性最小实战：用 Spring AI 原生 Observation 看清工具调用 + 多轮记忆
+# 33a Agent 可观测性最小实战：演进式教程
 
-> **这份文档是什么**：[33-方案](./33-Agent子过程实时可见性方案.md) 的最小可跑版。照着敲，得到一个独立模块 **demo07**——一个**记得上文、能自主调用 TimeTool** 的多轮 Agent，用 **Spring AI 原生 Observation 机制**把「LLM 调用、工具调用（含参数和返回值）」全程通过 SSE 实时推给前端。
+> **这份文档怎么用**：照着从 Step 1 敲到 Step 8，每一步都是一个**能独立跑起来的程序**——加一点东西、跑一次、看到效果、再往下。最后得到一个**记得上文、能自主调工具、全过程实时可见**的多轮 Agent（独立模块 **demo07**）。
 >
-> **为什么用 Observation（企业级规范）**：工具调用发生在 Spring AI 内部（`ToolCallingAdvisor` 循环里），手动包 `ToolCallback` 或写 Advisor 都拦不全。Spring AI 官方提供了 `ToolCallingObservation`——这是看工具调用的**标准机制**，企业级就该用它，而不是自己包底层。
+> **为什么不一次性给完整代码**：一次性把 WebFlux + Reactor Context + Observation + ContextPropagation + Memory 五件事摆出来，新人会认知过载。演进式让每步只引入 1 个新概念，始终在「跑得起来的代码」上前进。
 >
-> **和 33b 的关系**：33a 是练手小项目（最小骨架）；33b 是终极项目（完整演进）。
+> **和 33 的关系**：[33-方案](./33-Agent子过程实时可见性方案.md) 是理论全本，本 demo 是它的最小可跑版；[33b](./33b-Agent可观测性企业级演进实践.md) 是终极项目。
 >
-> **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · Micrometer Observation · **Micrometer ContextPropagation（会话隔离）** · 流式（`.stream()`）· DeepSeek。所有 API 经本地 jar 反编译核实，照抄能编译。
+> **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · Micrometer Observation · Micrometer ContextPropagation · 流式（`.stream()`）· DeepSeek。
 
 ---
 
-## 0. 这个 demo 要达到的效果
+## 演进路线（8 步）
 
-一个**记得上文**、能自主调工具的多轮 Agent。
+| Step | 引入的概念 | 这步要解决的痛点 |
+|------|-----------|----------------|
+| 1 | 项目骨架 + WebFlux | 跑起来，确认依赖/启动没问题 |
+| 2 | Spring AI 最小闭环 | 真正问 LLM 拿到回复 |
+| 3 | 流式 `.stream()` | 不等 30 秒，逐字吐出 |
+| 4 | 工具调用 `@Tool` | LLM 自主调工具拿实时数据 |
+| 5 | **Observation（demo 的灵魂）** | 工具返回值藏在黑盒里，看不清 |
+| 6 | 事件总线 + SSE | 把工具调用实时推给前端 |
+| 7 | 会话隔离 + ContextPropagation | 多用户并发会串流 |
+| 8 | 多轮记忆 ChatMemory | LLM 不记得上文 |
 
-- **第一轮**：用户问「现在几点了？帮我规划今天下午」，Agent 自己决定调 `getCurrentTime` 工具拿到时间，再基于时间回答。
-- **第二轮**：用户追问「那明天同一时间呢？还有别的建议吗」，Agent **不需要再调一次工具**（或根据上下文决定要不要调），因为第一轮的对话已存在 `ChatMemory` 里——这就是「记得上文」。
-
-整个过程的每一步对开发者**实时可见**——通过 SSE 流能看到：
-- 工具调用的名字、参数、**返回值**（`"2026-07-22 14:30:25"`）
-- LLM 回答的**逐字输出**（流式 `CONTENT_DELTA`）
-
-```
-# 终端 1：订阅事件流（sessionId 走 header）
-$ curl -N -H "sessionId: s1" "http://localhost:8080/demo07/obs/sse"
-
-# 终端 2：第一轮——触发任务。sessionId 走 header（它同时是观测 ID 和记忆 ID）
-$ curl -H "sessionId: s1" \
-    "http://localhost:8080/demo07/obs/chat?prompt=现在几点了，用一句话规划今天下午"
-
-# 第二轮——追问（同一 sessionId=s1，记得上文；事件流继续进同一个订阅）
-$ curl -H "sessionId: s1" \
-    "http://localhost:8080/demo07/obs/chat?prompt=那明天同一时间呢？"
-
-# 终端 1 实时收到 s1 的事件（SSE 帧只有 data: 行，靠 JSON 里的 type 分发）：
-data:{"type":"SESSION_STARTED","sessionId":"s1",...,"data":{"input":"现在几点了..."}}
-data:{"type":"TOOL_CALL","sessionId":"s1",...,"data":{"tool":"getCurrentTime","args":"{}","result":"2026-07-22 14:30:25"}}
-data:{"type":"CONTENT_DELTA","sessionId":"s1",...,"data":{"text":"现在"}}
-data:{"type":"CONTENT_DELTA","sessionId":"s1",...,"data":{"text":"是14:30"}}
-data:{"type":"CONTENT_DELTA","sessionId":"s1",...,"data":{"text":"，下午建议..."}}
-data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{...}}
-```
-
-> **多轮记忆验证**：第二轮**仍用 `sessionId: s1`**（和第一轮一致），LLM 会**记得第一轮聊过「规划今天下午」**，于是「那明天同一时间呢」能被正确理解为「明天同一时间怎么安排」。换 `sessionId: s2` 则是一段全新记忆，LLM 不知道你在说什么——这就是记忆隔离。注意：因为 sessionId 兼任记忆 ID，多轮追问要**复用同一 sessionId**，不能每轮换新的。
->
-> **会话隔离已做实**：`sessionId` 经 Micrometer ContextPropagation 从 `/chat` 透传到工具执行的 `ToolObservationHandler`，业务事件和工具事件**都标到同一个 sessionId**。订阅 `s1` 只收 `s1` 的事件，多会话并发互不串流。
-
-**核心价值**：工具的 `result`（`"2026-07-22 14:30:25"`）在事件流里看得清清楚楚——这就是「子过程可见」；多轮追问能接住上文——这就是「记得历史」。
-
-> **会话隔离已做实**：`sessionId` 经 Micrometer ContextPropagation 从 `/chat` 透传到工具执行的 `ToolObservationHandler`，业务事件和工具事件**都标到同一个 sessionId**。订阅 `s1` 只收 `s1` 的事件，多会话并发互不串流。
-
-**核心价值**：工具的 `result`（`"2026-07-22 14:30:25"`）在事件流里看得清清楚楚——这就是「子过程可见」。
+> 每步的固定结构：**① 这步解决什么问题 → ② 改/加什么代码 → ③ 跑起来你会看到 → （需要时）④ 内部怎么流转**。
 
 ---
 
-## 1. 核心心智模型
+## Step 1：项目骨架——先跑起来（不接 LLM）
 
-```mermaid
-flowchart LR
-    U[用户请求 + sessionId] -->|写入 Reactor Context| CC[ChatClient.stream 流式循环]
-    CC -->|调前: 按 sessionId 取历史| MEM[(ChatMemory<br/>内存)]
-    MEM -->|历史消息拼进 prompt| CC
-    CC -->|调后: 本轮消息存回| MEM
-    CC -->|决定调工具| T[TimeTool 执行]
-    T -->|Spring AI 自动发 Observation| H[ToolObservationHandler]
-    H -->|ContextPropagation 读回 sessionId| BUS[Sinks.Many 总线]
-    CC -->|每个 chunk| AG[ObservableAgent]
-    AG -->|发 CONTENT_DELTA / 会话事件| BUS
-    BUS -->|filter sessionId| SSE[SSE 接口]
-    SSE --> FE[curl 浏览器]
-```
+**① 要解决什么**：从零建一个 Spring Boot WebFlux 项目，确认依赖、启动、接口都通。这一步不碰 LLM，零门槛，先跑起来建立信心。
 
-三条主线，都围绕同一个 `sessionId`——它既是观测隔离 ID，又兼任记忆会话 ID（最小实战刻意合并）：
-| 关注什么 | 机制 | sessionId 怎么用 | 谁负责 |
-|---------|------|----------------|--------|
-| 工具调用（名/参数/返回值） | Spring AI **原生 ToolCallingObservation**（自动发） | Handler 在 `onStop` 用 ContextPropagation 从线程读回 | `ToolObservationHandler` 转成 `TOOL_CALL` 事件 |
-| LLM 流式正文 + 会话生命周期 | 业务代码直接发 | Agent 方法参数直接拿 | `ObservableAgent` 发 `CONTENT_DELTA` / `SESSION_*` |
-| **多轮记忆（记得上文）** | Spring AI **原生 MessageChatMemoryAdvisor** | 直接当作 `ChatMemory.CONVERSATION_ID` 传给 Advisor，据此取/存历史 | Advisor 自动管理，业务不写存取代码 |
+**② 代码**
 
-> **三个关键**：
-> 1. 工具调用我们**不自己拦**，而是订阅 Spring AI 已经在发的 Observation——这才是企业级做法（用框架原生能力，不侵入业务）。
-> 2. 会话隔离靠 **Micrometer ContextPropagation**：`/chat` 把 sessionId 写进 Reactor Context，Reactor 操作符自动跨线程传播到工具执行线程，Handler 在 `onStop` 读回。这是 Spring Boot 4 多租户的标准做法。
-> 3. 记忆也用**框架原生 `MessageChatMemoryAdvisor`**——调 LLM 前自动把 sessionId 对应的历史拼进 prompt，调完自动存回，业务零存取代码。本 demo 让 **sessionId 一身二职**（既是事件流过滤 ID，又是记忆会话 ID），接口最简；企业级若要观测和记忆解耦，可再拆出独立 conversationId（§6）。
-
----
-
-## 2. 项目结构（分层清晰）
-
-demo07 独立模块，零依赖。按职责分层：
-
-```
-demo07/
-├── pom.xml
-├── src/main/resources/
-│   ├── application.yaml
-│   └── static/demo07.html                ← 调试页面（§4.4，fetch + ReadableStream）
-└── src/main/java/com/example/demo07/
-    ├── Application.java                   ← 启动类
-    ├── config/
-    │   ├── ChatClientConfig.java          ← 装配 ChatClient（注册工具 + 记忆 Advisor）
-    │   ├── ChatMemoryConfig.java          ← 装配内存版 ChatMemory（多轮记忆，§3.7b）
-    │   ├── ObservationConfig.java         ← 注册 ToolObservationHandler 到 Registry
-    │   └── ContextPropagationConfig.java  ← 注册 SessionIdHolder + 开启自动传播（会话隔离核心）
-    ├── tool/
-    │   └── TimeTools.java                 ← 工具层：@Tool getCurrentTime
-    └── obs/                               ← 可观测层
-        ├── AgentEvent.java                ← 事件模型（含 sessionId，@Builder）
-        ├── SessionIdHolder.java           ← 可传播的 ThreadLocal（存当前 sessionId）
-        ├── AgentEventBus.java             ← 事件总线（flux(sessionId) 自带过滤）
-        ├── ToolObservationHandler.java    ← 订阅工具 Observation → 读 sessionId → 发 TOOL_CALL
-        ├── ObservableAgent.java           ← 编排：ChatClient.stream + 发 CONTENT_DELTA/会话事件
-        └── ObsController.java             ← /chat + /sse 两接口
-```
-
-**分层理由**（企业级规范）：
-- `config/`：Bean 装配集中管理，不散落（ChatClient、ChatMemory、Observation、ContextPropagation 各一个配置类）
-- `tool/`：工具定义独立，将来加工具只动这
-- `obs/`：可观测逻辑全在一起，和业务解耦
-
----
-
-## 3. 动手：敲代码
-
-### 3.1 pom.xml
-
+`pom.xml`：
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -150,90 +60,24 @@ demo07/
     </properties>
 
     <dependencies>
-        <!-- WebFlux：HTTP 接口 + SSE（不是 spring-boot-starter-web） -->
+        <!-- WebFlux：HTTP 接口 + SSE（注意不是 spring-boot-starter-web） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
-
-        <!-- Spring AI 调 OpenAI 兼容协议（DeepSeek 兼容） -->
-        <dependency>
-            <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-starter-model-openai</artifactId>
-        </dependency>
-
-        <!-- Actuator：必须引！它带来 ObservationRegistry Bean（Spring Boot 4 的 Observation 核心自动配置在 actuator 里）。
-             没它的话 ObservationRegistry 装配不到，ToolObservationHandler 注册不了。
-             actuator 也是企业级标配（健康检查、metrics），并间接带入 context-propagation。 -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-actuator</artifactId>
-        </dependency>
-
-        <!-- Lombok：AgentEvent 的 @Builder 用。版本由 spring-boot-starter-parent 管理，无需显式指定。 -->
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <optional>true</optional>
-        </dependency>
     </dependencies>
-
-    <!-- Spring AI BOM：统一管版本 -->
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.springframework.ai</groupId>
-                <artifactId>spring-ai-bom</artifactId>
-                <version>${spring-ai.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
-
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-            </plugin>
-        </plugins>
-    </build>
 </project>
 ```
 
-> `micrometer-observation` 由 `spring-boot-starter-webflux` 间接带入，无需单独引。Spring AI starter 也自带 Observation 支持。
->
-> **会话隔离依赖**：`io.micrometer:context-propagation` 由 `spring-boot-starter-actuator` 间接带入（Spring Boot 4 把它列为核心依赖），无需单独引。它是 Reactor Context ↔ ThreadLocal 桥接的标准库。
->
-> **多轮记忆依赖**：`ChatMemory` 接口、`MessageWindowChatMemory`、`MessageChatMemoryAdvisor` 都在 `spring-ai-model` 里，由 `spring-ai-starter-model-openai` 间接带入，**无需额外引依赖**。内存版 `ChatMemoryRepository`（`InMemoryChatMemoryRepository`）也是 Spring AI 自动装配的默认实现。本 demo 用内存记忆，重启即丢——要持久化（JDBC/Cassandra/Redis）才需加对应 starter（见 §7）。
+> 现在只引 WebFlux。Spring AI、actuator 后面按需加。
 
-### 3.2 application.yaml
-
-`src/main/resources/application.yaml`：
-
+`src/main/resources/application.yaml`（暂时空配置，后面填）：
 ```yaml
-spring:
-  ai:
-    openai:
-      # 换成你的 DeepSeek API key（platform.deepseek.com 申请）
-      # 用环境变量优先，避免把 key 提交进 git
-      api-key: ${DEEPSEEK_API_KEY:你的key}
-      base-url: https://api.deepseek.com
-      chat:
-        model: deepseek-chat
-        temperature: 0.7
-logging:
-  level:
-    org.springframework.ai: info
+server:
+  port: 8080
 ```
 
-> ⚠️ API key 别硬编码进 git。`${DEEPSEEK_API_KEY:你的key}` 是「优先读环境变量，没有用默认值」。
-
-### 3.3 启动类
-
 `src/main/java/com/example/demo07/Application.java`：
-
 ```java
 package com.example.demo07;
 
@@ -248,10 +92,222 @@ public class Application {
 }
 ```
 
-### 3.4 工具层：TimeTools
+`src/main/java/com/example/demo07/obs/ObsController.java`：
+```java
+package com.example.demo07.obs;
 
-`src/main/java/com/example/demo07/tool/TimeTools.java`：
+import org.springframework.web.bind.annotation.*;
 
+/**
+ * Step 1：先返回硬编码字符串，确认骨架跑得通。
+ */
+@RestController
+@RequestMapping("/demo07/obs")
+public class ObsController {
+
+    @GetMapping("/chat")
+    public String chat(@RequestParam String prompt) {
+        return "你说的是：" + prompt + "（Step 1 骨架，还没接 LLM）";
+    }
+}
+```
+
+**③ 跑起来你会看到**
+
+```bash
+cd demo07
+mvn spring-boot:run
+
+# 另一个终端
+curl "http://localhost:8080/demo07/obs/chat?prompt=你好"
+# 你说的是：你好（Step 1 骨架，还没接 LLM）
+```
+
+跑通了，骨架没问题。下一步接 LLM。
+
+---
+
+## Step 2：接上 ChatClient——真正问 LLM
+
+**① 要解决什么**：让 `/chat` 真正把问题发给 LLM（DeepSeek），拿到回复。这一步是 Spring AI 的最小闭环——理解 `ChatClient.Builder` 自动装配。
+
+**② 代码**
+
+`pom.xml` 加两个依赖：
+```xml
+        <!-- Spring AI 调 OpenAI 兼容协议（DeepSeek 兼容） -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
+```
+
+并在 `<dependencies>` 后加 Spring AI BOM 统一管版本：
+```xml
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+```
+
+`application.yaml` 加 DeepSeek 配置：
+```yaml
+spring:
+  ai:
+    openai:
+      api-key: ${DEEPSEEK_API_KEY:你的key}      # platform.deepseek.com 申请，用环境变量避免进 git
+      base-url: https://api.deepseek.com
+      chat:
+        model: deepseek-chat
+        temperature: 0.7
+logging:
+  level:
+    org.springframework.ai: info
+```
+
+> ⚠️ API key 别硬编码进 git。`${DEEPSEEK_API_KEY:你的key}` 是「优先读环境变量，没有用默认值」。
+
+新增 `config/ChatClientConfig.java`——装配 ChatClient（Step 2 还不挂任何 Advisor）：
+```java
+package com.example.demo07.config;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+/**
+ * Step 2：装配最简 ChatClient（空 Builder，不挂任何东西）。
+ * ChatClient.Builder 由 Spring AI starter 自动注入。
+ */
+@Configuration
+public class ChatClientConfig {
+
+    @Bean
+    public ChatClient chatClient(ChatClient.Builder builder) {
+        return builder.build();
+    }
+}
+```
+
+改 `ObsController`——用 ChatClient 调 LLM（同步 `.call()`，先不用流式）：
+```java
+package com.example.demo07.obs;
+
+import com.example.demo07.config.ChatClientConfig;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/demo07/obs")
+public class ObsController {
+
+    private final ChatClient chatClient;
+
+    public ObsController(ChatClient chatClient) {
+        this.chatClient = chatClient;
+    }
+
+    @GetMapping("/chat")
+    public String chat(@RequestParam String prompt) {
+        // Step 2：同步调用，等 LLM 全部生成完一次性返回
+        return chatClient.prompt()
+                .user(prompt)
+                .call()
+                .content();
+    }
+}
+```
+
+**③ 跑起来你会看到**
+
+```bash
+curl "http://localhost:8080/demo07/obs/chat?prompt=用一句话介绍你自己"
+# 我是一个 AI 助手……（等了几秒后一次性返回）
+```
+
+**④ 内部怎么流转**（参数传递线，第一次出现）：
+```
+HTTP ?prompt=xxx
+   ↓
+ObsController.chat(prompt)
+   ↓ chatClient.prompt().user(prompt).call().content()
+   ↓ （ChatClient 是单例 Bean，所有请求共享）
+DeepSeek API（用 application.yaml 里的 key/base-url/model）
+   ↓
+返回完整字符串给前端
+```
+
+痛点来了：**要等好几秒，期间前端干等**。下一步改成流式。
+
+---
+
+## Step 3：流式 `.stream()`——逐字吐出
+
+**① 要解决什么**：Step 2 同步 `.call()` 要等 LLM 全生成完才返回，体验差。改成流式，LLM 边产边推，前端逐字看到。
+
+**② 代码**
+
+改 `ObsController`——`.call()` 换 `.stream()`，返回类型从 `String` 换 `Flux<String>`：
+```java
+package com.example.demo07.obs;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+
+@RestController
+@RequestMapping("/demo07/obs")
+public class ObsController {
+
+    private final ChatClient chatClient;
+
+    public ObsController(ChatClient chatClient) {
+        this.chatClient = chatClient;
+    }
+
+    /**
+     * Step 3：流式。返回 Flux<String> + produces SSE → 每个文本片段是一帧 data: 行。
+     * LLM 边产边推，前端逐字收到，不等整段。
+     */
+    @GetMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<String> chat(@RequestParam String prompt) {
+        return chatClient.prompt()
+                .user(prompt)
+                .stream()
+                .content();   // Flux<String>：每个 chunk 是一段文本
+    }
+}
+```
+
+**③ 跑起来你会看到**
+
+```bash
+curl -N "http://localhost:8080/demo07/obs/chat?prompt=用一句话介绍你自己"
+# 我
+# 是一个
+# AI 助手
+# …（逐段、近实时地到达）
+```
+
+> `produces = TEXT_EVENT_STREAM_VALUE` 让 Spring 把 `Flux<String>` 自动序列化成 SSE（Server-Sent Events）。`curl -N` 是禁用缓冲，实时看到流。这就是「流式」的全部——`.call()` → `.stream()`，返回类型 `String` → `Flux<String>`。
+
+---
+
+## Step 4：加工具——LLM 自主调 `getCurrentTime`
+
+**① 要解决什么**：LLM 不知道「现在几点」（训练数据是旧的）。给它一个工具 `getCurrentTime`，LLM 自己决定要不要调，拿到真实时间再回答。
+
+**② 代码**
+
+新增 `tool/TimeTools.java`：
 ```java
 package com.example.demo07.tool;
 
@@ -275,153 +331,59 @@ public class TimeTools {
 }
 ```
 
-> 注意：**工具用最简单的 `@Tool` 声明即可**，不需要手动转 `ToolCallback`、不需要包装饰器。工具调用的可见性由后面的 Observation 机制负责，和工具定义解耦。
-
-### 3.5 可观测层：AgentEvent + AgentEventBus
-
-`src/main/java/com/example/demo07/obs/AgentEvent.java`：
-
-```java
-package com.example.demo07.obs;
-
-import lombok.Builder;
-
-/**
- * 一个 Agent 事件。record + Lombok @Builder：不可变 + 链式构造。
- * timestamp 用 long（epoch 毫秒），发事件处显式传 System.currentTimeMillis()。
- * data 用 Object：不同 type 装不同结构（Map / String），交给 Jackson 序列化。
- */
-@Builder
-public record AgentEvent(
-        String type,                  // 事件类型
-        String sessionId,             // 会话 ID（SSE 按它过滤）
-        long timestamp,               // epoch 毫秒
-        Object data                   // 附加信息（Map 或其它，按 type 定）
-) {
-}
-```
-
-> `data` 用 `Object`：实际放什么由 `type` 决定——`TOOL_CALL` 放 `{tool, args, result}`，`CONTENT_DELTA` 放 `{text}`，`SESSION_STARTED` 放 `{input}`，`SESSION_COMPLETED` 放 `{output}`。WebFlux 的 Jackson 编解码器会自动序列化，前端按 `type` 选择性渲染。
->
-> 用法全程 builder：`AgentEvent.builder().type("TOOL_CALL").sessionId(sid).timestamp(System.currentTimeMillis()).data(map).build()`——`timestamp` 是基本类型 long，必须显式传（不传是 0）。
->
-> 本 demo 里 `sessionId` 一身二职：既是事件流过滤 ID，又兼任 `ChatMemory.CONVERSATION_ID`（记忆会话 ID）。所以不需要额外的 conversationId 字段——前端拿到 sessionId 就知道这是哪段记忆会话（§6）。
-
-`src/main/java/com/example/demo07/obs/AgentEventBus.java`：
-
-```java
-package com.example.demo07.obs;
-
-import org.springframework.stereotype.Component;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Sinks;
-
-/**
- * 事件总线。整个进程一个实例。
- * 当成「公共公告板」：emit 塞事件、flux 订阅。生产者消费者解耦。
- */
-@Component
-public class AgentEventBus {
-
-    private final Sinks.Many<AgentEvent> sink =
-            Sinks.many().multicast().onBackpressureBuffer(256, false);
-
-    public void emit(AgentEvent event) {
-        sink.tryEmitNext(event);
-    }
-
-    /** 订阅全量事件（审计/日志消费者用）。 */
-    public Flux<AgentEvent> flux() {
-        return sink.asFlux();
-    }
-
-    /** 订阅某会话的事件（SSE 接口用，自带 sessionId 过滤）。 */
-    public Flux<AgentEvent> flux(String sessionId) {
-        return sink.asFlux().filter(e -> sessionId.equals(e.sessionId()));
-    }
-}
-```
-
-### 3.6 会话隔离核心：SessionIdHolder（可传播的 ThreadLocal）
-
-> **为什么需要它**：工具的 Observation 由 Spring AI 内部（`DefaultToolCallingManager`）发起，我们的 `ToolObservationHandler` 只能在 `onStop` 里**只读**回调，无法在发起时往里塞 sessionId。要让 Handler 拿到本次请求的 sessionId，只能靠「当前线程上下文」——即一个 ThreadLocal。
->
-> **WebFlux 下的坑**：`ChatClient.stream()` 的 Flux 链会在 `boundedElastic` 等线程池上切换线程执行工具，普通 ThreadLocal 一切线程就丢。解决办法是 Micrometer ContextPropagation：把它注册为「可传播 ThreadLocal」，配合 `Hooks.enableAutomaticContextPropagation()`，Reactor 操作符切线程时自动恢复。
-
-`src/main/java/com/example/demo07/obs/SessionIdHolder.java`：
-
-```java
-package com.example.demo07.obs;
-
-/**
- * 持有「当前请求的 sessionId」。设计为可传播的 ThreadLocal（见 ContextPropagationConfig 注册）。
- * - ObservableAgent.run 入口 set，工具执行线程经 ContextPropagation 自动读到
- * - ToolObservationHandler.onStop 在此读回 sessionId，给 TOOL_CALL 事件标会话
- * - 用完必须 clear，防线程池复用导致串会话
- */
-public final class SessionIdHolder {
-    private static final ThreadLocal<String> SESSION_ID = new ThreadLocal<>();
-
-    public static void set(String sessionId) { SESSION_ID.set(sessionId); }
-    public static String get() {
-        String sid = SESSION_ID.get();
-        return sid != null ? sid : "unknown";
-    }
-    public static void clear() { SESSION_ID.remove(); }
-
-    private SessionIdHolder() {}
-}
-```
-
-`src/main/java/com/example/demo07/config/ContextPropagationConfig.java`：
-
+改 `ChatClientConfig`——注册工具：
 ```java
 package com.example.demo07.config;
 
-import com.example.demo07.obs.SessionIdHolder;
-import io.micrometer.context.ContextRegistry;
-import jakarta.annotation.PostConstruct;
+import com.example.demo07.tool.TimeTools;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import reactor.core.publisher.Hooks;
 
-/**
- * 会话隔离的装配核心（企业级标准做法）：
- * 1. 把 SessionIdHolder 注册为可传播 ThreadLocal——Reactor Context 里的 "sessionId"
- *    能自动桥接进出这个 ThreadLocal
- * 2. 开启 Reactor 自动上下文传播——flatMap/subscribeOn/publishOn 切线程时
- *    ThreadLocal 自动恢复，工具执行线程也能读到 sessionId
- *
- * 这是 Spring Boot 4 + WebFlux 多租户/会话隔离的标准机制，非自研。
- */
 @Configuration
-public class ContextPropagationConfig {
+public class ChatClientConfig {
 
-    @PostConstruct
-    public void init() {
-        ContextRegistry registry = ContextRegistry.getInstance();
-        // registerThreadLocalAccessor(key, getter, setter, clearer)
-        registry.registerThreadLocalAccessor("sessionId",
-                SessionIdHolder::get,
-                SessionIdHolder::set,
-                SessionIdHolder::clear);
-        // 开启自动传播：Reactor 操作符切线程时，自动用上面的 accessor 恢复 ThreadLocal
-        Hooks.enableAutomaticContextPropagation();
+    @Bean
+    public ChatClient chatClient(ChatClient.Builder builder, TimeTools timeTools) {
+        return builder
+                .defaultTools(timeTools)    // 注册工具，LLM 自主决定调不调
+                .build();
     }
 }
 ```
 
-> **API 核实**（反编译确认）：
-> - `ContextRegistry.registerThreadLocalAccessor(String, Supplier, Consumer, Runnable)` —— `io.micrometer:context-propagation`（Spring Boot 4 actuator 间接带入）
-> - `Hooks.enableAutomaticContextPropagation()` —— `reactor-core` 3.5+（要求 context-propagation 在类路径，已满足）
->
-> **顺序很重要**：`ContextPropagationConfig` 必须在最早初始化（`@PostConstruct`），`Hooks.enableAutomaticContextPropagation()` 才能对后续所有 Reactor 链生效。
+**③ 跑起来你会看到**
 
-### 3.7 核心可观测组件：ToolObservationHandler
+```bash
+curl -N "http://localhost:8080/demo07/obs/chat?prompt=现在几点了，用一句话规划今天下午"
+# 现在是 14:30，下午建议……
+```
 
-**这是本 demo 的关键**——订阅 Spring AI 原生的工具调用 Observation，把「工具名/参数/返回值」转成 `TOOL_CALL` 事件。
+**痛点暴露了**：LLM 回答里有 `14:30`，但 `14:30` 哪来的？`getCurrentTime` 真的被调了吗？返回值到底是什么？**你完全看不见**——工具调用发生在 Spring AI 内部循环里，是个黑盒。这正是下一步要解决的。
 
-`src/main/java/com/example/demo07/obs/ToolObservationHandler.java`：
+> 第一反应可能是「自己写个拦截器拦工具」——但工具调用在 Spring AI 内部 `ToolCallingAdvisor` 循环里，手动包 `ToolCallback` 或写 Advisor 都拦不全。Spring AI 早就挖好了观测点：**Observation**。下一步用它。
 
+---
+
+## Step 5：Observation——把工具黑盒打开（demo 的灵魂）
+
+**① 要解决什么**：Step 4 那个「工具返回值看不见」的痛点。解决方案：写一个 `ObservationHandler`，**订阅** Spring AI 已经在发的工具调用 Observation，把「工具名/参数/返回值」打印出来。
+
+**关键认知**：工具可见性不是「自己拦」，而是「订阅框架原生发的观测事件」。这是企业级做法——用框架能力，零侵入。
+
+**② 代码**
+
+`pom.xml` 加 actuator（它带来 `ObservationRegistry`，没它 Handler 注册不了）：
+```xml
+        <!-- Actuator：带来 ObservationRegistry Bean，ToolObservationHandler 注册必备；
+             也是企业级标配（健康检查、metrics），间接带入 context-propagation（Step 7 用） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+```
+
+新增 `obs/ToolObservationHandler.java`——订阅工具调用 Observation，打印结果：
 ```java
 package com.example.demo07.obs;
 
@@ -430,92 +392,52 @@ import io.micrometer.observation.ObservationHandler;
 import org.springframework.ai.tool.observation.ToolCallingObservationContext;
 import org.springframework.stereotype.Component;
 
-import java.util.Map;
-
 /**
- * 订阅 Spring AI 原生的工具调用 Observation，转成 TOOL_CALL 事件。
+ * Step 5：订阅 Spring AI 原生的工具调用 Observation，打印工具名/参数/返回值。
  *
- * 企业级规范：工具调用由 Spring AI 内部发 Observation（ToolCallingObservation），
- * 我们写一个 ObservationHandler 订阅它，把工具的【名字、参数、返回值】转成业务事件。
- * —— 不侵入工具代码、不手动包 ToolCallback。
+ * 为什么用 Observation 而不是自己拦：
+ *   工具调用发生在 Spring AI 内部循环里，手动包 ToolCallback 拦不全。
+ *   Spring AI 经 DefaultToolCallingManager（带 ObservationRegistry）执行工具，
+ *   设计上就在发 ToolCallingObservation——我们只管订阅，零侵入。
  *
- * 关键时机：onStop 时，工具已执行完，context.getToolCallResult() 才有值。
+ * 关键时机：onStop 时工具已执行完，getToolCallResult() 才有值。
  */
 @Component
 public class ToolObservationHandler implements ObservationHandler<ToolCallingObservationContext> {
 
-    private final AgentEventBus bus;
-
-    public ToolObservationHandler(AgentEventBus bus) {
-        this.bus = bus;
-    }
-
-    /** 只处理工具调用的 Observation（ChatClient 的 LLM 调用 Observation 是别的类型，这里不管）。 */
+    /** 只处理工具调用的 Observation（LLM 调用是别的类型，这里不管）。 */
     @Override
     public boolean supportsContext(Observation.Context context) {
         return context instanceof ToolCallingObservationContext;
     }
 
-    /** 工具调用结束：此时 getToolCallResult() 有值。发事件。 */
+    /** 工具调用结束：此时 getToolCallResult() 有值。打印它。 */
     @Override
     public void onStop(ToolCallingObservationContext context) {
-        // sessionId 从 SessionIdHolder 读回——工具执行线程与 run() 不同线程，
-        // 靠 ContextPropagationConfig 的自动传播，此处能读到 run() 入口 set 的值
-        String sessionId = SessionIdHolder.get();
-
         String toolName = context.getToolDefinition() != null
                 ? context.getToolDefinition().name() : "unknown";
 
-        // 注意：用 HashMap 而不是 Map.of——Map.of 不允许 null，
-        // 而 getToolCallArguments()/getToolCallResult() 在异常或无参时可能返回 null。
-        // 保留原始类型（不强转 String），SSE 由框架序列化，数字/字符串都正确。
-        Map<String, Object> data = new java.util.HashMap<>();
-        data.put("tool", toolName);
-        data.put("args", context.getToolCallArguments());
-        data.put("result", context.getToolCallResult());
-        data.put("toolType", context.getToolType());
-
-        bus.emit(AgentEvent.builder()
-                .type("TOOL_CALL").sessionId(sessionId)
-                .timestamp(System.currentTimeMillis())
-                .data(data).build());
+        System.out.println("===== 工具调用 =====");
+        System.out.println("  工具: " + toolName);
+        System.out.println("  参数: " + context.getToolCallArguments());
+        System.out.println("  返回: " + context.getToolCallResult());
+        System.out.println("====================");
     }
 }
 ```
 
-> **API 核实**（全部反编译确认）：
-> - `ObservationHandler<T>` 的 `onStop(T)` / `supportsContext(Context)` —— micrometer-observation
-> - `ToolCallingObservationContext`（`final`，可 `instanceof`）的 `getToolDefinition().name()`、`getToolCallArguments()`、`getToolCallResult()`、`getToolType()` —— spring-ai-model 2.0.0
-> - `DefaultToolCallingManager` 构造器强制接收 `ObservationRegistry` —— 说明工具执行设计上是带 Observation 的
->
-> **为什么 `onStop` 才发事件？** 工具调用开始时（`onStart`）还没有返回值。`onStop` 时工具已执行完，`getToolCallResult()` 有值——这时才能发完整的「参数+返回值」事件。
->
-> **sessionId 怎么到这里的**：`/chat` 调 `agent.run(prompt).contextWrite(Context.of("sessionId", sid))` 注入 Reactor Context；`run()` 里 `deferContextual` 读出。工具执行时，`Hooks.enableAutomaticContextPropagation()` 把 Reactor Context 的 sessionId 恢复到工具线程的 `SessionIdHolder`，`onStop` 在此读到。⚠️ 这环依赖 Spring AI ToolCallingAdvisor 走标准 Reactor 链，需实跑验证；若读不到退路见 §3.9 末尾说明。
->
-> ⚠️ **关于工具 Observation 是否触发**：`defaultTools` 注册的工具被调用时，Spring AI 经 `DefaultToolCallingManager`（带 ObservationRegistry）执行，设计上会发 `ToolCallingObservation`。**前提是 `ObservationRegistry` Bean 存在**——所以 pom 里必须引 `spring-boot-starter-actuator`（见 §3.1），它带来 Observation 的完整自动配置。引了 actuator 后这条链路才是完整的。
->
-> 如果跑起来还是收不到 `TOOL_CALL`：
-> - 在 `ObservationConfig.init()` 打个日志确认 Handler 注册了
-> - 兜底方案：改回手动包 `ToolCallback` 装饰器（[33 方案 §4.2](./33-Agent子过程实时可见性方案.md)）
-
-#### 注册 Handler
-
-`ToolObservationHandler` 是 `@Component`，但还需要注册到 `ObservationRegistry` 才能收到事件。在配置层做：
-
-`src/main/java/com/example/demo07/config/ObservationConfig.java`：
-
+新增 `config/ObservationConfig.java`——把 Handler 注册到 Registry：
 ```java
 package com.example.demo07.config;
 
 import com.example.demo07.obs.ToolObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
+import jakarta.annotation.PostConstruct;
 import org.springframework.context.annotation.Configuration;
 
-import jakarta.annotation.PostConstruct;
-
 /**
- * 注册 ObservationHandler：把我们的 ToolObservationHandler 挂到 ObservationRegistry。
- * Spring Boot 自动注入 ObservationRegistry（starter 提供）。
+ * Step 5：把 ToolObservationHandler 挂到 ObservationRegistry，它才能收到事件。
+ * ObservationRegistry 由 actuator 自动装配。
  */
 @Configuration
 public class ObservationConfig {
@@ -535,120 +457,133 @@ public class ObservationConfig {
 }
 ```
 
-> **API 核实**：`ObservationRegistry.observationConfig().observationHandler(handler)` —— micrometer-observation 真实方法。
+**③ 跑起来你会看到**
 
-### 3.7b 配置层：ChatMemoryConfig（内存版多轮记忆）
+```bash
+curl -N "http://localhost:8080/demo07/obs/chat?prompt=现在几点了"
+```
 
-`src/main/java/com/example/demo07/config/ChatMemoryConfig.java`：
+后端控制台会打印：
+```
+===== 工具调用 =====
+  工具: getCurrentTime
+  参数: {}
+  返回: 2026-07-23 14:30:25
+====================
+```
 
+**痛点解决了！** 工具的参数和返回值清清楚楚。但只是打印在后端控制台——前端用户看不到。下一步把它实时推给前端。
+
+> **API 核实**（官方/反编译确认）：
+> - `ObservationHandler<T>` 的 `onStop(T)` / `supportsContext(Context)` —— micrometer-observation（webflux 间接带入）
+> - `ToolCallingObservationContext` 的 `getToolDefinition().name()`、`getToolCallArguments()`、`getToolCallResult()` —— spring-ai-model 2.0.0
+> - `DefaultToolCallingManager` 构造器强制接收 `ObservationRegistry` —— 工具执行设计上带 Observation
+
+---
+
+## Step 6：事件总线 + SSE——把工具调用实时推给前端
+
+**① 要解决什么**：Step 5 的工具调用只打印在后端。要让它实时推给前端（浏览器/curl），需要一个「事件总线」+ 一个 SSE 订阅接口。
+
+这里要做一个**架构决策**：为什么要拆成「`/chat` 触发 + `/sse` 订阅」两个接口，而不是一个？
+
+> 因为一次请求里有**两种事件**要观测：工具调用（ToolObservationHandler 发）和 LLM 流式正文（Controller 里的流）。两者来自不同地方，需要一个**公共总线**汇合，再用一个 `/sse` 接口订阅。如果只用 Step 3 那种「`/chat` 直接返回 Flux」，工具事件就没地方塞进去了。
+
+**② 代码**
+
+定义事件模型 `obs/AgentEvent.java`：
 ```java
-package com.example.demo07.config;
+package com.example.demo07.obs;
 
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.memory.MessageWindowChatMemory;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import lombok.Builder;
 
 /**
- * 装配内存版 ChatMemory（多轮记忆的核心 Bean）。
- *
- * - MessageWindowChatMemory：滑动窗口策略，默认保留最近 20 条消息，超出按「整轮」淘汰（保留 SystemMessage）。
- *   这也是 Spring AI 2.0 自动装配的默认 ChatMemory 类型——这里显式声明一份，方便改 maxMessages。
- * - 底层存储：Spring AI 默认用 InMemoryChatMemoryRepository（ConcurrentHashMap），无需额外声明，
- *   重启即丢——本 demo 是最小实战，够用；要持久化见 §7。
- *
- * 注意：ChatMemory 只管「按会话 ID 存取消息」。本 demo 让 sessionId 兼任这个会话 ID
- * （直接当作 ChatMemory.CONVERSATION_ID 传给 Advisor，见 §3.9），所以记忆和观测共用一个 ID——
- * 同一 sessionId 的多次 /chat 累积上下文，换 sessionId 就是一段全新记忆。
+ * 一个 Agent 事件。record + Lombok @Builder：不可变 + 链式构造。
+ * timestamp 用 long（epoch 毫秒），发事件处显式传 System.currentTimeMillis()。
+ * data 用 Object：不同 type 装不同结构，交给 Jackson 序列化。
  */
-@Configuration
-public class ChatMemoryConfig {
+@Builder
+public record AgentEvent(
+        String type,                  // 事件类型：TOOL_CALL / CONTENT_DELTA / SESSION_*
+        String sessionId,             // 会话 ID（SSE 按它过滤；Step 7 才真正用上）
+        long timestamp,               // epoch 毫秒
+        Object data                   // 附加信息（按 type 定）
+) {
+}
+```
 
-    @Bean
-    public ChatMemory chatMemory() {
-        return MessageWindowChatMemory.builder()
-                .maxMessages(20)          // 滑动窗口：最近 20 条
-                .build();                 // 不传 chatMemoryRepository → 用默认 InMemoryChatMemoryRepository
+> pom 加 Lombok：
+> ```xml
+>         <dependency>
+>             <groupId>org.projectlombok</groupId>
+>             <artifactId>lombok</artifactId>
+>             <optional>true</optional>
+>         </dependency>
+> ```
+
+事件总线 `obs/AgentEventBus.java`：
+```java
+package com.example.demo07.obs;
+
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
+
+/**
+ * 事件总线。整个进程一个实例。当成「公共公告板」：emit 塞事件、flux 订阅。
+ * 生产者消费者解耦——ToolObservationHandler 和 ObservableAgent 都往这塞，/sse 从这取。
+ */
+@Component
+public class AgentEventBus {
+
+    private final Sinks.Many<AgentEvent> sink =
+            Sinks.many().multicast().onBackpressureBuffer(256, false);
+
+    public void emit(AgentEvent event) {
+        sink.tryEmitNext(event);
+    }
+
+    /** 订阅某会话的事件（SSE 接口用，自带 sessionId 过滤）。 */
+    public Flux<AgentEvent> flux(String sessionId) {
+        return sink.asFlux().filter(e -> sessionId.equals(e.sessionId()));
     }
 }
 ```
 
-> **API 核实**（官方文档确认）：
-> - `MessageWindowChatMemory.builder().maxMessages(int).build()` —— spring-ai-model 2.0.0；不传 `chatMemoryRepository` 时使用自动装配的 `InMemoryChatMemoryRepository`。
-> - 官方明确：Spring AI 2.0 自动装配一个 `ChatMemory` Bean（`InMemoryChatMemoryRepository` + `MessageWindowChatMemory`）。本 demo 显式声明一份是为了能调 `maxMessages`，也方便将来换成 JDBC/Cassandra 等仓库。
-> - `ChatMemory.CONVERSATION_ID` 是记忆 Advisor 的**必传参数**（无默认值）——本 demo 直接把 sessionId 传给它（§3.9），让 sessionId 兼任记忆会话 ID。
->
-> ⚠️ **关于「工具调用的中间消息」的诚实说明**：当前 Spring AI 2.0 实现，**工具调用过程中与 LLM 交换的中间消息不会自动存入 memory**（官方文档明确这是已知限制）。对本 demo 的影响：用户消息和 LLM 最终回复**会**正常存入记忆，多轮上下文连续性有保证；但工具调用的 `ToolResponseMessage` 不进记忆——这意味着「下一轮 LLM 知道自己上次说了什么，但不一定记得上次调过什么工具」。多数场景够用；若要完整持久化工具消息，需用 Spring AI Session 项目（超本 demo 范围，§7）。
-
-### 3.8 配置层：ChatClientConfig（注册工具 + 记忆 Advisor）
-
-`src/main/java/com/example/demo07/config/ChatClientConfig.java`：
-
+改 `ToolObservationHandler`——不再打印，改成发事件（sessionId 先硬编码 "unknown"，Step 7 解决）：
 ```java
-package com.example.demo07.config;
+    @Override
+    public void onStop(ToolCallingObservationContext context) {
+        String toolName = context.getToolDefinition() != null
+                ? context.getToolDefinition().name() : "unknown";
 
-import com.example.demo07.tool.TimeTools;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+        Map<String, Object> data = new HashMap<>();
+        data.put("tool", toolName);
+        data.put("args", context.getToolCallArguments());
+        data.put("result", context.getToolCallResult());
 
-/**
- * 装配 ChatClient：
- *   - 注册 TimeTool（LLM 可自主调用）
- *   - 挂 MessageChatMemoryAdvisor（多轮记忆：调前自动取记忆会话的历史、调后自动存回；记忆会话 ID 由 sessionId 兼任）
- *
- * 工具可见性交给 Observation（§3.7），这里只管「工具 + 记忆」两件事。
- * 记忆会话 ID（CONVERSATION_ID）不在这写死——按请求把 sessionId 传给 Advisor（§3.9），
- * 同一 ChatClient 即可服务多个独立记忆会话。
- */
-@Configuration
-public class ChatClientConfig {
-
-    @Bean
-    public ChatClient chatClient(ChatClient.Builder builder,
-                                 TimeTools timeTools,
-                                 ChatMemory chatMemory) {
-        return builder
-                .defaultTools(timeTools)                                              // 注册工具，LLM 自主决定调不调
-                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build()) // 多轮记忆 Advisor
-                .build();
+        bus.emit(AgentEvent.builder()
+                .type("TOOL_CALL").sessionId("unknown")     // Step 6 先硬编码，Step 7 改对
+                .timestamp(System.currentTimeMillis())
+                .data(data).build());
     }
-}
 ```
+（构造器注入 `AgentEventBus bus`，完整文件见文末附录）
 
-> **API 核实**（官方文档确认）：
-> - `MessageChatMemoryAdvisor.builder(ChatMemory).build()` —— spring-ai-model 2.0.0，挂到 `.defaultAdvisors()`。
-> - `MessageChatMemoryAdvisor` 在每次交互时：从 memory 取当前记忆会话 ID 的历史消息拼进 prompt → 调 LLM → 把本轮 UserMessage + AssistantMessage 存回 memory。业务零存取代码。记忆会话 ID 由 §3.9 把 sessionId 传进来。
-> - 注意：**`defaultAdvisors` 装的是「该 ChatClient 所有请求共享」的 Advisor 实例**，但记忆会话 ID 是每次请求动态传的（§3.9 的 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))`），所以同一个 ChatClient 能正确服务多个独立记忆会话，不会串记忆。
-
-### 3.9 可观测层：ObservableAgent（流式编排 + 发业务事件）
-
-`src/main/java/com/example/demo07/obs/ObservableAgent.java`：
-
+新增编排层 `obs/ObservableAgent.java`——把流式正文也转成事件，发会话生命周期事件：
 ```java
 package com.example.demo07.obs;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientResponse;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.util.Map;
 
 /**
- * Agent 编排：流式调 ChatClient，把每个阶段实时转成事件，推到总线。
- *
- * 工具调用事件不在这发——由 ToolObservationHandler 订阅 Observation 自动发。
- * 职责分离：业务事件（正文/会话生命周期）归 Agent，工具事件归 ObservationHandler。
- *
- * sessionId 一身二职（最小实战刻意合并，简化心智模型）：
- *   - 观测维度：事件流按它过滤；不裸用 ThreadLocal（切线程会丢），走 Reactor Context，
- *     配合 ContextPropagation 自动恢复到工具执行线程的 SessionIdHolder。
- *   - 记忆维度：直接当作 ChatMemory.CONVERSATION_ID 传给 MessageChatMemoryAdvisor，
- *     决定取/存哪段历史——同一 sessionId 的多次 /chat 累积上下文。
+ * Step 6：流式调 ChatClient，把每个阶段实时转成事件，推到总线。
+ * 工具调用事件由 ToolObservationHandler 发，业务事件（正文/会话生命周期）归这里——职责分离。
  */
 @Component
 public class ObservableAgent {
@@ -661,34 +596,460 @@ public class ObservableAgent {
         this.bus = bus;
     }
 
-    /**
-     * 流式执行 Agent，返回事件流（不阻塞、不在内部 subscribe）。
-     * 由 /chat 触发后订阅这个 Flux，事件自然地边产出边进总线，/sse 从总线过滤推前端。
-     *
-     * sessionId 通过 Reactor Context 传入：调用方 .contextWrite(Context.of("sessionId", sid))，
-     * 这里 deferContextual 读出来，整条流（含切线程执行工具）都拿到同一个 sessionId。
-     */
+    public Flux<AgentEvent> run(String userInput, String sessionId) {
+        // 会话开始
+        bus.emit(AgentEvent.builder()
+                .type("SESSION_STARTED").sessionId(sessionId)
+                .timestamp(System.currentTimeMillis())
+                .data(Map.of("input", userInput)).build());
+
+        Flux<ChatClientResponse> stream = chatClient.prompt()
+                .user(userInput)
+                .stream()
+                .chatClientResponse();
+
+        // 每个 chunk → CONTENT_DELTA；完成 → SESSION_COMPLETED；错误 → SESSION_FAILED
+        return stream
+                .doOnNext(resp -> {
+                    String text = resp.chatResponse().getResult().getOutput().getText();
+                    if (text != null && !text.isEmpty()) {
+                        bus.emit(AgentEvent.builder()
+                                .type("CONTENT_DELTA").sessionId(sessionId)
+                                .timestamp(System.currentTimeMillis())
+                                .data(Map.of("text", text)).build());
+                    }
+                })
+                .doOnError(err -> bus.emit(AgentEvent.builder()
+                        .type("SESSION_FAILED").sessionId(sessionId)
+                        .timestamp(System.currentTimeMillis())
+                        .data(Map.of("error", err.getClass().getSimpleName() + ": " + err.getMessage()))
+                        .build()))
+                .doFinally(signal -> bus.emit(AgentEvent.builder()
+                        .type("SESSION_COMPLETED").sessionId(sessionId)
+                        .timestamp(System.currentTimeMillis())
+                        .data(Map.of()).build()));
+    }
+}
+```
+
+改 `ObsController`——双接口：`/chat` 触发（异步），`/sse` 订阅：
+```java
+@RestController
+@RequestMapping("/demo07/obs")
+public class ObsController {
+
+    private final AgentEventBus bus;
+    private final ObservableAgent agent;
+
+    public ObsController(AgentEventBus bus, ObservableAgent agent) {
+        this.bus = bus;
+        this.agent = agent;
+    }
+
+    /** 接口一：触发 Agent。异步订阅 run()，立即返回 sessionId。 */
+    @GetMapping("/chat")
+    public String chat(@RequestParam String prompt,
+                       @RequestHeader String sessionId) {
+        agent.run(prompt, sessionId).subscribe();   // 异步触发，事件进总线，不阻塞
+        return sessionId;
+    }
+
+    /** 接口二：订阅事件流。调用顺序：先连 /sse，再调 /chat（否则漏 SESSION_STARTED）。 */
+    @GetMapping(value = "/sse", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<AgentEvent> sse(@RequestHeader String sessionId) {
+        return bus.flux(sessionId)
+                .takeUntil(e -> "SESSION_COMPLETED".equals(e.type()));
+    }
+}
+```
+
+**③ 跑起来你会看到**
+
+```bash
+# 终端 1：先订阅（sessionId 走 header）
+curl -N -H "sessionId: s1" "http://localhost:8080/demo07/obs/sse"
+
+# 终端 2：再触发
+curl -H "sessionId: s1" "http://localhost:8080/demo07/obs/chat?prompt=现在几点了"
+```
+
+终端 1 实时收到：
+```
+data:{"type":"SESSION_STARTED","sessionId":"s1",...,"data":{"input":"现在几点了"}}
+data:{"type":"TOOL_CALL","sessionId":"unknown",...,"data":{"tool":"getCurrentTime","result":"2026-07-23 14:30:25"}}
+                                                                ↑ 工具返回值！实时到达！
+data:{"type":"CONTENT_DELTA","sessionId":"s1",...,"data":{"text":"现在"}}
+data:{"type":"CONTENT_DELTA","sessionId":"s1",...,"data":{"text":"是14:30"}}
+data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
+```
+
+**前端实时看到工具返回值了！** 但注意一个 bug：`TOOL_CALL` 的 sessionId 是 `"unknown"`——因为 `ToolObservationHandler` 在工具执行线程里，拿不到 `/chat` 那个 sessionId。两个用户同时用就会串流。下一步解决。
+
+**④ 内部怎么流转**（双接口架构的核心）：
+```
+/chchat(s1) ──subscribe──> run(prompt, s1) ──发 SESSION_STARTED/CONTENT_DELTA──┐
+                                                                                ↓
+                                                              AgentEventBus（公共公告板）
+                                                                                ↑
+/sse(s1) ──────────── filter(sessionId=s1) ────────────────────────────────────┘
+                                    ↑
+              ToolObservationHandler.onStop ──发 TOOL_CALL──┐（sessionId 还是 unknown！）
+```
+
+---
+
+## Step 7：会话隔离——sessionId 怎么传到工具线程
+
+**① 要解决什么**：Step 6 的 `TOOL_CALL` 的 sessionId 是 `unknown`，因为 `ToolObservationHandler` 在**另一个线程**执行工具，拿不到 `/chat` 的 sessionId。要解决「工具事件怎么标到正确的会话」。
+
+**坑**：WebFlux 下 `ChatClient.stream()` 的 Flux 链会在 `boundedElastic` 线程池切换线程，普通 ThreadLocal 一切线程就丢。
+
+**② 代码（三件套）**
+
+(a) 可传播的 ThreadLocal `obs/SessionIdHolder.java`：
+```java
+package com.example.demo07.obs;
+
+/**
+ * 持有「当前请求的 sessionId」。设计为可传播的 ThreadLocal。
+ * - ObservableAgent.run 入口 set，工具执行线程经 ContextPropagation 自动读到
+ * - ToolObservationHandler.onStop 在此读回 sessionId
+ * - 用完必须 clear，防线程池复用导致串会话
+ */
+public final class SessionIdHolder {
+    private static final ThreadLocal<String> SESSION_ID = new ThreadLocal<>();
+
+    public static void set(String sessionId) { SESSION_ID.set(sessionId); }
+    public static String get() {
+        String sid = SESSION_ID.get();
+        return sid != null ? sid : "unknown";
+    }
+    public static void clear() { SESSION_ID.remove(); }
+
+    private SessionIdHolder() {}
+}
+```
+
+(b) 注册自动传播 `config/ContextPropagationConfig.java`：
+```java
+package com.example.demo07.config;
+
+import com.example.demo07.obs.SessionIdHolder;
+import io.micrometer.context.ContextRegistry;
+import jakarta.annotation.PostConstruct;
+import org.springframework.context.annotation.Configuration;
+import reactor.core.publisher.Hooks;
+
+/**
+ * 会话隔离的装配核心：
+ * 1. 把 SessionIdHolder 注册为可传播 ThreadLocal——Reactor Context 的 sessionId 自动桥接进出它
+ * 2. 开启 Reactor 自动上下文传播——切线程时 ThreadLocal 自动恢复
+ */
+@Configuration
+public class ContextPropagationConfig {
+
+    @PostConstruct
+    public void init() {
+        ContextRegistry registry = ContextRegistry.getInstance();
+        registry.registerThreadLocalAccessor("sessionId",
+                SessionIdHolder::get,
+                SessionIdHolder::set,
+                SessionIdHolder::clear);
+        Hooks.enableAutomaticContextPropagation();
+    }
+}
+```
+
+(c) 改 `ObservableAgent.run()`——sessionId 改走 Reactor Context（不再当方法参数），并在入口 set 到 SessionIdHolder：
+```java
     public Flux<AgentEvent> run(String userInput) {
-        // deferContextual：订阅时才从 Reactor Context 读 sessionId，保证每次调用拿到的是本次的值
+        // sessionId 改从 Reactor Context 读（调用方 .contextWrite 注入）
         return Flux.deferContextual(ctx -> {
             String sessionId = ctx.getOrDefault("sessionId", "unknown");
+            SessionIdHolder.set(sessionId);   // 入口 set，工具线程经自动传播能读到
 
-            // 1. 会话开始事件
+            // ... 同 Step 6：发 SESSION_STARTED、流式调用、发 CONTENT_DELTA/SESSION_*
+        });
+    }
+```
+
+改 `ToolObservationHandler.onStop`——从 SessionIdHolder 读：
+```java
+        String sessionId = SessionIdHolder.get();   // 不再硬编码 unknown
+        // ... 发 TOOL_CALL 带上 sessionId
+```
+
+改 `ObsController`——`/chat` 用 `contextWrite` 注入 sessionId：
+```java
+    @GetMapping("/chat")
+    public String chat(@RequestParam String prompt,
+                       @RequestHeader String sessionId) {
+        agent.run(prompt)
+                .contextWrite(reactor.util.context.Context.of("sessionId", sessionId))
+                .subscribe();
+        return sessionId;
+    }
+```
+
+**③ 跑起来你会看到**
+
+```bash
+# 终端 1 订阅 s1，终端 3 订阅 s2
+curl -N -H "sessionId: s1" "http://localhost:8080/demo07/obs/sse" &
+curl -N -H "sessionId: s2" "http://localhost:8080/demo07/obs/sse" &
+
+# 终端 2 用 s1 触发
+curl -H "sessionId: s1" "http://localhost:8080/demo07/obs/chat?prompt=现在几点了"
+```
+
+这次 `TOOL_CALL` 的 sessionId 是 `"s1"` 了！终端 1（s1）收到全部事件，终端 3（s2）什么都收不到——**会话隔离做实，工具事件也只标到对应会话**。
+
+**④ sessionId 怎么到工具线程的**（这一步的核心，参数传递线讲透）：
+```
+/chchat header: sessionId=s1
+   ↓
+ObsController: contextWrite(Context.of("sessionId", s1))
+   ↓ 写进 Reactor Context（随 Flux 链传播）
+ObservableAgent.run: deferContextual 读出 s1 → SessionIdHolder.set(s1)
+   ↓ ChatClient.stream() 流式调用，LLM 决定调工具
+   ↓ 工具执行切到 boundedElastic 线程（换了线程！）
+Hooks.enableAutomaticContextPropagation()
+   ↓ Reactor Context 的 sessionId 自动恢复到工具线程的 SessionIdHolder
+ToolObservationHandler.onStop: SessionIdHolder.get() → 读到 s1
+   ↓ TOOL_CALL 带上 s1
+```
+
+⚠️ **诚实说明**：`ToolObservationHandler.onStop` 能否读到，取决于 Spring AI 2.0 的 `ToolCallingAdvisor` 内部执行工具时是否走标准 Reactor 操作符链。本 demo 设计是标准做法，但**这一环需实跑验证**。若读不到，退路是把 sessionId 通过 `ToolContext` 显式传给工具（`@Tool` 方法加 `ToolContext` 参数），在工具里手动 emit 事件。
+
+---
+
+## Step 8：多轮记忆——LLM 记得上文
+
+**① 要解决什么**：现在每次 `/chat` 都是独立调用，LLM 不记得之前聊过什么。问「现在几点」→回答 14:30；再问「那明天同一时间呢」→LLM 不知道「同一时间」指什么。要让它记得上文。
+
+**② 代码（用框架原生 ChatMemory，零自研存取代码）**
+
+新增 `config/ChatMemoryConfig.java`——内存版记忆：
+```java
+package com.example.demo07.config;
+
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.memory.MessageWindowChatMemory;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+/**
+ * Step 8：内存版 ChatMemory（重启即丢，最小实战够用）。
+ * MessageWindowChatMemory：滑动窗口，保留最近 20 条，超出按整轮淘汰。
+ * 底层用 Spring AI 自动装配的 InMemoryChatMemoryRepository，无需额外依赖。
+ */
+@Configuration
+public class ChatMemoryConfig {
+
+    @Bean
+    public ChatMemory chatMemory() {
+        return MessageWindowChatMemory.builder()
+                .maxMessages(20)
+                .build();
+    }
+}
+```
+
+改 `ChatClientConfig`——挂记忆 Advisor：
+```java
+    @Bean
+    public ChatClient chatClient(ChatClient.Builder builder,
+                                 TimeTools timeTools,
+                                 ChatMemory chatMemory) {
+        return builder
+                .defaultTools(timeTools)
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                .build();
+    }
+```
+
+改 `ObservableAgent.run()`——把 sessionId 当作记忆会话 ID 传给 Advisor（sessionId 一身二职：既是观测 ID，又兼任 `ChatMemory.CONVERSATION_ID`）：
+```java
+            Flux<ChatClientResponse> stream = chatClient.prompt()
+                    .user(userInput)
+                    .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
+                    .stream()
+                    .chatClientResponse();
+```
+
+**③ 跑起来你会看到**
+
+```bash
+# 第一轮
+curl -H "sessionId: s1" "http://localhost:8080/demo07/obs/chat?prompt=现在几点了，帮我规划今天下午"
+# → 现在是 14:30，下午建议……
+
+# 第二轮（同一 sessionId=s1，记得上文）
+curl -H "sessionId: s1" "http://localhost:8080/demo07/obs/chat?prompt=那明天同一时间呢"
+# → 明天 14:30 的话，建议……（接住了「规划/同一时间」的上下文！）
+
+# 换 sessionId=s2 就是全新记忆
+curl -H "sessionId: s2" "http://localhost:8080/demo07/obs/chat?prompt=那明天同一时间呢"
+# → 什么同一时间？我不太明白……（没有上文）
+```
+
+**多轮记忆 + 会话隔离都做实了。** 这是完整 demo07 的最终形态。
+
+⚠️ **已知限制**（官方明确）：Spring AI 2.0 下，工具调用的中间消息**不会自动存入 memory**。影响：用户消息和 LLM 最终回复会正常累积，多轮连续；但工具的 `ToolResponseMessage` 不进记忆——下一轮 LLM 记得自己说过什么，不一定记得调过什么工具。多数场景够用。
+
+---
+
+## 完整结构（Step 8 结束后的项目）
+
+```
+demo07/
+├── pom.xml
+├── src/main/resources/
+│   ├── application.yaml
+│   └── static/demo07.html                ← 调试页面（见附录）
+└── src/main/java/com/example/demo07/
+    ├── Application.java
+    ├── config/
+    │   ├── ChatClientConfig.java          ← Step 2/4/8 演进：空 → 工具 → 工具+记忆
+    │   ├── ChatMemoryConfig.java          ← Step 8
+    │   ├── ObservationConfig.java         ← Step 5
+    │   └── ContextPropagationConfig.java  ← Step 7
+    ├── tool/
+    │   └── TimeTools.java                 ← Step 4
+    └── obs/
+        ├── AgentEvent.java                ← Step 6
+        ├── SessionIdHolder.java           ← Step 7
+        ├── AgentEventBus.java             ← Step 6
+        ├── ToolObservationHandler.java    ← Step 5/6/7 演进
+        ├── ObservableAgent.java           ← Step 6/7/8 演进
+        └── ObsController.java             ← Step 1/2/3/6/7 演进
+```
+
+---
+
+## 这个方案为什么「企业级、合理」
+
+| 做法 | 为什么合理 |
+|------|-----------|
+| 工具用原生 `@Tool` + `.defaultTools()` | 用框架原生能力，不手动包底层 `ToolCallback` |
+| 工具可见性用 `ObservationHandler` | 订阅框架已发的 Observation，不侵入工具代码 |
+| 多轮记忆用原生 `MessageChatMemoryAdvisor` | 调前自动取历史、调后自动存回，业务零存取代码 |
+| 流式 `.stream()` + `CONTENT_DELTA` | 每个阶段实时可见，不等整段返回 |
+| 会话隔离走 Reactor Context + ContextPropagation | 不裸用 ThreadLocal（切线程会丢），随流传播到工具执行线程 |
+| sessionId 兼任记忆会话 ID | 最小实战不分两个 ID，接口最简 |
+| config/tool/obs 分层 | 装配、工具、可观测各管各的 |
+| 两接口（/chat + /sse）分离 | 触发和订阅解耦 |
+| `AgentEventBus` 总线 | 多消费者共享，加日志/审计消费者零改 Agent |
+
+简单说：**能用框架原生能力的，就不要自己包底层**（工具可见用 Observation、记忆用 ChatMemory）。
+
+---
+
+## 这个 demo 没做什么（对照 33 方案）
+
+| 没做 | 后果 | 方案章节 |
+|------|------|---------|
+| 事件序号 + 重排 | 可能乱序 | §17.1 |
+| 背压分级降级 | 高频时事件可能丢 | §17.2 |
+| SSE 断线重连 | 刷新页面漏中间事件 | §17.3 |
+| LLM token 统计 | 不知道烧了多少钱 | §12 |
+| 多实例 | 单机扛不住高并发 | §4 |
+| 多租户（tenantId） | 只有 sessionId 维度 | §12 |
+| 记忆持久化 | 内存 ChatMemory，重启即丢；持久化换 JDBC/Cassandra/Redis starter | §12 |
+| 观测/记忆 ID 解耦 | sessionId 兼任记忆 ID，无法「一次观测跨多段记忆」 | — |
+| 工具消息进记忆 | Spring AI 2.0 限制：工具调用中间消息不进 memory | — |
+
+---
+
+## 附录 A：完整 ToolObservationHandler（Step 7 后）
+
+```java
+package com.example.demo07.obs;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import org.springframework.ai.tool.observation.ToolCallingObservationContext;
+import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Component
+public class ToolObservationHandler implements ObservationHandler<ToolCallingObservationContext> {
+
+    private final AgentEventBus bus;
+
+    public ToolObservationHandler(AgentEventBus bus) {
+        this.bus = bus;
+    }
+
+    @Override
+    public boolean supportsContext(Observation.Context context) {
+        return context instanceof ToolCallingObservationContext;
+    }
+
+    @Override
+    public void onStop(ToolCallingObservationContext context) {
+        String sessionId = SessionIdHolder.get();   // Step 7：从可传播 ThreadLocal 读
+
+        String toolName = context.getToolDefinition() != null
+                ? context.getToolDefinition().name() : "unknown";
+
+        // HashMap 而非 Map.of——getToolCallArguments()/getToolCallResult() 可能返回 null
+        Map<String, Object> data = new HashMap<>();
+        data.put("tool", toolName);
+        data.put("args", context.getToolCallArguments());
+        data.put("result", context.getToolCallResult());
+        data.put("toolType", context.getToolType());
+
+        bus.emit(AgentEvent.builder()
+                .type("TOOL_CALL").sessionId(sessionId)
+                .timestamp(System.currentTimeMillis())
+                .data(data).build());
+    }
+}
+```
+
+## 附录 B：完整 ObservableAgent（Step 8 后）
+
+```java
+package com.example.demo07.obs;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+
+import java.util.Map;
+
+@Component
+public class ObservableAgent {
+
+    private final ChatClient chatClient;
+    private final AgentEventBus bus;
+
+    public ObservableAgent(ChatClient chatClient, AgentEventBus bus) {
+        this.chatClient = chatClient;
+        this.bus = bus;
+    }
+
+    public Flux<AgentEvent> run(String userInput) {
+        return Flux.deferContextual(ctx -> {
+            String sessionId = ctx.getOrDefault("sessionId", "unknown");
+            SessionIdHolder.set(sessionId);
+
             bus.emit(AgentEvent.builder()
                     .type("SESSION_STARTED").sessionId(sessionId)
                     .timestamp(System.currentTimeMillis())
                     .data(Map.of("input", userInput)).build());
 
-            // 2. 流式调用：按 sessionId 取历史拼进 prompt（MessageChatMemoryAdvisor 自动做），
-            //    LLM 自主决定调工具——工具调用会被 ToolObservationHandler 捕获发事件。
-            //    ChatMemory.CONVERSATION_ID 是记忆 Advisor 的必传参数——这里直接用 sessionId 兼任。
             Flux<ChatClientResponse> stream = chatClient.prompt()
                     .user(userInput)
                     .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
                     .stream()
-                    .chatClientResponse();   // 返回 Flux<ChatClientResponse>，每个 chunk 一个
+                    .chatClientResponse();
 
-            // 3. 每个 chunk → CONTENT_DELTA（正文逐字）；完成 → SESSION_COMPLETED；错误 → SESSION_FAILED
             return stream
                     .doOnNext(resp -> {
                         String text = resp.chatResponse().getResult().getOutput().getText();
@@ -713,144 +1074,11 @@ public class ObservableAgent {
 }
 ```
 
-> **记忆的关键**：`.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))` 把本次的 `sessionId` 作为记忆会话 ID 注入，`MessageChatMemoryAdvisor` 据此取历史、存新消息。**同一 sessionId 的多次调用会累积上下文**——这就是「记得上文」。换一个 sessionId 就是一段全新记忆，互不干扰。
->
-> **流式的关键**：`.stream().chatClientResponse()` 返回 `Flux<ChatClientResponse>`，LLM 边产出边推，每个 chunk 触发一次 `doOnNext` 发 `CONTENT_DELTA`——前端拿到的是逐字流，不是等 30 秒后的整段。`run()` 返回的是**声明式的 Flux**，不阻塞、不在内部 `subscribe()`，由 `/chat` 触发订阅。
->
-> **sessionId 走 Reactor Context 而非裸 ThreadLocal**：经调用方 `.contextWrite(...)` 注入，`deferContextual` 读出。这是 Spring Boot 4 + WebFlux 的标准做法。
->
-> ⚠️ **关于「能不能传到工具线程」的诚实说明**：`Hooks.enableAutomaticContextPropagation()` 会把 Reactor Context 里的 `sessionId` 自动恢复到 Reactor 操作符切换的线程的 `SessionIdHolder`。但 `ToolObservationHandler.onStop` 能否读到，**取决于 Spring AI 2.0 的 `ToolCallingAdvisor` 内部执行工具时是否走标准 Reactor 操作符链**（走则自动传播生效；若内部脱离 Reactor Context 用裸线程/CompletableFuture 则读不到）。本 demo 的设计是标准做法，但这一环需要**实跑验证**——如果跑起来 `TOOL_CALL` 的 sessionId 是 `unknown`，说明该版本工具执行没走自动传播路径，退路是把 sessionId 通过 `ToolContext` 显式传给工具（`@Tool` 方法签名加 `ToolContext` 参数），在工具里手动 emit 事件。
->
-> **为什么返回 Flux 而不内部 subscribe**：返回 Flux 让 `/chat` 触发订阅（`agent.run(prompt).contextWrite(...).subscribe()`），事件流的生命周期由调用方控制，符合企业级「事件源声明式、订阅方控制」的范式。
+## 附录 C：调试用 HTML 页面（Step 8 后）
 
-### 3.10 Controller：两个接口
+放 `src/main/resources/static/demo07.html`，浏览器打开 `http://localhost:8080/demo07.html`。
 
-`src/main/java/com/example/demo07/obs/ObsController.java`：
-
-```java
-package com.example.demo07.obs;
-
-import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
-
-/**
- * 两个接口，职责分离：
- *   GET  /chat —— 触发 Agent（异步，立即返回 sessionId）
- *   GET  /sse  —— 订阅事件流（返回 Flux，声明式不阻塞）
- * 调用顺序：先连 /sse，再调 /chat（否则漏 SESSION_STARTED）。
- *
- * 只需要一个 sessionId，它一身二职：
- *   - 观测维度：/sse 按它过滤事件流
- *   - 记忆维度：run() 里直接当作 ChatMemory.CONVERSATION_ID，决定取/存哪段历史
- * 同一 sessionId 的多次 /chat 会累积上下文——这就是「记得上文」。
- */
-@RestController
-@RequestMapping("/demo07/obs")
-public class ObsController {
-
-    private final AgentEventBus bus;
-    private final ObservableAgent agent;
-
-    public ObsController(AgentEventBus bus, ObservableAgent agent) {
-        this.bus = bus;
-        this.agent = agent;
-    }
-
-    /**
-     * 接口一：触发 Agent。异步订阅 run()，立即返回 sessionId（不阻塞当前请求线程）。
-     *
-     * sessionId 通过 contextWrite 注入 Reactor Context，run() 里 deferContextual 读出，
-     * 整条流（含切线程执行工具）都带这个 sessionId —— 它同时用于事件流过滤和记忆取存。
-     */
-    @GetMapping("/chat")
-    public String chat(@RequestParam String prompt,
-                       @RequestHeader String sessionId) {
-        agent.run(prompt)
-                .contextWrite(reactor.util.context.Context.of("sessionId", sessionId))
-                .subscribe();   // 触发订阅：事件流开始产出，边出边进总线。不阻塞当前请求线程。
-        return sessionId;
-    }
-
-    /**
-     * 接口二：订阅事件流。sessionId 走 header（浏览器 EventSource 不能设头，前端用 fetch + ReadableStream）。
-     *
-     * 直接返回 Flux<AgentEvent>（不包 ServerSentEvent）：
-     *   - WebFlux 自带 Jackson 编解码器，自动把 record 序列化成 SSE 的 data: 行（JSON）
-     *   - 声明式返回，WebFlux 异步逐帧推送，不在请求线程阻塞
-     *   - 这种写法 SSE 帧只有 data: 行，没有 event: 行——前端靠 JSON 里的 type 字段分发
-     */
-    @GetMapping(value = "/sse", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<AgentEvent> sse(@RequestHeader String sessionId) {
-        return bus.flux(sessionId)                      // AgentEventBus.flux(sessionId) 自带过滤
-                .takeUntil(e -> "SESSION_COMPLETED".equals(e.type()));
-    }
-}
-```
-
-> **为什么只要一个 sessionId**：`sessionId` 同时承担「观测隔离」和「记忆会话」两个角色——`/chat` 把它写进 Reactor Context，`run()` 既用它过滤事件流、又把它作为 `ChatMemory.CONVERSATION_ID` 取存历史。这样接口最简，多轮记忆也成立：前端多轮追问时**复用同一个 sessionId**，上下文就连续；换 sessionId 就是一段全新记忆。最小实战刻意不分两个 ID，避免概念冗余（企业级若要「观测和记忆解耦」再拆 conversationId，见 §6）。
-
----
-
-## 4. 跑起来验证
-
-### 4.1 启动
-
-```bash
-cd demo07
-mvn spring-boot:run
-```
-
-### 4.2 两个终端配合（先订阅、后触发，支持多轮追问）
-
-```bash
-# 终端 1：先订阅（sessionId 走 header，自定义一个如 s1）
-curl -N -H "sessionId: s1" "http://localhost:8080/demo07/obs/sse"
-
-# 终端 2：第一轮——触发（sessionId=s1 与订阅一致 → 会话隔离；同一 s1 也兼任记忆会话 ID）
-curl -H "sessionId: s1" \
-    "http://localhost:8080/demo07/obs/chat?prompt=现在几点了，用一句话规划今天下午"
-
-# 终端 2：第二轮——追问（同一 sessionId=s1，记得上文）
-curl -H "sessionId: s1" \
-    "http://localhost:8080/demo07/obs/chat?prompt=那明天同一时间呢？"
-```
-
-> **多轮记忆验证**：第二轮**仍用 `sessionId: s1`**，LLM 会记得第一轮聊过「规划今天下午」，于是「那明天同一时间呢」被理解为「明天同一时间怎么安排」。换 `sessionId: s2` 则 LLM 完全不知道你在说什么——记忆隔离生效。因为 sessionId 兼任记忆 ID，**多轮追问必须复用同一 sessionId**，不能每轮换新的。
->
-> **会话隔离验证**：开第二个终端用 `-H "sessionId: s2"` 触发一次，终端 1（订阅 s1）**不会**收到 s2 的事件——证明 sessionId 经 ContextPropagation 透传成功，工具事件也只标到对应会话。
-
-### 4.3 你会看到
-
-终端 1 实时输出（SSE 帧只有 `data:` 行，靠 JSON 里的 `type` 分发）：
-
-```
-data:{"type":"SESSION_STARTED","sessionId":"s1",...,"timestamp":..., "data":{"input":"现在几点了，用一句话规划今天下午"}}
-
-data:{"type":"TOOL_CALL","sessionId":"s1",...,"data":{"tool":"getCurrentTime","args":"{}","result":"2026-07-22 14:30:25","toolType":"..."}}
-                                                                ↑ 工具返回值！
-
-data:{"type":"CONTENT_DELTA","sessionId":"s1",...,"data":{"text":"现在"}}
-data:{"type":"CONTENT_DELTA","sessionId":"s1",...,"data":{"text":"是14:30"}}
-data:{"type":"CONTENT_DELTA","sessionId":"s1",...,"data":{"text":"，下午建议..."}}
-                                ↑ LLM 回答逐字流出
-
-data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
-```
-
-**关键**：
-- `TOOL_CALL` 的 `result` 是 `"2026-07-22 14:30:25"`——工具返回值在事件流里看得清清楚楚；`CONTENT_DELTA` 是流式正文，逐字到达。这些都是 Spring AI 原生 Observation + 流式给的，我们没写任何「拦工具」「拼结果」的代码。
-- 第二轮追问用**同一个 sessionId**，LLM 接住了第一轮的上文——证明 `MessageChatMemoryAdvisor` 以 sessionId 为记忆会话 ID 的存取生效。
-
-> **如果没看到 TOOL_CALL**：LLM 这次没决定调工具。换明确要时间的 prompt（如「**现在几点了**？告诉我当前时间」），或 temperature=0。
->
-> **如果第二轮 LLM 「忘了」上文**：检查第二轮的 `sessionId` 是否和第一轮一致——不一致就是新记忆。也可在 application.yaml 加 `logging.level.org.springframework.ai: debug` 看 `MessageChatMemoryAdvisor` 是否取到了历史。
-
-### 4.4 用 HTML 页面看（调试用，比 curl 直观）
-
-放 `src/main/resources/static/demo07.html`，浏览器打开 `http://localhost:8080/demo07.html`。Spring Boot 自动服务静态资源。
-
-> 为什么用 `fetch + ReadableStream` 而不是 `EventSource`：SSE 的 sessionId 走 header（§3.10），而浏览器原生 `EventSource` 不能设自定义 header。`fetch` 可以。后端返回的是「只有 `data:` 行」的 SSE（没有 `event:` 行），前端靠 JSON 里的 `type` 字段分发。
+> 为什么用 `fetch + ReadableStream` 而不是 `EventSource`：SSE 的 sessionId 走 header，而 `EventSource` 不能设自定义 header，`fetch` 可以。
 
 ```html
 <!DOCTYPE html>
@@ -860,56 +1088,36 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
     <title>Agent 可观测性 Demo</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-            background: #f7f7f8; height: 100vh; display: flex; flex-direction: column;
-        }
-        header {
-            background: #fff; padding: 14px 24px; border-bottom: 1px solid #ececec;
-            font-size: 16px; font-weight: 600; color: #333;
-        }
+        body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+               background: #f7f7f8; height: 100vh; display: flex; flex-direction: column; }
+        header { background: #fff; padding: 14px 24px; border-bottom: 1px solid #ececec;
+                 font-size: 16px; font-weight: 600; color: #333; }
         #chat { flex: 1; overflow-y: auto; padding: 24px 0; }
         .msg { max-width: 760px; margin: 0 auto; padding: 0 24px; }
         .user { display: flex; justify-content: flex-end; margin-bottom: 20px; }
-        .user .bubble {
-            background: #4d6bfe; color: #fff; padding: 10px 16px;
-            border-radius: 14px 14px 4px 14px; max-width: 70%; line-height: 1.6;
-            word-break: break-all;
-        }
+        .user .bubble { background: #4d6bfe; color: #fff; padding: 10px 16px;
+                        border-radius: 14px 14px 4px 14px; max-width: 70%; line-height: 1.6; word-break: break-all; }
         .assistant { margin-bottom: 24px; }
         .assistant .avatar { font-size: 13px; color: #999; margin-bottom: 8px; }
-        .assistant .bubble {
-            background: #fff; padding: 14px 18px; border-radius: 12px;
-            line-height: 1.8; color: #333; word-break: break-all;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-        }
+        .assistant .bubble { background: #fff; padding: 14px 18px; border-radius: 12px;
+                             line-height: 1.8; color: #333; word-break: break-all; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
         .process { max-width: 760px; margin: 0 auto 20px; padding: 0 24px; }
         .process summary { cursor: pointer; color: #999; font-size: 13px; padding: 6px 0; user-select: none; }
-        .process summary b { color: #666; }
-        .step {
-            background: #fff; border-left: 3px solid #4d6bfe; margin: 6px 0;
-            padding: 8px 12px; border-radius: 0 6px 6px 0; font-size: 13px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-        }
+        .step { background: #fff; border-left: 3px solid #4d6bfe; margin: 6px 0; padding: 8px 12px;
+                border-radius: 0 6px 6px 0; font-size: 13px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
         .step .label { color: #4d6bfe; font-weight: 600; margin-right: 6px; }
         .step .kv { color: #888; margin-right: 10px; }
         .step .kv b { color: #333; font-weight: 500; }
         .step.tool { border-left-color: #00b96b; }
         .step.tool .label { color: #00b96b; }
         .step.done { border-left-color: #999; }
-        .step.done .label { color: #888; }
         #input-bar { background: #fff; border-top: 1px solid #ececec; padding: 14px 24px; }
-        #input-wrap {
-            max-width: 760px; margin: 0 auto; display: flex; gap: 10px;
-            align-items: center; background: #f7f7f8; border-radius: 22px;
-            padding: 6px 6px 6px 18px;
-        }
-        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 8px 0; line-height: 1.5; }
-        #send {
-            background: #4d6bfe; color: #fff; border: none; width: 36px; height: 36px;
-            border-radius: 50%; cursor: pointer; font-size: 18px; flex-shrink: 0;
-        }
-        #send:disabled { background: #c5cdfa; cursor: not-allowed; }
+        #input-wrap { max-width: 760px; margin: 0 auto; display: flex; gap: 10px; align-items: center;
+                      background: #f7f7f8; border-radius: 22px; padding: 6px 6px 6px 18px; }
+        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 8px 0; }
+        #send { background: #4d6bfe; color: #fff; border: none; width: 36px; height: 36px;
+                border-radius: 50%; cursor: pointer; font-size: 18px; flex-shrink: 0; }
+        #send:disabled { background: #c5cdfa; cursor: not allowed; }
         #status { text-align: center; color: #bbb; font-size: 12px; padding: 6px 0; }
     </style>
 </head>
@@ -917,29 +1125,18 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
 <header>Agent 可观测性 Demo <span style="font-weight:400;color:#bbb;font-size:13px">· 流式 + 工具调用全程可见 + 多轮记忆</span>
     <button id="new-chat" style="float:right;font-size:13px;border:1px solid #ddd;background:#fff;border-radius:6px;padding:4px 10px;cursor:pointer;color:#666">新对话（清记忆）</button>
 </header>
-
 <div id="chat"></div>
-
 <div id="status">输入问题，回车或点发送</div>
-<div id="input-bar">
-    <div id="input-wrap">
-        <input id="prompt" placeholder="问点什么，如：现在几点了？规划今天下午"
-               value="现在几点了，用一句话规划今天下午">
-        <button id="send" onclick="start()">➤</button>
-    </div>
-</div>
-
+<div id="input-bar"><div id="input-wrap">
+    <input id="prompt" placeholder="问点什么，如：现在几点了？规划今天下午" value="现在几点了，用一句话规划今天下午">
+    <button id="send" onclick="start()">➤</button>
+</div></div>
 <script>
     let sending = false, sseController = null;
-    // sessionId 一身二职：既是事件流过滤 ID，又兼任记忆会话 ID（见文档 §1/§6）。
-    // 同一对话多轮复用同一个 sessionId（这样才有连续上下文），点「新对话」才换新的。
+    // sessionId 一身二职：事件流过滤 ID + 记忆会话 ID。同一对话多轮复用，点「新对话」才换。
     let currentSessionId = 's-' + Date.now();
 
-    document.getElementById('prompt').addEventListener('keydown', e => {
-        if (e.key === 'Enter') start();
-    });
-
-    // 新对话：换一个 sessionId（旧上下文不再被取到，因为换了记忆会话）
+    document.getElementById('prompt').addEventListener('keydown', e => { if (e.key === 'Enter') start(); });
     document.getElementById('new-chat').addEventListener('click', () => {
         if (sending) return;
         currentSessionId = 's-' + Date.now();
@@ -948,31 +1145,23 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
     });
 
     function start() {
-        if (sending) return;             // 上一次还没完，禁止并发（避免事件串流）
+        if (sending) return;
         const promptInput = document.getElementById('prompt');
         const prompt = promptInput.value.trim();
         if (!prompt) return;
-        // 同一对话多轮复用 sessionId：它既是事件流 ID、又兼任记忆会话 ID——
-        // 复用同一 sessionId，多轮才有连续上下文。点「新对话」才换 sessionId。
         const sessionId = currentSessionId;
         const chat = document.getElementById('chat');
 
-        // 用户气泡
-        const u = document.createElement('div');
-        u.className = 'msg user';
+        const u = document.createElement('div'); u.className = 'msg user';
         u.innerHTML = '<div class="bubble"></div>';
         u.querySelector('.bubble').textContent = prompt;
         chat.appendChild(u);
 
-        // 可折叠「过程」区（默认展开），标题标 sessionId（同时是观测 ID 和记忆会话 ID）
-        const proc = document.createElement('details');
-        proc.className = 'process'; proc.open = true;
+        const proc = document.createElement('details'); proc.className = 'process'; proc.open = true;
         proc.innerHTML = '<summary><b>Agent 执行过程</b>（会话 ' + sessionId + '，点击折叠）</summary>';
         chat.appendChild(proc);
 
-        // 助手回答气泡（CONTENT_DELTA 逐字填充）
-        const a = document.createElement('div');
-        a.className = 'msg assistant';
+        const a = document.createElement('div'); a.className = 'msg assistant';
         a.innerHTML = '<div class="avatar">Assistant</div><div class="bubble"></div>';
         chat.appendChild(a);
         chat.scrollTop = chat.scrollHeight;
@@ -980,36 +1169,33 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
         promptInput.value = '';
         setSending(true);
         document.getElementById('status').textContent = '连接中...';
-        subscribeSse(sessionId, prompt, proc, a);   // 先订阅，订阅成功后再触发
+        subscribeSse(sessionId, prompt, proc, a);
     }
 
-    // fetch + ReadableStream 订阅 SSE：能带 sessionId header（EventSource 做不到）
     function subscribeSse(sessionId, prompt, proc, assistantEl) {
         sseController = new AbortController();
-        fetch('/demo07/obs/sse', {
-            method: 'GET',
+        fetch('/demo07/obs/sse', { method: 'GET',
             headers: { 'sessionId': sessionId, 'Accept': 'text/event-stream' },
             signal: sseController.signal
         }).then(resp => {
             if (!resp.ok) throw new Error('SSE 连接失败: ' + resp.status);
             document.getElementById('status').textContent = 'Agent 思考中...';
-            triggerChat(sessionId, prompt);   // 订阅成功后触发，保证不漏 SESSION_STARTED
+            triggerChat(sessionId, prompt);
             const reader = resp.body.getReader();
             const decoder = new TextDecoder('utf-8');
             let buffer = '';
-            function pump() {
+            (function pump() {
                 reader.read().then(({ done, value }) => {
                     if (done) { onStreamEnd(); return; }
                     buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
                     let idx;
-                    while ((idx = buffer.indexOf('\n\n')) >= 0) {     // 按空行切 SSE 帧
+                    while ((idx = buffer.indexOf('\n\n')) >= 0) {
                         handleFrame(buffer.slice(0, idx), proc, assistantEl);
                         buffer = buffer.slice(idx + 2);
                     }
                     pump();
                 }).catch(err => { if (err.name !== 'AbortError') onStreamEnd(); });
-            }
-            pump();
+            })();
         }).catch(err => {
             document.getElementById('status').textContent = '连接失败: ' + err.message;
             setSending(false);
@@ -1022,25 +1208,18 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
         });
     }
 
-    // 解析一帧：后端只发 data: 行（没有 event: 行），靠 JSON 里的 type 分发
     function handleFrame(frame, proc, assistantEl) {
         let dataLine = '';
-        for (const line of frame.split('\n')) {
-            if (line.startsWith('data:')) dataLine += line.slice(5).trim();
-        }
+        for (const line of frame.split('\n')) if (line.startsWith('data:')) dataLine += line.slice(5).trim();
         if (!dataLine) return;
-        let evt;
-        try { evt = JSON.parse(dataLine); } catch (e) { return; }
+        let evt; try { evt = JSON.parse(dataLine); } catch (e) { return; }
         onEvent(evt.type, evt.data || {}, proc, assistantEl);
     }
 
     function onEvent(type, data, proc, assistantEl) {
         if (type === 'TOOL_CALL') {
-            addStep(proc, 'tool', '🔧 ' + (data.tool || 'tool'), [
-                ['参数', data.args], ['返回值', data.result]
-            ]);
+            addStep(proc, 'tool', '🔧 ' + (data.tool || 'tool'), [['参数', data.args], ['返回值', data.result]]);
         } else if (type === 'CONTENT_DELTA') {
-            // 流式正文：逐字追加到助手气泡
             if (data.text) assistantEl.querySelector('.bubble').textContent += data.text;
         } else if (type === 'SESSION_COMPLETED') {
             addStep(proc, 'done', '✓ 完成', []);
@@ -1048,8 +1227,7 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
             setSending(false);
             if (sseController) sseController.abort();
         } else if (type === 'SESSION_FAILED') {
-            const errStep = document.createElement('div');
-            errStep.className = 'step done';
+            const errStep = document.createElement('div'); errStep.className = 'step done';
             errStep.style.borderLeftColor = '#e53935';
             errStep.innerHTML = '<span class="label" style="color:#e53935">❌ 后端错误</span>'
                 + '<span class="kv">error: <b>' + escapeHtml(String(data.error || '')) + '</b></span>';
@@ -1062,29 +1240,16 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
     }
 
     function onStreamEnd() {
-        if (sending) {
-            document.getElementById('status').textContent = '连接已结束';
-            setSending(false);
-        }
+        if (sending) { document.getElementById('status').textContent = '连接已结束'; setSending(false); }
     }
-
     function addStep(proc, cls, label, kvs) {
-        const step = document.createElement('div');
-        step.className = 'step ' + cls;
+        const step = document.createElement('div'); step.className = 'step ' + cls;
         let html = '<span class="label">' + label + '</span>';
-        for (const [k, v] of kvs) {
-            if (v !== null && v !== undefined && v !== '') {
-                html += '<span class="kv">' + k + ': <b>' + escapeHtml(String(v)) + '</b></span>';
-            }
-        }
-        step.innerHTML = html;
-        proc.appendChild(step);
+        for (const [k, v] of kvs) if (v !== null && v !== undefined && v !== '')
+            html += '<span class="kv">' + k + ': <b>' + escapeHtml(String(v)) + '</b></span>';
+        step.innerHTML = html; proc.appendChild(step);
     }
-
-    function escapeHtml(s) {
-        return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-    }
-
+    function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
     function setSending(v) {
         sending = v;
         document.getElementById('send').disabled = v;
@@ -1095,88 +1260,14 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
 </html>
 ```
 
-点发送后：你的问题以右侧蓝色气泡出现，下面是一个**可折叠的「Agent 执行过程」区**（仿 DeepSeek 思考过程，标题带本次 sessionId），里面绿色步骤显示 `工具调用 / 参数 / 返回值`，助手回答以左侧气泡**逐字流式填充**（`CONTENT_DELTA`）。同一对话多轮**复用同一个 sessionId**（这样才有连续上下文）；点右上角「新对话」才换 sessionId、清空页面、开始一段全新记忆——这就是「多轮记忆 + 会话隔离」做实后的效果。
+点发送后：你的问题以右侧蓝色气泡出现，下面是一个可折叠的「Agent 执行过程」区（绿色步骤显示工具调用/参数/返回值），助手回答以左侧气泡逐字流式填充。同一对话多轮复用 sessionId（这样才有连续上下文）；点「新对话」才换 sessionId、清空页面、开始一段全新记忆。
 
 ---
 
-## 5. 这个方案为什么「企业级、合理」
-
-| 做法 | 为什么合理 |
-|------|-----------|
-| 工具用原生 `@Tool` + `.defaultTools()` | 用框架原生能力，不手动包底层 `ToolCallback` |
-| 工具可见性用 `ObservationHandler` | 订阅框架已发的 Observation，不侵入工具代码 |
-| 流式 `.stream()` + `CONTENT_DELTA` | 每个阶段实时可见，不等整段返回；run() 返回 Flux、不阻塞 |
-| 业务事件（会话/正文）和工具事件分离 | Agent 发业务事件、Handler 发工具事件，职责清晰 |
-| 会话隔离走 Reactor Context + ContextPropagation | 不裸用 ThreadLocal（切线程会丢），随流传播到工具执行线程 |
-| 多轮记忆用原生 `MessageChatMemoryAdvisor` + 内存 `ChatMemory` | 调前自动取历史、调后自动存回，业务零存取代码；sessionId 兼任记忆 ID，接口最简 |
-| config/tool/obs 分层 | 装配、工具、可观测各管各的，加工具/改观测互不影响 |
-| 两接口（/chat + /sse）分离 | 触发和订阅解耦，符合企业项目标准 |
-| `AgentEventBus` 总线 | 多消费者共享，加日志/审计消费者零改 Agent |
-
-**对比另一种常见做法**（企业里也有人这么写，但不如本方案规范）：
-- ❌ 手动把 `@Tool` 对象转成 `ToolCallback[]` 再包一层装饰器拦截 `call()` —— 能达成工具可见，但要写「转回调 + 包装饰器」的底层代码，侵入性强、不像用框架
-- ✅ 本方案用 Spring AI 原生 `Observation`：框架本就在发工具调用观测事件，我们只订阅，零侵入
-
-记忆同理：
-- ❌ 自己维护一个 `Map<sessionId, List<Message>>`、每次手动拼历史、手动存回复 —— 能跑，但要写一堆存取/裁剪逻辑，且和 ChatClient 调用耦合
-- ✅ 本方案用 Spring AI 原生 `MessageChatMemoryAdvisor` + `MessageWindowChatMemory`：框架自动取历史、存新消息、按窗口裁剪，业务零存取代码
-
-简单说：**能用框架原生能力的，就不要自己包底层**（工具可见用 Observation、记忆用 ChatMemory）。这是企业级的基本判断。
-
----
-
-## 6. 会话隔离 + 多轮记忆：已实现（回顾）
-
-本 demo 的会话隔离和多轮记忆**都已做实**，不再是进阶项。回顾闭环链路：
-
-```
-/chat 收到 sessionId(s1)
-   ↓ agent.run(prompt).contextWrite(Context.of("sessionId", s1)).subscribe()
-ObservableAgent.run：Flux.deferContextual 读出 s1
-   ↓ SESSION_STARTED 带上 s1
-ChatClient.prompt().advisors(a -> a.param(CONVERSATION_ID, s1))   ← sessionId 兼任记忆会话 ID
-   ↓ MessageChatMemoryAdvisor：调前取 s1 的历史拼进 prompt、调后存回本轮消息
-ChatClient.stream() 流式调用，LLM 决定调工具（带历史上下文）
-   ↓ 工具执行切到 boundedElastic 线程
-ContextPropagationConfig（Hooks.enableAutomaticContextPropagation）
-   ↓ Reactor Context 的 sessionId 自动恢复到工具线程的 SessionIdHolder
-ToolObservationHandler.onStop：SessionIdHolder.get() 读到 s1
-   ↓ TOOL_CALL 带上 s1
-AgentEventBus → /sse 过滤 sessionId=s1 → 前端只收 s1 的事件
-（下一轮再用 s1 触发 → ChatMemory 里 s1 的历史已累积 → LLM 接住上文）
-```
-
-企业级做法的三个要点：
-1. **sessionId 走 Reactor Context，不裸用 ThreadLocal**——ThreadLocal 切线程就丢，Reactor Context 随流传播。
-2. **ContextPropagation 桥接**——Reactor Context ↔ ThreadLocal，让 `ToolObservationHandler`（Spring AI 内部发起，只能读当前线程）也能拿到 sessionId。
-3. **sessionId 兼任记忆会话 ID**——最小实战刻意不分两个 ID，把 `sessionId` 直接当作 `ChatMemory.CONVERSATION_ID`，接口最简。企业级若要「观测隔离」和「记忆会话」解耦（比如一次观测流横跨多段记忆，或一段记忆被多次观测），可再拆出独立 `conversationId`，由 `/chat` 单独传入、`run()` 分别写两个 Reactor Context key——改动很小，但最小实战不需要。
-
-> ⚠️ **记忆的已知限制**：Spring AI 2.0 当前实现下，**工具调用过程中与 LLM 交换的中间消息不会自动存入 memory**（官方明确是已知限制）。本 demo 的影响：用户消息和 LLM 最终回复会正常累积，多轮上下文连续；但工具调用的 `ToolResponseMessage` 不进记忆——下一轮 LLM 知道自己上次说了什么，不一定记得上次调过什么工具。多数场景够用；要完整持久化需 Spring AI Session 项目（超本 demo 范围）。
->
-> 更复杂的多租户/多实例隔离（tenantId 透传、Redis 跨实例广播、记忆持久化到 JDBC/Cassandra）见 [33 方案 §12](./33-Agent子过程实时可见性方案.md)、[33b](./33b-Agent可观测性企业级演进实践.md)。
-
----
-
-## 7. 这个 demo 没做什么（对照 33 方案）
-
-| 没做 | 后果 | 方案章节 |
-|------|------|---------|
-| 事件序号 + 重排 | 可能乱序 | §17.1 |
-| 背压分级降级 | 高频时事件可能丢 | §17.2 |
-| SSE 断线重连 | 刷新页面漏中间事件 | §17.3 |
-| LLM token 统计 | 不知道烧了多少钱 | §12 |
-| 多实例 | 单机扛不住高并发 | §4 |
-| 多租户（tenantId） | 只有 sessionId 维度 | §12 |
-| 记忆持久化 | 用内存 `ChatMemory`，重启即丢历史；要持久化换 JDBC/Cassandra/Redis starter | §12 |
-| 观测/记忆 ID 解耦 | sessionId 兼任记忆 ID，无法「一次观测跨多段记忆」 | §6 |
-| 工具消息进记忆 | Spring AI 2.0 限制：工具调用的中间消息不进 memory（已知） | §6 |
-
----
-
-## 8. 相关文档
+## 相关文档
 
 - [33-Agent子过程实时可见性方案](./33-Agent子过程实时可见性方案.md) —— 完整方案（本 demo 的理论全本）
-- [33b-Agent可观测性企业级演进实践](./33b-Agent可观测性企业级演进实践.md) —— 终极项目（本 demo 的完整版）
+- [33b-Agent可观测性企业级演进实践](./33b-Agent可观测性企业级演进实践.md) —— 终极项目
 
 ---
 
