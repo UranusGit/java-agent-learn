@@ -1270,7 +1270,19 @@ public class ObservableAgent {
         .assistant { margin-bottom: 24px; }
         .assistant .avatar { font-size: 13px; color: #999; margin-bottom: 8px; }
         .assistant .bubble { background: #fff; padding: 14px 18px; border-radius: 12px;
-                             line-height: 1.8; color: #333; word-break: break-all; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+                             line-height: 1.8; color: #333; word-break: break-word;
+                             box-shadow: 0 1px 3px rgba(0,0,0,0.04); overflow-x: auto; }
+        /* Markdown 渲染样式：代码块、行内代码、列表、标题、段落间距 */
+        .assistant .bubble pre { background: #f6f8fa; padding: 12px; border-radius: 6px;
+                                 overflow-x: auto; margin: 8px 0; font-size: 13px; line-height: 1.5; }
+        .assistant .bubble code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; }
+        .assistant .bubble p { margin: 6px 0; }
+        .assistant .bubble p:first-child { margin-top: 0; }
+        .assistant .bubble p:last-child { margin-bottom: 0; }
+        .assistant .bubble ul, .assistant .bubble ol { margin: 6px 0; padding-left: 22px; }
+        .assistant .bubble h1, .assistant .bubble h2, .assistant .bubble h3 { margin: 10px 0 6px; }
+        .assistant .bubble h1 { font-size: 18px; } .assistant .bubble h2 { font-size: 16px; } .assistant .bubble h3 { font-size: 15px; }
+        .assistant .bubble a { color: #4d6bfe; }
         .process { max-width: 760px; margin: 0 auto 20px; padding: 0 24px; }
         .process summary { cursor: pointer; color: #999; font-size: 13px; padding: 6px 0; user-select: none; }
         .step { background: #fff; border-left: 3px solid #4d6bfe; margin: 6px 0; padding: 8px 12px;
@@ -1302,7 +1314,7 @@ public class ObservableAgent {
     <button id="send" onclick="start()">➤</button>
 </div></div>
 <script>
-    let sending = false, sseController = null, pendingChat = null;
+    let sending = false, sseController = null, pendingChat = null, assistantText = '';
     // sessionId 一身二职：事件流过滤 ID + 记忆会话 ID。同一对话多轮复用，点「新对话」才换。
     let currentSessionId = 's-' + Date.now();
 
@@ -1311,6 +1323,7 @@ public class ObservableAgent {
         if (sending) return;
         currentSessionId = 's-' + Date.now();
         document.getElementById('chat').innerHTML = '';
+        assistantText = '';   // 清空累积的 Markdown 文本
         document.getElementById('status').textContent = '已开新对话（会话 ' + currentSessionId + '）';
     });
 
@@ -1398,7 +1411,11 @@ public class ObservableAgent {
         if (type === 'TOOL_CALL') {
             addStep(proc, 'tool', '🔧 ' + (data.tool || 'tool'), [['参数', data.args], ['返回值', data.result]]);
         } else if (type === 'CONTENT_DELTA') {
-            if (data.text) assistantEl.querySelector('.bubble').textContent += data.text;
+            if (data.text) {
+                // 累积原始 Markdown 文本，每次增量到达后整体重新渲染（流式标准做法）
+                assistantText += data.text;
+                assistantEl.querySelector('.bubble').innerHTML = renderMarkdown(assistantText);
+            }
         } else if (type === 'SESSION_COMPLETED') {
             addStep(proc, 'done', '✓ 完成', []);
             document.getElementById('status').textContent = '完成';
@@ -1428,6 +1445,47 @@ public class ObservableAgent {
         step.innerHTML = html; proc.appendChild(step);
     }
     function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+    /**
+     * 极简 Markdown 渲染（无外部依赖，流式安全）。
+     * 支持：代码块 ```、行内代码 `、粗体 **、标题 #、无序列表 -、有序列表 1.、链接 []()、换行/段落。
+     * 安全：所有非代码文本经 escapeHtml 转义，防 XSS（LLM 输出不可信）。
+     * 流式：代码块未闭合 ``` 时，已闭合部分正常渲染，未闭合的按普通文本显示。
+     */
+    function renderMarkdown(md) {
+        const blocks = [];   // 暂存代码块占位
+        // 1. 提取代码块 ```...```（含未闭合的最后一个，按普通文本处理）
+        let text = md.replace(/```(\w*)\n?([\s\S]*?)(?:```|$)/g, (m, lang, code) => {
+            if (!m.endsWith('```')) return m;   // 未闭合，留给后续当普通文本
+            const i = blocks.length;
+            blocks.push('<pre><code>' + escapeHtml(code.replace(/\n$/, '')) + '</code></pre>');
+            return ' BLOCK' + i + ' ';
+        });
+        // 2. 转义剩余文本（防 XSS）
+        text = escapeHtml(text);
+        // 3. 按行处理块级元素
+        const lines = text.split('\n');
+        let html = '', inUl = false, inOl = false;
+        const closeLists = () => { if (inUl) { html += '</ul>'; inUl = false; } if (inOl) { html += '</ol>'; inOl = false; } };
+        for (const line of lines) {
+            if (/^###\s+/.test(line)) { closeLists(); html += '<h3>' + inline(line.replace(/^###\s+/, '')) + '</h3>'; }
+            else if (/^##\s+/.test(line)) { closeLists(); html += '<h2>' + inline(line.replace(/^##\s+/, '')) + '</h2>'; }
+            else if (/^#\s+/.test(line)) { closeLists(); html += '<h1>' + inline(line.replace(/^#\s+/, '')) + '</h1>'; }
+            else if (/^[-*]\s+/.test(line)) { if (!inUl) { closeLists(); html += '<ul>'; inUl = true; } html += '<li>' + inline(line.replace(/^[-*]\s+/, '')) + '</li>'; }
+            else if (/^\d+\.\s+/.test(line)) { if (!inOl) { closeLists(); html += '<ol>'; inOl = true; } html += '<li>' + inline(line.replace(/^\d+\.\s+/, '')) + '</li>'; }
+            else if (line.trim() === '') { closeLists(); }
+            else { closeLists(); html += '<p>' + inline(line) + '</p>'; }
+        }
+        closeLists();
+        // 4. 行内规则：行内代码、粗体、链接
+        function inline(s) {
+            return s.replace(/`([^`]+)`/g, (_, c) => '<code>' + c + '</code>')
+                    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+        }
+        // 5. 还原代码块占位
+        return html.replace(/ BLOCK(\d+) /g, (_, i) => blocks[+i]);
+    }
     function setSending(v) {
         sending = v;
         document.getElementById('send').disabled = v;
