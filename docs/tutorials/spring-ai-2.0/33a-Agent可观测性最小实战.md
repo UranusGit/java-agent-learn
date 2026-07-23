@@ -426,36 +426,12 @@ public class ToolObservationHandler implements ObservationHandler<ToolCallingObs
 }
 ```
 
-新增 `config/ObservationConfig.java`——把 Handler 注册到 Registry：
-```java
-package com.example.demo07.config;
+**不需要手动注册 Handler。** `ToolObservationHandler` 标了 `@Component`，Spring Boot 4 + actuator 会**自动把所有 `ObservationHandler` 类型的 Bean 注册到 `ObservationRegistry`**（通过 `ObservationRegistryPostProcessor`）。所以 `@Component` 这一个注解就够了，Handler 自动收到事件。
 
-import com.example.demo07.obs.ToolObservationHandler;
-import io.micrometer.observation.ObservationRegistry;
-import jakarta.annotation.PostConstruct;
-import org.springframework.context.annotation.Configuration;
-
-/**
- * Step 5：把 ToolObservationHandler 挂到 ObservationRegistry，它才能收到事件。
- * ObservationRegistry 由 actuator 自动装配。
- */
-@Configuration
-public class ObservationConfig {
-
-    private final ObservationRegistry registry;
-    private final ToolObservationHandler toolHandler;
-
-    public ObservationConfig(ObservationRegistry registry, ToolObservationHandler toolHandler) {
-        this.registry = registry;
-        this.toolHandler = toolHandler;
-    }
-
-    @PostConstruct
-    public void init() {
-        registry.observationConfig().observationHandler(toolHandler);
-    }
-}
-```
+> ⚠️ **别再写一个 `ObservationConfig` 手动 `registry.observationConfig().observationHandler(handler)`** ——那是新手最常踩的坑：
+> Spring 已经自动注册了一次，你再手动注册一次，**同一个 Handler 实例会在 Registry 里出现两次**，结果是每次工具调用的 `onStop` 被调用两遍，控制台**打印两遍**「工具调用」。
+>
+> 记住：**`observationHandler(...)` 是「追加」不是「替换」，且 Spring 已自动追加过**。手动再追加 = 重复。靠 `@Component` 自动注册即可，这正是「能用框架原生能力就不自己包底层」的体现。
 
 **③ 跑起来你会看到**
 
@@ -912,7 +888,6 @@ demo07/
     ├── config/
     │   ├── ChatClientConfig.java          ← Step 2/4/8 演进：空 → 工具 → 工具+记忆
     │   ├── ChatMemoryConfig.java          ← Step 8
-    │   ├── ObservationConfig.java         ← Step 5
     │   └── ContextPropagationConfig.java  ← Step 7
     ├── tool/
     │   └── TimeTools.java                 ← Step 4
