@@ -1350,6 +1350,7 @@ public class ObservableAgent {
         chat.scrollTop = chat.scrollHeight;
 
         promptInput.value = '';
+        assistantText = '';   // 每轮新气泡从空开始（否则会累积以往所有回答）
         setSending(true);
         document.getElementById('status').textContent = '连接中...';
         subscribeSse(sessionId, prompt, proc, a);
