@@ -10,6 +10,12 @@
 >
 > **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · Reactor · Maven · DeepSeek（OpenAI 兼容协议）。
 > **难度假设**：你会 Java、会用 IDE、会跑 Maven，但不熟 Reactor/SSE/可观测性。每个新概念第一次出现都先用大白话讲。
+>
+> **本文边界（重要）**：讲「**可观测性**」——让 Agent 的执行过程可见、可靠、可治理，以及支撑这套的工程化（事件总线、SSE、归档检索、重试降级等）。**不讲**两件事：
+> - **AI 产品功能开发**（RAG、Agent 编排、多模态、prompt 工程的"怎么写好 prompt"）——那是产品能力，不是可观测性；
+> - **部署运维**（Docker/k8s/CI-CD）——本文目标是你**在 IDE 里能启动跑通**，外部依赖只用一个 Redis（brew/docker 起一个即可），不引入容器编排。
+>
+> 简单说：**本文教你把"看不见的 Agent"变成"看得见、查得到、出事能救的生产级可观测系统"，在 IDE 里一步步复现**。AI 功能怎么写、怎么部署上云，是另外的文档。
 
 ---
 
@@ -460,6 +466,12 @@ import reactor.core.publisher.Sinks;
  * 底层 Sinks.Many 当成一个「公共公告板」：
  *   multicast：广播，所有订阅者都收得到
  *   onBackpressureBuffer(256)：消费者来不及处理时缓冲 256 条
+ *
+ * 背压满后会发生什么（企业级必须搞清）：
+ *   缓冲满时 emit 调 tryEmitNext 返回 FAIL_TERMINATED/FAIL_OVERFLOW，事件被丢弃（不阻塞生产者）。
+ *   这就是第 2 章事故 1「SESSION_COMPLETED 丢失」的根因——CRITICAL 事件被丢，前端永远转圈。
+ *   解法不是"加大 buffer"（治标），而是「关键事件落 Redis 兜底」——丢了大不了重连回放，不能没有。
+ *   buffer 大小按"消费者处理速度 × 瞬时积压窗口"定，256 对调试场景够，生产按 metrics 调。
  */
 @Component
 public class EventBus {
@@ -1295,6 +1307,136 @@ public class SseController {
 >
 > **企业级并发控制**：`boundedElastic` 默认上限 10×CPU 核数（8 核机器 = 80 个线程），超出的任务排队。这个上限是**背压保护**——高并发时请求排队而不是无限建线程拖垮系统。调上限：`Schedulers.newBoundedElastic(线程数, 队列大小, "name")` 自定义。**永远不要在高并发路径用裸 `new Thread`**——它是无上限的，一个流量洪峰就能 OOM。
 
+#### 2.2.6 事件归档：从"实时看"到"事后查"
+
+到这里可观测系统已经能"实时看"了，但缺一个核心能力——**事后查**。用户说"我昨天那次生成有问题"，Redis 只留 30 分钟，早清了。**可观测产品和调试页面的分水岭就是"能不能查历史"**。
+
+Redis 是**短期兜底**（防丢、重连回放，30 分钟够），归档是**长期可查**（按 sessionId/tenant/时间检索某次会话）。两者职责不同，各存各的。
+
+**存储选型**：本文目标是 IDE 能跑、零重型外部依赖。生产用 Elasticsearch（全文检索）或 ClickHouse（时序），但那要额外起服务。**这里用 H2 内嵌数据库**——加个依赖就能在 IDE 跑（文件存储，零外部服务），逻辑和生产一样（都是 JDBC），将来换 ES/ClickHouse 只换实现。
+
+加 H2 依赖：
+```xml
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+        </dependency>
+```
+
+`application.yaml` 加 H2 配置（文件模式，重启不丢）：
+```yaml
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/aobs-events    # 文件存储，IDE 重启不丢
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  sql:
+    init:
+      mode: always                            # 每次启动建表（IF NOT EXISTS）
+```
+
+`src/main/resources/schema.sql`（自动建表）：
+```sql
+CREATE TABLE IF NOT EXISTS event_archive (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    session_id VARCHAR(64) NOT NULL,
+    seq BIGINT,                               -- 会话内序号
+    type VARCHAR(32) NOT NULL,                -- 事件类型
+    tenant_id VARCHAR(64),                    -- 租户（第5章后填）
+    ts BIGINT NOT NULL,                       -- 时间戳
+    payload TEXT                              -- 完整事件 JSON
+);
+CREATE INDEX IF NOT EXISTS idx_archive_session ON event_archive(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_archive_tenant_time ON event_archive(tenant_id, ts);
+```
+
+归档服务 `src/main/java/com/example/aobs/obs/EventArchiveService.java`（新增）：
+```java
+package com.example.aobs.obs;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 事件归档：把事件持久化到 JDBC 存储（本文用 H2，生产换 ES/ClickHouse）。
+ * 和 CriticalEventStore 的区别：Redis 是短期兜底（30min），归档是长期可查。
+ * 归档是异步的——绝不拖累事件流的主路径。
+ */
+@Service
+public class EventArchiveService {
+
+    private final JdbcTemplate jdbc;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public EventArchiveService(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    /** 归档一个事件。失败只打日志，不影响事件流。 */
+    public void archive(AgentEvent event) {
+        try {
+            jdbc.update(
+                    "INSERT INTO event_archive (session_id, seq, type, tenant_id, ts, payload) VALUES (?,?,?,?,?,?)",
+                    event.sessionId(),
+                    event.sequence(),
+                    event.type(),
+                    event.tenantId(),
+                    event.timestamp().toEpochMilli(),
+                    mapper.writeValueAsString(event));
+        } catch (Exception e) {
+            System.err.println("[Archive] failed: " + e.getMessage());   // 归档失败不影响主流程
+        }
+    }
+
+    /** 按会话查历史事件（事后排查用）。按 seq 排序，还原事件顺序。 */
+    public List<Map<String, Object>> findBySession(String sessionId) {
+        return jdbc.queryForList(
+                "SELECT type, ts, payload FROM event_archive WHERE session_id = ? ORDER BY seq",
+                sessionId);
+    }
+}
+```
+
+让 EventBus 在发事件时顺手归档（和落 Redis 一起，都在 emit 内部）：
+```java
+// EventBus.emit 里，落库关键事件后加一行归档（所有事件都归档，不只 CRITICAL）
+public void emit(AgentEvent event) {
+    AgentEvent sequenced = withSequence(event, nextSeq(event.sessionId()));
+    sink.tryEmitNext(sequenced);
+    if (storeProvider.getIfAvailable() != null
+            && sequenced.criticality() == AgentEvent.Criticality.CRITICAL) {
+        storeProvider.getIfAvailable().save(sequenced);   // Redis 短期兜底
+    }
+    archiveProvider.getIfAvailable().archive(sequenced);   // ← 归档长期可查（所有事件）
+}
+```
+
+查询接口（加到 `SseController`，让调试台能查历史）：
+```java
+    /** 查某会话的历史事件（事后排查）。GET /api/obs/history/{sessionId} */
+    @GetMapping("/history/{sessionId}")
+    public List<Map<String, Object>> history(@PathVariable String sessionId) {
+        return archiveProvider.getIfAvailable().findBySession(sessionId);
+    }
+```
+
+> **为什么 Redis + 归档两层**：Redis 快但短期（内存贵、丢了心疼，30min 兜底回放用）；归档慢但长期（磁盘便宜，事后查用）。职责分开，各取所长。这是可观测系统的通用分层——**热数据（实时/短期）+ 冷数据（归档/长期）**。
+>
+> **归档必须异步/容错**：归档走 JDBC（磁盘 IO），不能阻塞事件流。`archive` 内部 try/catch 吞异常——归档挂了不影响实时事件和写作主流程（和第 6 章"绝不拖垮主链路"一致）。生产用 `boundedElastic` 异步归档 + 队列削峰。
+>
+> **生产换 ES/ClickHouse**：H2 是 IDE 可跑的演示。生产事件量大、要全文检索（如"查所有 output 含某关键词的会话"）时换 Elasticsearch；要按时间聚合统计（"每天事件量趋势"）换 ClickHouse。接口不变（都是 `archive`/`findBySession`），只换实现——这就是抽象的价值。
+>
+> ⚠️ `AgentEvent` 的 `sequence()`/`tenantId()` 是第 2/5 章加的字段。归档代码假设这些字段已存在——如果在第 2 章早期做归档（tenantId 还没加），那行写 null 即可。
+
 ### 2.3 验证（用页面 + Redis CLI）
 
 确保 Redis 已启动。启动应用，打开 `http://localhost:8080/index.html`，测三个场景：
@@ -1334,13 +1476,15 @@ redis-cli ZRANGE aobs:events:s1 0 -1
 <script>
 // 幂等去重：记录已收到的帧 id（对应后端 sequence）。回放可能重复投递，这里去重。
 const seenIds = new Set();
-function start() {
-    document.getElementById('events').innerHTML = '';
-    seenIds.clear();
+let reconnectAttempts = 0;          // 重连次数（指数退避用）
+const MAX_RECONNECT = 5;            // 最大重连次数，超了放弃（避免无限打爆后端）
+let es = null;
+
+function connect() {
     // EventSource：sessionId 走 query；断线自动重连，自动带 Last-Event-ID 头
-    const es = new EventSource('/api/obs/article?prompt=重连演示&sessionId=rc-demo');
+    es = new EventSource('/api/obs/article?prompt=重连演示&sessionId=rc-demo');
+    es.onopen = () => { reconnectAttempts = 0; add('[连接已建立]', 'reconn'); };
     es.onmessage = e => {
-        // e.lastEventId 是后端设的帧 id（sessionId-timestamp-sequence 格式）
         if (e.lastEventId && seenIds.has(e.lastEventId)) {
             add('[重复帧已丢弃] ' + e.lastEventId, 'dup');   // 幂等：已收过的丢弃
             return;
@@ -1349,7 +1493,25 @@ function start() {
         add(e.data);
     };
     es.addEventListener('SESSION_COMPLETED', e => { add('[完成]'); es.close(); });
-    es.onopen = () => add('[连接已建立]', 'reconn');
+    // 重连退避：EventSource 默认 3s 固定重连，会打爆挂掉的后端。这里接管——
+    // onerror 时主动 close，按指数退避（2s/4s/8s...）自己重连，超阈值放弃。
+    es.onerror = () => {
+        es.close();
+        if (reconnectAttempts >= MAX_RECONNECT) {
+            add('[重连失败，请稍后手动重试]', 'reconn');
+            return;
+        }
+        const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 30000); // 指数退避，上限 30s
+        reconnectAttempts++;
+        add('[' + delay/1000 + 's 后第 ' + reconnectAttempts + ' 次重连]', 'reconn');
+        setTimeout(connect, delay);
+    };
+}
+function start() {
+    document.getElementById('events').innerHTML = '';
+    seenIds.clear();
+    reconnectAttempts = 0;
+    connect();
 }
 function add(text, cls) {
     const d = document.createElement('div');
@@ -1371,15 +1533,18 @@ function add(text, cls) {
 ```
 src/main/java/com/example/aobs/obs/
 ├── AgentEvent.java          （改：加 criticality + sequence）
-├── EventBus.java            （改：落库 + 分配序号）
-├── CriticalEventStore.java  （新增）
-└── SseController.java       （改：回放 + 线程池 + ObjectMapper + sessionId 兼容 query）
+├── EventBus.java            （改：落库 + 分配序号 + 归档）
+├── CriticalEventStore.java  （新增：Redis 短期兜底）
+├── EventArchiveService.java （新增：JDBC 长期归档 + 历史查询）
+└── SseController.java       （改：回放 + 线程池 + ObjectMapper + sessionId 兼容 query + history 接口）
 
-src/main/resources/static/
-├── index.html               （第1章版，不变）
-└── reconnect.html           （新增：EventSource 重连演示）
+src/main/resources/
+├── schema.sql               （新增：event_archive 建表）
+└── static/
+    ├── index.html           （第1章版，不变）
+    └── reconnect.html       （新增：EventSource 重连演示 + 退避）
 ```
-pom 加了 `spring-boot-starter-data-redis`。
+pom 加了 `spring-boot-starter-data-redis` + `spring-boot-starter-jdbc` + `h2`。
 
 ```bash
 git add -A && git commit -m "第2章：事件可靠性——分级落库、序号、重连回放（页面演示）"
@@ -2910,7 +3075,8 @@ ai-writing-assistant/
 │       ├── PropagatedContextValue.java   # 通用上下文值（第3章）
 │       ├── AppContextKeys.java           # 上下文注册中心（第3章）
 │       ├── EventSequencer.java           # 序号重排（第4章）
-│       ├── CriticalEventStore.java       # 关键事件落库（第2章）
+│       ├── CriticalEventStore.java       # 关键事件落库 Redis（第2章）
+│       ├── EventArchiveService.java      # 事件归档 JDBC + 历史查询（第2章）
 │       ├── SessionStateStore.java        # 会话状态外置（第4章）
 │       ├── RedisStreamBridge.java        # 跨实例广播（第4章）
 │       ├── ToolObservationHandler.java   # 订阅工具 Observation（第3章）
@@ -2921,6 +3087,7 @@ ai-writing-assistant/
 │       └── ObsHealthIndicator.java       # 健康检查（第6章）
 ├── src/main/resources/
 │   ├── application.yaml
+│   ├── schema.sql                        # event_archive 建表（第2章归档）
 │   └── static/                           # 前端页面（随章节演进，主要验证手段）
 │       ├── index.html                    # 调试台（第1章起，逐章增强）
 │       └── reconnect.html                # 重连演示（第2章）
@@ -3055,6 +3222,15 @@ flowchart TD
             <artifactId>resilience4j-spring-boot3</artifactId>
             <version>2.2.0</version>
         </dependency>
+        <!-- 事件归档：JDBC + H2（第2章 2.2.6；生产换 ES/ClickHouse） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>
@@ -3180,6 +3356,7 @@ logging:
 
 **可观测性深度**：
 - 本文的"事件流"是自定义观测。生产还应接 **Micrometer + Prometheus**（metrics）和 **分布式追踪**（tracing，Spring AI 的 Observation 已自带 span，接 Tempo/Zipkin 即可）——这是可观测性三件套（metrics/tracing/logs）的后两件。
+- **traceId 和 sessionId 要关联**：这是可观测三件套联动的关键。sessionId 是业务会话维度（本文的事件流用它），traceId 是分布式追踪维度（跨服务的请求链路用它）。两者不能各管各的——否则在追踪系统按 traceId 查到一条链路，却对不上是哪个用户的哪次会话。企业级做法：把 sessionId 作为 **baggage**（分布式上下文字段）放进追踪，或事件归档时同时存 traceId（`event_archive` 加 trace_id 列）。这样任意一个维度都能跳查到另一个——这是"可观测性"真正"可查"的闭环。
 
 **成本告警闭环**：
 第 5 章算了成本指标（`tenant_daily_cost_usd`），但要"烧钱时主动知道"，得接告警。Prometheus alertmanager 规则示例（`alerts.yml`）：
