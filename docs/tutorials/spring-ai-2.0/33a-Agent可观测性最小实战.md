@@ -552,14 +552,22 @@ package com.example.demo07.obs;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Step 6：流式调 ChatClient，把每个阶段实时转成事件，推到总线。
  * 工具调用事件由 ToolObservationHandler 发，业务事件（正文/会话生命周期）归这里——职责分离。
+ *
+ * 设计要点（企业级响应式编排）：
+ *   - 方法真正产出的是「事件」，所以返回 Flux<AgentEvent>（签名诚实，非"返回值只是触发器"）。
+ *   - 事件双出口：作为流元素返回（给直接订阅方）+ doOnNext/defer 里同步 emit 进总线（给 /sse）。
+ *   - 三段式 concat：开始 → 正文 → 完成，顺序由 Flux.concat 保证。
+ *   - 开始/完成用 Flux.defer：到点才构造，timestamp 才准；不提前 emit，subscribe 前无副作用。
  */
 @Component
 public class ObservableAgent {
@@ -573,40 +581,65 @@ public class ObservableAgent {
     }
 
     public Flux<AgentEvent> run(String userInput, String sessionId) {
-        // 会话开始
-        bus.emit(AgentEvent.builder()
-                .type("SESSION_STARTED").sessionId(sessionId)
-                .timestamp(System.currentTimeMillis())
-                .data(Map.of("input", userInput)).build());
 
-        Flux<ChatClientResponse> stream = chatClient.prompt()
+        // 正文事件流：每个 chunk 映射成一个 CONTENT_DELTA（数量不定，只能由流产出，无法提前构造）
+        Flux<AgentEvent> deltas = chatClient.prompt()
                 .user(userInput)
                 .stream()
-                .chatClientResponse();
-
-        // 每个 chunk → CONTENT_DELTA；完成 → SESSION_COMPLETED；错误 → SESSION_FAILED
-        return stream
-                .doOnNext(resp -> {
+                .chatClientResponse()
+                .map(resp -> {
                     String text = resp.chatResponse().getResult().getOutput().getText();
-                    if (text != null && !text.isEmpty()) {
-                        bus.emit(AgentEvent.builder()
-                                .type("CONTENT_DELTA").sessionId(sessionId)
-                                .timestamp(System.currentTimeMillis())
-                                .data(Map.of("text", text)).build());
+                    if (text == null || text.isEmpty()) {
+                        return null;
                     }
+                    AgentEvent delta = AgentEvent.builder()
+                            .type("CONTENT_DELTA").sessionId(sessionId)
+                            .timestamp(System.currentTimeMillis())
+                            .data(Map.of("text", text)).build();
+                    bus.emit(delta);
+                    return delta;
                 })
-                .doOnError(err -> bus.emit(AgentEvent.builder()
-                        .type("SESSION_FAILED").sessionId(sessionId)
-                        .timestamp(System.currentTimeMillis())
-                        .data(Map.of("error", err.getClass().getSimpleName() + ": " + err.getMessage()))
-                        .build()))
-                .doFinally(signal -> bus.emit(AgentEvent.builder()
-                        .type("SESSION_COMPLETED").sessionId(sessionId)
-                        .timestamp(System.currentTimeMillis())
-                        .data(Map.of()).build()));
+                .filter(Objects::nonNull)
+                .doOnError(err -> {
+                    AgentEvent failed = AgentEvent.builder()
+                            .type("SESSION_FAILED").sessionId(sessionId)
+                            .timestamp(System.currentTimeMillis())
+                            .data(Map.of("error", err.getClass().getSimpleName() + ": " + err.getMessage()))
+                            .build();
+                    bus.emit(failed);
+                });
+
+        // 三段式编排：开始 → 正文 → 完成。
+        // 顺序靠 Flux.concat（前一段完成才订阅下一段）；时机靠 Flux.defer（到点才构造，timestamp 才准）。
+        return Flux.concat(
+                Flux.defer(() -> {
+                    AgentEvent started = AgentEvent.builder()
+                            .type("SESSION_STARTED").sessionId(sessionId)
+                            .timestamp(System.currentTimeMillis())
+                            .data(Map.of("input", userInput)).build();
+                    bus.emit(started);
+                    return Flux.just(started);
+                }),
+                deltas,
+                Flux.defer(() -> {
+                    AgentEvent completed = AgentEvent.builder()
+                            .type("SESSION_COMPLETED").sessionId(sessionId)
+                            .timestamp(System.currentTimeMillis())
+                            .data(Map.of()).build();
+                    bus.emit(completed);
+                    return Flux.just(completed);
+                })
+        );
     }
 }
 ```
+
+> **为什么这样编排（企业级响应式要点）**：
+> 1. **签名诚实**——返回 `Flux<AgentEvent>` 就是事件流，不再「返回值是触发器、真正产出在副作用里」。调用方可直接订阅拿完整事件序列。
+> 2. **事件双出口**——每个事件既作为流元素返回（给直接订阅方），又 `bus.emit` 进总线（给 `/sse`）。一条逻辑、两个出口，不重复构造。
+> 3. **顺序靠 `Flux.concat`**——`concat(开始, 正文, 完成)` 严格按序：前一段完成才订阅下一段。这是"开始→正文→完成"顺序的保证。
+> 4. **时机靠 `Flux.defer`**——开始/完成事件到点才构造，`timestamp` 才准（completed 的时间戳是流结束时刻，不是方法调用时刻）；且 subscribe 前不执行任何副作用。
+> 5. **错误路径安全**——`doOnError` 发 `SESSION_FAILED`；异常时 concat 后续（completed 的 defer）不会执行，不会多发 `SESSION_COMPLETED`。比 `doFinally`（错误和完成都触发）更严谨。
 
 改 `ObsController`——双接口：`/chat` 触发（异步），`/sse` 订阅：
 ```java
@@ -663,7 +696,7 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
 
 **④ 内部怎么流转**（双接口架构的核心）：
 ```
-/chchat(s1) ──subscribe──> run(prompt, s1) ──发 SESSION_STARTED/CONTENT_DELTA──┐
+/chat(s1) ──subscribe──> run(prompt, s1) ──发 SESSION_STARTED/CONTENT_DELTA──┐
                                                                                 ↓
                                                               AgentEventBus（公共公告板）
                                                                                 ↑
@@ -997,6 +1030,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.util.Map;
+import java.util.Objects;
 
 @Component
 public class ObservableAgent {
@@ -1014,36 +1048,54 @@ public class ObservableAgent {
             String sessionId = ctx.getOrDefault("sessionId", "unknown");
             SessionIdHolder.set(sessionId);
 
-            bus.emit(AgentEvent.builder()
-                    .type("SESSION_STARTED").sessionId(sessionId)
-                    .timestamp(System.currentTimeMillis())
-                    .data(Map.of("input", userInput)).build());
-
-            Flux<ChatClientResponse> stream = chatClient.prompt()
+            // 正文事件流（带记忆 Advisor）
+            Flux<AgentEvent> deltas = chatClient.prompt()
                     .user(userInput)
                     .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
                     .stream()
-                    .chatClientResponse();
-
-            return stream
-                    .doOnNext(resp -> {
+                    .chatClientResponse()
+                    .map(resp -> {
                         String text = resp.chatResponse().getResult().getOutput().getText();
-                        if (text != null && !text.isEmpty()) {
-                            bus.emit(AgentEvent.builder()
-                                    .type("CONTENT_DELTA").sessionId(sessionId)
-                                    .timestamp(System.currentTimeMillis())
-                                    .data(Map.of("text", text)).build());
+                        if (text == null || text.isEmpty()) {
+                            return null;
                         }
+                        AgentEvent delta = AgentEvent.builder()
+                                .type("CONTENT_DELTA").sessionId(sessionId)
+                                .timestamp(System.currentTimeMillis())
+                                .data(Map.of("text", text)).build();
+                        bus.emit(delta);
+                        return delta;
                     })
-                    .doOnError(err -> bus.emit(AgentEvent.builder()
-                            .type("SESSION_FAILED").sessionId(sessionId)
-                            .timestamp(System.currentTimeMillis())
-                            .data(Map.of("error", err.getClass().getSimpleName() + ": " + err.getMessage()))
-                            .build()))
-                    .doFinally(signal -> bus.emit(AgentEvent.builder()
-                            .type("SESSION_COMPLETED").sessionId(sessionId)
-                            .timestamp(System.currentTimeMillis())
-                            .data(Map.of()).build()));
+                    .filter(Objects::nonNull)
+                    .doOnError(err -> {
+                        AgentEvent failed = AgentEvent.builder()
+                                .type("SESSION_FAILED").sessionId(sessionId)
+                                .timestamp(System.currentTimeMillis())
+                                .data(Map.of("error", err.getClass().getSimpleName() + ": " + err.getMessage()))
+                                .build();
+                        bus.emit(failed);
+                    });
+
+            // 三段式：开始 → 正文 → 完成（顺序靠 concat，时机靠 defer）
+            return Flux.concat(
+                    Flux.defer(() -> {
+                        AgentEvent started = AgentEvent.builder()
+                                .type("SESSION_STARTED").sessionId(sessionId)
+                                .timestamp(System.currentTimeMillis())
+                                .data(Map.of("input", userInput)).build();
+                        bus.emit(started);
+                        return Flux.just(started);
+                    }),
+                    deltas,
+                    Flux.defer(() -> {
+                        AgentEvent completed = AgentEvent.builder()
+                                .type("SESSION_COMPLETED").sessionId(sessionId)
+                                .timestamp(System.currentTimeMillis())
+                                .data(Map.of()).build();
+                        bus.emit(completed);
+                        return Flux.just(completed);
+                    })
+            );
         });
     }
 }
