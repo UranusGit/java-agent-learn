@@ -551,8 +551,6 @@ public class AgentEventBus {
 package com.example.demo07.obs;
 
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.ChatClientResponse;
-import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
@@ -565,9 +563,14 @@ import java.util.Objects;
  *
  * 设计要点（企业级响应式编排）：
  *   - 方法真正产出的是「事件」，所以返回 Flux<AgentEvent>（签名诚实，非"返回值只是触发器"）。
- *   - 事件双出口：作为流元素返回（给直接订阅方）+ doOnNext/defer 里同步 emit 进总线（给 /sse）。
- *   - 三段式 concat：开始 → 正文 → 完成，顺序由 Flux.concat 保证。
+ *   - 事件双出口：作为流元素返回（给直接订阅方）+ 构造时同步 emit 进总线（给 /sse）。
+ *   - 三段式 concat：opening → deltas → closing，顺序由 Flux.concat 保证。
  *   - 开始/完成用 Flux.defer：到点才构造，timestamp 才准；不提前 emit，subscribe 前无副作用。
+ *
+ * 命名约定（消除内外层重名）：
+ *   - 外层 Flux 用「阶段名」：opening / deltas / closing（流的几段）
+ *   - 内层 AgentEvent 用「事件名」：started / delta / completed / failed（具体一个事件）
+ *   两层词类不同，不会撞名。
  */
 @Component
 public class ObservableAgent {
@@ -582,20 +585,30 @@ public class ObservableAgent {
 
     public Flux<AgentEvent> run(String userInput, String sessionId) {
 
-        // 正文事件流：每个 chunk 映射成一个 CONTENT_DELTA（数量不定，只能由流产出，无法提前构造）
+        // 阶段一：会话开始。defer → 订阅时才构造 started，timestamp 才准。
+        Flux<AgentEvent> opening = Flux.defer(() -> {
+            AgentEvent started = AgentEvent.builder()
+                    .type("SESSION_STARTED").sessionId(sessionId)
+                    .timestamp(System.currentTimeMillis())
+                    .data(Map.of("input", userInput)).build();
+            bus.emit(started);
+            return Flux.just(started);
+        });
+
+        // 阶段二：正文流。每个 chunk 映射成一个 delta（数量不定，只能由流产出，无法提前构造）。
+        // .content() 直接拿 Flux<String>（纯文本 chunk），比 chatClientResponse() 更简洁。
         Flux<AgentEvent> deltas = chatClient.prompt()
                 .user(userInput)
                 .stream()
-                .chatClientResponse()
-                .map(resp -> {
-                    String text = resp.chatResponse().getResult().getOutput().getText();
-                    if (text == null || text.isEmpty()) {
+                .content()
+                .map(chunk -> {
+                    if (chunk == null || chunk.isEmpty()) {
                         return null;
                     }
                     AgentEvent delta = AgentEvent.builder()
                             .type("CONTENT_DELTA").sessionId(sessionId)
                             .timestamp(System.currentTimeMillis())
-                            .data(Map.of("text", text)).build();
+                            .data(Map.of("text", chunk)).build();
                     bus.emit(delta);
                     return delta;
                 })
@@ -609,27 +622,19 @@ public class ObservableAgent {
                     bus.emit(failed);
                 });
 
-        // 三段式编排：开始 → 正文 → 完成。
-        // 顺序靠 Flux.concat（前一段完成才订阅下一段）；时机靠 Flux.defer（到点才构造，timestamp 才准）。
-        return Flux.concat(
-                Flux.defer(() -> {
-                    AgentEvent started = AgentEvent.builder()
-                            .type("SESSION_STARTED").sessionId(sessionId)
-                            .timestamp(System.currentTimeMillis())
-                            .data(Map.of("input", userInput)).build();
-                    bus.emit(started);
-                    return Flux.just(started);
-                }),
-                deltas,
-                Flux.defer(() -> {
-                    AgentEvent completed = AgentEvent.builder()
-                            .type("SESSION_COMPLETED").sessionId(sessionId)
-                            .timestamp(System.currentTimeMillis())
-                            .data(Map.of()).build();
-                    bus.emit(completed);
-                    return Flux.just(completed);
-                })
-        );
+        // 阶段三：会话完成。defer → 流执行到末尾时才构造 completed，timestamp 才准。
+        Flux<AgentEvent> closing = Flux.defer(() -> {
+            AgentEvent completed = AgentEvent.builder()
+                    .type("SESSION_COMPLETED").sessionId(sessionId)
+                    .timestamp(System.currentTimeMillis())
+                    .data(Map.of()).build();
+            bus.emit(completed);
+            return Flux.just(completed);
+        });
+
+        // 三段编排：opening → deltas → closing。
+        // 顺序靠 Flux.concat（前一段完成才订阅下一段）；时机靠各阶段的 Flux.defer / map lambda。
+        return Flux.concat(opening, deltas, closing);
     }
 }
 ```
@@ -637,9 +642,15 @@ public class ObservableAgent {
 > **为什么这样编排（企业级响应式要点）**：
 > 1. **签名诚实**——返回 `Flux<AgentEvent>` 就是事件流，不再「返回值是触发器、真正产出在副作用里」。调用方可直接订阅拿完整事件序列。
 > 2. **事件双出口**——每个事件既作为流元素返回（给直接订阅方），又 `bus.emit` 进总线（给 `/sse`）。一条逻辑、两个出口，不重复构造。
-> 3. **顺序靠 `Flux.concat`**——`concat(开始, 正文, 完成)` 严格按序：前一段完成才订阅下一段。这是"开始→正文→完成"顺序的保证。
-> 4. **时机靠 `Flux.defer`**——开始/完成事件到点才构造，`timestamp` 才准（completed 的时间戳是流结束时刻，不是方法调用时刻）；且 subscribe 前不执行任何副作用。
-> 5. **错误路径安全**——`doOnError` 发 `SESSION_FAILED`；异常时 concat 后续（completed 的 defer）不会执行，不会多发 `SESSION_COMPLETED`。比 `doFinally`（错误和完成都触发）更严谨。
+> 3. **三段独立具名**——`opening/deltas/closing` 各自成变量，末尾 `Flux.concat(opening, deltas, closing)` 一行编排。读起来是「定义三段 → 拼接」，层次清晰，不用在 concat 参数堆里分辨。
+> 4. **顺序靠 `Flux.concat`**——`concat` 严格按序：前一段完成才订阅下一段。这是"开始→正文→完成"顺序的保证。
+> 5. **时机靠 `Flux.defer`**——opening/closing 的 `currentTimeMillis()` 写在 defer 的 lambda 体内，到点才执行（`currentTimeMillis()` 这个**调用**在 lambda 里，不是把结果传进去——这是延迟生效的关键）；completed 的时间戳是流结束时刻，不是方法调用时刻。deltas 的 timestamp 则在每个 chunk 到达时由 map 的 lambda 取。
+> 6. **错误路径安全**——`doOnError` 发 `SESSION_FAILED`；异常时 concat 后续（closing 的 defer）不会执行，不会多发 `SESSION_COMPLETED`。比 `doFinally`（错误和完成都触发）更严谨。
+
+> 💡 **响应式核心认知（这段代码的底层原理）**：
+> - **lambda 传递的是"位置"不是"执行"**——`.map(fn)` / `Flux.defer(fn)` 里的 `fn` 是一段"将来执行的代码"，组装 Flux 时只把 fn 存起来，fn 体内的代码（包括 `currentTimeMillis()`）一行都没跑。
+> - **副作用写进 lambda 体内才能延迟**——`currentTimeMillis()` 这个调用必须写在 lambda 的 `{}` 里（不是把它的结果传进 lambda），它的执行才跟着 lambda 走。
+> - **选哪个操作符 = 选"什么时候触发 lambda"**——map 靠"元素到达"触发、defer 靠"订阅"触发、doOnComplete 靠"完成"触发。延迟都靠 lambda，触发器因场景而异。
 
 改 `ObsController`——双接口：`/chat` 触发（异步），`/sse` 订阅：
 ```java
@@ -1024,7 +1035,6 @@ public class ToolObservationHandler implements ObservationHandler<ToolCallingObs
 package com.example.demo07.obs;
 
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -1048,21 +1058,30 @@ public class ObservableAgent {
             String sessionId = ctx.getOrDefault("sessionId", "unknown");
             SessionIdHolder.set(sessionId);
 
-            // 正文事件流（带记忆 Advisor）
+            // 阶段一：会话开始
+            Flux<AgentEvent> opening = Flux.defer(() -> {
+                AgentEvent started = AgentEvent.builder()
+                        .type("SESSION_STARTED").sessionId(sessionId)
+                        .timestamp(System.currentTimeMillis())
+                        .data(Map.of("input", userInput)).build();
+                bus.emit(started);
+                return Flux.just(started);
+            });
+
+            // 阶段二：正文流（带记忆 Advisor）；.content() 直接拿 Flux<String>
             Flux<AgentEvent> deltas = chatClient.prompt()
                     .user(userInput)
                     .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
                     .stream()
-                    .chatClientResponse()
-                    .map(resp -> {
-                        String text = resp.chatResponse().getResult().getOutput().getText();
-                        if (text == null || text.isEmpty()) {
+                    .content()
+                    .map(chunk -> {
+                        if (chunk == null || chunk.isEmpty()) {
                             return null;
                         }
                         AgentEvent delta = AgentEvent.builder()
                                 .type("CONTENT_DELTA").sessionId(sessionId)
                                 .timestamp(System.currentTimeMillis())
-                                .data(Map.of("text", text)).build();
+                                .data(Map.of("text", chunk)).build();
                         bus.emit(delta);
                         return delta;
                     })
@@ -1076,26 +1095,18 @@ public class ObservableAgent {
                         bus.emit(failed);
                     });
 
-            // 三段式：开始 → 正文 → 完成（顺序靠 concat，时机靠 defer）
-            return Flux.concat(
-                    Flux.defer(() -> {
-                        AgentEvent started = AgentEvent.builder()
-                                .type("SESSION_STARTED").sessionId(sessionId)
-                                .timestamp(System.currentTimeMillis())
-                                .data(Map.of("input", userInput)).build();
-                        bus.emit(started);
-                        return Flux.just(started);
-                    }),
-                    deltas,
-                    Flux.defer(() -> {
-                        AgentEvent completed = AgentEvent.builder()
-                                .type("SESSION_COMPLETED").sessionId(sessionId)
-                                .timestamp(System.currentTimeMillis())
-                                .data(Map.of()).build();
-                        bus.emit(completed);
-                        return Flux.just(completed);
-                    })
-            );
+            // 阶段三：会话完成
+            Flux<AgentEvent> closing = Flux.defer(() -> {
+                AgentEvent completed = AgentEvent.builder()
+                        .type("SESSION_COMPLETED").sessionId(sessionId)
+                        .timestamp(System.currentTimeMillis())
+                        .data(Map.of()).build();
+                bus.emit(completed);
+                return Flux.just(completed);
+            });
+
+            // 三段编排：opening → deltas → closing
+            return Flux.concat(opening, deltas, closing);
         });
     }
 }
