@@ -30,6 +30,7 @@
 - [第 5 章：对多客户收费——多租户与成本治理](#第-5-章对多客户收费多租户与成本治理)
 - [第 6 章：生产关键系统——灾备与 SRE](#第-6-章生产关键系统灾备与-sre)
 - [第 7 章：运营中的事故——只有真实流量才踩得到](#第-7-章运营中的事故只有真实流量才踩得到)
+- [第 8 章：会话持久化与历史回放——让数据活得久、查得到、接得上](#第-8-章会话持久化与历史回放让数据活得久查得到接得上)
 - [附录：完整目录树与踩坑手册](#附录完整目录树与踩坑手册)
 
 ---
@@ -75,6 +76,7 @@
 | 第 5 章 | 治理：多租户、成本、配额 | SaaS、多客户 |
 | 第 6 章 | 灾备：降级、SRE、测试 | 生产关键链路 |
 | 第 7 章 | 运营事故：心跳、重试、取消、连接治理、归档 | 对外运营后 |
+| 第 8 章 | 持久化与历史：状态机、回放、列表、续传、幂等、脱敏、TTL | 产品成熟、要查历史/恢复 |
 
 > 你不需要一次走到第 6 章——**走到你当前体量够用的阶段就停**，等痛点出现再往前。这是这份文档的核心纪律：不为想象中的需求写代码。
 
@@ -467,7 +469,8 @@ public enum EventContent {
     LLM_TOKENS,         // LLM token 消耗 + 成本
     // —— 治理（第 5/7 章）——
     QUOTA_EXCEEDED,     // 配额超限（第 5 章）
-    SESSION_CANCELLED;  // 用户取消（第 7 章）
+    SESSION_CANCELLED,  // 用户取消（第 7 章）
+    STEP_RESUMED;       // 续传起点（第 8 章）
 
     /** 序列化名。和枚举名一致，单独抽方法是为了日后改序列化格式时只改一处。 */
     public String wireName() { return name(); }
@@ -3422,9 +3425,941 @@ EventBus.emit 里归档所有事件（和落 Redis 一起）；SseController 加
 
 ---
 
+## 第 8 章：会话持久化与历史回放——让数据活得久、查得到、接得上
+
+### 8.0 场景：客服工单倒逼的四个能力
+
+第 7 章结束，产品稳定运营了几个月。某天客服连开四个工单，每一个都暴露一个第 1-7 章没覆盖的能力缺口：
+
+1. **「用户说昨天那次生成到一半断了，能接着看完吗？」**——第 7 章归档存了事件，但 SSE 一断、前端关了页面，就再也"接不上"。**缺：历史回放**（把存档的事件重新推成一条 SSE 流，前端用同一个页面看）。
+2. **「运营要在后台看所有用户的会话，按状态筛选」**——第 7 章只有 `findBySession`（按 sessionId 查单条），运营根本不知道有哪些会话、哪些失败了。**缺：会话列表 + 状态筛选**。
+3. **「一次部署重启，进行中的会话全废了，用户要重输」**——A.8 优雅停机提了"标记会话状态，重启后可恢复"，但没做。**缺：断点续传**（会话崩在第 2 步，重启后从第 2 步接着跑，不重头）。
+4. **「合规审计说我们存了用户输入原文，里面有身份证号」**——第 7 章归档把 `input` 原样存了 JDBC。**缺：PII 脱敏 + 删除权**。
+
+这四个工单的共同点——它们都是"**产品成熟到要管历史数据**"才出现的。第 1-7 章聚焦"实时把 Agent 跑起来、看得见、出事能救"；第 8 章回答"**数据跑完之后，怎么让它活得久、查得到、接得上、管得住**"。
+
+> **为什么放第 8 章、不提前**：这些能力在第 1-6 章做就是过度设计（那时连实时都没跑顺）。它们是"运营几个月、有真实历史数据要管"才出现的痛点——典型如"断点续传"，没真实重启过中断会话的人，根本不知道续传要存哪些中间态。**痛点驱动，不预先实现**。
+
+> **第 8 章和第 7 章的关系**：第 7 章 7.5 引入了事件归档（H2/JDBC），但只做了"存 + 按会话查"两件事。第 8 章把归档从"被动存档"升级成"可回放、可列表、可续传、可治理"的完整历史能力——**复用第 7 章的归档表，往上长功能，不重写地基**。
+
+### 8.1 思路：会话状态机 + 四个能力各管一摊
+
+先给"会话"一个**明确的生命周期状态**——这是第 8 章所有功能的地基。第 1-7 章的会话是离散事件流，没有"当前是什么状态"的语义，导致列表/筛选/续传/清理都无从下手。
+
+**会话状态机**：
+
+```
+ACTIVE ──正常完成──> COMPLETED
+  │                    ↑
+  │ 失败               │ 续传成功
+  ↓                    │
+FAILED <──续传── INTERRUPTED ──重启识别──> (从断点续跑)
+                       ↑
+              停机/崩溃时 ACTIVE 标记为 INTERRUPTED
+              超过保留期 ──> EXPIRED（清理）
+```
+
+| 状态 | 含义 | 谁触发 |
+|------|------|-------|
+| `ACTIVE` | 进行中 | SESSION_STARTED 时 |
+| `COMPLETED` | 正常完成 | SESSION_COMPLETED 时 |
+| `FAILED` | 失败 | SESSION_FAILED 时 |
+| `INTERRUPTED` | 中断（停机/崩溃） | 优雅停机时把未完成的 ACTIVE 标记 |
+| `EXPIRED` | 过期 | TTL 清理任务 |
+
+> **为什么 INTERRUPTED 不等于 FAILED**：FAILED 是"跑出了错"（有 SESSION_FAILED 事件、有错误信息）；INTERRUPTED 是"没跑完、也没出错、就是被打断了"（停机/崩溃）。两者续传语义不同：FAILED 通常要用户重试（可能输入有问题），INTERRUPTED 可以自动/一键续传（输入没问题，只是断了）。**状态区分是续传决策的依据**。
+
+四个能力各管一摊，但都建在状态机 + 归档之上：
+
+| 能力 | 做什么 | 复用什么 |
+|------|--------|---------|
+| **历史回放** | 把归档事件按 sequence 重放成 SSE 流 | 第 7 章归档表 |
+| **会话列表** | 分页 + 按状态/租户筛选所有会话 | 新增 SessionRecord 表 |
+| **断点续传** | 从断点（失败的步骤）接着跑 | SessionStateStore（第 4 章）存 step 进度 |
+| **治理配套** | 幂等键、PII 脱敏、TTL 清理、回放鉴权 | 随历史功能一起做（否则上了就是合规/成本黑洞） |
+
+> **⚠️ 治理配套不是可选项**：这四个里，幂等键防烧钱、脱敏防合规事故、TTL 防成本爆炸、鉴权防越权——**做历史功能就必须一起做**，否则历史功能本身就是个灾难。这不是过度设计，是"上历史列表"的必要前提。第 8 章把它们作为配套必做，不是可选附录。
+
+### 8.2 动手
+
+#### 8.2.1 会话状态机 + SessionRecord 表
+
+先建会话级元数据表（和第 7 章的 `event_archive` 分开——事件是"过程"，SessionRecord 是"概要"）。
+
+`src/main/java/com/example/aobs/session/SessionStatus.java`（新增）：
+
+```java
+package com.example.aobs.session;
+
+/**
+ * 会话生命周期状态。见 8.1 状态机图。
+ * 状态流转：ACTIVE → COMPLETED/FAILED；ACTIVE → INTERRUPTED（停机时）；任意 → EXPIRED（清理）。
+ * 续传只对 INTERRUPTED 生效（FAILED 要用户判断是否重试）。
+ */
+public enum SessionStatus {
+    ACTIVE,        // 进行中
+    COMPLETED,     // 正常完成
+    FAILED,        // 失败（有错误信息）
+    INTERRUPTED,   // 中断（停机/崩溃，可续传）
+    EXPIRED        // 过期（TTL 清理）
+}
+```
+
+`src/main/resources/schema.sql`（在 event_archive 之后加 session_record 表）：
+
+```sql
+-- 第 8 章：会话级元数据（概要，和事件归档分开）
+CREATE TABLE IF NOT EXISTS session_record (
+    session_id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64),
+    user_id VARCHAR(64),
+    agent_version VARCHAR(32),
+    status VARCHAR(16) NOT NULL,          -- SessionStatus 枚举名
+    idempotency_key VARCHAR(128),         -- 幂等键（防重复提交，见 8.2.6）
+    input_text TEXT,                      -- 脱敏后的输入（见 8.2.5）
+    output_text TEXT,                     -- 最终输出（COMPLETED 时回填）
+    last_step INT DEFAULT -1,             -- 已完成的最后一步（续传用，-1=未开始）
+    total_steps INT,                      -- 总步数
+    trace_id VARCHAR(64),                 -- 关联追踪（同 event_archive）
+    started_at BIGINT NOT NULL,
+    ended_at BIGINT,                      -- COMPLETED/FAILED 时回填
+    updated_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_tenant_status ON session_record(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_session_user ON session_record(user_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_session_idem ON session_record(idempotency_key);
+```
+
+> **为什么 SessionRecord 和 event_archive 分两张表**：`event_archive` 是"事件流"（一个会话 N 行，按 sequence），用于回放；`session_record` 是"会话概要"（一个会话 1 行），用于列表/筛选/续传。分开后列表查询不用扫整个事件表（事件表会很大），按状态筛会话只查概要表——**读多写少的概要和写多读少的事件，分开存是企业级数据建模的常规**。
+>
+> **`last_step` 是续传的关键**：每步完成时更新（复用第 4 章 SessionStateStore 的思路），续传时读它决定"从第几步接着跑"。`-1` 表示一步没跑完（续传 = 从头跑）。
+
+#### 8.2.2 SessionService——会话的 CRUD + 状态流转
+
+`src/main/java/com/example/aobs/session/SessionService.java`（新增）：
+
+```java
+package com.example.aobs.session;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 会话级元数据的 CRUD + 状态流转。
+ * 状态变更不是任意改字段，而是经"流转"——保证状态机合法（见 SessionStatus）。
+ */
+@Service
+public class SessionService {
+
+    private final JdbcTemplate jdbc;
+
+    public SessionService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    /** 开始一个会话（SESSION_STARTED 时调）。幂等：已存在则不重复插。 */
+    public void start(String sessionId, String tenantId, String userId, String agentVersion,
+                      String maskedInput, int totalSteps, String idempotencyKey, String traceId) {
+        long now = System.currentTimeMillis();
+        jdbc.update("""
+                MERGE INTO session_record KEY(session_id)
+                VALUES (?,?,?,?,?,?,?,?,NULL,-1,?,?,?,NULL,?)
+                """,
+                sessionId, tenantId, userId, agentVersion, SessionStatus.ACTIVE.name(),
+                idempotencyKey, maskedInput, totalSteps, traceId, now, now);
+    }
+
+    /** 更新已完成的最后一步（每步 STEP_END 时调，续传用）。 */
+    public void advanceStep(String sessionId, int lastStep) {
+        jdbc.update("UPDATE session_record SET last_step=?, updated_at=? WHERE session_id=?",
+                lastStep, System.currentTimeMillis(), sessionId);
+    }
+
+    /** 回填最终输出（COMPLETED 时）。 */
+    public void complete(String sessionId, String output) {
+        long now = System.currentTimeMillis();
+        jdbc.update("UPDATE session_record SET status=?, output_text=?, ended_at=?, updated_at=? WHERE session_id=?",
+                SessionStatus.COMPLETED.name(), output, now, now, sessionId);
+    }
+
+    /** 标记失败。 */
+    public void fail(String sessionId) {
+        long now = System.currentTimeMillis();
+        jdbc.update("UPDATE session_record SET status=?, ended_at=?, updated_at=? WHERE session_id=?",
+                SessionStatus.FAILED.name(), now, now, sessionId);
+    }
+
+    /** 标记中断（优雅停机时，把未完成的 ACTIVE 改成 INTERRUPTED）。 */
+    public void markInterrupted() {
+        jdbc.update("UPDATE session_record SET status=?, updated_at=? WHERE status=?",
+                SessionStatus.INTERRUPTED.name(), System.currentTimeMillis(), SessionStatus.ACTIVE.name());
+    }
+
+    public SessionRecord get(String sessionId) {
+        List<SessionRecord> rs = jdbc.query(
+                "SELECT * FROM session_record WHERE session_id=?",
+                (rsr, i) -> SessionRecord.fromRow(rsr), sessionId);
+        return rs.isEmpty() ? null : rs.get(0);
+    }
+
+    /** 分页 + 按租户/状态筛选（列表页用）。 */
+    public List<SessionRecord> list(String tenantId, SessionStatus status, int page, int size) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM session_record WHERE 1=1");
+        List<Object> args = new java.util.ArrayList<>();
+        if (tenantId != null) { sql.append(" AND tenant_id=?"); args.add(tenantId); }
+        if (status != null) { sql.append(" AND status=?"); args.add(status.name()); }
+        sql.append(" ORDER BY started_at DESC LIMIT ? OFFSET ?");
+        args.add(size); args.add(page * size);
+        return jdbc.query(sql.toString(), (rsr, i) -> SessionRecord.fromRow(rsr), args.toArray());
+    }
+}
+```
+
+`src/main/java/com/example/aobs/session/SessionRecord.java`（新增，行映射 + DTO）：
+
+```java
+package com.example.aobs.session;
+
+import java.sql.ResultSet;
+
+/** 会话概要 DTO（session_record 表一行的映射）。字段对应表结构。 */
+public record SessionRecord(
+        String sessionId, String tenantId, String userId, String agentVersion,
+        String status, String idempotencyKey, String inputText, String outputText,
+        int lastStep, int totalSteps, String traceId,
+        long startedAt, Long endedAt, long updatedAt
+) {
+    public static SessionRecord fromRow(ResultSet rs) throws java.sql.SQLException {
+        return new SessionRecord(
+                rs.getString("session_id"), rs.getString("tenant_id"),
+                rs.getString("user_id"), rs.getString("agent_version"),
+                rs.getString("status"), rs.getString("idempotency_key"),
+                rs.getString("input_text"), rs.getString("output_text"),
+                rs.getInt("last_step"), rs.getInt("total_steps"), rs.getString("trace_id"),
+                rs.getLong("started_at"), (Long) rs.getObject("ended_at"), rs.getLong("updated_at"));
+    }
+}
+```
+
+> **API 核实**：H2 的 `MERGE INTO ... KEY(col)` 是 upsert 语法（MySQL 用 `ON DUPLICATE KEY UPDATE`、PostgreSQL 用 `ON CONFLICT`——生产换库时改这一句）。`JdbcTemplate.query(sql, RowMapper, args...)` 是 spring-jdbc 标准 API。
+>
+> **`status` 存枚举名（String）而非 int**：可读性优先（查库直接看到 `ACTIVE`），枚举和库的映射用 `SessionStatus.name()`/`SessionStatus.valueOf()`——加新状态不改库结构（schema 演进纪律，第 5 章讲过）。
+
+#### 8.2.3 接入 ChainingService——run 支持从断点续跑
+
+把 SessionService 接进 `run`：开始时 `start()`、每步完成 `advanceStep()`、正常结束 `complete()`、失败 `fail()`。**关键改造**：`run` 加一个 `fromStep` 参数，续传时从指定步接着跑（而不是从头）。
+
+`src/main/java/com/example/aobs/workflow/ChainingService.java`（run 改造，只列变化）：
+
+```java
+public abstract class ChainingService {
+
+    protected final ChatClient chatClient;
+    protected final EventBus eventBus;
+    protected final SessionService sessionService;   // ← 第 8 章新增
+    protected final PiiMasker piiMasker;             // ← 第 8 章新增（脱敏，见 8.2.5）
+
+    protected ChainingService(ChatClient chatClient, EventBus eventBus,
+                              SessionService sessionService, PiiMasker piiMasker) {
+        this.chatClient = chatClient;
+        this.eventBus = eventBus;
+        this.sessionService = sessionService;
+        this.piiMasker = piiMasker;
+    }
+
+    /**
+     * 正常执行：从第 0 步跑完整条链（带会话上下文，第 8 章版本）。
+     */
+    public Flux<AgentEvent> run(String input, String sessionId, SessionContext ctx) {
+        return runFrom(input, sessionId, ctx, 0);
+    }
+
+    /**
+     * 第 1-7 章的老签名保留兼容（无 SessionContext）——内部构造空上下文。
+     * 前面章节的 Controller 调 run(prompt, sessionId) 不用改。
+     */
+    public Flux<AgentEvent> run(String input, String sessionId) {
+        return run(input, sessionId, new SessionContext(null, null, null, null));
+    }
+
+    /**
+     * 从 fromStep 开始跑——续传入口。fromStep=0 等价于全新执行。
+     * 续传时 input 从 session_record 取（用户上次输入），不从请求读。
+     */
+    public Flux<AgentEvent> runFrom(String input, String sessionId, SessionContext ctx, int fromStep) {
+        return Flux.<AgentEvent>create(sink -> {
+                    FluxSinkAdapter out = new FluxSinkAdapter(sink, eventBus, sessionId);
+                    List<Step> stepList = steps();
+                    int total = stepList.size();
+
+                    // 会话元数据落库（脱敏输入 + 状态 ACTIVE）
+                    // fromStep=0 才 start（全新会话）；续传（fromStep>0）时记录已存在，跳过
+                    if (fromStep == 0) {
+                        sessionService.start(sessionId, ctx.tenantId(), ctx.userId(), "v1",
+                                piiMasker.mask(input), total, ctx.idempotencyKey(), ctx.traceId());
+                        out.emit(EventContent.SESSION_STARTED, Map.of("input", input));
+                    } else {
+                        // 续传：发一个 STEP_RESUMED 让前端知道"从第 N 步接着跑"
+                        out.emit(EventContent.STEP_RESUMED, Map.of("fromStep", fromStep, "total", total));
+                    }
+
+                    String payload = input;   // 续传时这里的 input 是上次的输入；真正喂下一步的中间产物靠循环累积
+                    for (int step = fromStep; step < total; step++) {
+                        Step s = stepList.get(step);
+                        out.emit(EventContent.STEP_START, Map.of("step", step, "total", total));
+                        // 续传的关键：上一步的完整输出要从归档取（见下方 resolvePrevOutput），不能靠内存
+                        String userPrompt = resolveUserPrompt(s, payload, sessionId, step, fromStep);
+                        String full = streamStep(s.system(), userPrompt, sessionId, step, out);
+                        out.emit(EventContent.STEP_END, Map.of("step", step, "output", truncate(full, 80)));
+                        sessionService.advanceStep(sessionId, step);   // 记录进度（续传依据）
+                        payload = full;
+                    }
+
+                    sessionService.complete(sessionId, truncate(payload, 2000));   // 回填最终输出
+                    out.emit(EventContent.SESSION_COMPLETED, Map.of());
+                    sink.complete();
+                })
+                .onErrorResume(err -> {
+                    sessionService.fail(sessionId);   // 标记失败
+                    AgentEvent failed = AgentEvent.builder().type(EventContent.SESSION_FAILED)
+                            .sessionId(sessionId).data(Map.of("error",
+                                    err.getClass().getSimpleName() + ": " + err.getMessage())).build();
+                    eventBus.emit(failed);
+                    return Flux.just(failed);
+                })
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+    }
+
+    /**
+     * 续传时，上一步的完整输出（payload）在内存里没了（重启了）——从归档取该步的 STEP_END.output。
+     * 全新执行（step==fromStep==0）直接用用户输入。
+     */
+    private String resolveUserPrompt(Step s, String payload, String sessionId, int step, int fromStep) {
+        if (step == fromStep) {
+            // 当前续传的第一步：它的输入是上一步的完整输出
+            if (step == 0) return s.toUserPrompt().apply(payload, sessionId);   // 全新执行，payload=input
+            // 续传：从归档取第 step-1 步的完整输出（见 8.2.4 归档查询）
+            String prevOutput = sessionService.getStepOutput(sessionId, step - 1);
+            return s.toUserPrompt().apply(prevOutput != null ? prevOutput : payload, sessionId);
+        }
+        return s.toUserPrompt().apply(payload, sessionId);
+    }
+
+    // ... streamStep / FluxSinkAdapter / Step 不变
+}
+```
+
+> **续传的核心难点：上一步的中间产物不在内存**。全新执行时，第 1 步的输出（草稿）在内存的 `payload` 变量里，直接喂第 2 步。但续传时进程重启了，内存没了——第 2 步的输入（草稿）必须从**归档**取（第 1 步 STEP_END 事件存了 `output`）。所以 `resolveUserPrompt` 在续传的第一步要查归档拿上一步输出。**断点续传不只是"接着跑"，还要"把中间产物也持久化"**——这是企业级续传和"简单重跑"的本质区别。
+>
+> **STEP_RESUMED 事件**：续传开始时发一帧，让前端明确"这次是续跑、从第 N 步开始"，而不是误以为全新生成。加进 `EventContent` 枚举。
+>
+> **`SessionContext`**：把 tenantId/userId/idempotencyKey/traceId 打包传进来（Controller 从请求头取），不散在 run 参数里。
+
+`SessionContext`（新增，纯数据载体）：
+
+```java
+package com.example.aobs.session;
+/** 一次请求的上下文（从 HTTP 头解析，传给 run）。 */
+public record SessionContext(String tenantId, String userId, String idempotencyKey, String traceId) {}
+```
+
+`EventContent` 加 `STEP_RESUMED`：
+
+```java
+    SESSION_CANCELLED,  // 用户取消（第 7 章）
+    STEP_RESUMED;       // 续传起点（第 8 章）
+```
+
+#### 8.2.4 历史回放接口——把归档事件重放成 SSE
+
+复用第 7 章的 `event_archive` 表，按 `sequence` 排序查出该会话全部事件，逐条映射成 SSE 帧推给前端。前端用**同一个调试页面**看历史——和实时看的体验一致。
+
+`src/main/java/com/example/aobs/session/SessionReplayController.java`（新增）：
+
+```java
+package com.example.aobs.session;
+
+import com.example.aobs.obs.AgentEvent;
+import com.example.aobs.obs.EventContent;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+
+import java.time.Duration;
+import java.util.Map;
+
+/**
+ * 历史回放：把归档的事件按 sequence 重放成 SSE 流。
+ * 用法和实时接口一样：浏览器打开 replay 页面，订阅这个流，事件逐条到达。
+ *
+ * 两种回放速度：
+ *   - 默认快放（一次性快速推完）——运营查历史不想等。
+ *   - ?realtime=true 按原始时间间隔重推——还原"当时的体验"（调试/复盘用）。
+ */
+@RestController
+@RequestMapping("/api/session")
+public class SessionReplayController {
+
+    private final JdbcTemplate jdbc;
+    private final SessionService sessionService;
+
+    public SessionReplayController(JdbcTemplate jdbc, SessionService sessionService) {
+        this.jdbc = jdbc;
+        this.sessionService = sessionService;
+    }
+
+    @GetMapping(value = "/replay/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> replay(
+            @PathVariable String sessionId,
+            @RequestParam(name = "tenantId", required = false) String tenantId,
+            @RequestParam(defaultValue = "false") boolean realtime) {
+
+        // 鉴权：会话的 tenantId 必须匹配请求的 tenantId（复用第 5 章双向校验思想）
+        // sessionId 不是秘密——知道 sessionId 不能等于有权看。鉴权靠 tenantId。
+        SessionRecord rec = sessionService.get(sessionId);
+        if (rec == null) {
+            return Flux.just(sse("ERROR", "{\"error\":\"session not found\"}"));
+        }
+        if (tenantId == null || !tenantId.equals(rec.tenantId())) {
+            return Flux.just(sse("ERROR", "{\"error\":\"forbidden\"}"));
+        }
+
+        // 从归档按 sequence 查全部事件（payload 是完整 JSON）
+        var events = jdbc.queryForList(
+                "SELECT payload FROM event_archive WHERE session_id=? ORDER BY seq", sessionId);
+
+        Flux<ServerSentEvent<String>> flux = Flux.fromIterable(events)
+                .map(row -> sse(eventType(row), String.valueOf(row.get("payload"))));
+
+        // realtime 模式：按事件原始时间间隔重推。否则快放（仅控制流背压，不人为延迟）
+        if (realtime) {
+            flux = flux.delayElements(Duration.ofMillis(50));   // 简化：固定 50ms/帧；生产按原始 timestamp 间隔算
+        }
+        return flux.startWith(sse("READY", "{\"type\":\"READY\"}"));
+    }
+
+    /** 从 payload JSON 里粗取 type（用于 SSE event 字段）。生产用 ObjectMapper 解析。 */
+    private String eventType(Map<String, Object> row) {
+        String payload = String.valueOf(row.get("payload"));
+        int i = payload.indexOf("\"type\":\"");
+        if (i < 0) return "EVENT";
+        int j = payload.indexOf("\"", i + 8);
+        return j < 0 ? "EVENT" : payload.substring(i + 8, j);
+    }
+
+    private ServerSentEvent<String> sse(String event, String data) {
+        return ServerSentEvent.<String>builder().event(event).data(data).build();
+    }
+}
+```
+
+> **鉴权铁律：sessionId 不是秘密**。回放/列表/续传所有历史接口都必须校验 `tenantId`（或 userId）。第 5 章的租户双向校验思想在这里复用——**知道 sessionId 不等于有权访问**，鉴权靠"请求方的 tenantId 必须匹配会话的 tenantId"。漏了这个，任何人猜 sessionId 就能看别人会话（含脱敏前的输入内容，灾难）。
+>
+> **回放是只读重放，不会重跑 LLM**：回放读的是已归档的事件（历史快照），不触发 `run`、不烧钱。和第 2 章"重连走 EventBus 看后续实时事件"完全不同——回放看的是"过去的全部"，重连看的是"断连后的增量"。
+>
+> **sequence 单调保证去重**：回放按 `seq` 排序，前端按 `sequence` 去重（第 2 章前端已实现 `seenIds`）。即使归档有重复（理论上不会，但防御），前端去重兜底。
+
+#### 8.2.5 PII 脱敏 + 删除权（合规配套）
+
+归档会存用户输入原文——里面可能有手机号/身份证/邮箱。**入库前必须脱敏**，且提供"删除某会话全部数据"接口（GDPR 删除权）。
+
+`src/main/java/com/example/aobs/session/PiiMasker.java`（新增）：
+
+```java
+package com.example.aobs.session;
+
+import org.springframework.stereotype.Component;
+
+import java.util.regex.Pattern;
+
+/**
+ * PII（个人身份信息）脱敏。入库前对文本做正则替换，把敏感信息打码。
+ * 这是最小实现——生产用专门的脱敏服务/规则引擎，支持更多类型 + 上下文识别。
+ *
+ * 只脱敏"入库的副本"，不脱敏"喂给 LLM 的原文"——否则 LLM 生成质量受影响。
+ * 即：LLM 看到原文，归档/日志看到脱敏版。
+ */
+@Component
+public class PiiMasker {
+
+    private static final Pattern PHONE = Pattern.compile("(?<![0-9])1[3-9]\\d{9}(?![0-9])");
+    private static final Pattern ID_CARD = Pattern.compile("(?<![0-9])[1-9]\\d{16}[0-9Xx](?![0-9Xx])");
+    private static final Pattern EMAIL = Pattern.compile("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}");
+
+    public String mask(String text) {
+        if (text == null) return null;
+        String t = PHONE.matcher(text).replaceAll(m -> maskMiddle(m.group(), 3, 4));
+        t = ID_CARD.matcher(t).replaceAll(m -> maskMiddle(m.group(), 6, 4));
+        t = EMAIL.matcher(t).replaceAll(m -> maskMiddle(m.group(), 1, m.group().indexOf('@')));
+        return t;
+    }
+
+    /** 保留前 keepPrefix、后 keepSuffix 位，中间打码。138****1234。 */
+    private String maskMiddle(String s, int keepPrefix, int keepSuffix) {
+        if (s.length() <= keepPrefix + keepSuffix) return "****";
+        int midLen = s.length() - keepPrefix - keepSuffix;
+        return s.substring(0, keepPrefix) + "*".repeat(midLen) + s.substring(s.length() - keepSuffix);
+    }
+}
+```
+
+删除权接口（GDPR——用户注销时清掉其所有数据）：
+
+```java
+// SessionReplayController 加删除接口
+@DeleteMapping("/{sessionId}")
+public Map<String, Object> delete(@PathVariable String sessionId,
+                                  @RequestParam String tenantId) {
+    SessionRecord rec = sessionService.get(sessionId);
+    if (rec == null || !tenantId.equals(rec.tenantId())) {
+        return Map.of("deleted", 0);   // 不存在或无权，返回 0（不暴露存在性）
+    }
+    // 删两处：会话概要 + 该会话所有归档事件
+    int a = jdbc.update("DELETE FROM session_record WHERE session_id=?", sessionId);
+    int b = jdbc.update("DELETE FROM event_archive WHERE session_id=?", sessionId);
+    // 还要清 Redis：关键事件兜底 + 会话状态
+    //（复用第 2/4 章的 Redis key 规范，这里省略具体 redis.delete）
+    return Map.of("deleted", a + b);
+}
+```
+
+> **脱敏只针对"副本"，不碰"原文"**：喂给 LLM 的是原文（否则"帮我润色这段含手机号的文字"会被打码、生成质量下降）；归档/日志/列表展示的是脱敏版。**LLM 看原文，存储看脱敏版**——这是合规和质量的平衡。
+>
+> **删除接口返回值不暴露存在性**：会话不存在和无权访问都返回 `deleted: 0`，不告诉调用方"这个会话存在但你没权"——否则可被用来探测 sessionId 是否存在。这是安全细节。
+>
+> **正则脱敏的局限**：手机号/身份证/邮箱这类"有格式"的 PII 能用正则；但"我叫张三，住在朝阳区"这类自然语言 PII 正则抓不到，要靠 NER 模型或 LLM 脱敏——本文用正则做最小演示，生产接专门服务。
+
+#### 8.2.6 幂等键——防重复提交烧钱
+
+网络抖动/用户连点，同一个写作请求发两次 → 创建两个会话、烧两次 LLM。企业级用**幂等键**：前端生成唯一 key 带上，后端发现"这个 key 已有会话"就直接返回已存在的会话，不重跑。
+
+`src/main/java/com/example/aobs/session/IdempotencyService.java`（新增）：
+
+```java
+package com.example.aobs.session;
+
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+
+import java.time.Duration;
+
+/**
+ * 幂等键服务：防重复提交。
+ * 机制——请求带 Idempotency-Key，后端用 SETNX 在 Redis 占坑：
+ *   - 首次：占坑成功，记录 key→sessionId，正常执行。
+ *   - 重复：占坑失败（key 已存在），返回已记录的 sessionId，不重跑。
+ * 占坑保留 10 分钟（够用户重试窗口）；会话完成后这条映射意义不大，自然过期。
+ */
+@Service
+public class IdempotencyService {
+
+    private static final Duration TTL = Duration.ofMinutes(10);
+    private final StringRedisTemplate redis;
+
+    public IdempotencyService(StringRedisTemplate redis) { this.redis = redis; }
+
+    private String key(String idempotencyKey) { return "aobs:idem:" + idempotencyKey; }
+
+    /**
+     * 尝试占坑。返回 true=首次（可执行），false=重复（应返回已有 sessionId）。
+     * @param sessionId 本次生成的 sessionId（首次时绑定到 key）
+     * @return true=首次，false=重复
+     */
+    public boolean tryAcquire(String idempotencyKey, String sessionId) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) return true;  // 没带 key 不强制幂等
+        Boolean ok = redis.opsForValue().setIfAbsent(key(idempotencyKey), sessionId, TTL);
+        return Boolean.TRUE.equals(ok);
+    }
+
+    /** 重复请求时，取回首次绑定的 sessionId。 */
+    public String getExistingSession(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) return null;
+        return redis.opsForValue().get(key(idempotencyKey));
+    }
+}
+```
+
+Controller 接入（`/api/obs/article` 开头加幂等检查）：
+
+```java
+@GetMapping(value = "/article", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> stream(
+        @RequestParam String prompt,
+        @RequestHeader(name = "sessionId", required = false) String fromHeader,
+        @RequestParam(name = "sessionId", required = false) String fromQuery,
+        @RequestHeader(value = "Idempotency-Key", required = false) String idemKey,
+        @RequestHeader(value = "X-Tenant-Id", required = false) String tenantId,
+        /* ... 其他参数 ... */) {
+
+    String sessionId = fromHeader != null ? fromHeader : fromQuery;
+
+    // 幂等检查：重复 key 直接返回已有会话（引导前端去看历史回放）
+    if (idemKey != null && !idempotencyService.tryAcquire(idemKey, sessionId)) {
+        String existing = idempotencyService.getExistingSession(idemKey);
+        return Flux.just(sse("IDEMPOTENT_REPLAY",
+                "{\"existingSession\":\"" + existing + "\",\"msg\":\"已有会话，走回放\"}"));
+    }
+
+    // ... 正常走 run（SessionContext 带 idempotencyKey）...
+}
+```
+
+> **SETNX（setIfAbsent）是原子占坑**：Redis 的 `SET key value NX EX 600` 在"不存在时设置 + 过期"这一步是原子的，多并发请求只有一个能成功。这是分布式幂等的标准做法。不能用"先 GET 判空再 SET"——那两步之间有竞态。
+>
+> **幂等不是"返回上次结果"，是"不重复执行"**：重复请求时，我们不重放上次的事件流（那是回放接口的事），而是告诉前端"你这次的 key 已对应某会话，去看回放"。前端拿到 existingSession 跳回放页面即可。
+
+#### 8.2.7 TTL 清理——归档不能无限增长
+
+第 7 章归档是只增不删的——做历史列表后会爆炸。加定时清理：超过保留期的会话（含其事件）删除或转冷存储。
+
+`src/main/java/com/example/aobs/session/ArchiveRetentionJob.java`（新增）：
+
+```java
+package com.example.aobs.session;
+
+import com.example.aobs.obs.SessionStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 归档保留期清理。每天凌晨跑一次，删除超过保留期的会话 + 其事件。
+ * 保留期 90 天（按业务定）。生产里"转冷存储"比"硬删"更常见，本文简化为删除。
+ */
+@Component
+public class ArchiveRetentionJob {
+
+    private static final int RETENTION_DAYS = 90;
+    private final JdbcTemplate jdbc;
+
+    public ArchiveRetentionJob(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    @Scheduled(cron = "0 0 3 * * *")   // 每天 03:00
+    public void purgeExpired() {
+        long cutoff = System.currentTimeMillis() - RETENTION_DAYS * 86400_000L;
+
+        // 先选出要清理的 sessionId（避免大表 DELETE 时锁全表，分批删）
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT session_id FROM session_record WHERE updated_at < ? AND status <> ?",
+                cutoff, SessionStatus.ACTIVE.name());   // 不清理还在跑的（理论上不会过期，防御）
+
+        for (Map<String, Object> row : rows) {
+            String sid = (String) row.get("session_id");
+            jdbc.update("DELETE FROM event_archive WHERE session_id=?", sid);
+            jdbc.update("DELETE FROM session_record WHERE session_id=?", sid);
+        }
+    }
+}
+```
+
+启动类开启定时任务：
+
+```java
+@SpringBootApplication
+@EnableScheduling    // ← 开启 @Scheduled
+public class Application { ... }
+```
+
+> **为什么分批删而不是一条大 DELETE**：`DELETE FROM ... WHERE updated_at < ?` 在大表上会锁大量行、产生巨量 undo log，可能拖垮库。先 SELECT 出 sessionId 列表，再逐条删（每条事务小）。生产里大量数据用"分页删 + 间隔 sleep"，本文简化为逐条。
+>
+> **ACTIVE 不清理**：理论上过期（90天前）的不会还是 ACTIVE，但防御性排除——避免把"卡死的 ACTIVE"（比如 bug 导致永远不 COMPLETED）当过期删了，丢失正在（假装）进行的会话。卡死会话另有检测机制（8.3 会暴露）。
+>
+> **生产换"转冷存储"**：直接删是简化。真实做法是"热库保留 30 天 + 转冷存储（S3/对象存储）保留 1 年 + 1 年后删"——分层存储，平衡成本和合规留存要求。
+
+#### 8.2.8 会话列表接口
+
+运营后台要"看所有会话、按状态/租户筛选、分页"。
+
+```java
+// SessionReplayController 加列表接口
+@GetMapping("/list")
+public Map<String, Object> listSessions(
+        @RequestParam(required = false) String tenantId,
+        @RequestParam(required = false) String status,
+        @RequestParam(defaultValue = "0") int page,
+        @RequestParam(defaultValue = "20") int size) {
+
+    SessionStatus st = status != null ? SessionStatus.valueOf(status.toUpperCase()) : null;
+    List<SessionRecord> items = sessionService.list(tenantId, st, page, size);
+    // 暴露给前端时，input/output 已是脱敏版（入库时脱敏过），可直接返回
+    return Map.of("items", items, "page", page, "size", size);
+}
+```
+
+> **列表返回的字段已是脱敏版**：因为入库时（`sessionService.start`）存的就是 `piiMasker.mask(input)`，列表查出来的 input/output 天然脱敏——前端列表页直接展示，不用再脱敏一遍。**脱敏在入口（入库）做一次，下游所有展示都安全**。
+
+#### 8.2.9 断点续传接口——从断点接着跑
+
+用户看到 INTERRUPTED 的历史会话，点"继续生成"，后端从 `last_step + 1` 接着跑。
+
+```java
+// SessionReplayController 加续传接口
+@PostMapping(value = "/resume/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> resume(
+        @PathVariable String sessionId,
+        @RequestParam String tenantId,
+        @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader) {
+
+    String tid = tenantHeader != null ? tenantHeader : tenantId;
+    SessionRecord rec = sessionService.get(sessionId);
+    if (rec == null || !tid.equals(rec.tenantId())) {
+        return Flux.just(sse("ERROR", "{\"error\":\"forbidden\"}"));
+    }
+    if (!"INTERRUPTED".equals(rec.status()) && !"FAILED".equals(rec.status())) {
+        // 只允许中断/失败的会话续传；ACTIVE/COMPLETED 不允许
+        return Flux.just(sse("ERROR",
+                "{\"error\":\"只能续传中断或失败的会话，当前状态:" + rec.status() + "\"}"));
+    }
+
+    int fromStep = rec.lastStep() + 1;   // 从上一步的下一步接着跑
+    // 续传的 input 是用户上次的原始输入（session_record 存的脱敏版够喂 LLM 吗？见下方说明）
+    String input = rec.inputText();
+    SessionContext ctx = new SessionContext(rec.tenantId(), rec.userId(), null, rec.traceId());
+    return articleService.runFrom(input, sessionId, ctx, fromStep).map(this::toSse);
+}
+```
+
+> **续传只允许 INTERRUPTED/FAILED**：ACTIVE 的会话正在跑（不该续，会重复）；COMPLETED 已完成（没意义）。状态机限定续传入口——**状态不只是标签，是行为的开关**。
+>
+> **⚠️ 脱敏输入喂 LLM 的问题**（8.4 会暴露并修）：`session_record.inputText` 是脱敏过的（"138****1234"），续传时拿它当 input 喂 LLM，LLM 看到的是打码文本——生成质量受影响。正确做法是**单独存一份原文（加密）供续传用**，归档/列表用脱敏版。8.4 暴露这个问题，8.5 修。
+
+#### 8.2.10 优雅停机标记 + 启动扫描
+
+兑现 A.8 的承诺——停机前把 ACTIVE 标 INTERRUPTED，重启后用户能续传。
+
+```java
+// 停机钩子（@PreDestroy，停机时触发）
+@Component
+public class ShutdownHook {
+    private final SessionService sessionService;
+    public ShutdownHook(SessionService sessionService) { this.sessionService = sessionService; }
+
+    @jakarta.annotation.PreDestroy
+    public void onShutdown() {
+        sessionService.markInterrupted();   // 把所有 ACTIVE 标 INTERRUPTED
+    }
+}
+```
+
+`application.yaml` 开优雅停机（A.8 给过）：
+
+```yaml
+server:
+  shutdown: graceful
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s   # 等进行中请求结束，最多 30s，然后才走 @PreDestroy
+```
+
+> **优雅停机的完整序列**：① 收到停机信号 → ② 不再接新请求（Spring 拒绝）→ ③ 等进行中请求结束（最多 30s）→ ④ `@PreDestroy` 把未完成会话标 INTERRUPTED → ⑤ 进程退出。重启后这些 INTERRUPTED 会话出现在历史列表里，用户可点"继续"续传。
+>
+> **`kill -9` 不触发 @PreDestroy**：强制杀死进程，钩子来不及跑——会话还是 ACTIVE（僵尸态）。8.3 的页面验证会暴露这个：卡死的 ACTIVE 既不 COMPLETED 也不 FAILED，列表里永远"进行中"。8.5 加心跳超时检测把僵尸 ACTIVE 转 INTERRUPTED。
+
+### 8.3 前端页面——历史列表 + 回放 + 续传
+
+第 8 章需要一个运营/用户都能用的"历史会话台"：列表 → 点进回放 → 看历史事件流 → 中断的可续传。新建 `src/main/resources/static/history.html`（核心 JS，样式省略）：
+
+```html
+<h1>历史会话</h1>
+<div id="filters">
+  租户 <input id="tenant" value="tenantA">
+  状态 <select id="status">
+    <option value="">全部</option>
+    <option value="ACTIVE">进行中</option>
+    <option value="COMPLETED">已完成</option>
+    <option value="INTERRUPTED">中断</option>
+    <option value="FAILED">失败</option>
+  </select>
+  <button onclick="loadList()">查询</button>
+</div>
+<table id="list"><tr><th>会话</th><th>状态</th><th>输入(脱敏)</th><th>开始时间</th><th>操作</th></tr></table>
+<div id="replay"></div>   <!-- 回放面板：点某行后，把历史事件流渲染到这里 -->
+
+<script>
+async function loadList() {
+  const tenant = document.getElementById('tenant').value;
+  const status = document.getElementById('status').value;
+  const resp = await fetch(`/api/session/list?tenantId=${tenant}&status=${status}`);
+  const data = await resp.json();
+  const tb = document.querySelector('#list');
+  tb.innerHTML = '<tr><th>会话</th><th>状态</th><th>输入(脱敏)</th><th>开始时间</th><th>操作</th></tr>';
+  for (const s of data.items) {
+    const tr = document.createElement('tr');
+    const canResume = s.status === 'INTERRUPTED' || s.status === 'FAILED';
+    tr.innerHTML = `<td>${s.sessionId.slice(-8)}</td><td>${s.status}</td>`
+      + `<td>${(s.inputText||'').slice(0,30)}</td>`
+      + `<td>${new Date(s.startedAt).toLocaleString()}</td>`
+      + `<td><button onclick="replay('${s.sessionId}','${tenant}')">回放</button>`
+      + (canResume ? ` <button onclick="resume('${s.sessionId}','${tenant}')">继续生成</button>` : '')
+      + `</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+// 回放：订阅历史 SSE，把事件渲染出来（复用调试页面的 handleFrame 逻辑）
+async function replay(sessionId, tenant) {
+  document.getElementById('replay').innerHTML = `<h3>回放 ${sessionId.slice(-8)}</h3><div id="events"></div>`;
+  const resp = await fetch(`/api/session/replay/${sessionId}?tenantId=${tenant}`);
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) >= 0) {
+      handleFrame(buffer.slice(0, idx));
+      buffer = buffer.slice(idx + 2);
+    }
+  }
+}
+
+function handleFrame(frame) {
+  let type = '', data = '';
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event:')) type = line.slice(6).trim();
+    if (line.startsWith('data:')) data += line.slice(5).trim();
+  }
+  const d = document.createElement('div');
+  d.textContent = type + '  ' + data.slice(0, 100);
+  document.querySelector('#events').appendChild(d);
+}
+
+// 续传：调 resume 接口，事件流回到回放面板
+async function resume(sessionId, tenant) {
+  document.getElementById('replay').innerHTML = `<h3>续传 ${sessionId.slice(-8)}</h3><div id="events"></div>`;
+  const resp = await fetch(`/api/session/resume/${sessionId}?tenantId=${tenant}`, {
+    method: 'POST', headers: { 'X-Tenant-Id': tenant }
+  });
+  // ... 同 replay 的 SSE 读取逻辑 ...
+}
+</script>
+```
+
+> **页面三件套**：① 列表（按状态/租户筛选，展示脱敏输入）→ ② 回放（订阅历史 SSE，事件渲染）→ ③ 续传（INTERRUPTED/FAILED 的会话才显示"继续生成"按钮）。这就是一个最小的"历史会话管理台"——运营查历史、用户续中断，都靠它。
+>
+> **回放页面复用调试页面的帧解析逻辑**：实时流和历史回放都是 SSE，前端解析完全一样。**统一的 SSE 协议让"实时看"和"回放看"用同一套前端代码**——这是事件流架构的回报。
+
+### 8.4 用页面验证 → 暴露两个真实问题
+
+**场景 1（正常链路）**：页面点「生成」→ 会话跑完。打开 `history.html` 查询，列表里出现这个会话（COMPLETED）。点「回放」→ 历史事件流逐条重现（SESSION_STARTED → CONTENT_DELTA× → ... → SESSION_COMPLETED）。点「查询」按状态筛选——只看 INTERRUPTED 等。**历史功能闭环可用**。
+
+**场景 2（中断 + 续传）**：页面点「生成」，跑到第 1 步时 `kill` 后端（优雅停机）。重启后端，`history.html` 查 INTERRUPTED——能看到那个会话（`@PreDestroy` 标记生效）。点「继续生成」→ 事件流从 STEP_RESUMED 开始，接着跑第 2 步、第 3 步，到 SESSION_COMPLETED。**断点续传可用**。
+
+但场景 2 会暴露两个问题：
+
+**问题 A：续传后，会话里出现了"第 0 步"和"从第 1 步续跑"两段事件，时间上不连续**。回放这个续传过的会话，事件流是 [第0步的归档事件] + [续传时新发的事件]，中间没有 STEP_RESUMED 的明显分隔——前端看着像"重新跑了一遍第 0 步"。根因：续传时新发的事件直接追加到归档，和原会话事件混在一起，没有"这是续传段"的标记。
+
+**问题 B：续传喂给 LLM 的是脱敏输入**（8.2.9 标的那个 ⚠️）。场景 2 如果用户原输入含手机号"13812345678"，归档存的是"138****5678"；续传时 `runFrom` 拿 `inputText`（脱敏版）当 input 喂 LLM——LLM 看到打码文本，生成的草稿里手机号也是乱的。**脱敏和续传原文是冲突的需求**。
+
+**问题 C（僵尸 ACTIVE）**：`kill -9`（不是优雅 kill）后端，会话卡在 ACTIVE。`history.html` 查 ACTIVE——这个僵尸会话永远"进行中"，既不 COMPLETED 也不 INTERRUPTED，无法续传（续传只允许 INTERRUPTED/FAILED）。根因：`@PreDestroy` 只在优雅停机触发，`kill -9` 不触发。
+
+### 8.5 修复
+
+**修问题 A（续传段标记）**：续传发的事件，在 data 里带 `resume: true`，回放时前端据此加分隔线。改 `runFrom`：
+
+```java
+// 续传段的事件 data 里加 resume 标记
+out.emit(EventContent.STEP_RESUMED, Map.of("fromStep", fromStep, "total", total, "resume", true));
+// 续传段的 STEP_START/CONTENT_DELTA/STEP_END 也在 data 里带上 "resume", true
+// （FluxSinkAdapter.emit 加个重载，支持带 extra 字段）
+```
+
+回放时前端看到 `resume: true` 的事件，渲染前插一条分隔线"——以下为续传——"。这样"原会话 + 续传段"在回放里清晰可辨。
+
+**修问题 B（原文与脱敏分离）**：`session_record` 加一列 `input_text_raw`（加密的原文，续传用），`input_text` 仍是脱敏版（列表/展示用）。续传读 raw、列表读 masked。
+
+```sql
+ALTER TABLE session_record ADD COLUMN input_text_raw TEXT;   -- 加密原文（续传用）
+```
+
+```java
+// sessionService.start：raw 存加密后的原文，masked 存脱敏版
+public void start(..., String rawInput, String maskedInput, ...) {
+    jdbc.update("... input_text=?, input_text_raw=? ...",
+            maskedInput, cryptoService.encrypt(rawInput), ...);
+}
+// 续传时取 input_text_raw 解密
+String input = cryptoService.decrypt(rec.inputTextRaw());
+```
+
+> **为什么不能只存脱敏版**：脱敏是"对外展示/合规"的需求；续传是"重新喂 LLM"的需求——后者要原文。两个需求指向不同的存储：展示用脱敏、续传用加密原文。**合规和功能不能互相牺牲，要分层存储**。加密原文访问要审计（谁能解密、何时解密），生产用 KMS 管密钥。
+
+**修问题 C（僵尸 ACTIVE 检测）**：加定时任务，把"超过 N 分钟还 ACTIVE"的会话标 INTERRUPTED（视为崩溃遗留）。复用 8.2.7 的 `@Scheduled`：
+
+```java
+@Scheduled(fixedDelay = 300_000)   // 每 5 分钟
+public void reapZombieActive() {
+    long cutoff = System.currentTimeMillis() - 10 * 60_000L;   // 超过 10 分钟没更新
+    // 正常会话每步都更新 updated_at；10 分钟没更新 = 卡死了
+    jdbc.update("UPDATE session_record SET status=?, updated_at=? WHERE status=? AND updated_at < ?",
+            SessionStatus.INTERRUPTED.name(), System.currentTimeMillis(),
+            SessionStatus.ACTIVE.name(), cutoff);
+}
+```
+
+> **僵尸回收靠 updated_at 超时**：正常会话每步 STEP_END 都更新 `updated_at`（8.2.3 的 advanceStep）。一个 ACTIVE 会话如果 10 分钟没更新，说明它卡死了（kill -9 / 进程崩溃 / 死循环）——转 INTERRUPTED，让用户能续传或重试。**心跳超时检测是分布式系统识别"僵死状态"的通用手段**。
+
+### 8.6 checkpoint
+
+```
+src/main/java/com/example/aobs/
+├── session/                          ← 第 8 章新增
+│   ├── SessionStatus.java            # 会话状态枚举
+│   ├── SessionRecord.java            # 会话概要 DTO
+│   ├── SessionService.java           # 会话 CRUD + 状态流转
+│   ├── SessionContext.java           # 请求上下文
+│   ├── SessionReplayController.java  # 回放/列表/续传/删除接口
+│   ├── IdempotencyService.java       # 幂等键
+│   ├── PiiMasker.java                # PII 脱敏
+│   ├── ArchiveRetentionJob.java      # TTL 清理 + 僵尸回收
+│   └── ShutdownHook.java             # 停机标记 INTERRUPTED
+├── workflow/
+│   └── ChainingService.java          # 改：run 接 SessionService + runFrom 支持续传
+└── obs/
+    └── EventContent.java             # 改：加 STEP_RESUMED
+
+src/main/resources/
+├── schema.sql                        # 改：加 session_record 表
+└── static/
+    └── history.html                  ← 新增：历史会话管理台
+```
+
+`Application` 加 `@EnableScheduling`。
+
+```bash
+git add -A && git commit -m "第8章：会话持久化+历史回放+断点续传+幂等+脱敏+TTL"
+```
+
+### 8.7 复盘
+
+**做了**：把第 7 章的"被动归档"升级成完整的历史能力——会话状态机、历史回放（SSE 重放）、会话列表（分页筛选）、断点续传（从 last_step 接着跑），以及四个治理配套（幂等键防重、PII 脱敏、TTL 清理、回放鉴权）。
+
+**这一章最该记住的工程教训**：
+1. **会话状态机是历史功能的地基**——没有明确状态（ACTIVE/COMPLETED/FAILED/INTERRUPTED/EXPIRED），列表筛选、续传决策、过期清理都无从下手。状态不只是标签，是行为开关（续传只允许 INTERRUPTED/FAILED）。
+2. **断点续传 ≠ 简单重跑**——续传要把"中间产物"也持久化（上一步的 output），否则第 N 步拿不到第 N-1 步的结果。这是续传和重跑的本质区别。
+3. **合规和功能要分层存储**——脱敏版（展示/合规）和加密原文（续传/重放）分两列，互不牺牲。LLM 看原文、存储看脱敏版。
+4. **历史功能必须配套治理**——幂等（防烧钱）、脱敏（防合规事故）、TTL（防成本爆炸）、鉴权（防越权）四个，缺一个历史功能就是黑洞。**不是可选附录，是前提**。
+5. **僵尸状态靠心跳超时检测**——`@PreDestroy` 只管优雅停机，`kill -9` 的崩溃要靠 updated_at 超时兜底。分布式系统识别"僵死"的通用手段。
+
+**关于 EventContent 又长了**：第 8 章加了 `STEP_RESUMED`。事件类型枚举随章节演进——第 1 章生命周期、第 3 章工具/token、第 5 章配额、第 7 章取消、第 8 章续传。只加不删（schema 演进纪律）。
+
+**到这里，一个从"实时可见"到"历史可管"的完整可观测产品成型了**——不仅能把 Agent 跑起来、看得见、出事能救，还能让数据活得久、查得到、接得上、管得住。
+
+> **第 8 章是"可观测性"向"数据治理"的自然延伸**。再往后是产品功能（多轮记忆、历史编辑、A/B、质量评估）——它们是 AI 产品能力，不是可观测本身，进附录 A.11-A.13 讲。
+
+---
+
 ## 附录：完整目录树与踩坑手册
 
-### A.1 完整项目结构（第 7 章结束时）
+### A.1 完整项目结构（第 8 章结束时）
 
 ```
 ai-writing-assistant/
@@ -3434,14 +4369,24 @@ ai-writing-assistant/
 │   ├── config/
 │   │   └── ChatClientConfig.java
 │   ├── workflow/
-│   │   └── ChainingService.java          # 业务基类（流式 run + 埋点 + token 旁路）
+│   │   └── ChainingService.java          # 业务基类（流式 run + 续传 runFrom + 埋点）
 │   ├── writing/
 │   │   ├── ArticleService.java           # 写作助手
 │   │   ├── ArticleController.java        # 同步接口
 │   │   └── WritingTools.java             # @Tool 工具
+│   ├── session/                          # 会话持久化与历史（第8章）
+│   │   ├── SessionStatus.java            # 状态枚举
+│   │   ├── SessionRecord.java            # 会话概要 DTO
+│   │   ├── SessionService.java           # CRUD + 状态流转
+│   │   ├── SessionContext.java           # 请求上下文
+│   │   ├── SessionReplayController.java  # 回放/列表/续传/删除
+│   │   ├── IdempotencyService.java       # 幂等键
+│   │   ├── PiiMasker.java                # PII 脱敏
+│   │   ├── ArchiveRetentionJob.java      # TTL 清理 + 僵尸回收
+│   │   └── ShutdownHook.java             # 停机标记 INTERRUPTED
 │   └── obs/                              # 可观测层（第 1-6 章逐步长出）
 │       ├── AgentEvent.java               # 事件 record + builder（字段随章节长）
-│       ├── EventContent.java             # 事件类型枚举（第1章）
+│       ├── EventContent.java             # 事件类型枚举（第1章起逐章加）
 │       ├── EventBus.java / ShardedEventBus.java   # 总线（第1章）/分片总线（第4章）
 │       ├── PropagatedContextValue.java   # Reactor Context key + ThreadLocalAccessor（第3章）
 │       ├── AppContextKeys.java           # 上下文注册中心（第3章）
@@ -3460,16 +4405,18 @@ ai-writing-assistant/
 │       └── ObsHealthIndicator.java       # 健康检查（第6章）
 ├── src/main/resources/
 │   ├── application.yaml
-│   ├── schema.sql                        # event_archive 建表（第7章归档）
+│   ├── schema.sql                        # event_archive + session_record 建表
 │   └── static/                           # 前端页面（随章节演进，主要验证手段）
 │       ├── index.html                    # 调试台（第1章起，逐章增强）
-│       └── reconnect.html                # 重连演示（第2章）
+│       ├── reconnect.html                # 重连演示（第2章）
+│       └── history.html                  # 历史会话管理台（第8章）
 ```
 > 本文以**前端页面**为主要验证手段（不是单元测试）。真实项目里建议团队按需补 JUnit/StepVerifier 测试，但本文篇幅聚焦页面验证这条主线。
 
 ### A.2 git 提交历史
 
 ```
+第8章：会话持久化+历史回放+断点续传+幂等+脱敏+TTL
 第7章：运营事故——心跳、重试降级、取消、连接治理、事件归档
 第6章：灾备降级 + 健康检查 + 超时/错误修复 + 监控
 第5章：多租户隔离 + 成本归因 + 多级配额
@@ -3515,6 +4462,18 @@ ai-writing-assistant/
 - **长文本超时 `Stream failed: CANCEL`** → 底层 OkHttp 读超时太短，把 LLM 生成的正常停顿误判成卡死。解法：自定义 `WebClient.Builder`/`RestClient.Builder` 设足够长读超时（180s）。
 - **`ErrorCallbackNotImplemented` 刷屏** → `subscribe()` 无参没接错误。解法：`subscribe(onNext, onError)`，错误转 `SESSION_FAILED` 事件。
 - 健康检查把 Redis 探测设成「必须 UP 否则应用拒绝启动」→ 错。健康检查只反映状态，不该影响启动。
+
+**第 7 章**：
+- 心跳 `Flux.interval` 忘了 `takeUntilOther` 停 → 写作完成后 SSE 连接不关。必须事件流结束就停心跳。
+- Resilience4j `@Retry` 加在 private 方法上 → AOP 不生效，没重试。必须 public，且避免自调用（自调用绕过代理）。
+- 归档 `archive` 没 try/catch → JDBC 慢/挂会拖垮事件流主路径。归档必须容错（吞异常 + 打点）。
+
+**第 8 章**：
+- **续传喂了脱敏输入给 LLM** → 生成质量下降。脱敏版只用于展示/合规，续传要用加密原文（分两列存）。
+- **`kill -9` 后会话卡在 ACTIVE** → `@PreDestroy` 不触发，要靠 updated_at 超时定时任务兜底回收僵尸。
+- **幂等键用"先 GET 判空再 SET"** → 并发竞态，两个请求都判空都 SET。必须用 Redis `SETNX`（setIfAbsent）原子占坑。
+- **回放/列表接口漏了 tenantId 校验** → 知道 sessionId 就能看别人会话。所有历史接口必须校验 tenantId 双向匹配。
+- **续传段事件和历史事件混在一起** → 回放时分不清哪段是续传。续传事件 data 里带 `resume: true` 标记。
 
 ### A.4 演进全景图
 
