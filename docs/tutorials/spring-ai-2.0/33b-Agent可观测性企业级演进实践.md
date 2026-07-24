@@ -3427,116 +3427,82 @@ EventBus.emit 里归档所有事件（和落 Redis 一起）；SseController 加
 
 ## 第 8 章：会话持久化与历史回放——让数据活得久、查得到、接得上
 
-### 8.0 场景：客服工单倒逼的四个能力
+> **本章节奏**：和第 1-7 章一样，按"痛点驱动"分**六个阶段**，每个阶段都是一个**能独立编译、能跑的项目 checkpoint**。不要一口气读完——照着每个阶段敲代码、跑通、看到它暴露的问题，再进下一阶段。**每个机制都是被上一阶段的痛点逼出来的**，这样你才学得到"为什么这么设计"，而不是死记一坨最终代码。
 
-第 7 章结束，产品稳定运营了几个月。某天客服连开四个工单，每一个都暴露一个第 1-7 章没覆盖的能力缺口：
+### 8.0 场景：客服工单倒逼的"历史能力"
 
-1. **「用户说昨天那次生成到一半断了，能接着看完吗？」**——第 7 章归档存了事件，但 SSE 一断、前端关了页面，就再也"接不上"。**缺：历史回放**（把存档的事件重新推成一条 SSE 流，前端用同一个页面看）。
-2. **「运营要在后台看所有用户的会话，按状态筛选」**——第 7 章只有 `findBySession`（按 sessionId 查单条），运营根本不知道有哪些会话、哪些失败了。**缺：会话列表 + 状态筛选**。
-3. **「一次部署重启，进行中的会话全废了，用户要重输」**——A.8 优雅停机提了"标记会话状态，重启后可恢复"，但没做。**缺：断点续传**（会话崩在第 2 步，重启后从第 2 步接着跑，不重头）。
-4. **「合规审计说我们存了用户输入原文，里面有身份证号」**——第 7 章归档把 `input` 原样存了 JDBC。**缺：PII 脱敏 + 删除权**。
+第 7 章结束，产品稳定运营了几个月。客服连开工单，每一个都暴露第 1-7 章没覆盖的能力：
 
-这四个工单的共同点——它们都是"**产品成熟到要管历史数据**"才出现的。第 1-7 章聚焦"实时把 Agent 跑起来、看得见、出事能救"；第 8 章回答"**数据跑完之后，怎么让它活得久、查得到、接得上、管得住**"。
+1. **「用户说昨天那次生成到一半断了，能接着看完吗？」**——缺：历史回放。
+2. **「运营要在后台看所有会话，按状态筛选」**——缺：会话列表。
+3. **「部署重启，进行中的会话全废了」**——缺：断点续传。
+4. **「合规审计说归档里有用户身份证号」**——缺：PII 脱敏。
 
-> **为什么放第 8 章、不提前**：这些能力在第 1-6 章做就是过度设计（那时连实时都没跑顺）。它们是"运营几个月、有真实历史数据要管"才出现的痛点——典型如"断点续传"，没真实重启过中断会话的人，根本不知道续传要存哪些中间态。**痛点驱动，不预先实现**。
+共同点：都是"**产品成熟到要管历史数据**"才出现的。第 1-7 章聚焦"实时跑起来、看得见、出事能救"；第 8 章回答"**数据跑完之后，怎么活得久、查得到、接得上、管得住**"。
 
-> **第 8 章和第 7 章的关系**：第 7 章 7.5 引入了事件归档（H2/JDBC），但只做了"存 + 按会话查"两件事。第 8 章把归档从"被动存档"升级成"可回放、可列表、可续传、可治理"的完整历史能力——**复用第 7 章的归档表，往上长功能，不重写地基**。
+> **为什么放第 8 章、分六阶段**：这些能力在第 1-6 章做就是过度设计。它们是"运营几个月、有真实历史要管"才出现的痛点。而且它们之间有**依赖链**——不先持久化就没法回放、不先回放就暴露不出越权、不先续传就暴露不出脱敏问题。所以按依赖顺序分阶段，每阶段踩到下阶段的痛点。
 
-### 8.1 思路：会话状态机 + 四个能力各管一摊
+**六个阶段一览**（每阶段一个 checkpoint）：
 
-先给"会话"一个**明确的生命周期状态**——这是第 8 章所有功能的地基。第 1-7 章的会话是离散事件流，没有"当前是什么状态"的语义，导致列表/筛选/续传/清理都无从下手。
+| 阶段 | 做什么 | 能跑出什么 | 暴露什么 → 下阶段 |
+|------|--------|-----------|-----------------|
+| **8.1 最小持久化** | 会话落库（状态 + 输入输出） | 查库能看到会话记录 | 想看历史事件流 → 8.2 回放 |
+| **8.2 历史回放** | 归档事件重放成 SSE | 点会话能回放事件流 | 回放没鉴权，越权 → 8.3 |
+| **8.3 列表 + 鉴权** | 会话列表 + 租户校验 | 左侧栏列表、防越权 | 中断会话没法恢复 → 8.4 |
+| **8.4 断点续传** | last_step + runFrom | 中断能续跑 | 续传喂了脱敏输入 → 8.5 |
+| **8.5 治理配套** | 幂等/脱敏/加密/TTL/僵尸回收 | 防重/合规/成本可控 | 要管租户本身 → 8.6 |
+| **8.6 多租户管理** | 租户 CRUD + 配额 + 鉴权 | 租户可建可停 | — |
 
-**会话状态机**：
+---
 
-```
-ACTIVE ──正常完成──> COMPLETED
-  │                    ↑
-  │ 失败               │ 续传成功
-  ↓                    │
-FAILED <──续传── INTERRUPTED ──重启识别──> (从断点续跑)
-                       ↑
-              停机/崩溃时 ACTIVE 标记为 INTERRUPTED
-              超过保留期 ──> EXPIRED（清理）
-```
+### 8.1 阶段一：最小持久化——会话能落库
 
-| 状态 | 含义 | 谁触发 |
-|------|------|-------|
-| `ACTIVE` | 进行中 | SESSION_STARTED 时 |
-| `COMPLETED` | 正常完成 | SESSION_COMPLETED 时 |
-| `FAILED` | 失败 | SESSION_FAILED 时 |
-| `INTERRUPTED` | 中断（停机/崩溃） | 优雅停机时把未完成的 ACTIVE 标记 |
-| `EXPIRED` | 过期 | TTL 清理任务 |
+#### 8.1.0 场景
 
-> **为什么 INTERRUPTED 不等于 FAILED**：FAILED 是"跑出了错"（有 SESSION_FAILED 事件、有错误信息）；INTERRUPTED 是"没跑完、也没出错、就是被打断了"（停机/崩溃）。两者续传语义不同：FAILED 通常要用户重试（可能输入有问题），INTERRUPTED 可以自动/一键续传（输入没问题，只是断了）。**状态区分是续传决策的依据**。
+客服说"用户问昨天那次的结果"，你查库——**什么都没有**。第 7 章归档存的是"事件流"（过程），没有"会话概要"（结果）。连"有哪些会话、各自什么状态、输入输出是什么"都不知道。
 
-四个能力各管一摊，但都建在状态机 + 归档之上：
+这一阶段只做**最小的一件事**：会话开始/完成/失败时，往一张概要表写一条记录。不做回放、不做列表、不做续传——先让数据落下来。
 
-| 能力 | 做什么 | 复用什么 |
-|------|--------|---------|
-| **历史回放** | 把归档事件按 sequence 重放成 SSE 流 | 第 7 章归档表 |
-| **会话列表** | 分页 + 按状态/租户筛选所有会话 | 新增 SessionRecord 表 |
-| **断点续传** | 从断点（失败的步骤）接着跑 | SessionStateStore（第 4 章）存 step 进度 |
-| **治理配套** | 幂等键、PII 脱敏、TTL 清理、回放鉴权 | 随历史功能一起做（否则上了就是合规/成本黑洞） |
+#### 8.1.1 思路
 
-> **⚠️ 治理配套不是可选项**：这四个里，幂等键防烧钱、脱敏防合规事故、TTL 防成本爆炸、鉴权防越权——**做历史功能就必须一起做**，否则历史功能本身就是个灾难。这不是过度设计，是"上历史列表"的必要前提。第 8 章把它们作为配套必做，不是可选附录。
+加一张 `session_record` 表（会话概要，一个会话一行），和第 7 章的 `event_archive`（事件流，一个会话 N 行）**分开**。原因：列表查询要扫概要（小表），回放要扫事件（大表）——读多写少的概要、写多读少的事件，分开存是企业级数据建模的常规。
 
-### 8.2 动手
+`SessionStatus` 先给最小三个状态：`ACTIVE`（进行中）、`COMPLETED`（完成）、`FAILED`（失败）。后面阶段再加 `INTERRUPTED`/`EXPIRED`。
 
-#### 8.2.1 会话状态机 + SessionRecord 表
-
-先建会话级元数据表（和第 7 章的 `event_archive` 分开——事件是"过程"，SessionRecord 是"概要"）。
+#### 8.1.2 动手
 
 `src/main/java/com/example/aobs/session/SessionStatus.java`（新增）：
 
 ```java
 package com.example.aobs.session;
 
-/**
- * 会话生命周期状态。见 8.1 状态机图。
- * 状态流转：ACTIVE → COMPLETED/FAILED；ACTIVE → INTERRUPTED（停机时）；任意 → EXPIRED（清理）。
- * 续传只对 INTERRUPTED 生效（FAILED 要用户判断是否重试）。
- */
+/** 会话生命周期状态。本阶段只用到前三个；INTERRUPTED/EXPIRED 后续阶段加。 */
 public enum SessionStatus {
     ACTIVE,        // 进行中
     COMPLETED,     // 正常完成
-    FAILED,        // 失败（有错误信息）
-    INTERRUPTED,   // 中断（停机/崩溃，可续传）
-    EXPIRED        // 过期（TTL 清理）
+    FAILED,        // 失败
+    INTERRUPTED,   // 中断（第 8.4 章加，停机/崩溃）
+    EXPIRED        // 过期（第 8.5 章加，TTL 清理）
 }
 ```
 
-`src/main/resources/schema.sql`（在 event_archive 之后加 session_record 表）：
+`src/main/resources/schema.sql`（在 `event_archive` 之后追加）：
 
 ```sql
--- 第 8 章：会话级元数据（概要，和事件归档分开）
+-- 第 8.1 章：会话概要（和事件归档分开）
 CREATE TABLE IF NOT EXISTS session_record (
     session_id VARCHAR(64) PRIMARY KEY,
-    tenant_id VARCHAR(64),
-    user_id VARCHAR(64),
-    agent_version VARCHAR(32),
     status VARCHAR(16) NOT NULL,          -- SessionStatus 枚举名
-    idempotency_key VARCHAR(128),         -- 幂等键（防重复提交，见 8.2.6）
-    input_text TEXT,                      -- 脱敏后的输入（见 8.2.5）
+    input_text TEXT,                      -- 输入（本阶段先存原文，8.5 改脱敏）
     output_text TEXT,                     -- 最终输出（COMPLETED 时回填）
-    last_step INT DEFAULT -1,             -- 已完成的最后一步（续传用，-1=未开始）
-    total_steps INT,                      -- 总步数
-    trace_id VARCHAR(64),                 -- 关联追踪（同 event_archive）
+    total_steps INT,
     started_at BIGINT NOT NULL,
     ended_at BIGINT,                      -- COMPLETED/FAILED 时回填
     updated_at BIGINT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_session_tenant_status ON session_record(tenant_id, status);
-CREATE INDEX IF NOT EXISTS idx_session_user ON session_record(user_id, started_at);
-CREATE INDEX IF NOT EXISTS idx_session_idem ON session_record(idempotency_key);
 ```
 
-> **为什么 SessionRecord 和 event_archive 分两张表**：`event_archive` 是"事件流"（一个会话 N 行，按 sequence），用于回放；`session_record` 是"会话概要"（一个会话 1 行），用于列表/筛选/续传。分开后列表查询不用扫整个事件表（事件表会很大），按状态筛会话只查概要表——**读多写少的概要和写多读少的事件，分开存是企业级数据建模的常规**。
->
-> **`last_step` 是续传的关键**：每步完成时更新（复用第 4 章 SessionStateStore 的思路），续传时读它决定"从第几步接着跑"。`-1` 表示一步没跑完（续传 = 从头跑）。
-
-#### 8.2.2 SessionService——会话的 CRUD + 状态流转
-
-`src/main/java/com/example/aobs/session/SessionService.java`（新增）：
+`src/main/java/com/example/aobs/session/SessionService.java`（新增，最小 CRUD）：
 
 ```java
 package com.example.aobs.session;
@@ -3544,814 +3510,1031 @@ package com.example.aobs.session;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
-import java.util.Map;
-
-/**
- * 会话级元数据的 CRUD + 状态流转。
- * 状态变更不是任意改字段，而是经"流转"——保证状态机合法（见 SessionStatus）。
- */
+/** 会话概要的落库。本阶段只做 start/complete/fail 三件事。 */
 @Service
 public class SessionService {
 
     private final JdbcTemplate jdbc;
-
     public SessionService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
-    /** 开始一个会话（SESSION_STARTED 时调）。幂等：已存在则不重复插。 */
-    public void start(String sessionId, String tenantId, String userId, String agentVersion,
-                      String maskedInput, int totalSteps, String idempotencyKey, String traceId) {
+    /** 开始会话（SESSION_STARTED 时调）。MERGE 做 upsert，重复调不报错。 */
+    public void start(String sessionId, String input, int totalSteps) {
         long now = System.currentTimeMillis();
-        jdbc.update("""
-                MERGE INTO session_record KEY(session_id)
-                VALUES (?,?,?,?,?,?,?,?,NULL,-1,?,?,?,NULL,?)
-                """,
-                sessionId, tenantId, userId, agentVersion, SessionStatus.ACTIVE.name(),
-                idempotencyKey, maskedInput, totalSteps, traceId, now, now);
+        jdbc.update("MERGE INTO session_record KEY(session_id) VALUES (?,?,?,?,?,?,NULL,?)",
+                sessionId, SessionStatus.ACTIVE.name(), input, null, totalSteps, now, now);
     }
 
-    /** 更新已完成的最后一步（每步 STEP_END 时调，续传用）。 */
-    public void advanceStep(String sessionId, int lastStep) {
-        jdbc.update("UPDATE session_record SET last_step=?, updated_at=? WHERE session_id=?",
-                lastStep, System.currentTimeMillis(), sessionId);
-    }
-
-    /** 回填最终输出（COMPLETED 时）。 */
+    /** 正常完成（SESSION_COMPLETED 时调），回填输出。 */
     public void complete(String sessionId, String output) {
         long now = System.currentTimeMillis();
         jdbc.update("UPDATE session_record SET status=?, output_text=?, ended_at=?, updated_at=? WHERE session_id=?",
                 SessionStatus.COMPLETED.name(), output, now, now, sessionId);
     }
 
-    /** 标记失败。 */
+    /** 失败（SESSION_FAILED 时调）。 */
     public void fail(String sessionId) {
         long now = System.currentTimeMillis();
         jdbc.update("UPDATE session_record SET status=?, ended_at=?, updated_at=? WHERE session_id=?",
                 SessionStatus.FAILED.name(), now, now, sessionId);
     }
-
-    /** 标记中断（优雅停机时，把未完成的 ACTIVE 改成 INTERRUPTED）。 */
-    public void markInterrupted() {
-        jdbc.update("UPDATE session_record SET status=?, updated_at=? WHERE status=?",
-                SessionStatus.INTERRUPTED.name(), System.currentTimeMillis(), SessionStatus.ACTIVE.name());
-    }
-
-    public SessionRecord get(String sessionId) {
-        List<SessionRecord> rs = jdbc.query(
-                "SELECT * FROM session_record WHERE session_id=?",
-                (rsr, i) -> SessionRecord.fromRow(rsr), sessionId);
-        return rs.isEmpty() ? null : rs.get(0);
-    }
-
-    /** 分页 + 按租户/状态筛选（列表页用）。 */
-    public List<SessionRecord> list(String tenantId, SessionStatus status, int page, int size) {
-        StringBuilder sql = new StringBuilder("SELECT * FROM session_record WHERE 1=1");
-        List<Object> args = new java.util.ArrayList<>();
-        if (tenantId != null) { sql.append(" AND tenant_id=?"); args.add(tenantId); }
-        if (status != null) { sql.append(" AND status=?"); args.add(status.name()); }
-        sql.append(" ORDER BY started_at DESC LIMIT ? OFFSET ?");
-        args.add(size); args.add(page * size);
-        return jdbc.query(sql.toString(), (rsr, i) -> SessionRecord.fromRow(rsr), args.toArray());
-    }
 }
 ```
 
-`src/main/java/com/example/aobs/session/SessionRecord.java`（新增，行映射 + DTO）：
+> **API 核实**：H2 的 `MERGE INTO ... KEY(col)` 是 upsert（MySQL 用 `ON DUPLICATE KEY UPDATE`、PostgreSQL 用 `ON CONFLICT`——换库时改这一句）。`JdbcTemplate.update(sql, args...)` 是 spring-jdbc 标准 API。
+
+接入 `ChainingService.run`——在 SESSION_STARTED/COMPLETED/FAILED 时调 SessionService。**只加三个调用，不动 run 的执行逻辑**：
 
 ```java
-package com.example.aobs.session;
+// ChainingService 构造器加 SessionService（老的无 SessionService 构造器保留兼容，内部传 null）
+protected final SessionService sessionService;
 
-import java.sql.ResultSet;
+// run 的 Flux.create 里：
+out.emit(EventContent.SESSION_STARTED, Map.of("input", input));
+if (sessionService != null) sessionService.start(sessionId, input, steps().size());   // ← 新增
 
-/** 会话概要 DTO（session_record 表一行的映射）。字段对应表结构。 */
-public record SessionRecord(
-        String sessionId, String tenantId, String userId, String agentVersion,
-        String status, String idempotencyKey, String inputText, String outputText,
-        int lastStep, int totalSteps, String traceId,
-        long startedAt, Long endedAt, long updatedAt
-) {
-    public static SessionRecord fromRow(ResultSet rs) throws java.sql.SQLException {
-        return new SessionRecord(
-                rs.getString("session_id"), rs.getString("tenant_id"),
-                rs.getString("user_id"), rs.getString("agent_version"),
-                rs.getString("status"), rs.getString("idempotency_key"),
-                rs.getString("input_text"), rs.getString("output_text"),
-                rs.getInt("last_step"), rs.getInt("total_steps"), rs.getString("trace_id"),
-                rs.getLong("started_at"), (Long) rs.getObject("ended_at"), rs.getLong("updated_at"));
-    }
+// ... 循环执行步骤不变 ...
+
+// 循环结束后：
+if (sessionService != null) sessionService.complete(sessionId, truncate(payload, 2000));   // ← 新增
+out.emit(EventContent.SESSION_COMPLETED, Map.of());
+
+// onErrorResume 里：
+if (sessionService != null) sessionService.fail(sessionId);   // ← 新增
+```
+
+子类 `ArticleService` 构造器加 SessionService（配套改动）：
+
+```java
+public ArticleService(ChatClient chatClient, EventBus eventBus, SessionService sessionService) {
+    super(chatClient, eventBus, sessionService);
 }
 ```
 
-> **API 核实**：H2 的 `MERGE INTO ... KEY(col)` 是 upsert 语法（MySQL 用 `ON DUPLICATE KEY UPDATE`、PostgreSQL 用 `ON CONFLICT`——生产换库时改这一句）。`JdbcTemplate.query(sql, RowMapper, args...)` 是 spring-jdbc 标准 API。
->
-> **`status` 存枚举名（String）而非 int**：可读性优先（查库直接看到 `ACTIVE`），枚举和库的映射用 `SessionStatus.name()`/`SessionStatus.valueOf()`——加新状态不改库结构（schema 演进纪律，第 5 章讲过）。
+#### 8.1.3 验证
 
-#### 8.2.3 接入 ChainingService——run 支持从断点续跑
+启动应用，页面点「生成」跑完一次。查库：
 
-把 SessionService 接进 `run`：开始时 `start()`、每步完成 `advanceStep()`、正常结束 `complete()`、失败 `fail()`。**关键改造**：`run` 加一个 `fromStep` 参数，续传时从指定步接着跑（而不是从头）。
-
-`src/main/java/com/example/aobs/workflow/ChainingService.java`（run 改造，只列变化）：
-
-```java
-public abstract class ChainingService {
-
-    protected final ChatClient chatClient;
-    protected final EventBus eventBus;
-    protected final SessionService sessionService;   // ← 第 8 章新增
-    protected final PiiMasker piiMasker;             // ← 第 8 章新增（脱敏，见 8.2.5）
-
-    protected ChainingService(ChatClient chatClient, EventBus eventBus,
-                              SessionService sessionService, PiiMasker piiMasker) {
-        this.chatClient = chatClient;
-        this.eventBus = eventBus;
-        this.sessionService = sessionService;
-        this.piiMasker = piiMasker;
-    }
-
-    /**
-     * 正常执行：从第 0 步跑完整条链（带会话上下文，第 8 章版本）。
-     */
-    public Flux<AgentEvent> run(String input, String sessionId, SessionContext ctx) {
-        return runFrom(input, sessionId, ctx, 0);
-    }
-
-    /**
-     * 第 1-7 章的老签名保留兼容（无 SessionContext）——内部构造空上下文。
-     * 前面章节的 Controller 调 run(prompt, sessionId) 不用改。
-     */
-    public Flux<AgentEvent> run(String input, String sessionId) {
-        return run(input, sessionId, new SessionContext(null, null, null, null));
-    }
-
-    /**
-     * 从 fromStep 开始跑——续传入口。fromStep=0 等价于全新执行。
-     * 续传时 input 从 session_record 取（用户上次输入），不从请求读。
-     */
-    public Flux<AgentEvent> runFrom(String input, String sessionId, SessionContext ctx, int fromStep) {
-        return Flux.<AgentEvent>create(sink -> {
-                    FluxSinkAdapter out = new FluxSinkAdapter(sink, eventBus, sessionId);
-                    List<Step> stepList = steps();
-                    int total = stepList.size();
-
-                    // 会话元数据落库（脱敏输入 + 状态 ACTIVE）
-                    // fromStep=0 才 start（全新会话）；续传（fromStep>0）时记录已存在，跳过
-                    if (fromStep == 0) {
-                        sessionService.start(sessionId, ctx.tenantId(), ctx.userId(), "v1",
-                                piiMasker.mask(input), total, ctx.idempotencyKey(), ctx.traceId());
-                        out.emit(EventContent.SESSION_STARTED, Map.of("input", input));
-                    } else {
-                        // 续传：发一个 STEP_RESUMED 让前端知道"从第 N 步接着跑"
-                        out.emit(EventContent.STEP_RESUMED, Map.of("fromStep", fromStep, "total", total));
-                    }
-
-                    String payload = input;   // 续传时这里的 input 是上次的输入；真正喂下一步的中间产物靠循环累积
-                    for (int step = fromStep; step < total; step++) {
-                        Step s = stepList.get(step);
-                        out.emit(EventContent.STEP_START, Map.of("step", step, "total", total));
-                        // 续传的关键：上一步的完整输出要从归档取（见下方 resolvePrevOutput），不能靠内存
-                        String userPrompt = resolveUserPrompt(s, payload, sessionId, step, fromStep);
-                        String full = streamStep(s.system(), userPrompt, sessionId, step, out);
-                        out.emit(EventContent.STEP_END, Map.of("step", step, "output", truncate(full, 80)));
-                        sessionService.advanceStep(sessionId, step);   // 记录进度（续传依据）
-                        payload = full;
-                    }
-
-                    sessionService.complete(sessionId, truncate(payload, 2000));   // 回填最终输出
-                    out.emit(EventContent.SESSION_COMPLETED, Map.of());
-                    sink.complete();
-                })
-                .onErrorResume(err -> {
-                    sessionService.fail(sessionId);   // 标记失败
-                    AgentEvent failed = AgentEvent.builder().type(EventContent.SESSION_FAILED)
-                            .sessionId(sessionId).data(Map.of("error",
-                                    err.getClass().getSimpleName() + ": " + err.getMessage())).build();
-                    eventBus.emit(failed);
-                    return Flux.just(failed);
-                })
-                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
-    }
-
-    /**
-     * 续传时，上一步的完整输出（payload）在内存里没了（重启了）——从归档取该步的 STEP_END.output。
-     * 全新执行（step==fromStep==0）直接用用户输入。
-     */
-    private String resolveUserPrompt(Step s, String payload, String sessionId, int step, int fromStep) {
-        if (step == fromStep) {
-            // 当前续传的第一步：它的输入是上一步的完整输出
-            if (step == 0) return s.toUserPrompt().apply(payload, sessionId);   // 全新执行，payload=input
-            // 续传：从归档取第 step-1 步的完整输出（见 8.2.4 归档查询）
-            String prevOutput = sessionService.getStepOutput(sessionId, step - 1);
-            return s.toUserPrompt().apply(prevOutput != null ? prevOutput : payload, sessionId);
-        }
-        return s.toUserPrompt().apply(payload, sessionId);
-    }
-
-    // ... streamStep / FluxSinkAdapter / Step 不变
-}
+```bash
+# H2 文件库用任意工具或加 /h2-console；这里示意 SQL
+SELECT session_id, status, input_text, substr(output_text,1,40), started_at FROM session_record;
 ```
 
-> **续传的核心难点：上一步的中间产物不在内存**。全新执行时，第 1 步的输出（草稿）在内存的 `payload` 变量里，直接喂第 2 步。但续传时进程重启了，内存没了——第 2 步的输入（草稿）必须从**归档**取（第 1 步 STEP_END 事件存了 `output`）。所以 `resolveUserPrompt` 在续传的第一步要查归档拿上一步输出。**断点续传不只是"接着跑"，还要"把中间产物也持久化"**——这是企业级续传和"简单重跑"的本质区别。
->
-> **STEP_RESUMED 事件**：续传开始时发一帧，让前端明确"这次是续跑、从第 N 步开始"，而不是误以为全新生成。加进 `EventContent` 枚举。
->
-> **`SessionContext`**：把 tenantId/userId/idempotencyKey/traceId 打包传进来（Controller 从请求头取），不散在 run 参数里。
+能看到一条 `COMPLETED` 的记录，带输入和输出。再制造一次失败（断网/改错 key），查到一条 `FAILED`。**会话终于落库了**。
 
-`SessionContext`（新增，纯数据载体）：
+#### 8.1.4 暴露问题
 
-```java
-package com.example.aobs.session;
-/** 一次请求的上下文（从 HTTP 头解析，传给 run）。 */
-public record SessionContext(String tenantId, String userId, String idempotencyKey, String traceId) {}
+客服回来说"我看到那条记录了，但用户问的是**当时生成到一半的大纲长什么样**"——概要表只有最终输出，**过程事件没有可回放的入口**。第 7 章归档存了事件，但没接口把它重放出来。
+
+→ 进 **8.2 历史回放**。
+
+#### 8.1.5 checkpoint
+
+```
+src/main/java/com/example/aobs/session/   ← 新增包
+├── SessionStatus.java
+└── SessionService.java
+src/main/resources/schema.sql             （改：加 session_record 表）
+src/main/java/.../workflow/ChainingService.java （改：run 接 SessionService）
+src/main/java/.../writing/ArticleService.java   （改：构造器）
 ```
 
-`EventContent` 加 `STEP_RESUMED`：
-
-```java
-    SESSION_CANCELLED,  // 用户取消（第 7 章）
-    STEP_RESUMED;       // 续传起点（第 8 章）
+```bash
+git add -A && git commit -m "第8.1章：会话最小持久化（状态+输入输出落库）"
 ```
 
-#### 8.2.4 历史回放接口——把归档事件重放成 SSE
+---
 
-复用第 7 章的 `event_archive` 表，按 `sequence` 排序查出该会话全部事件，逐条映射成 SSE 帧推给前端。前端用**同一个调试页面**看历史——和实时看的体验一致。
+### 8.2 阶段二：历史回放——把归档事件重放成 SSE
+
+#### 8.2.0 场景
+
+8.1 暴露的问题：概要表没有过程，用户想看"当时大纲"。第 7 章归档表 `event_archive` 其实**已经存了全部事件**（按 sequence），只是没接口把它重放出来。
+
+这一阶段做**回放接口**：输入 sessionId，从归档按 sequence 查出全部事件，逐条映射成 SSE 帧推给前端。前端用**同一个调试页面**看历史——和实时看的体验一致（同样的 CONTENT_DELTA 逐字、同样的 STEP 面板）。
+
+#### 8.2.1 思路
+
+复用第 7 章 `event_archive` 表（不新建表）。回放 = `SELECT payload FROM event_archive WHERE session_id=? ORDER BY seq`，每条 payload 本身就是完整的事件 JSON，包成 SSE 帧推出去。
+
+**关键认知：回放是只读重放，不重跑 LLM**。回放读的是历史快照（归档的事件），不触发 `run`、不烧钱。这点和第 2 章"重连走 EventBus 看后续实时事件"完全不同——回放看"过去的全部"，重连看"断连后的增量"。
+
+#### 8.2.2 动手
 
 `src/main/java/com/example/aobs/session/SessionReplayController.java`（新增）：
 
 ```java
 package com.example.aobs.session;
 
-import com.example.aobs.obs.AgentEvent;
-import com.example.aobs.obs.EventContent;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
-import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 /**
- * 历史回放：把归档的事件按 sequence 重放成 SSE 流。
- * 用法和实时接口一样：浏览器打开 replay 页面，订阅这个流，事件逐条到达。
+ * 历史回放：把归档事件按 sequence 重放成 SSE 流。
+ * 前端订阅它，事件逐条到达——和实时接口的体验一致。
  *
- * 两种回放速度：
- *   - 默认快放（一次性快速推完）——运营查历史不想等。
- *   - ?realtime=true 按原始时间间隔重推——还原"当时的体验"（调试/复盘用）。
+ * ⚠️ 本阶段先不做鉴权（8.3 会暴露并修）。
  */
 @RestController
 @RequestMapping("/api/session")
 public class SessionReplayController {
 
     private final JdbcTemplate jdbc;
-    private final SessionService sessionService;
 
-    public SessionReplayController(JdbcTemplate jdbc, SessionService sessionService) {
-        this.jdbc = jdbc;
-        this.sessionService = sessionService;
-    }
+    public SessionReplayController(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
     @GetMapping(value = "/replay/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> replay(
-            @PathVariable String sessionId,
-            @RequestParam(name = "tenantId", required = false) String tenantId,
-            @RequestParam(defaultValue = "false") boolean realtime) {
-
-        // 鉴权：会话的 tenantId 必须匹配请求的 tenantId（复用第 5 章双向校验思想）
-        // sessionId 不是秘密——知道 sessionId 不能等于有权看。鉴权靠 tenantId。
-        SessionRecord rec = sessionService.get(sessionId);
-        if (rec == null) {
-            return Flux.just(sse("ERROR", "{\"error\":\"session not found\"}"));
-        }
-        if (tenantId == null || !tenantId.equals(rec.tenantId())) {
-            return Flux.just(sse("ERROR", "{\"error\":\"forbidden\"}"));
-        }
-
-        // 从归档按 sequence 查全部事件（payload 是完整 JSON）
-        var events = jdbc.queryForList(
+    public Flux<ServerSentEvent<String>> replay(@PathVariable String sessionId) {
+        // 按序号查出该会话全部事件的 payload（已是完整 JSON）
+        List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT payload FROM event_archive WHERE session_id=? ORDER BY seq", sessionId);
 
-        Flux<ServerSentEvent<String>> flux = Flux.fromIterable(events)
-                .map(row -> sse(eventType(row), String.valueOf(row.get("payload"))));
-
-        // realtime 模式：按事件原始时间间隔重推。否则快放（仅控制流背压，不人为延迟）
-        if (realtime) {
-            flux = flux.delayElements(Duration.ofMillis(50));   // 简化：固定 50ms/帧；生产按原始 timestamp 间隔算
-        }
-        return flux.startWith(sse("READY", "{\"type\":\"READY\"}"));
+        return Flux.fromIterable(rows)
+                .map(row -> {
+                    String payload = String.valueOf(row.get("payload"));
+                    return ServerSentEvent.<String>builder()
+                            .event(extractType(payload))   // 从 payload 取 type 作为 SSE event 字段
+                            .data(payload)
+                            .build();
+                })
+                .startWith(ServerSentEvent.<String>builder()
+                        .event("READY").data("{\"type\":\"READY\"}").build());
     }
 
-    /** 从 payload JSON 里粗取 type（用于 SSE event 字段）。生产用 ObjectMapper 解析。 */
-    private String eventType(Map<String, Object> row) {
-        String payload = String.valueOf(row.get("payload"));
+    /** 从 payload JSON 粗取 type（SSE event 字段用）。生产换 ObjectMapper 解析。 */
+    private String extractType(String payload) {
         int i = payload.indexOf("\"type\":\"");
         if (i < 0) return "EVENT";
         int j = payload.indexOf("\"", i + 8);
         return j < 0 ? "EVENT" : payload.substring(i + 8, j);
     }
+}
+```
 
-    private ServerSentEvent<String> sse(String event, String data) {
-        return ServerSentEvent.<String>builder().event(event).data(data).build();
+> **API 核实**：`JdbcTemplate.queryForList(sql, args)` 返回 `List<Map<String,Object>>`；`Flux.fromIterable(...).map(...)` 是标准 Reactor；`ServerSentEvent.builder()` 是 WebFlux 的 SSE 帧。归档表的 `payload` 列在第 7 章存的是 `ObjectMapper.writeValueAsString(event)` 完整 JSON，这里原样包成 SSE data。
+>
+> **为什么前端不用改**：实时流（`/api/obs/article`）和历史回放（`/api/session/replay/{id}`）都是 SSE，前端帧解析逻辑完全一样。A.10 的页面 `replay()` 函数直接订阅这个接口即可。
+
+#### 8.2.3 验证
+
+页面跑完一次写作（8.1 已落库 + 归档有事件）。然后用浏览器或 curl 回放：
+
+```bash
+curl -N "http://localhost:8080/api/session/replay/s-1700000000000"
+```
+
+事件逐条到达——SESSION_STARTED → STEP_START → CONTENT_DELTA× → STEP_END → ... → SESSION_COMPLETED。**和历史实时看的一模一样**。在 A.10 页面左侧栏点历史会话，右侧渲染出完整回放。
+
+#### 8.2.4 暴露问题
+
+现在回放接口**任何人知道 sessionId 就能看**——没有鉴权。sessionId 不是秘密（它是时间戳生成的、可能出现在日志里），猜到一个就能看别人的会话（含用户输入）。这是越权漏洞。
+
+更糟：还没法"列出有哪些会话"——客服要在后台看所有会话，现在只能猜 sessionId 一个个回放试。
+
+→ 进 **8.3 会话列表 + 鉴权**。
+
+#### 8.2.5 checkpoint
+
+```
+src/main/java/com/example/aobs/session/
+└── SessionReplayController.java   ← 新增：回放接口
+```
+
+```bash
+git add -A && git commit -m "第8.2章：历史回放（归档事件按sequence重放成SSE）"
+```
+
+---
+
+### 8.3 阶段三：会话列表 + 鉴权——能查所有会话、防越权
+
+#### 8.3.0 场景
+
+8.2 暴露两个问题：① 回放没鉴权，越权；② 没有"列表"，客服看不到所有会话。这一阶段一起解决——加列表接口（分页 + 状态筛选），并给所有历史接口加租户鉴权。
+
+但这里先要补一个**前置条件**：第 5 章的 `tenantId` 是事件级字段，会话概要表（8.1）还没存 tenantId。要按租户筛会话、要校验"你只能看自己租户的会话"，先得让 `session_record` 带上 tenantId。
+
+#### 8.3.1 思路
+
+- `session_record` 加 `tenant_id` 列，`SessionService.start` 时写入。
+- 列表接口 `GET /api/session/list?tenantId=&status=&page=&size=`：按租户/状态筛选、分页。
+- 回放/列表都校验：请求的 tenantId 必须匹配会话的 tenantId（**双向校验**，复用第 5 章思想）。
+- 加一个 `WebFilter` 统一校验请求的租户身份（`X-Tenant-Id` + `X-Tenant-Key`）——这样不用每个 Controller 自己校验，避免漏。
+
+> **鉴权铁律：sessionId 不是秘密**。所有历史接口（回放/列表/续传/删除）都必须校验 tenantId。知道 sessionId 不等于有权看，鉴权靠"请求方 tenantId 必须匹配会话 tenantId"。
+
+#### 8.3.2 动手
+
+`session_record` 加 `tenant_id` 列（改 schema）：
+
+```sql
+ALTER TABLE session_record ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(64);
+CREATE INDEX IF NOT EXISTS idx_session_tenant_status ON session_record(tenant_id, status);
+```
+
+`SessionRecord` DTO（新增，行映射 + 给列表返回用）：
+
+```java
+package com.example.aobs.session;
+
+import java.sql.ResultSet;
+
+/** 会话概要 DTO（session_record 一行的映射）。字段随阶段长。 */
+public record SessionRecord(
+        String sessionId, String tenantId, String status,
+        String inputText, String outputText, int totalSteps,
+        long startedAt, Long endedAt
+) {
+    public static SessionRecord fromRow(ResultSet rs) throws java.sql.SQLException {
+        return new SessionRecord(
+                rs.getString("session_id"), rs.getString("tenant_id"), rs.getString("status"),
+                rs.getString("input_text"), rs.getString("output_text"), rs.getInt("total_steps"),
+                rs.getLong("started_at"), (Long) rs.getObject("ended_at"));
     }
 }
 ```
 
-> **鉴权铁律：sessionId 不是秘密**。回放/列表/续传所有历史接口都必须校验 `tenantId`（或 userId）。第 5 章的租户双向校验思想在这里复用——**知道 sessionId 不等于有权访问**，鉴权靠"请求方的 tenantId 必须匹配会话的 tenantId"。漏了这个，任何人猜 sessionId 就能看别人会话（含脱敏前的输入内容，灾难）。
+`SessionService` 扩展——start 带 tenantId、加 get/list（在 8.1 基础上追加方法）：
+
+```java
+// start 签名加 tenantId
+public void start(String sessionId, String tenantId, String input, int totalSteps) {
+    long now = System.currentTimeMillis();
+    jdbc.update("MERGE INTO session_record KEY(session_id) VALUES (?,?,?,?,?,?,NULL,NULL,?)",
+            sessionId, SessionStatus.ACTIVE.name(), tenantId, input, null, totalSteps, now, now);
+}
+
+public SessionRecord get(String sessionId) {
+    var rs = jdbc.query("SELECT * FROM session_record WHERE session_id=?",
+            (r, i) -> SessionRecord.fromRow(r), sessionId);
+    return rs.isEmpty() ? null : rs.get(0);
+}
+
+/** 分页 + 按租户/状态筛选。 */
+public List<SessionRecord> list(String tenantId, SessionStatus status, int page, int size) {
+    StringBuilder sql = new StringBuilder("SELECT * FROM session_record WHERE 1=1");
+    java.util.List<Object> args = new java.util.ArrayList<>();
+    if (tenantId != null) { sql.append(" AND tenant_id=?"); args.add(tenantId); }
+    if (status != null) { sql.append(" AND status=?"); args.add(status.name()); }
+    sql.append(" ORDER BY started_at DESC LIMIT ? OFFSET ?");
+    args.add(size); args.add(page * size);
+    return jdbc.query(sql.toString(), (r, i) -> SessionRecord.fromRow(r), args.toArray());
+}
+```
+
+> `ChainingService.run` 调 `start` 的地方同步加 tenantId（从请求上下文取，本阶段先用方法参数透传，8.5 会整理成 SessionContext）。
+
+**鉴权过滤器**——所有 `/api/**` 统一校验租户身份：
+
+```java
+package com.example.aobs.session;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.server.WebFilter;
+import org.springframework.web.server.WebFilterChain;
+import reactor.core.publisher.Mono;
+
+/**
+ * 租户鉴权过滤器：校验 X-Tenant-Id（本阶段先只校验存在性，8.6 加 X-Tenant-Key 真鉴权）。
+ * 放过静态资源和调试端点（生产收紧）。
+ */
+@Component
+public class TenantAuthFilter implements WebFilter {
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+        String path = exchange.getRequest().getPath().value();
+        if (path.startsWith("/index.html") || path.startsWith("/actuator") || path.equals("/")) {
+            return chain.filter(exchange);
+        }
+
+        String tenantId = exchange.getRequest().getHeaders().getFirst("X-Tenant-Id");
+        if (tenantId == null) {
+            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+            return exchange.getResponse().setComplete();
+        }
+        exchange.getAttributes().put("tenantId", tenantId);   // Controller 取用
+        return chain.filter(exchange);
+    }
+}
+```
+
+回放接口加鉴权（改 SessionReplayController）：
+
+```java
+@GetMapping(value = "/replay/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> replay(@PathVariable String sessionId,
+                                            @RequestHeader("X-Tenant-Id") String tenantId) {
+    SessionRecord rec = sessionService.get(sessionId);
+    // 双向校验：会话不存在或租户不匹配，都返回 not found（不暴露存在性）
+    if (rec == null || !tenantId.equals(rec.tenantId())) {
+        return Flux.just(ServerSentEvent.<String>builder()
+                .event("ERROR").data("{\"error\":\"session not found\"}").build());
+    }
+    // ... 原回放逻辑 ...
+}
+```
+
+列表接口（SessionReplayController 加）：
+
+```java
+@GetMapping("/list")
+public Map<String, Object> list(@RequestHeader("X-Tenant-Id") String tenantId,
+                                @RequestParam(required = false) String status,
+                                @RequestParam(defaultValue = "0") int page,
+                                @RequestParam(defaultValue = "20") int size) {
+    SessionStatus st = status != null ? SessionStatus.valueOf(status.toUpperCase()) : null;
+    return Map.of("items", sessionService.list(tenantId, st, page, size), "page", page, "size", size);
+}
+```
+
+> **API 核实**：`WebFilter` 是 WebFlux 过滤器（Servlet 版是 `jakarta.servlet.Filter`）；`exchange.getAttributes().put(...)` 在请求链路里传值，Controller 用 `@RequestHeader` 或 `exchange.getAttribute` 取。H2 的 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 是标准 DDL。
 >
-> **回放是只读重放，不会重跑 LLM**：回放读的是已归档的事件（历史快照），不触发 `run`、不烧钱。和第 2 章"重连走 EventBus 看后续实时事件"完全不同——回放看的是"过去的全部"，重连看的是"断连后的增量"。
->
-> **sequence 单调保证去重**：回放按 `seq` 排序，前端按 `sequence` 去重（第 2 章前端已实现 `seenIds`）。即使归档有重复（理论上不会，但防御），前端去重兜底。
+> **鉴权不暴露存在性**：会话不存在和租户不匹配都返回"not found"——不告诉调用方"这个会话存在但没权"，否则可被用来探测 sessionId 是否存在。
 
-#### 8.2.5 PII 脱敏 + 删除权（合规配套）
+#### 8.3.3 验证
 
-归档会存用户输入原文——里面可能有手机号/身份证/邮箱。**入库前必须脱敏**，且提供"删除某会话全部数据"接口（GDPR 删除权）。
+**正常**：带 `X-Tenant-Id: tenantA` 调 `/api/session/list`，看到 tenantA 的会话列表。带状态筛选 `?status=COMPLETED` 只看完成的。
 
-`src/main/java/com/example/aobs/session/PiiMasker.java`（新增）：
+**越权被拦**：tenantA 的会话，用 `X-Tenant-Id: tenantB` 调回放 → 返回 not found（看不到 B 没权的会话）。
+
+**无租户头被拦**：不带 `X-Tenant-Id` 调任何 `/api/**` → 401。
+
+#### 8.3.4 暴露问题
+
+客服在列表里看到一些 `ACTIVE` 状态的会话——但它们其实是**上周部署重启时被打断的僵尸会话**（停机时没标记，永远卡在 ACTIVE）。用户问"我那次断了能接着跑吗"——现在没法恢复，只能让用户重输。
+
+→ 进 **8.4 断点续传**。
+
+#### 8.3.5 checkpoint
+
+```
+src/main/java/com/example/aobs/session/
+├── SessionRecord.java           ← 新增：DTO
+├── SessionService.java          （改：start 带 tenantId + get/list）
+├── SessionReplayController.java （改：回放鉴权 + 列表接口）
+└── TenantAuthFilter.java        ← 新增：鉴权过滤器
+src/main/resources/schema.sql    （改：session_record 加 tenant_id）
+```
+
+```bash
+git add -A && git commit -m "第8.3章：会话列表+租户鉴权（防越权）"
+```
+
+---
+
+### 8.4 阶段四：断点续传——中断后从断点接着跑
+
+#### 8.4.0 场景
+
+8.3 暴露：僵尸 ACTIVE 会话（停机时未标记）+ 用户想续中断。这一阶段做两件事：① 停机时把未完成的 ACTIVE 标成 INTERRUPTED；② 给 INTERRUPTED/FAILED 会话一个"继续生成"入口，从断点接着跑。
+
+`SessionStatus` 启用 `INTERRUPTED`（8.1 已定义）。
+
+#### 8.4.1 思路
+
+**续传的关键认知：续传 ≠ 简单重跑**。会话崩在第 2 步，续传要从第 2 步接着跑——但第 2 步的输入（第 1 步的草稿）在内存里没了（重启了），必须从持久化取。所以续传要解决两个问题：
+1. **记得跑到哪一步了** → `session_record` 加 `last_step` 列，每步完成时更新。
+2. **拿到上一步的输出** → 第 7 章归档的 STEP_END 事件存了 output（摘要），续传时取它喂下一步。
+
+> **续传只允许 INTERRUPTED/FAILED**：ACTIVE 正在跑（不该续）、COMPLETED 已完成（没意义）。状态机限定续传入口——**状态不只是标签，是行为开关**。
+
+#### 8.4.2 动手
+
+`session_record` 加 `last_step` 列：
+
+```sql
+ALTER TABLE session_record ADD COLUMN IF NOT EXISTS last_step INT DEFAULT -1;   -- -1=未开始
+```
+
+`SessionService` 加 advanceStep / markInterrupted（在 8.3 基础上追加）：
+
+```java
+/** 每步完成时更新 last_step（续传依据）。 */
+public void advanceStep(String sessionId, int lastStep) {
+    jdbc.update("UPDATE session_record SET last_step=?, updated_at=? WHERE session_id=?",
+            lastStep, System.currentTimeMillis(), sessionId);
+}
+
+/** 优雅停机时把所有未完成的 ACTIVE 标 INTERRUPTED。 */
+public void markInterrupted() {
+    jdbc.update("UPDATE session_record SET status=?, updated_at=? WHERE status=?",
+            SessionStatus.INTERRUPTED.name(), System.currentTimeMillis(), SessionStatus.ACTIVE.name());
+}
+
+/** 取某步的完整输出（续传喂下一步用）。从归档 STEP_END 取 output。 */
+public String getStepOutput(String sessionId, int step) {
+    try {
+        var payloads = jdbc.queryForList(
+                "SELECT payload FROM event_archive WHERE session_id=? AND type=? ORDER BY seq DESC LIMIT 1",
+                String.class, sessionId, "STEP_END");
+        if (payloads.isEmpty()) return null;
+        String p = payloads.get(0);
+        int i = p.indexOf("\"output\":\"");
+        if (i < 0) return null;
+        int j = p.indexOf("\"", i + 10);
+        return j < 0 ? null : p.substring(i + 10, j);
+    } catch (Exception e) { return null; }
+}
+```
+
+`ChainingService` 加 `runFrom`（从 fromStep 接着跑），run 调 runFrom(..., 0)：
+
+```java
+/**
+ * 从 fromStep 开始跑。fromStep=0 等价全新执行。续传时 fromStep = last_step + 1。
+ * 续传的第一步，其输入（上一步输出）从归档取（resolveUserPrompt）。
+ */
+public Flux<AgentEvent> runFrom(String input, String sessionId, String tenantId, int fromStep) {
+    return Flux.<AgentEvent>create(sink -> {
+                FluxSinkAdapter out = new FluxSinkAdapter(sink, eventBus, sessionId);
+                java.util.List<Step> stepList = steps();
+                int total = stepList.size();
+
+                if (fromStep == 0) {
+                    sessionService.start(sessionId, tenantId, input, total);
+                    out.emit(EventContent.SESSION_STARTED, Map.of("input", input));
+                } else {
+                    // 续传：发 STEP_RESUMED，让前端知道"从第 N 步接着跑"
+                    out.emit(EventContent.STEP_RESUMED, Map.of("fromStep", fromStep, "total", total));
+                }
+
+                String payload = input;
+                for (int step = fromStep; step < total; step++) {
+                    Step s = stepList.get(step);
+                    out.emit(EventContent.STEP_START, Map.of("step", step, "total", total));
+                    // 续传的第一步：输入从归档取（上一步输出）；否则用循环累积的 payload
+                    String userPrompt = (step == fromStep && fromStep > 0)
+                            ? s.toUserPrompt().apply(sessionService.getStepOutput(sessionId, step - 1), sessionId)
+                            : s.toUserPrompt().apply(payload, sessionId);
+                    String full = streamStep(s.system(), userPrompt, sessionId, step, out);
+                    out.emit(EventContent.STEP_END, Map.of("step", step, "output", truncate(full, 80)));
+                    sessionService.advanceStep(sessionId, step);   // 记录进度
+                    payload = full;
+                }
+
+                sessionService.complete(sessionId, truncate(payload, 2000));
+                out.emit(EventContent.SESSION_COMPLETED, Map.of());
+                sink.complete();
+            })
+            .onErrorResume(err -> { sessionService.fail(sessionId); /* ... 发 SESSION_FAILED ... */ return Flux.empty(); })
+            .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+}
+
+/** 全新执行（第 1-7 章的老入口保留兼容）。 */
+public Flux<AgentEvent> run(String input, String sessionId, String tenantId) {
+    return runFrom(input, sessionId, tenantId, 0);
+}
+```
+
+`EventContent` 加 `STEP_RESUMED`：
+
+```java
+    STEP_RESUMED;       // 续传起点（第 8.4 章）
+```
+
+续传接口（SessionReplayController 加）：
+
+```java
+@PostMapping(value = "/resume/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> resume(@PathVariable String sessionId,
+                                            @RequestHeader("X-Tenant-Id") String tenantId) {
+    SessionRecord rec = sessionService.get(sessionId);
+    if (rec == null || !tenantId.equals(rec.tenantId())) {
+        return Flux.just(errorSse("session not found"));
+    }
+    if (!"INTERRUPTED".equals(rec.status()) && !"FAILED".equals(rec.status())) {
+        return Flux.just(errorSse("只能续传中断或失败的会话，当前:" + rec.status()));
+    }
+    int fromStep = rec.lastStep() + 1;
+    return articleService.runFrom(rec.inputText(), sessionId, tenantId, fromStep).map(this::toSse);
+}
+```
+
+优雅停机标记（`@PreDestroy`）+ 开启优雅停机：
+
+```java
+@Component
+public class ShutdownHook {
+    private final SessionService sessionService;
+    public ShutdownHook(SessionService sessionService) { this.sessionService = sessionService; }
+    @jakarta.annotation.PreDestroy
+    public void onShutdown() { sessionService.markInterrupted(); }
+}
+```
+
+```yaml
+# application.yaml
+server:
+  shutdown: graceful
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+```
+
+> **优雅停机序列**：① 收到信号 → ② 拒新请求 → ③ 等进行中请求结束（≤30s）→ ④ `@PreDestroy` 标 INTERRUPTED → ⑤ 退出。重启后这些会话出现在列表里，可续传。
+
+#### 8.4.3 验证
+
+页面跑写作，跑到第 1 步时 `kill` 后端（优雅 kill，不是 -9）。重启后端，调 `/api/session/list` 查 INTERRUPTED——能看到那个会话。调 `/api/session/resume/{id}` → 事件流从 STEP_RESUMED 开始，接着跑完。**断点续传可用**。
+
+#### 8.4.4 暴露问题
+
+续传后会发现：**用户原输入里的手机号变成了 `138****5678`**——因为 8.1 的 `start` 把 input 原样存了（还没脱敏，但 8.5 要脱敏），而续传 `runFrom` 拿 `rec.inputText()` 当 input 喂 LLM。一旦 8.5 给 input 脱敏，续传就喂了打码文本，LLM 生成质量下降。**脱敏（合规）和续传（要原文）是冲突需求**。
+
+另一个：`kill -9`（非优雅）时 `@PreDestroy` 不触发，会话卡在 ACTIVE 僵尸态。
+
+→ 进 **8.5 治理配套**（脱敏/加密/僵尸回收）。
+
+#### 8.4.5 checkpoint
+
+```
+src/main/java/com/example/aobs/session/
+├── SessionService.java           （改：advanceStep/markInterrupted/getStepOutput）
+├── SessionReplayController.java  （改：续传接口）
+└── ShutdownHook.java             ← 新增：停机标记
+src/main/java/.../workflow/ChainingService.java （改：runFrom 支持续传）
+src/main/java/.../obs/EventContent.java          （改：加 STEP_RESUMED）
+src/main/resources/schema.sql     （改：session_record 加 last_step）
+```
+
+```bash
+git add -A && git commit -m "第8.4章：断点续传（last_step+runFrom+停机标记INTERRUPTED）"
+```
+
+---
+
+### 8.5 阶段五：治理配套——脱敏/加密/幂等/TTL/僵尸回收
+
+#### 8.5.0 场景
+
+8.4 暴露：① 脱敏和续传原文冲突；② `kill -9` 僵尸会话。加上线后就一直在的合规/成本问题——归档存了用户原文（身份证）、重复提交烧两次钱、归档无限增长。这一阶段把"上历史功能必须配套"的治理能力一次性补齐（**不是可选，是前提**）。
+
+#### 8.5.1 思路
+
+| 治理项 | 解决什么 | 做法 |
+|--------|---------|------|
+| **PII 脱敏** | 归档/列表存原文=合规事故 | 入库前正则打码（手机/身份证/邮箱） |
+| **加密原文** | 脱敏后续传没原文=质量差 | 单独存加密原文，续传解密用 |
+| **幂等键** | 连点两次烧两次钱 | 请求带 key，Redis SETNX 占坑 |
+| **TTL 清理** | 归档无限增长 | 定时删过期会话（保留期 90 天） |
+| **僵尸回收** | kill -9 卡 ACTIVE | 定时把超时 ACTIVE 标 INTERRUPTED |
+
+> **核心：脱敏只针对"副本"，不碰"原文"**。LLM 看原文（质量）、存储看脱敏版（合规）、续传看加密原文（功能）——三份分层存储，互不牺牲。
+
+#### 8.5.2 动手
+
+**（a）PII 脱敏** `PiiMasker`：
 
 ```java
 package com.example.aobs.session;
 
 import org.springframework.stereotype.Component;
-
 import java.util.regex.Pattern;
 
-/**
- * PII（个人身份信息）脱敏。入库前对文本做正则替换，把敏感信息打码。
- * 这是最小实现——生产用专门的脱敏服务/规则引擎，支持更多类型 + 上下文识别。
- *
- * 只脱敏"入库的副本"，不脱敏"喂给 LLM 的原文"——否则 LLM 生成质量受影响。
- * 即：LLM 看到原文，归档/日志看到脱敏版。
- */
+/** PII 脱敏：入库前打码。只脱敏"副本"（归档/列表），不脱敏喂 LLM 的原文。 */
 @Component
 public class PiiMasker {
-
     private static final Pattern PHONE = Pattern.compile("(?<![0-9])1[3-9]\\d{9}(?![0-9])");
     private static final Pattern ID_CARD = Pattern.compile("(?<![0-9])[1-9]\\d{16}[0-9Xx](?![0-9Xx])");
     private static final Pattern EMAIL = Pattern.compile("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}");
 
     public String mask(String text) {
         if (text == null) return null;
-        String t = PHONE.matcher(text).replaceAll(m -> maskMiddle(m.group(), 3, 4));
-        t = ID_CARD.matcher(t).replaceAll(m -> maskMiddle(m.group(), 6, 4));
-        t = EMAIL.matcher(t).replaceAll(m -> maskMiddle(m.group(), 1, m.group().indexOf('@')));
+        String t = PHONE.matcher(text).replaceAll(m -> mid(m.group(), 3, 4));
+        t = ID_CARD.matcher(t).replaceAll(m -> mid(m.group(), 6, 4));
+        t = EMAIL.matcher(t).replaceAll(m -> mid(m.group(), 1, m.group().indexOf('@')));
         return t;
     }
-
-    /** 保留前 keepPrefix、后 keepSuffix 位，中间打码。138****1234。 */
-    private String maskMiddle(String s, int keepPrefix, int keepSuffix) {
-        if (s.length() <= keepPrefix + keepSuffix) return "****";
-        int midLen = s.length() - keepPrefix - keepSuffix;
-        return s.substring(0, keepPrefix) + "*".repeat(midLen) + s.substring(s.length() - keepSuffix);
+    private String mid(String s, int pre, int suf) {
+        if (s.length() <= pre + suf) return "****";
+        return s.substring(0, pre) + "*".repeat(s.length() - pre - suf) + s.substring(s.length() - suf);
     }
 }
 ```
 
-删除权接口（GDPR——用户注销时清掉其所有数据）：
+**（b）加密原文** `CryptoService`（AES-GCM）+ session_record 加列：
+
+```sql
+ALTER TABLE session_record ADD COLUMN IF NOT EXISTS input_text_raw TEXT;  -- 加密原文（续传用）
+```
 
 ```java
-// SessionReplayController 加删除接口
-@DeleteMapping("/{sessionId}")
-public Map<String, Object> delete(@PathVariable String sessionId,
-                                  @RequestParam String tenantId) {
-    SessionRecord rec = sessionService.get(sessionId);
-    if (rec == null || !tenantId.equals(rec.tenantId())) {
-        return Map.of("deleted", 0);   // 不存在或无权，返回 0（不暴露存在性）
+package com.example.aobs.session;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.util.Base64;
+
+/** AES-GCM 加密。续传原文加密存储，密钥从配置读（生产走 KMS）。 */
+@Service
+public class CryptoService {
+    private final byte[] key;
+    public CryptoService(@Value("${aobs.crypto.key}") String hex) {
+        this.key = hexToBytes(hex);   // 32 字节 = AES-256
     }
-    // 删两处：会话概要 + 该会话所有归档事件
-    int a = jdbc.update("DELETE FROM session_record WHERE session_id=?", sessionId);
-    int b = jdbc.update("DELETE FROM event_archive WHERE session_id=?", sessionId);
-    // 还要清 Redis：关键事件兜底 + 会话状态
-    //（复用第 2/4 章的 Redis key 规范，这里省略具体 redis.delete）
-    return Map.of("deleted", a + b);
+    public String encrypt(String plain) {
+        try {
+            byte[] iv = new byte[12]; new SecureRandom().nextBytes(iv);
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, iv));
+            byte[] ct = c.doFinal(plain.getBytes(StandardCharsets.UTF_8));
+            byte[] out = new byte[iv.length + ct.length];
+            System.arraycopy(iv, 0, out, 0, iv.length); System.arraycopy(ct, 0, out, iv.length, ct.length);
+            return Base64.getEncoder().encodeToString(out);
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
+    public String decrypt(String enc) {
+        try {
+            byte[] all = Base64.getDecoder().decode(enc);
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, all, 0, 12));
+            return new String(c.doFinal(all, 12, all.length - 12), StandardCharsets.UTF_8);
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
+    private static byte[] hexToBytes(String h) {
+        byte[] b = new byte[h.length() / 2];
+        for (int i = 0; i < b.length; i++) b[i] = (byte) Integer.parseInt(h.substring(2*i, 2*i+2), 16);
+        return b;
+    }
 }
 ```
 
-> **脱敏只针对"副本"，不碰"原文"**：喂给 LLM 的是原文（否则"帮我润色这段含手机号的文字"会被打码、生成质量下降）；归档/日志/列表展示的是脱敏版。**LLM 看原文，存储看脱敏版**——这是合规和质量的平衡。
->
-> **删除接口返回值不暴露存在性**：会话不存在和无权访问都返回 `deleted: 0`，不告诉调用方"这个会话存在但你没权"——否则可被用来探测 sessionId 是否存在。这是安全细节。
->
-> **正则脱敏的局限**：手机号/身份证/邮箱这类"有格式"的 PII 能用正则；但"我叫张三，住在朝阳区"这类自然语言 PII 正则抓不到，要靠 NER 模型或 LLM 脱敏——本文用正则做最小演示，生产接专门服务。
+```yaml
+aobs:
+  crypto:
+    key: ${AOBS_CRYPTO_KEY:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f}
+```
 
-#### 8.2.6 幂等键——防重复提交烧钱
+`SessionService.start` 改为：脱敏版存 `input_text`、加密原文存 `input_text_raw`：
 
-网络抖动/用户连点，同一个写作请求发两次 → 创建两个会话、烧两次 LLM。企业级用**幂等键**：前端生成唯一 key 带上，后端发现"这个 key 已有会话"就直接返回已存在的会话，不重跑。
+```java
+public void start(String sessionId, String tenantId, String rawInput, int totalSteps) {
+    long now = System.currentTimeMillis();
+    jdbc.update("MERGE INTO session_record KEY(session_id) VALUES (?,?,?,?,?,?,?,?,NULL,NULL,?)",
+            sessionId, SessionStatus.ACTIVE.name(), tenantId,
+            piiMasker.mask(rawInput),           // input_text = 脱敏版（展示/合规）
+            cryptoService.encrypt(rawInput),    // input_text_raw = 加密原文（续传用）
+            null, totalSteps, -1, now, now);
+}
+```
 
-`src/main/java/com/example/aobs/session/IdempotencyService.java`（新增）：
+续传接口改用加密原文（修 8.4 暴露的问题）：
+
+```java
+// resume 接口里：input 取加密原文并解密
+String rawInput = cryptoService.decrypt(rec.inputTextRaw());
+return articleService.runFrom(rawInput, sessionId, tenantId, fromStep).map(this::toSse);
+```
+
+> **API 核实**：`javax.crypto.Cipher`（AES/GCM/NoPadding）、`GCMParameterSpec`（128 位 auth tag、12 字节 IV）是 JDK 标准。AES-GCM 是加密"带认证"数据的标准（比 CBC 安全，防填充攻击）。
+
+**（c）幂等键** `IdempotencyService`（Redis SETNX）：
 
 ```java
 package com.example.aobs.session;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-
 import java.time.Duration;
 
-/**
- * 幂等键服务：防重复提交。
- * 机制——请求带 Idempotency-Key，后端用 SETNX 在 Redis 占坑：
- *   - 首次：占坑成功，记录 key→sessionId，正常执行。
- *   - 重复：占坑失败（key 已存在），返回已记录的 sessionId，不重跑。
- * 占坑保留 10 分钟（够用户重试窗口）；会话完成后这条映射意义不大，自然过期。
- */
+/** 幂等键：防重复提交。SETNX 原子占坑，重复 key 返回已有会话。 */
 @Service
 public class IdempotencyService {
-
     private static final Duration TTL = Duration.ofMinutes(10);
     private final StringRedisTemplate redis;
-
     public IdempotencyService(StringRedisTemplate redis) { this.redis = redis; }
 
-    private String key(String idempotencyKey) { return "aobs:idem:" + idempotencyKey; }
-
-    /**
-     * 尝试占坑。返回 true=首次（可执行），false=重复（应返回已有 sessionId）。
-     * @param sessionId 本次生成的 sessionId（首次时绑定到 key）
-     * @return true=首次，false=重复
-     */
-    public boolean tryAcquire(String idempotencyKey, String sessionId) {
-        if (idempotencyKey == null || idempotencyKey.isBlank()) return true;  // 没带 key 不强制幂等
-        Boolean ok = redis.opsForValue().setIfAbsent(key(idempotencyKey), sessionId, TTL);
-        return Boolean.TRUE.equals(ok);
+    /** 占坑。true=首次可执行，false=重复。SETNX 原子，无竞态。 */
+    public boolean tryAcquire(String key, String sessionId) {
+        if (key == null || key.isBlank()) return true;
+        return Boolean.TRUE.equals(redis.opsForValue().setIfAbsent("aobs:idem:" + key, sessionId, TTL));
     }
-
-    /** 重复请求时，取回首次绑定的 sessionId。 */
-    public String getExistingSession(String idempotencyKey) {
-        if (idempotencyKey == null || idempotencyKey.isBlank()) return null;
-        return redis.opsForValue().get(key(idempotencyKey));
+    public String getExistingSession(String key) {
+        return key == null ? null : redis.opsForValue().get("aobs:idem:" + key);
     }
 }
 ```
 
-Controller 接入（`/api/obs/article` 开头加幂等检查）：
+SSE 接口开头加幂等检查（重复 key 引导走回放）：
 
 ```java
-@GetMapping(value = "/article", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-public Flux<ServerSentEvent<String>> stream(
-        @RequestParam String prompt,
-        @RequestHeader(name = "sessionId", required = false) String fromHeader,
-        @RequestParam(name = "sessionId", required = false) String fromQuery,
-        @RequestHeader(value = "Idempotency-Key", required = false) String idemKey,
-        @RequestHeader(value = "X-Tenant-Id", required = false) String tenantId,
-        /* ... 其他参数 ... */) {
-
-    String sessionId = fromHeader != null ? fromHeader : fromQuery;
-
-    // 幂等检查：重复 key 直接返回已有会话（引导前端去看历史回放）
-    if (idemKey != null && !idempotencyService.tryAcquire(idemKey, sessionId)) {
-        String existing = idempotencyService.getExistingSession(idemKey);
-        return Flux.just(sse("IDEMPOTENT_REPLAY",
-                "{\"existingSession\":\"" + existing + "\",\"msg\":\"已有会话，走回放\"}"));
-    }
-
-    // ... 正常走 run（SessionContext 带 idempotencyKey）...
+if (idemKey != null && !idempotencyService.tryAcquire(idemKey, sessionId)) {
+    String existing = idempotencyService.getExistingSession(idemKey);
+    return Flux.just(sse("IDEMPOTENT_REPLAY", "{\"existingSession\":\"" + existing + "\"}"));
 }
 ```
 
-> **SETNX（setIfAbsent）是原子占坑**：Redis 的 `SET key value NX EX 600` 在"不存在时设置 + 过期"这一步是原子的，多并发请求只有一个能成功。这是分布式幂等的标准做法。不能用"先 GET 判空再 SET"——那两步之间有竞态。
->
-> **幂等不是"返回上次结果"，是"不重复执行"**：重复请求时，我们不重放上次的事件流（那是回放接口的事），而是告诉前端"你这次的 key 已对应某会话，去看回放"。前端拿到 existingSession 跳回放页面即可。
+> **SETNX 是原子占坑**：`SET key val NX EX 600` 在"不存在时设置+过期"一步原子完成，并发只一个成功。不能用"先 GET 判空再 SET"——两步间有竞态。
 
-#### 8.2.7 TTL 清理——归档不能无限增长
-
-第 7 章归档是只增不删的——做历史列表后会爆炸。加定时清理：超过保留期的会话（含其事件）删除或转冷存储。
-
-`src/main/java/com/example/aobs/session/ArchiveRetentionJob.java`（新增）：
+**（d）TTL 清理 + 僵尸回收** `ArchiveRetentionJob`：
 
 ```java
 package com.example.aobs.session;
 
-import com.example.aobs.obs.SessionStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-
 import java.util.List;
 import java.util.Map;
 
-/**
- * 归档保留期清理。每天凌晨跑一次，删除超过保留期的会话 + 其事件。
- * 保留期 90 天（按业务定）。生产里"转冷存储"比"硬删"更常见，本文简化为删除。
- */
+/** 归档保留期清理 + 僵尸 ACTIVE 回收。 */
 @Component
 public class ArchiveRetentionJob {
-
     private static final int RETENTION_DAYS = 90;
     private final JdbcTemplate jdbc;
-
     public ArchiveRetentionJob(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
-    @Scheduled(cron = "0 0 3 * * *")   // 每天 03:00
+    /** 每天 03:00 清理超过 90 天的会话（分批删，避免大表锁）。 */
+    @Scheduled(cron = "0 0 3 * * *")
     public void purgeExpired() {
         long cutoff = System.currentTimeMillis() - RETENTION_DAYS * 86400_000L;
-
-        // 先选出要清理的 sessionId（避免大表 DELETE 时锁全表，分批删）
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT session_id FROM session_record WHERE updated_at < ? AND status <> ?",
-                cutoff, SessionStatus.ACTIVE.name());   // 不清理还在跑的（理论上不会过期，防御）
-
+                cutoff, SessionStatus.ACTIVE.name());
         for (Map<String, Object> row : rows) {
             String sid = (String) row.get("session_id");
             jdbc.update("DELETE FROM event_archive WHERE session_id=?", sid);
             jdbc.update("DELETE FROM session_record WHERE session_id=?", sid);
         }
     }
-}
-```
 
-启动类开启定时任务：
-
-```java
-@SpringBootApplication
-@EnableScheduling    // ← 开启 @Scheduled
-public class Application { ... }
-```
-
-> **为什么分批删而不是一条大 DELETE**：`DELETE FROM ... WHERE updated_at < ?` 在大表上会锁大量行、产生巨量 undo log，可能拖垮库。先 SELECT 出 sessionId 列表，再逐条删（每条事务小）。生产里大量数据用"分页删 + 间隔 sleep"，本文简化为逐条。
->
-> **ACTIVE 不清理**：理论上过期（90天前）的不会还是 ACTIVE，但防御性排除——避免把"卡死的 ACTIVE"（比如 bug 导致永远不 COMPLETED）当过期删了，丢失正在（假装）进行的会话。卡死会话另有检测机制（8.3 会暴露）。
->
-> **生产换"转冷存储"**：直接删是简化。真实做法是"热库保留 30 天 + 转冷存储（S3/对象存储）保留 1 年 + 1 年后删"——分层存储，平衡成本和合规留存要求。
-
-#### 8.2.8 会话列表接口
-
-运营后台要"看所有会话、按状态/租户筛选、分页"。
-
-```java
-// SessionReplayController 加列表接口
-@GetMapping("/list")
-public Map<String, Object> listSessions(
-        @RequestParam(required = false) String tenantId,
-        @RequestParam(required = false) String status,
-        @RequestParam(defaultValue = "0") int page,
-        @RequestParam(defaultValue = "20") int size) {
-
-    SessionStatus st = status != null ? SessionStatus.valueOf(status.toUpperCase()) : null;
-    List<SessionRecord> items = sessionService.list(tenantId, st, page, size);
-    // 暴露给前端时，input/output 已是脱敏版（入库时脱敏过），可直接返回
-    return Map.of("items", items, "page", page, "size", size);
-}
-```
-
-> **列表返回的字段已是脱敏版**：因为入库时（`sessionService.start`）存的就是 `piiMasker.mask(input)`，列表查出来的 input/output 天然脱敏——前端列表页直接展示，不用再脱敏一遍。**脱敏在入口（入库）做一次，下游所有展示都安全**。
-
-#### 8.2.9 断点续传接口——从断点接着跑
-
-用户看到 INTERRUPTED 的历史会话，点"继续生成"，后端从 `last_step + 1` 接着跑。
-
-```java
-// SessionReplayController 加续传接口
-@PostMapping(value = "/resume/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-public Flux<ServerSentEvent<String>> resume(
-        @PathVariable String sessionId,
-        @RequestParam String tenantId,
-        @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader) {
-
-    String tid = tenantHeader != null ? tenantHeader : tenantId;
-    SessionRecord rec = sessionService.get(sessionId);
-    if (rec == null || !tid.equals(rec.tenantId())) {
-        return Flux.just(sse("ERROR", "{\"error\":\"forbidden\"}"));
-    }
-    if (!"INTERRUPTED".equals(rec.status()) && !"FAILED".equals(rec.status())) {
-        // 只允许中断/失败的会话续传；ACTIVE/COMPLETED 不允许
-        return Flux.just(sse("ERROR",
-                "{\"error\":\"只能续传中断或失败的会话，当前状态:" + rec.status() + "\"}"));
-    }
-
-    int fromStep = rec.lastStep() + 1;   // 从上一步的下一步接着跑
-    // 续传的 input 是用户上次的原始输入（session_record 存的脱敏版够喂 LLM 吗？见下方说明）
-    String input = rec.inputText();
-    SessionContext ctx = new SessionContext(rec.tenantId(), rec.userId(), null, rec.traceId());
-    return articleService.runFrom(input, sessionId, ctx, fromStep).map(this::toSse);
-}
-```
-
-> **续传只允许 INTERRUPTED/FAILED**：ACTIVE 的会话正在跑（不该续，会重复）；COMPLETED 已完成（没意义）。状态机限定续传入口——**状态不只是标签，是行为的开关**。
->
-> **⚠️ 脱敏输入喂 LLM 的问题**（8.4 会暴露并修）：`session_record.inputText` 是脱敏过的（"138****1234"），续传时拿它当 input 喂 LLM，LLM 看到的是打码文本——生成质量受影响。正确做法是**单独存一份原文（加密）供续传用**，归档/列表用脱敏版。8.4 暴露这个问题，8.5 修。
-
-#### 8.2.10 优雅停机标记 + 启动扫描
-
-兑现 A.8 的承诺——停机前把 ACTIVE 标 INTERRUPTED，重启后用户能续传。
-
-```java
-// 停机钩子（@PreDestroy，停机时触发）
-@Component
-public class ShutdownHook {
-    private final SessionService sessionService;
-    public ShutdownHook(SessionService sessionService) { this.sessionService = sessionService; }
-
-    @jakarta.annotation.PreDestroy
-    public void onShutdown() {
-        sessionService.markInterrupted();   // 把所有 ACTIVE 标 INTERRUPTED
+    /** 每 5 分钟回收僵尸 ACTIVE（kill -9 遗留）：超 10 分钟没更新 = 卡死，转 INTERRUPTED。 */
+    @Scheduled(fixedDelay = 300_000)
+    public void reapZombieActive() {
+        long cutoff = System.currentTimeMillis() - 10 * 60_000L;
+        jdbc.update("UPDATE session_record SET status=?, updated_at=? WHERE status=? AND updated_at < ?",
+                SessionStatus.INTERRUPTED.name(), System.currentTimeMillis(),
+                SessionStatus.ACTIVE.name(), cutoff);
     }
 }
 ```
 
-`application.yaml` 开优雅停机（A.8 给过）：
+启动类加 `@EnableScheduling`。
 
-```yaml
-server:
-  shutdown: graceful
-spring:
-  lifecycle:
-    timeout-per-shutdown-phase: 30s   # 等进行中请求结束，最多 30s，然后才走 @PreDestroy
-```
-
-> **优雅停机的完整序列**：① 收到停机信号 → ② 不再接新请求（Spring 拒绝）→ ③ 等进行中请求结束（最多 30s）→ ④ `@PreDestroy` 把未完成会话标 INTERRUPTED → ⑤ 进程退出。重启后这些 INTERRUPTED 会话出现在历史列表里，用户可点"继续"续传。
+> **僵尸回收靠 updated_at 超时**：正常会话每步都更新 updated_at（advanceStep）。10 分钟没更新 = 卡死。转 INTERRUPTED 让用户能续传。**心跳超时检测是分布式系统识别僵死的通用手段**。
 >
-> **`kill -9` 不触发 @PreDestroy**：强制杀死进程，钩子来不及跑——会话还是 ACTIVE（僵尸态）。8.3 的页面验证会暴露这个：卡死的 ACTIVE 既不 COMPLETED 也不 FAILED，列表里永远"进行中"。8.5 加心跳超时检测把僵尸 ACTIVE 转 INTERRUPTED。
+> **分批删而非一条大 DELETE**：大表 DELETE 锁大量行、产生巨量 undo log。先 SELECT 出 id 再逐条删（事务小）。生产里更大量数据用"分页删 + sleep"。
 
-### 8.3 前端页面——历史列表 + 回放 + 续传
+#### 8.5.3 验证
 
-第 8 章需要一个运营/用户都能用的"历史会话台"：列表 → 点进回放 → 看历史事件流 → 中断的可续传。新建 `src/main/resources/static/history.html`（核心 JS，样式省略）：
+- **脱敏**：输入含手机号，查 session_record.input_text 是 `138****5678`，input_text_raw 是加密串；解密 input_text_raw 得到原文；续传喂的是原文，生成质量正常。
+- **幂等**：连点两次生成（同 Idempotency-Key），第二次返回 IDEMPOTENT_REPLAY，不重跑。
+- **TTL/僵尸**：手动改一条记录的 updated_at 到 11 分钟前，等定时任务跑（或手动调 reapZombieActive），状态变 INTERRUPTED。
 
-```html
-<h1>历史会话</h1>
-<div id="filters">
-  租户 <input id="tenant" value="tenantA">
-  状态 <select id="status">
-    <option value="">全部</option>
-    <option value="ACTIVE">进行中</option>
-    <option value="COMPLETED">已完成</option>
-    <option value="INTERRUPTED">中断</option>
-    <option value="FAILED">失败</option>
-  </select>
-  <button onclick="loadList()">查询</button>
-</div>
-<table id="list"><tr><th>会话</th><th>状态</th><th>输入(脱敏)</th><th>开始时间</th><th>操作</th></tr></table>
-<div id="replay"></div>   <!-- 回放面板：点某行后，把历史事件流渲染到这里 -->
+#### 8.5.4 暴露问题（最后）
 
-<script>
-async function loadList() {
-  const tenant = document.getElementById('tenant').value;
-  const status = document.getElementById('status').value;
-  const resp = await fetch(`/api/session/list?tenantId=${tenant}&status=${status}`);
-  const data = await resp.json();
-  const tb = document.querySelector('#list');
-  tb.innerHTML = '<tr><th>会话</th><th>状态</th><th>输入(脱敏)</th><th>开始时间</th><th>操作</th></tr>';
-  for (const s of data.items) {
-    const tr = document.createElement('tr');
-    const canResume = s.status === 'INTERRUPTED' || s.status === 'FAILED';
-    tr.innerHTML = `<td>${s.sessionId.slice(-8)}</td><td>${s.status}</td>`
-      + `<td>${(s.inputText||'').slice(0,30)}</td>`
-      + `<td>${new Date(s.startedAt).toLocaleString()}</td>`
-      + `<td><button onclick="replay('${s.sessionId}','${tenant}')">回放</button>`
-      + (canResume ? ` <button onclick="resume('${s.sessionId}','${tenant}')">继续生成</button>` : '')
-      + `</td>`;
-    tb.appendChild(tr);
-  }
-}
+到目前为止，租户身份校验只验了 `X-Tenant-Id` 存在（8.3 的简化），没验"这个 tenantId 合法吗、有没有密钥"。任何人填个 tenantId 就能过。而且租户本身没法管理（不能建租户、改配额、停用）。
 
-// 回放：订阅历史 SSE，把事件渲染出来（复用调试页面的 handleFrame 逻辑）
-async function replay(sessionId, tenant) {
-  document.getElementById('replay').innerHTML = `<h3>回放 ${sessionId.slice(-8)}</h3><div id="events"></div>`;
-  const resp = await fetch(`/api/session/replay/${sessionId}?tenantId=${tenant}`);
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-    let idx;
-    while ((idx = buffer.indexOf('\n\n')) >= 0) {
-      handleFrame(buffer.slice(0, idx));
-      buffer = buffer.slice(idx + 2);
-    }
-  }
-}
+→ 进 **8.6 多租户管理**。
 
-function handleFrame(frame) {
-  let type = '', data = '';
-  for (const line of frame.split('\n')) {
-    if (line.startsWith('event:')) type = line.slice(6).trim();
-    if (line.startsWith('data:')) data += line.slice(5).trim();
-  }
-  const d = document.createElement('div');
-  d.textContent = type + '  ' + data.slice(0, 100);
-  document.querySelector('#events').appendChild(d);
-}
-
-// 续传：调 resume 接口，事件流回到回放面板
-async function resume(sessionId, tenant) {
-  document.getElementById('replay').innerHTML = `<h3>续传 ${sessionId.slice(-8)}</h3><div id="events"></div>`;
-  const resp = await fetch(`/api/session/resume/${sessionId}?tenantId=${tenant}`, {
-    method: 'POST', headers: { 'X-Tenant-Id': tenant }
-  });
-  // ... 同 replay 的 SSE 读取逻辑 ...
-}
-</script>
-```
-
-> **页面三件套**：① 列表（按状态/租户筛选，展示脱敏输入）→ ② 回放（订阅历史 SSE，事件渲染）→ ③ 续传（INTERRUPTED/FAILED 的会话才显示"继续生成"按钮）。这就是一个最小的"历史会话管理台"——运营查历史、用户续中断，都靠它。
->
-> **回放页面复用调试页面的帧解析逻辑**：实时流和历史回放都是 SSE，前端解析完全一样。**统一的 SSE 协议让"实时看"和"回放看"用同一套前端代码**——这是事件流架构的回报。
-
-### 8.4 用页面验证 → 暴露两个真实问题
-
-**场景 1（正常链路）**：页面点「生成」→ 会话跑完。打开 `history.html` 查询，列表里出现这个会话（COMPLETED）。点「回放」→ 历史事件流逐条重现（SESSION_STARTED → CONTENT_DELTA× → ... → SESSION_COMPLETED）。点「查询」按状态筛选——只看 INTERRUPTED 等。**历史功能闭环可用**。
-
-**场景 2（中断 + 续传）**：页面点「生成」，跑到第 1 步时 `kill` 后端（优雅停机）。重启后端，`history.html` 查 INTERRUPTED——能看到那个会话（`@PreDestroy` 标记生效）。点「继续生成」→ 事件流从 STEP_RESUMED 开始，接着跑第 2 步、第 3 步，到 SESSION_COMPLETED。**断点续传可用**。
-
-但场景 2 会暴露两个问题：
-
-**问题 A：续传后，会话里出现了"第 0 步"和"从第 1 步续跑"两段事件，时间上不连续**。回放这个续传过的会话，事件流是 [第0步的归档事件] + [续传时新发的事件]，中间没有 STEP_RESUMED 的明显分隔——前端看着像"重新跑了一遍第 0 步"。根因：续传时新发的事件直接追加到归档，和原会话事件混在一起，没有"这是续传段"的标记。
-
-**问题 B：续传喂给 LLM 的是脱敏输入**（8.2.9 标的那个 ⚠️）。场景 2 如果用户原输入含手机号"13812345678"，归档存的是"138****5678"；续传时 `runFrom` 拿 `inputText`（脱敏版）当 input 喂 LLM——LLM 看到打码文本，生成的草稿里手机号也是乱的。**脱敏和续传原文是冲突的需求**。
-
-**问题 C（僵尸 ACTIVE）**：`kill -9`（不是优雅 kill）后端，会话卡在 ACTIVE。`history.html` 查 ACTIVE——这个僵尸会话永远"进行中"，既不 COMPLETED 也不 INTERRUPTED，无法续传（续传只允许 INTERRUPTED/FAILED）。根因：`@PreDestroy` 只在优雅停机触发，`kill -9` 不触发。
-
-### 8.5 修复
-
-**修问题 A（续传段标记）**：续传发的事件，在 data 里带 `resume: true`，回放时前端据此加分隔线。改 `runFrom`：
-
-```java
-// 续传段的事件 data 里加 resume 标记
-out.emit(EventContent.STEP_RESUMED, Map.of("fromStep", fromStep, "total", total, "resume", true));
-// 续传段的 STEP_START/CONTENT_DELTA/STEP_END 也在 data 里带上 "resume", true
-// （FluxSinkAdapter.emit 加个重载，支持带 extra 字段）
-```
-
-回放时前端看到 `resume: true` 的事件，渲染前插一条分隔线"——以下为续传——"。这样"原会话 + 续传段"在回放里清晰可辨。
-
-**修问题 B（原文与脱敏分离）**：`session_record` 加一列 `input_text_raw`（加密的原文，续传用），`input_text` 仍是脱敏版（列表/展示用）。续传读 raw、列表读 masked。
-
-```sql
-ALTER TABLE session_record ADD COLUMN input_text_raw TEXT;   -- 加密原文（续传用）
-```
-
-```java
-// sessionService.start：raw 存加密后的原文，masked 存脱敏版
-public void start(..., String rawInput, String maskedInput, ...) {
-    jdbc.update("... input_text=?, input_text_raw=? ...",
-            maskedInput, cryptoService.encrypt(rawInput), ...);
-}
-// 续传时取 input_text_raw 解密
-String input = cryptoService.decrypt(rec.inputTextRaw());
-```
-
-> **为什么不能只存脱敏版**：脱敏是"对外展示/合规"的需求；续传是"重新喂 LLM"的需求——后者要原文。两个需求指向不同的存储：展示用脱敏、续传用加密原文。**合规和功能不能互相牺牲，要分层存储**。加密原文访问要审计（谁能解密、何时解密），生产用 KMS 管密钥。
-
-**修问题 C（僵尸 ACTIVE 检测）**：加定时任务，把"超过 N 分钟还 ACTIVE"的会话标 INTERRUPTED（视为崩溃遗留）。复用 8.2.7 的 `@Scheduled`：
-
-```java
-@Scheduled(fixedDelay = 300_000)   // 每 5 分钟
-public void reapZombieActive() {
-    long cutoff = System.currentTimeMillis() - 10 * 60_000L;   // 超过 10 分钟没更新
-    // 正常会话每步都更新 updated_at；10 分钟没更新 = 卡死了
-    jdbc.update("UPDATE session_record SET status=?, updated_at=? WHERE status=? AND updated_at < ?",
-            SessionStatus.INTERRUPTED.name(), System.currentTimeMillis(),
-            SessionStatus.ACTIVE.name(), cutoff);
-}
-```
-
-> **僵尸回收靠 updated_at 超时**：正常会话每步 STEP_END 都更新 `updated_at`（8.2.3 的 advanceStep）。一个 ACTIVE 会话如果 10 分钟没更新，说明它卡死了（kill -9 / 进程崩溃 / 死循环）——转 INTERRUPTED，让用户能续传或重试。**心跳超时检测是分布式系统识别"僵死状态"的通用手段**。
-
-### 8.6 checkpoint
+#### 8.5.5 checkpoint
 
 ```
-src/main/java/com/example/aobs/
-├── session/                          ← 第 8 章新增
-│   ├── SessionStatus.java            # 会话状态枚举
-│   ├── SessionRecord.java            # 会话概要 DTO
-│   ├── SessionService.java           # 会话 CRUD + 状态流转
-│   ├── SessionContext.java           # 请求上下文
-│   ├── SessionReplayController.java  # 回放/列表/续传/删除接口
-│   ├── IdempotencyService.java       # 幂等键
-│   ├── PiiMasker.java                # PII 脱敏
-│   ├── ArchiveRetentionJob.java      # TTL 清理 + 僵尸回收
-│   └── ShutdownHook.java             # 停机标记 INTERRUPTED
-├── workflow/
-│   └── ChainingService.java          # 改：run 接 SessionService + runFrom 支持续传
-└── obs/
-    └── EventContent.java             # 改：加 STEP_RESUMED
-
-src/main/resources/
-├── schema.sql                        # 改：加 session_record 表
-└── static/
-    └── history.html                  ← 新增：历史会话管理台
+src/main/java/com/example/aobs/session/
+├── PiiMasker.java              ← 新增：脱敏
+├── CryptoService.java          ← 新增：AES-GCM 加密
+├── IdempotencyService.java     ← 新增：幂等键
+├── ArchiveRetentionJob.java    ← 新增：TTL 清理 + 僵尸回收
+└── SessionService.java         （改：start 存脱敏+加密原文）
+src/main/resources/schema.sql   （改：session_record 加 input_text_raw）
+src/main/java/.../Application.java （改：加 @EnableScheduling）
 ```
-
-`Application` 加 `@EnableScheduling`。
 
 ```bash
-git add -A && git commit -m "第8章：会话持久化+历史回放+断点续传+幂等+脱敏+TTL"
+git add -A && git commit -m "第8.5章：治理配套（脱敏+加密+幂等+TTL+僵尸回收）"
 ```
 
-### 8.7 复盘
+---
 
-**做了**：把第 7 章的"被动归档"升级成完整的历史能力——会话状态机、历史回放（SSE 重放）、会话列表（分页筛选）、断点续传（从 last_step 接着跑），以及四个治理配套（幂等键防重、PII 脱敏、TTL 清理、回放鉴权）。
+### 8.6 阶段六：多租户管理——租户可建可停可改配额
+
+#### 8.6.0 场景
+
+8.5 暴露：租户身份没真鉴权（只验存在）、租户本身不可管理。这一阶段把第 5 章的"租户"从"事件字段"升级成"可管理实体"——建租户（发密钥）、改配额、停用、真鉴权。
+
+#### 8.6.1 思路
+
+- `tenant` 表：租户信息 + 配额 + apiKey（存 SHA-256 哈希）。
+- `TenantAuthFilter`（8.3 已建）升级：不只验 X-Tenant-Id 存在，还要 `X-Tenant-Id` + `X-Tenant-Key` 匹配（checkApiKey），且租户 ACTIVE。
+- 管理接口（运营用）：建/改配额/停用/列表。
+
+> **入口鉴权（本节）+ 出口校验（第 5 章）= 纵深防御**：鉴权回答"你是哪个租户、合法吗"（入口拦），校验回答"这个事件确实属于这个租户吗"（出口防越权）。单靠任一不够。
+
+#### 8.6.2 动手
+
+`tenant` 表：
+
+```sql
+CREATE TABLE IF NOT EXISTS tenant (
+    tenant_id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(128),
+    status VARCHAR(16) NOT NULL,          -- ACTIVE/SUSPENDED
+    daily_budget_usd DOUBLE NOT NULL,
+    user_rpm_limit INT NOT NULL,
+    api_key_hash VARCHAR(128),            -- SHA-256 哈希（不存明文）
+    created_at BIGINT NOT NULL
+);
+```
+
+`Tenant` + `TenantService`：
+
+```java
+package com.example.aobs.tenant;
+
+public record Tenant(String tenantId, String name, TenantStatus status,
+                     double dailyBudgetUsd, int userRpmLimit, String apiKeyHash, long createdAt) {
+    public enum TenantStatus { ACTIVE, SUSPENDED }
+}
+```
+
+```java
+package com.example.aobs.tenant;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.List;
+
+@Service
+public class TenantService {
+    private final JdbcTemplate jdbc;
+    public TenantService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    public void create(Tenant t, String plainApiKey) {
+        jdbc.update("INSERT INTO tenant (tenant_id,name,status,daily_budget_usd,user_rpm_limit,api_key_hash,created_at) VALUES (?,?,?,?,?,?,?)",
+                t.tenantId(), t.name(), t.status().name(), t.dailyBudgetUsd(),
+                t.userRpmLimit(), sha256(plainApiKey), System.currentTimeMillis());
+    }
+    public void updateQuota(String id, double budget, int rpm) {
+        jdbc.update("UPDATE tenant SET daily_budget_usd=?, user_rpm_limit=? WHERE tenant_id=?", budget, rpm, id);
+    }
+    public void setStatus(String id, Tenant.TenantStatus s) {
+        jdbc.update("UPDATE tenant SET status=? WHERE tenant_id=?", s.name(), id);
+    }
+    public Tenant get(String id) {
+        var rs = jdbc.query("SELECT * FROM tenant WHERE tenant_id=?", (r,i) -> new Tenant(
+                r.getString("tenant_id"), r.getString("name"),
+                Tenant.TenantStatus.valueOf(r.getString("status")),
+                r.getDouble("daily_budget_usd"), r.getInt("user_rpm_limit"),
+                r.getString("api_key_hash"), r.getLong("created_at")), id);
+        return rs.isEmpty() ? null : rs.get(0);
+    }
+    public List<Tenant> list() {
+        return jdbc.query("SELECT * FROM tenant ORDER BY created_at DESC", (r,i) -> new Tenant(
+                r.getString("tenant_id"), r.getString("name"),
+                Tenant.TenantStatus.valueOf(r.getString("status")),
+                r.getDouble("daily_budget_usd"), r.getInt("user_rpm_limit"),
+                r.getString("api_key_hash"), r.getLong("created_at")));
+    }
+    /** 鉴权：租户存在 + ACTIVE + key 哈希匹配。 */
+    public boolean checkApiKey(String tenantId, String plainKey) {
+        Tenant t = get(tenantId);
+        return t != null && t.status() == Tenant.TenantStatus.ACTIVE
+                && t.apiKeyHash() != null && t.apiKeyHash().equals(sha256(plainKey));
+    }
+    private static String sha256(String s) {
+        try {
+            byte[] h = MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : h) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception e) { return Integer.toString(s.hashCode()); }
+    }
+}
+```
+
+`TenantAuthFilter` 升级（8.3 的基础上加 key 校验）：
+
+```java
+@Component
+public class TenantAuthFilter implements WebFilter {
+    private final TenantService tenantService;
+    public TenantAuthFilter(TenantService tenantService) { this.tenantService = tenantService; }
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+        String path = exchange.getRequest().getPath().value();
+        if (path.startsWith("/index.html") || path.startsWith("/actuator") || path.equals("/")
+                || path.startsWith("/api/admin")) {   // 运营管理接口走单独鉴权（生产加）
+            return chain.filter(exchange);
+        }
+        String tid = exchange.getRequest().getHeaders().getFirst("X-Tenant-Id");
+        String tkey = exchange.getRequest().getHeaders().getFirst("X-Tenant-Key");
+        if (!tenantService.checkApiKey(tid, tkey)) {
+            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+            return exchange.getResponse().setComplete();
+        }
+        exchange.getAttributes().put("tenantId", tid);
+        return chain.filter(exchange);
+    }
+}
+```
+
+管理接口（运营用）：
+
+```java
+@RestController
+@RequestMapping("/api/admin/tenant")
+public class TenantController {
+    private final TenantService tenantService;
+    public TenantController(TenantService t) { this.tenantService = t; }
+
+    @PostMapping
+    public Map<String,Object> create(@RequestBody Map<String,Object> body) {
+        String apiKey = "sk-" + java.util.UUID.randomUUID();   // 明文 key 只返回这一次
+        tenantService.create(new Tenant((String)body.get("tenantId"), (String)body.get("name"),
+                Tenant.TenantStatus.ACTIVE, 10.0, 60, null, System.currentTimeMillis()), apiKey);
+        return Map.of("tenantId", body.get("tenantId"), "apiKey", apiKey, "msg", "妥善保存 apiKey，之后不可见");
+    }
+    @PutMapping("/{id}/quota")
+    public void quota(@PathVariable String id, @RequestParam double budget, @RequestParam int rpm) {
+        tenantService.updateQuota(id, budget, rpm);
+    }
+    @PutMapping("/{id}/status")
+    public void status(@PathVariable String id, @RequestParam String s) {
+        tenantService.setStatus(id, Tenant.TenantStatus.valueOf(s.toUpperCase()));
+    }
+    @GetMapping
+    public List<Tenant> list() { return tenantService.list(); }
+}
+```
+
+> **apiKey 存哈希、明文只返回一次**：和用户密码同理，库泄漏也拿不到明文。租户丢了 key 只能重置（重新 create/生成）。停用租户（SUSPENDED）在 checkApiKey 直接拒——既不烧 LLM 也不进事件流，**停用是入口拦截**。
+
+#### 8.6.3 验证
+
+```bash
+# 运营建租户（拿到 apiKey）
+curl -X POST http://localhost:8080/api/admin/tenant -H "Content-Type: application/json" \
+  -d '{"tenantId":"tenantA","name":"客户A"}'
+# → {"tenantId":"tenantA","apiKey":"sk-xxx","msg":"妥善保存..."}
+
+# 用 key 调业务接口（通过鉴权）
+curl -N "http://localhost:8080/api/obs/article?prompt=test" \
+  -H "X-Tenant-Id: tenantA" -H "X-Tenant-Key: sk-xxx" -H "sessionId: s1"
+
+# 错 key 被拒
+curl -N "http://localhost:8080/api/obs/article?prompt=test" \
+  -H "X-Tenant-Id: tenantA" -H "X-Tenant-Key: wrong" -H "sessionId: s1"   # 401
+
+# 停用
+curl -X PUT "http://localhost:8080/api/admin/tenant/tenantA/status?s=SUSPENDED"
+# 再用原 key 调 → 401（停用即拒）
+```
+
+#### 8.6.4 checkpoint
+
+```
+src/main/java/com/example/aobs/tenant/    ← 新增包
+├── Tenant.java
+├── TenantService.java
+└── TenantController.java
+src/main/java/.../session/TenantAuthFilter.java （改：加 X-Tenant-Key 校验）
+src/main/resources/schema.sql             （改：加 tenant 表）
+```
+
+```bash
+git add -A && git commit -m "第8.6章：多租户管理（CRUD+配额+停用+真鉴权）"
+```
+
+---
+
+### 8.7 前端整合——DeepSeek 风对话页面
+
+六个阶段的后端都齐了，前端用一个**参照 DeepSeek 官网布局**的页面整合：左侧会话历史栏（第 8 章列表/回放/续传）+ 右侧对话区（实时事件流）+ 底部输入。**只做对话，不做多模态/上传**。完整页面见附录 **A.10**（覆盖第 1-8 章所有验证）。
+
+> **为什么前端放附录 A.10、不在这展开**：页面 HTML 较长（~200 行），放正文挤占"分阶段学后端"的注意力。A.10 给完整页面，每个阶段验证时用它对应的功能（8.1 跑完看左侧栏刷新、8.2 点会话回放、8.4 点续传、8.6 切租户）。
+
+---
+
+### 8.8 第 8 章复盘
+
+**做了**（六阶段，每阶段一个能跑的 checkpoint）：
+1. 最小持久化（会话落库）→ 2. 历史回放（归档重放成 SSE）→ 3. 列表+鉴权（防越权）→ 4. 断点续传（从 last_step 接着跑）→ 5. 治理配套（脱敏/加密/幂等/TTL/僵尸回收）→ 6. 多租户管理（CRUD+配额+停用+真鉴权）。
 
 **这一章最该记住的工程教训**：
-1. **会话状态机是历史功能的地基**——没有明确状态（ACTIVE/COMPLETED/FAILED/INTERRUPTED/EXPIRED），列表筛选、续传决策、过期清理都无从下手。状态不只是标签，是行为开关（续传只允许 INTERRUPTED/FAILED）。
-2. **断点续传 ≠ 简单重跑**——续传要把"中间产物"也持久化（上一步的 output），否则第 N 步拿不到第 N-1 步的结果。这是续传和重跑的本质区别。
-3. **合规和功能要分层存储**——脱敏版（展示/合规）和加密原文（续传/重放）分两列，互不牺牲。LLM 看原文、存储看脱敏版。
-4. **历史功能必须配套治理**——幂等（防烧钱）、脱敏（防合规事故）、TTL（防成本爆炸）、鉴权（防越权）四个，缺一个历史功能就是黑洞。**不是可选附录，是前提**。
-5. **僵尸状态靠心跳超时检测**——`@PreDestroy` 只管优雅停机，`kill -9` 的崩溃要靠 updated_at 超时兜底。分布式系统识别"僵死"的通用手段。
+1. **每个机制都是被上一阶段痛点逼出来的**——不先落库就没法回放、不先回放就暴露不出越权、不先续传就暴露不出脱敏冲突。**演进驱动设计，不是一上来全画好**。
+2. **会话状态机是历史功能的地基**——没有明确状态，列表筛选、续传决策、过期清理都无从下手。状态不只是标签，是行为开关（续传只允许 INTERRUPTED/FAILED）。
+3. **断点续传 ≠ 简单重跑**——续传要把中间产物也持久化（上一步输出），否则下一步拿不到输入。
+4. **合规和功能要分层存储**——脱敏版（展示/合规）、加密原文（续传/功能）、LLM 看原文。三份分层，互不牺牲。
+5. **历史功能必须配套治理**——幂等（防烧钱）、脱敏（防合规事故）、TTL（防成本爆炸）、鉴权（防越权）。缺一个历史功能就是黑洞。**不是可选，是前提**。
+6. **入口鉴权 + 出口校验 = 纵深防御**——鉴权拦身份（入口）、校验防越权（出口），单靠任一不够。
 
-**关于 EventContent 又长了**：第 8 章加了 `STEP_RESUMED`。事件类型枚举随章节演进——第 1 章生命周期、第 3 章工具/token、第 5 章配额、第 7 章取消、第 8 章续传。只加不删（schema 演进纪律）。
-
-**到这里，一个从"实时可见"到"历史可管"的完整可观测产品成型了**——不仅能把 Agent 跑起来、看得见、出事能救，还能让数据活得久、查得到、接得上、管得住。
+**到这里，一个从"实时可见"到"历史可管"的完整可观测产品成型了**——Agent 跑得起来、看得见、出事能救、数据活得久、查得到、接得上、管得住。
 
 > **第 8 章是"可观测性"向"数据治理"的自然延伸**。再往后是产品功能（多轮记忆、历史编辑、A/B、质量评估）——它们是 AI 产品能力，不是可观测本身，进附录 A.11-A.13 讲。
 
@@ -4486,12 +4669,13 @@ flowchart TD
     S4[第4章 规模化<br/>状态外置+分片+广播] -->|业务: 对外SaaS| S5
     S5[第5章 治理<br/>多租户+归因+配额] -->|体量: 关键链路| S6
     S6[第6章 灾备<br/>降级+健康+超时/错误+SRE] -->|对外运营: 真实流量| S7
-    S7[第7章 运营事故<br/>心跳+重试+取消+连接治理+归档]
+    S7[第7章 运营事故<br/>心跳+重试+取消+连接治理+归档] -->|工单: 查历史/续中断| S8
+    S8[第8章 持久化与历史<br/>状态机+回放+列表+续传+治理配套]
 ```
 
 > **终极纪律**：走到你当前体量够用的阶段就停。日活不过千停第 3 章；不多实例停第 3 章；不对外卖停第 3 章。**每多走一章，都要能说出「是什么痛点逼我走的」——说不出来就别走**。
 
-### A.5 完整 pom.xml（第 7 章结束时）
+### A.5 完整 pom.xml（第 8 章结束时）
 
 照着这个最终版核对依赖，缺啥补啥：
 
@@ -4592,7 +4776,7 @@ flowchart TD
 
 > 单元测试依赖（`spring-boot-starter-test`）本文未用（页面验证为主），团队按需加。
 
-### A.6 完整 application.yaml（第 7 章结束时）
+### A.6 完整 application.yaml（第 8 章结束时）
 
 ```yaml
 spring:
@@ -4752,11 +4936,11 @@ public class TokenAwareChatMemory implements ChatMemory {
 >
 > **和成本的关系**：每次请求的历史 token 都计费。记忆管理不只是"不报错"，更是**成本控制**——裁掉无关历史 = 少付输入 token 费。这是 AI 后端和普通后端的又一区别。
 
-### A.10 DeepSeek 极简风调试页面（第 1-7 章通用）
+### A.10 DeepSeek 风对话页面（覆盖第 1-8 章）
 
 放 `src/main/resources/static/index.html`，浏览器打开 `http://localhost:8080/index.html`。
 
-**一个页面覆盖全部章节**：事件流（第1章）、工具调用面板（第3章 TOOL_CALL）、token 统计（第3章 LLM_TOKENS）、租户切换（第5章下拉框）、新对话（多轮/隔离）。各章验证都用它。
+**布局参照 DeepSeek 官网**（`chat.deepseek.com` 的对话骨架）：**左侧会话历史栏 + 右侧对话区 + 底部输入框**。本文只做对话功能，不做多模态/文件上传。一个页面覆盖全部章节——左侧栏整合会话历史（第 8 章回放/续传）+ 租户切换（第 5 章）；右侧对话区实时展示事件流（CONTENT_DELTA 打字机 + 工具/token 面板）。
 
 ```html
 <!DOCTYPE html>
@@ -4767,29 +4951,56 @@ public class TokenAwareChatMemory implements ChatMemory {
     <title>AI 写作助手</title>
     <style>
         :root {
-            --bg: #f7f7f8; --surface: #fff; --border: #ececec;
-            --text: #1a1a1a; --text-2: #8e8e8e; --muted: #b0b0b0;
-            --accent: #1a1a1a; --green: #00b96b; --orange: #e67e22; --red: #e53935;
+            --bg: #f7f7f8; --surface: #fff; --sidebar: #fafafa; --border: #ececec;
+            --text: #1a1a1a; --text-2: #6b6b6b; --muted: #b0b0b0;
+            --accent: #1a1a1a; --hover: #f0f0f0;
+            --green: #00b96b; --orange: #e67e22; --red: #e53935;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; }
         body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
-               background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
-               font-size: 15px; line-height: 1.8; }
-        header { background: var(--surface); border-bottom: 1px solid var(--border);
-                 padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; }
-        header .title { font-size: 16px; font-weight: 600; }
-        header .sub { color: var(--muted); font-size: 13px; margin-left: 8px; }
-        header .actions { display: flex; gap: 8px; }
-        header button, header select { font-size: 13px; border: 1px solid var(--border); background: var(--surface);
-                        border-radius: 8px; padding: 5px 12px; cursor: pointer; color: var(--text-2); }
-        header button:hover { border-color: var(--text-2); }
+               background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.8;
+               display: flex; height: 100vh; overflow: hidden; }
+
+        /* 左侧会话栏（DeepSeek 式） */
+        #sidebar { width: 260px; background: var(--sidebar); border-right: 1px solid var(--border);
+                   display: flex; flex-direction: column; flex-shrink: 0; }
+        #sidebar .top { padding: 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+        #new-chat { background: var(--accent); color: #fff; border: none; border-radius: 8px;
+                    padding: 10px; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; }
+        #new-chat:hover { opacity: 0.9; }
+        #tenant-row { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); }
+        #tenant { flex: 1; border: 1px solid var(--border); background: var(--surface); border-radius: 6px;
+                  padding: 4px 8px; font-size: 13px; color: var(--text); }
+        #sessions { flex: 1; overflow-y: auto; padding: 8px; }
+        .session-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
+                        color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px; }
+        .session-item:hover { background: var(--hover); }
+        .session-item.active { background: var(--hover); color: var(--text); font-weight: 500; }
+        .session-item .badge { font-size: 11px; padding: 1px 5px; border-radius: 4px; margin-left: 4px; }
+        .session-item .badge.interrupted { background: #fff3e0; color: var(--orange); }
+        .session-item .badge.failed { background: #fdecea; color: var(--red); }
+        .session-item .resume-btn { float: right; font-size: 11px; color: var(--accent); display: none; }
+        .session-item:hover .resume-btn { display: inline; }
+
+        /* 右侧主区 */
+        #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        #header { padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--surface);
+                  display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+        #header .title { font-size: 16px; font-weight: 600; }
+        #header .sub { color: var(--muted); font-size: 13px; margin-left: 8px; }
+        #header .cost { font-size: 13px; color: var(--text-2); }
+        #header .cost b { color: var(--orange); }
+
         #chat { flex: 1; overflow-y: auto; padding: 32px 0; }
         .msg { max-width: 720px; margin: 0 auto; padding: 0 24px; }
         .user { display: flex; justify-content: flex-end; margin-bottom: 16px; }
         .user .bubble { background: var(--accent); color: #fff; padding: 10px 16px;
                         border-radius: 12px 12px 4px 12px; max-width: 75%; word-break: break-word; }
         .assistant { margin-bottom: 20px; }
-        .assistant .bubble { background: var(--surface); padding: 14px 18px; border-radius: 12px; word-break: break-word; }
+        .assistant .bubble { background: var(--surface); padding: 14px 18px; border: 1px solid var(--border);
+                            border-radius: 12px; word-break: break-word; min-height: 20px; }
+        .assistant .bubble.empty { color: var(--muted); font-style: italic; }
         .process { max-width: 720px; margin: 0 auto 16px; padding: 0 24px; }
         .process summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; user-select: none; }
         .step { background: var(--surface); border-left: 2px solid var(--muted); margin: 4px 0; padding: 6px 12px;
@@ -4797,37 +5008,119 @@ public class TokenAwareChatMemory implements ChatMemory {
         .step.tool { border-left-color: var(--green); } .step.tool .label { color: var(--green); }
         .step.tokens { border-left-color: var(--orange); } .step.tokens .label { color: var(--orange); }
         .step.failed { border-left-color: var(--red); } .step.failed .label { color: var(--red); }
+        .step.resume-marker { border-left-color: var(--orange); color: var(--orange); font-style: italic; }
         .step .label { font-weight: 600; margin-right: 6px; }
         .step .kv { color: var(--muted); margin-right: 8px; } .step .kv b { color: var(--text-2); }
-        #bar { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 24px; }
+
+        #bar { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 24px; flex-shrink: 0; }
         #input-wrap { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: center;
-                      background: var(--bg); border-radius: 22px; padding: 4px 4px 4px 18px; }
-        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 8px 0; }
-        #send { background: var(--accent); color: #fff; border: none; width: 32px; height: 32px;
+                      background: var(--bg); border-radius: 22px; padding: 4px 4px 4px 18px; border: 1px solid var(--border); }
+        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 10px 0; }
+        #send { background: var(--accent); color: #fff; border: none; width: 34px; height: 34px;
                 border-radius: 50%; cursor: pointer; font-size: 16px; flex-shrink: 0; }
         #send:disabled { background: #d0d0d0; }
         #status { text-align: center; color: var(--muted); font-size: 12px; padding: 4px 0; }
     </style>
 </head>
 <body>
-<header>
-    <div><span class="title">AI 写作助手</span><span class="sub">可观测调试台</span></div>
-    <div class="actions">
-        <select id="tenant"><option value="">默认租户</option><option value="tenantA">租户A</option><option value="tenantB">租户B</option></select>
-        <button onclick="newChat()">新对话</button>
+<aside id="sidebar">
+    <div class="top">
+        <button id="new-chat" onclick="newChat()">+ 新建对话</button>
+        <div id="tenant-row">租户
+            <select id="tenant" onchange="loadSessions()">
+                <option value="">（无）</option>
+                <option value="tenantA">租户A</option>
+                <option value="tenantB">租户B</option>
+            </select>
+        </div>
     </div>
-</header>
-<div id="chat"></div>
-<div id="status">输入主题，回车发送</div>
-<div id="bar"><div id="input-wrap">
-    <input id="prompt" placeholder="输入主题，如：AI 的未来" value="AI 的未来">
-    <button id="send" onclick="send()">➤</button>
-</div></div>
-<script>
-    let sending = false, controller = null;
-    document.getElementById('prompt').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
-    function newChat() { if (!sending) { document.getElementById('chat').innerHTML = ''; document.getElementById('status').textContent = '已开新对话'; } }
+    <div id="sessions"></div>
+</aside>
 
+<main id="main">
+    <header id="header">
+        <div><span class="title">AI 写作助手</span><span class="sub">可观测调试台</span></div>
+        <div class="cost">本次成本：<b id="costVal">$0.0000</b></div>
+    </header>
+    <div id="chat"></div>
+    <div id="status">输入主题，回车发送</div>
+    <div id="bar"><div id="input-wrap">
+        <input id="prompt" placeholder="输入主题，如：AI 的未来" value="AI 的未来">
+        <button id="send" onclick="send()">➤</button>
+    </div></div>
+</main>
+
+<script>
+    let sending = false, controller = null, currentSession = null, totalCost = 0;
+    document.getElementById('prompt').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+
+    // 新建对话：清空右侧，生成新 sessionId（不入历史列表，直到发送后服务端落库）
+    function newChat() {
+        if (sending) return;
+        currentSession = 's-' + Date.now();
+        document.getElementById('chat').innerHTML = '';
+        totalCost = 0; document.getElementById('costVal').textContent = '$0.0000';
+        document.getElementById('status').textContent = '已开新对话';
+        document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
+    }
+
+    // 加载左侧历史会话列表（第 8 章 /api/session/list）
+    async function loadSessions() {
+        const tenant = document.getElementById('tenant').value;
+        const resp = await fetch('/api/session/list?tenantId=' + encodeURIComponent(tenant || ''));
+        let items = []; try { items = (await resp.json()).items || []; } catch(e) {}
+        const box = document.getElementById('sessions'); box.innerHTML = '';
+        for (const s of items) {
+            const div = document.createElement('div');
+            div.className = 'session-item' + (s.sessionId === currentSession ? ' active' : '');
+            const badge = s.status === 'INTERRUPTED' ? '<span class="badge interrupted">中断</span>'
+                        : s.status === 'FAILED' ? '<span class="badge failed">失败</span>' : '';
+            const canResume = s.status === 'INTERRUPTED' || s.status === 'FAILED';
+            div.innerHTML = '<span>' + (s.inputText || '(空)').slice(0,20) + '</span>' + badge
+                + (canResume ? '<span class="resume-btn" onclick="event.stopPropagation();resume(\'' + s.sessionId + '\')">续传</span>' : '');
+            div.onclick = () => replay(s.sessionId);
+            box.appendChild(div);
+        }
+    }
+
+    // 回放历史会话（第 8 章 /api/session/replay）——把归档事件流渲染到右侧
+    async function replay(sessionId) {
+        if (sending) return;
+        currentSession = sessionId;
+        newChat(); currentSession = sessionId;
+        const tenant = document.getElementById('tenant').value;
+        document.getElementById('status').textContent = '回放历史...';
+        const resp = await fetch('/api/session/replay/' + sessionId + '?tenantId=' + encodeURIComponent(tenant || ''));
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+            let idx;
+            while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                handleFrame(buffer.slice(0, idx), null, null, true);
+                buffer = buffer.slice(idx + 2);
+            }
+        }
+        document.getElementById('status').textContent = '回放完成';
+        loadSessions();
+    }
+
+    // 续传（第 8 章 /api/session/resume）——从断点接着跑
+    async function resume(sessionId) {
+        if (sending) return;
+        currentSession = sessionId;
+        const tenant = document.getElementById('tenant').value;
+        document.getElementById('status').textContent = '续传中...';
+        const resp = await fetch('/api/session/resume/' + sessionId + '?tenantId=' + encodeURIComponent(tenant || ''),
+            { method: 'POST', headers: { 'X-Tenant-Id': tenant || '' } });
+        await pump(resp);
+        loadSessions();
+    }
+
+    // 发送新消息（第 1 章 /api/obs/article，带租户 + 幂等键）
     async function send() {
         if (sending) return;
         const input = document.getElementById('prompt');
@@ -4837,6 +5130,10 @@ public class TokenAwareChatMemory implements ChatMemory {
         sending = true;
         document.getElementById('send').disabled = true;
 
+        if (!currentSession) currentSession = 's-' + Date.now();
+        const sessionId = currentSession;
+        const tenant = document.getElementById('tenant').value;
+
         const chat = document.getElementById('chat');
         const u = document.createElement('div'); u.className = 'msg user';
         u.innerHTML = '<div class="bubble"></div>';
@@ -4844,36 +5141,24 @@ public class TokenAwareChatMemory implements ChatMemory {
         chat.appendChild(u);
 
         const proc = document.createElement('details'); proc.className = 'process';
-        proc.innerHTML = '<summary>执行过程</summary>';
+        proc.innerHTML = '<summary>执行过程</summary>'; proc.open = true;
         chat.appendChild(proc);
 
         const a = document.createElement('div'); a.className = 'msg assistant';
-        a.innerHTML = '<div class="bubble"></div>';
+        a.innerHTML = '<div class="bubble empty">生成中...</div>';
         chat.appendChild(a);
         chat.scrollTop = chat.scrollHeight;
 
-        const sessionId = 's-' + Date.now();
-        const tenant = document.getElementById('tenant').value;
-        const headers = { 'sessionId': sessionId, 'Accept': 'text/event-stream' };
-        if (tenant) headers['X-Tenant-Id'] = tenant;
+        const headers = { 'sessionId': sessionId, 'Accept': 'text/event-stream',
+                          'Idempotency-Key': sessionId + '-' + Date.now() };
+        if (tenant) { headers['X-Tenant-Id'] = tenant; headers['X-Tenant-Key'] = 'demo-key-' + tenant; }
 
         controller = new AbortController();
         try {
             const resp = await fetch('/api/obs/article?prompt=' + encodeURIComponent(prompt), { headers, signal: controller.signal });
-            const reader = resp.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let buffer = '';
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-                let idx;
-                while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                    handleFrame(buffer.slice(0, idx), proc, a);
-                    buffer = buffer.slice(idx + 2);
-                }
-            }
+            await pump(resp, proc, a);
             document.getElementById('status').textContent = '完成';
+            loadSessions();   // 刷新左侧列表（新会话入库）
         } catch (e) {
             if (e.name !== 'AbortError') document.getElementById('status').textContent = '连接断开';
         }
@@ -4881,7 +5166,25 @@ public class TokenAwareChatMemory implements ChatMemory {
         document.getElementById('send').disabled = false;
     }
 
-    function handleFrame(frame, proc, assistantEl) {
+    // 通用：读 SSE 流，按帧分发（实时/回放/续传共用）
+    async function pump(resp, proc, assistantEl) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+            let idx;
+            while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                handleFrame(buffer.slice(0, idx), proc, assistantEl, false);
+                buffer = buffer.slice(idx + 2);
+            }
+        }
+    }
+
+    // 帧处理：实时模式（写到传入的 proc/assistantEl）vs 回放模式（追加到聊天区）
+    function handleFrame(frame, proc, assistantEl, isReplay) {
         let type = '', dataStr = '';
         for (const line of frame.split('\n')) {
             if (line.startsWith('event:')) type = line.slice(6).trim();
@@ -4890,30 +5193,180 @@ public class TokenAwareChatMemory implements ChatMemory {
         if (!type) return;
         let data = {}; try { data = JSON.parse(dataStr).data || JSON.parse(dataStr); } catch(e) { data = {}; }
 
+        // 回放模式：CONTENT_DELTA 也追加到聊天区（用临时气泡）；STEP_* 进折叠面板
+        if (isReplay && !proc) {
+            if (type === 'CONTENT_DELTA') {
+                let a = document.querySelector('#chat .replay-assistant');
+                if (!a) {
+                    a = document.createElement('div'); a.className = 'msg assistant replay-assistant';
+                    a.innerHTML = '<div class="bubble"></div>';
+                    document.getElementById('chat').appendChild(a);
+                }
+                a.querySelector('.bubble').textContent += (data.text || '');
+            } else if (type === 'STEP_START' || type === 'STEP_END' || type === 'TOOL_CALL' || type === 'LLM_TOKENS' || type === 'STEP_RESUMED') {
+                let p = document.querySelector('#chat .replay-proc');
+                if (!p) {
+                    p = document.createElement('details'); p.className = 'process replay-proc'; p.open = true;
+                    p.innerHTML = '<summary>执行过程（回放）</summary>';
+                    document.getElementById('chat').appendChild(p);
+                }
+                renderStep(p, type, data);
+            }
+            document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
+            return;
+        }
+
+        // 实时模式
         if (type === 'CONTENT_DELTA') {
-            if (data.text) assistantEl.querySelector('.bubble').textContent += data.text;
+            const bubble = assistantEl.querySelector('.bubble');
+            bubble.classList.remove('empty');
+            if (data.text) bubble.textContent += data.text;
         } else if (type !== 'SESSION_COMPLETED' && type !== 'READY') {
-            const step = document.createElement('div');
-            let cls = '', label = type, kvs = [];
-            if (type === 'TOOL_CALL') { cls = 'tool'; label = '🔧 ' + (data.tool||''); kvs = [['参数',data.args],['返回',data.result]]; }
-            else if (type === 'LLM_TOKENS') { cls = 'tokens'; label = '💰 ' + (data.totalTokens||0) + ' tokens'; }
-            else if (type === 'SESSION_FAILED') { cls = 'failed'; label = '❌ 失败'; kvs = [['error',data.error]]; }
-            step.className = 'step ' + cls;
-            let html = '<span class="label">' + label + '</span>';
-            for (const [k,v] of kvs) { if (v != null && v !== '') html += '<span class="kv">' + k + ': <b>' + v + '</b></span>'; }
-            step.innerHTML = html;
-            proc.appendChild(step);
+            renderStep(proc, type, data);
+            if (type === 'LLM_TOKENS') {
+                totalCost += Number(data.costUsd || 0);
+                document.getElementById('costVal').textContent = '$' + totalCost.toFixed(4);
+            }
         }
         document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
     }
+
+    function renderStep(proc, type, data) {
+        const step = document.createElement('div');
+        let cls = '', label = type, kvs = [];
+        if (type === 'TOOL_CALL') { cls = 'tool'; label = '🔧 ' + (data.tool||''); kvs = [['参数',data.args],['返回',data.result]]; }
+        else if (type === 'LLM_TOKENS') { cls = 'tokens'; label = '💰 ' + (data.totalTokens||0) + ' tokens'; }
+        else if (type === 'SESSION_FAILED') { cls = 'failed'; label = '❌ 失败'; kvs = [['error',data.error]]; }
+        else if (type === 'STEP_RESUMED') { cls = 'resume-marker'; label = '↻ 从第 ' + (data.fromStep||0) + ' 步续传'; }
+        else if (type === 'STEP_START') { label = '▸ 第 ' + (data.step||0) + ' 步开始'; }
+        else if (type === 'STEP_END') { label = '◂ 第 ' + (data.step||0) + ' 步完成'; kvs = [['输出',(data.output||'').slice(0,40)]]; }
+        step.className = 'step ' + cls;
+        let html = '<span class="label">' + label + '</span>';
+        for (const [k,v] of kvs) { if (v != null && v !== '') html += '<span class="kv">' + k + ': <b>' + v + '</b></span>'; }
+        step.innerHTML = html;
+        proc.appendChild(step);
+    }
+
+    // 启动：开新对话 + 加载历史
+    newChat();
+    loadSessions();
 </script>
 </body>
 </html>
 ```
 
-> **风格说明**：DeepSeek 极简风——纯白底、深色（#1a1a1a）主色（不用鲜艳蓝）、窄列（720px）、大留白、细边框。用户气泡深色右对齐，助手白底左对齐。工具调用/token/失败用克制的绿/橙/红色标。
+> **布局参照说明**：本页参照 DeepSeek 官网（`chat.deepseek.com`）的对话骨架——左侧会话历史栏（新建对话入口 + 历史会话列表）+ 右侧对话区（标题/成本 + 消息流 + 底部输入）。**只做对话功能**，不做官网的多模态/文件上传。DeepSeek 的视觉特征这里都对齐了：极简白底（#f7f7f8）、深色主色（#1a1a1a，不用鲜艳蓝）、窄列（720px 消息区）、大留白、细边框、用户气泡深色右对齐、助手白底左对齐。
 >
-> **租户下拉框**：第 1-4 章用不到（选"默认租户"即可），第 5 章多租户时选 tenantA/B 演示隔离。多余时不影响。
+> **⚠️ 诚实声明**：本文未直接抓取 chat.deepseek.com（环境限制无法 WebFetch），布局和配色基于 DeepSeek 公知的极简风格设计。若官方改版或有偏差，以你实际看到的官网为准微调 CSS 变量（`--bg`/`--accent` 等）。
+>
+> **一个页面覆盖全部章节**：
+> - **第 1-3 章**：右侧对话区实时展示事件流（CONTENT_DELTA 打字机 + STEP_START/END + TOOL_CALL + LLM_TOKENS）。
+> - **第 5 章**：左侧栏租户下拉，切换后请求带 `X-Tenant-Id` + `X-Tenant-Key`（第 8 章 8.2.11 鉴权）。
+> - **第 7 章**：成本实时累加（右上角 `LLM_TOKENS.costUsd`）。
+> - **第 8 章**：左侧会话列表（调 `/api/session/list`）、点会话回放（`/api/session/replay`）、中断/失败的点"续传"（`/api/session/resume`）、新对话带 `Idempotency-Key`（第 8 章 8.2.6 幂等）。
+>
+> **实时/回放/续传共用一套帧解析**：三种模式都是 SSE 流，前端 `handleFrame` 统一处理（回放模式 `isReplay=true` 把事件追加到聊天区，实时模式写传入的气泡）。**统一 SSE 协议让"实时看/回放看/续传看"用同一套前端代码**——这是事件流架构的回报。
+
+> **`history.html` 不再单独需要**：A.10 这个 `index.html` 已经把第 8 章 8.3 的历史列表/回放/续传全整合进左侧栏了。第 8 章 8.3 提到的 `history.html` 可作为"纯运营后台列表页"的简化版保留，或直接用 `index.html` 代替——两者功能重叠时优先用 `index.html`（用户和运营都靠它）。
+
+### A.11 历史消息编辑与重放（产品能力，不是可观测）
+
+> **边界声明**：本节是**AI 产品功能**，不是可观测性。主体 1-8 章讲"把 Agent 跑起来、看得见、数据管得住"；这一节讲"用户能改历史消息、从改动点重新生成"——这是 ChatGPT 的 edit message 能力，属于对话产品。放附录是因为它常被和"历史回放/续传"混淆，但本质不同。
+
+**和第 8 章三个能力的区别**（容易混）：
+
+| 能力 | 干什么 | 改不改变历史 |
+|------|--------|------------|
+| 历史回放（8.2.4） | 把存档事件原样重放给前端看 | 不改，只读 |
+| 断点续传（8.2.9） | 中断后从断点接着跑**未完成的步骤** | 不改历史，只续未来 |
+| **历史编辑（本节）** | 改某条已存在的消息，从那里**重新生成后续** | **改了**——产生新分支 |
+
+**核心难点：改历史 = 产生分支，不是覆盖**。用户改了第 2 条消息，从第 2 条重新生成——原来的第 3、4 条不能删（用户可能想对比），要保留为"旧分支"。所以历史编辑天然是**树状/图状的会话结构**，不是线性的。
+
+**最小实现思路**（不展开代码）：
+
+```
+会话树：
+  msg1(用户:写AI) → msg2(AI:大纲) → msg3(用户:草稿) → msg4(AI:文章v1)
+                        │
+                        └─编辑msg3为"写800字" → msg3'(用户:写800字) → msg4'(AI:文章v2)
+  两个叶子：msg4(原) 和 msg4'(编辑后)，用户可切换查看
+```
+
+数据模型：消息表加 `parent_msg_id`（指向上一条），形成树。编辑 = 新建一条 `parent_msg_id = msg2` 的消息，从它重新生成。这样原分支（msg3→msg4）和新分支（msg3'→msg4'）都保留。
+
+**和 ChatMemory 的关系**：编辑后重新生成，要把"从 msg1 到 msg3' 的历史"喂给 LLM（不是到 msg4）。所以 ChatMemory（A.9）要支持"从某个节点截取历史"，而不是"取全部"。这是编辑功能对记忆模块的要求。
+
+**本文为什么不做完整实现**：① 它是产品功能，撑破可观测文档定位；② 树状会话 + 分支切换的前端复杂度高，和"学可观测"无关；③ 它依赖 ChatMemory 改造（A.9 已是附录）。真要做的话，建消息树表 + 改 ChatMemory 截取逻辑 + 前端分支切换，是一个独立小项目。
+
+> **可观测视角的提示**：即使做编辑功能，每次编辑后的重新生成**仍走本文的事件流体系**（SESSION_STARTED → ... → SESSION_COMPLETED），事件照常归档。编辑产生的新会话在历史列表里是一个新 session（或同 session 的新分支），回放/续传/脱敏全都复用——**可观测基础设施对产品功能是透明的，产品功能长在上面，不用改地基**。这就是 1-8 章搭的骨架的价值。
+
+### A.12 A/B 测试与 prompt 分流（产品迭代基础设施）
+
+> **边界声明**：产品迭代能力，不是可观测本身。但 A.7 讲了 promptVersion 灰度对比的**概念**，这里补"分流怎么做"。
+
+**目标**：两个 prompt 版本（v1/v2）各跑 50% 流量，按版本聚合质量指标对比，决定是否全量切 v2。
+
+**分流**（按 userId 稳定 hash，保证同一用户总进同一桶）：
+
+```java
+@Component
+public class AbRouter {
+    /** 按 userId + 实验名 hash 分桶。返回桶名（如 "v1"/"v2"）。 */
+    public String bucket(String userId, String experiment, List<String> buckets) {
+        int h = (userId + ":" + experiment).hashCode();
+        int idx = Math.floorMod(h, buckets.size());
+        return buckets.get(idx);
+    }
+}
+```
+
+```java
+// ChainingService.run 里，根据分桶选 prompt 版本
+String bucket = abRouter.bucket(ctx.userId(), "outline-prompt", List.of("v1", "v2"));
+String system = bucket.equals("v2") ? OUTLINE_V2 : OUTLINE_V1;
+// 事件带 promptVersion（第 5 章的 agentVersion 字段，或单独加 promptVersion）
+```
+
+**指标聚合**：消费者订阅 EventBus，按 `promptVersion` 聚合——成功率、平均 token、平均耗时、（接 A.13 的）用户反馈分布。对比两个桶的指标，决定 v2 是否更好。
+
+**为什么不进主体**：分流逻辑是产品迭代工具，和"可观测性"正交。可观测提供数据（事件带 promptVersion），A/B 是数据的**用法**之一。本文把"带版本字段"做进事件（第 5 章），分流和聚合留给产品团队按需搭。
+
+> **可观测是 A/B 的地基**：没事件流带 promptVersion，A/B 无从聚合。本文的归档 + 版本字段让 A/B 分析可以**事后离线跑**（不用实时聚合）——查归档按 promptVersion 分组统计即可。这是"可观测数据复用"的又一例。
+
+### A.13 内容质量评估与用户反馈（可观测向质量的延伸）
+
+> **边界声明**：半产品半可观测——"生成质量好不好"是产品关心的事，但"质量可量化、可对比"是可观测的延伸（从"过程可见"到"结果可评"）。
+
+**两个质量信号源**：
+
+1. **用户显式反馈**（便宜、主观）：用户点 👍/👎。加一个 `SESSION_FEEDBACK` 事件：
+
+```java
+// EventContent 加 SESSION_FEEDBACK
+// 前端在生成完成后显示 👍/👎，点击后 POST /api/session/{id}/feedback?score=1（或 -1）
+// 后端发事件 + 落库（session_record 加 feedback_score 列）
+eventBus.emit(AgentEvent.of(EventContent.SESSION_FEEDBACK, sessionId,
+        Map.of("score", score, "promptVersion", agentVersion)));
+```
+
+2. **LLM-as-judge**（贵、客观）：用另一个 LLM 给生成结果打分。成本高（每次额外一次 LLM 调用），通常只对**采样**的会话做（比如 10%）：
+
+```java
+// 生成完成后，10% 概率触发评审
+if (random.nextDouble() < 0.1) {
+    String judgePrompt = "给以下文章打分(1-5)，从流畅度/结构/准确性评价：" + output;
+    int score = Integer.parseInt(chatClient.prompt().user(judgePrompt).call().content());
+    eventBus.emit(AgentEvent.of(EventContent.QUALITY_SCORE, sessionId,
+            Map.of("score", score, "judge", "llm")));
+}
+```
+
+**指标聚合**：按 promptVersion（A.12）聚合反馈分布、平均 judge 分。v1 的 👍 率 62% vs v2 的 71% → v2 更好，全量切 v2。
+
+**本文为什么只给思路**：① LLM-as-judge 成本高、prompt 要调，是独立主题；② 质量评估的"金标准"因业务而异（写作看流畅、客服看解决率、代码看能跑），没有通用实现。本文把"反馈事件"这个采集点给出，聚合和分析留给业务。
+
+> **质量可观测是可观测的"第三维度"**：第 1-3 章是"过程可观测"（发生了什么）、第 5 章是"成本可观测"（花了多少）、A.13 是"质量可观测"（好不好）。三者都建在同一套事件流上——**一套采集，多维分析**。这是事件驱动可观测架构的终极价值：数据采一次，过程/成本/质量/A-B 全能分析。
 
 ---
 
