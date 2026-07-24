@@ -1581,6 +1581,191 @@ flowchart TD
     S4[第4章 运营事故<br/>超时+429重试+错误归宿]
 ```
 
+### A.5 DeepSeek 极简风调试页面（全章通用）
+
+放 `src/main/resources/static/index.html`，浏览器打开 `http://localhost:8080/index.html`。
+
+对接两个接口：`GET /api/research?topic=xxx`（流式研究结果）、`POST /api/kb/ingest`（知识库入库，第2章）。**注意**：工具调用过程在后端控制台日志看（本文用日志可观测），页面只显示流式结果 + 入库面板。
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>研究 Agent</title>
+    <style>
+        :root {
+            --bg: #f7f7f8; --surface: #fff; --border: #ececec;
+            --text: #1a1a1a; --text-2: #8e8e8e; --muted: #b0b0b0;
+            --accent: #1a1a1a; --green: #00b96b; --orange: #e67e22; --red: #e53935;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+               background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
+               font-size: 15px; line-height: 1.8; }
+        header { background: var(--surface); border-bottom: 1px solid var(--border);
+                 padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; }
+        header .title { font-size: 16px; font-weight: 600; }
+        header .sub { color: var(--muted); font-size: 13px; margin-left: 8px; }
+        header .actions { display: flex; gap: 8px; }
+        header button { font-size: 13px; border: 1px solid var(--border); background: var(--surface);
+                        border-radius: 8px; padding: 5px 12px; cursor: pointer; color: var(--text-2); }
+        header button:hover { border-color: var(--text-2); }
+        header button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+        #chat { flex: 1; overflow-y: auto; padding: 32px 0; }
+        .msg { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+        .user { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+        .user .bubble { background: var(--accent); color: #fff; padding: 10px 16px;
+                        border-radius: 12px 12px 4px 12px; max-width: 75%; word-break: break-word; }
+        .assistant { margin-bottom: 20px; }
+        .assistant .bubble { background: var(--surface); padding: 14px 18px; border-radius: 12px;
+                             word-break: break-word; white-space: pre-wrap; min-height: 20px; }
+        /* 入库面板（第2章） */
+        #ingest-panel { display: none; max-width: 720px; margin: 0 auto; padding: 16px 24px;
+                        background: var(--surface); border-radius: 12px; margin: 16px auto; }
+        #ingest-panel.active { display: block; }
+        #ingest-panel h3 { font-size: 14px; margin-bottom: 8px; }
+        #ingest-panel textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px;
+                                  padding: 8px; font-size: 14px; resize: vertical; min-height: 80px; }
+        #ingest-panel button { margin-top: 8px; background: var(--accent); color: #fff; border: none;
+                                padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+        #ingest-result { font-size: 13px; color: var(--green); margin-top: 8px; }
+        #bar { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 24px; }
+        #input-wrap { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: center;
+                      background: var(--bg); border-radius: 22px; padding: 4px 4px 4px 18px; }
+        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 8px 0; }
+        #send { background: var(--accent); color: #fff; border: none; width: 32px; height: 32px;
+                border-radius: 50%; cursor: pointer; font-size: 16px; flex-shrink: 0; }
+        #send:disabled { background: #d0d0d0; }
+        #status { text-align: center; color: var(--muted); font-size: 12px; padding: 4px 0; }
+    </style>
+</head>
+<body>
+<header>
+    <div><span class="title">研究 Agent</span><span class="sub">自主研究 + 知识库</span></div>
+    <div class="actions">
+        <button id="btn-research" class="active" onclick="showResearch()">研究</button>
+        <button id="btn-ingest" onclick="showIngest()">知识库入库</button>
+    </div>
+</header>
+
+<!-- 研究区 -->
+<div id="chat"></div>
+
+<!-- 入库面板（第2章） -->
+<div id="ingest-panel">
+    <h3>知识库入库（文本 → 向量化 → 存 pgvector）</h3>
+    <textarea id="ingest-text" placeholder="粘贴要入库的文本..."></textarea>
+    <input id="ingest-source" placeholder="来源（如：产品白皮书）" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:8px;font-size:14px;margin-top:8px;">
+    <button onclick="ingest()">入库</button>
+    <div id="ingest-result"></div>
+</div>
+
+<div id="status">输入研究主题，回车发送</div>
+<div id="bar"><div id="input-wrap">
+    <input id="prompt" placeholder="研究主题，如：2026向量数据库对比" value="2026向量数据库对比">
+    <button id="send" onclick="send()">➤</button>
+</div></div>
+<script>
+    let sending = false, controller = null;
+
+    function showResearch() {
+        document.getElementById('btn-research').classList.add('active');
+        document.getElementById('btn-ingest').classList.remove('active');
+        document.getElementById('chat').style.display = 'block';
+        document.getElementById('ingest-panel').classList.remove('active');
+        document.getElementById('bar').style.display = 'block';
+    }
+    function showIngest() {
+        document.getElementById('btn-research').classList.remove('active');
+        document.getElementById('btn-ingest').classList.add('active');
+        document.getElementById('chat').style.display = 'none';
+        document.getElementById('ingest-panel').classList.add('active');
+        document.getElementById('bar').style.display = 'none';
+    }
+
+    document.getElementById('prompt').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+
+    async function send() {
+        if (sending) return;
+        const input = document.getElementById('prompt');
+        const topic = input.value.trim();
+        if (!topic) return;
+        input.value = '';
+        sending = true;
+        document.getElementById('send').disabled = true;
+
+        const chat = document.getElementById('chat');
+        const u = document.createElement('div'); u.className = 'msg user';
+        u.innerHTML = '<div class="bubble"></div>';
+        u.querySelector('.bubble').textContent = topic;
+        chat.appendChild(u);
+
+        const a = document.createElement('div'); a.className = 'msg assistant';
+        a.innerHTML = '<div class="bubble"></div>';
+        chat.appendChild(a);
+        chat.scrollTop = chat.scrollHeight;
+
+        // 调流式接口（返回 Flux<String>，逐字推）
+        document.getElementById('status').textContent = '研究中...';
+        controller = new AbortController();
+        try {
+            const resp = await fetch('/api/research?topic=' + encodeURIComponent(topic), {
+                headers: { 'Accept': 'text/event-stream' }, signal: controller.signal
+            });
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const text = decoder.decode(value, { stream: true });
+                // SSE data: 行逐段追加
+                for (const line of text.split('\n')) {
+                    if (line.startsWith('data:')) {
+                        a.querySelector('.bubble').textContent += line.slice(5);
+                    } else if (line.trim() && !line.startsWith('event:')) {
+                        a.querySelector('.bubble').textContent += line;
+                    }
+                }
+                chat.scrollTop = chat.scrollHeight;
+            }
+            document.getElementById('status').textContent = '完成';
+        } catch (e) {
+            if (e.name !== 'AbortError') document.getElementById('status').textContent = '失败：' + e.message;
+        }
+        sending = false;
+        document.getElementById('send').disabled = false;
+    }
+
+    // 知识库入库（第2章）
+    async function ingest() {
+        const text = document.getElementById('ingest-text').value.trim();
+        const source = document.getElementById('ingest-source').value || 'unknown';
+        if (!text) return;
+        const result = document.getElementById('ingest-result');
+        result.textContent = '入库中...';
+        try {
+            const resp = await fetch('/api/kb/ingest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, source })
+            });
+            const data = await resp.json();
+            result.textContent = '✓ 入库成功：' + (data.ingested || 0) + ' 块（来源：' + source + '）';
+        } catch (e) {
+            result.textContent = '✗ 入库失败：' + e.message;
+        }
+    }
+</script>
+</body>
+</html>
+```
+
+> **风格**：和 33b 一致的 DeepSeek 极简风（白底/深色主色/窄列/大留白）。
+>
+> **两个模式**：顶部切换「研究」（输入主题→流式结果）和「知识库入库」（粘贴文本→入库 pgvector，第2章）。研究模式下 Agent 调工具的过程在后端控制台日志看（本文用日志可观测，不发事件给前端）。
+
 ---
 
 ## 相关文档（学完本文，想深入相关主题时参考）

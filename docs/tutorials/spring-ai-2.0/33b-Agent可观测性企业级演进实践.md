@@ -3410,6 +3410,169 @@ public class TokenAwareChatMemory implements ChatMemory {
 >
 > **和成本的关系**：每次请求的历史 token 都计费。记忆管理不只是"不报错"，更是**成本控制**——裁掉无关历史 = 少付输入 token 费。这是 AI 后端和普通后端的又一区别。
 
+### A.10 DeepSeek 极简风调试页面（第 1-7 章通用）
+
+放 `src/main/resources/static/index.html`，浏览器打开 `http://localhost:8080/index.html`。
+
+**一个页面覆盖全部章节**：事件流（第1章）、工具调用面板（第3章 TOOL_CALL）、token 统计（第3章 LLM_TOKENS）、租户切换（第5章下拉框）、新对话（多轮/隔离）。各章验证都用它。
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 写作助手</title>
+    <style>
+        :root {
+            --bg: #f7f7f8; --surface: #fff; --border: #ececec;
+            --text: #1a1a1a; --text-2: #8e8e8e; --muted: #b0b0b0;
+            --accent: #1a1a1a; --green: #00b96b; --orange: #e67e22; --red: #e53935;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+               background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
+               font-size: 15px; line-height: 1.8; }
+        header { background: var(--surface); border-bottom: 1px solid var(--border);
+                 padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; }
+        header .title { font-size: 16px; font-weight: 600; }
+        header .sub { color: var(--muted); font-size: 13px; margin-left: 8px; }
+        header .actions { display: flex; gap: 8px; }
+        header button, header select { font-size: 13px; border: 1px solid var(--border); background: var(--surface);
+                        border-radius: 8px; padding: 5px 12px; cursor: pointer; color: var(--text-2); }
+        header button:hover { border-color: var(--text-2); }
+        #chat { flex: 1; overflow-y: auto; padding: 32px 0; }
+        .msg { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+        .user { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+        .user .bubble { background: var(--accent); color: #fff; padding: 10px 16px;
+                        border-radius: 12px 12px 4px 12px; max-width: 75%; word-break: break-word; }
+        .assistant { margin-bottom: 20px; }
+        .assistant .bubble { background: var(--surface); padding: 14px 18px; border-radius: 12px; word-break: break-word; }
+        .process { max-width: 720px; margin: 0 auto 16px; padding: 0 24px; }
+        .process summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; user-select: none; }
+        .step { background: var(--surface); border-left: 2px solid var(--muted); margin: 4px 0; padding: 6px 12px;
+                border-radius: 0 8px 8px 0; font-size: 13px; color: var(--text-2); }
+        .step.tool { border-left-color: var(--green); } .step.tool .label { color: var(--green); }
+        .step.tokens { border-left-color: var(--orange); } .step.tokens .label { color: var(--orange); }
+        .step.failed { border-left-color: var(--red); } .step.failed .label { color: var(--red); }
+        .step .label { font-weight: 600; margin-right: 6px; }
+        .step .kv { color: var(--muted); margin-right: 8px; } .step .kv b { color: var(--text-2); }
+        #bar { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 24px; }
+        #input-wrap { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: center;
+                      background: var(--bg); border-radius: 22px; padding: 4px 4px 4px 18px; }
+        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 8px 0; }
+        #send { background: var(--accent); color: #fff; border: none; width: 32px; height: 32px;
+                border-radius: 50%; cursor: pointer; font-size: 16px; flex-shrink: 0; }
+        #send:disabled { background: #d0d0d0; }
+        #status { text-align: center; color: var(--muted); font-size: 12px; padding: 4px 0; }
+    </style>
+</head>
+<body>
+<header>
+    <div><span class="title">AI 写作助手</span><span class="sub">可观测调试台</span></div>
+    <div class="actions">
+        <select id="tenant"><option value="">默认租户</option><option value="tenantA">租户A</option><option value="tenantB">租户B</option></select>
+        <button onclick="newChat()">新对话</button>
+    </div>
+</header>
+<div id="chat"></div>
+<div id="status">输入主题，回车发送</div>
+<div id="bar"><div id="input-wrap">
+    <input id="prompt" placeholder="输入主题，如：AI 的未来" value="AI 的未来">
+    <button id="send" onclick="send()">➤</button>
+</div></div>
+<script>
+    let sending = false, controller = null;
+    document.getElementById('prompt').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+    function newChat() { if (!sending) { document.getElementById('chat').innerHTML = ''; document.getElementById('status').textContent = '已开新对话'; } }
+
+    async function send() {
+        if (sending) return;
+        const input = document.getElementById('prompt');
+        const prompt = input.value.trim();
+        if (!prompt) return;
+        input.value = '';
+        sending = true;
+        document.getElementById('send').disabled = true;
+
+        const chat = document.getElementById('chat');
+        const u = document.createElement('div'); u.className = 'msg user';
+        u.innerHTML = '<div class="bubble"></div>';
+        u.querySelector('.bubble').textContent = prompt;
+        chat.appendChild(u);
+
+        const proc = document.createElement('details'); proc.className = 'process';
+        proc.innerHTML = '<summary>执行过程</summary>';
+        chat.appendChild(proc);
+
+        const a = document.createElement('div'); a.className = 'msg assistant';
+        a.innerHTML = '<div class="bubble"></div>';
+        chat.appendChild(a);
+        chat.scrollTop = chat.scrollHeight;
+
+        const sessionId = 's-' + Date.now();
+        const tenant = document.getElementById('tenant').value;
+        const headers = { 'sessionId': sessionId, 'Accept': 'text/event-stream' };
+        if (tenant) headers['X-Tenant-Id'] = tenant;
+
+        controller = new AbortController();
+        try {
+            const resp = await fetch('/api/obs/article?prompt=' + encodeURIComponent(prompt), { headers, signal: controller.signal });
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                    handleFrame(buffer.slice(0, idx), proc, a);
+                    buffer = buffer.slice(idx + 2);
+                }
+            }
+            document.getElementById('status').textContent = '完成';
+        } catch (e) {
+            if (e.name !== 'AbortError') document.getElementById('status').textContent = '连接断开';
+        }
+        sending = false;
+        document.getElementById('send').disabled = false;
+    }
+
+    function handleFrame(frame, proc, assistantEl) {
+        let type = '', dataStr = '';
+        for (const line of frame.split('\n')) {
+            if (line.startsWith('event:')) type = line.slice(6).trim();
+            if (line.startsWith('data:')) dataStr += line.slice(5).trim();
+        }
+        if (!type) return;
+        let data = {}; try { data = JSON.parse(dataStr).data || JSON.parse(dataStr); } catch(e) { data = {}; }
+
+        if (type === 'CONTENT_DELTA') {
+            if (data.text) assistantEl.querySelector('.bubble').textContent += data.text;
+        } else if (type !== 'SESSION_COMPLETED' && type !== 'READY') {
+            const step = document.createElement('div');
+            let cls = '', label = type, kvs = [];
+            if (type === 'TOOL_CALL') { cls = 'tool'; label = '🔧 ' + (data.tool||''); kvs = [['参数',data.args],['返回',data.result]]; }
+            else if (type === 'LLM_TOKENS') { cls = 'tokens'; label = '💰 ' + (data.totalTokens||0) + ' tokens'; }
+            else if (type === 'SESSION_FAILED') { cls = 'failed'; label = '❌ 失败'; kvs = [['error',data.error]]; }
+            step.className = 'step ' + cls;
+            let html = '<span class="label">' + label + '</span>';
+            for (const [k,v] of kvs) { if (v != null && v !== '') html += '<span class="kv">' + k + ': <b>' + v + '</b></span>'; }
+            step.innerHTML = html;
+            proc.appendChild(step);
+        }
+        document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
+    }
+</script>
+</body>
+</html>
+```
+
+> **风格说明**：DeepSeek 极简风——纯白底、深色（#1a1a1a）主色（不用鲜艳蓝）、窄列（720px）、大留白、细边框。用户气泡深色右对齐，助手白底左对齐。工具调用/token/失败用克制的绿/橙/红色标。
+>
+> **租户下拉框**：第 1-4 章用不到（选"默认租户"即可），第 5 章多租户时选 tenantA/B 演示隔离。多余时不影响。
+
 ---
 
 ## 相关文档
