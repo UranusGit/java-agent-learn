@@ -591,7 +591,7 @@ pom 加：
         </dependency>
 ```
 
-application.yaml 加数据源 + 向量库：
+application.yaml 加数据源 + 向量库 + **embedding 模型**：
 ```yaml
 spring:
   datasource:
@@ -601,13 +601,26 @@ spring:
   ai:
     vectorstore:
       pgvector:
-        dimensions: 1536              # embedding 维度（按你用的 embedding 模型定）
+        dimensions: 1536              # 必须等于 embedding 模型输出维度
         distance-type: cosine_distance
         index-type: hnsw
         initialize-schema: true       # 自动建表
+    openai:
+      embedding:
+        model: text-embedding-3-small          # ← 必须配，否则 EmbeddingModel 没着落
+        api-key: ${OPENAI_API_KEY}              # 可独立于 chat 的 key（见下）
+        # base-url: ...                          # 可指向 OpenAI 兼容的 embedding 端点
 ```
 
-> **embedding 维度**：DeepSeek 没有官方 embedding API。生产用 OpenAI `text-embedding-3-small`（1536 维）或本地 Ollama。`dimensions` 必须和 embedding 模型一致，否则入库报错。本文假设你配了一个 1536 维的 embedding（OpenAI 或兼容端点）。
+> **embedding 从哪来（必须配，否则第 2 章跑不起来）**：
+> `vectorStore.add(docs)` 自动向量化——向量化靠 `EmbeddingModel` Bean。`spring-ai-starter-model-openai`（第 0 章已加）**自动配置 `EmbeddingModel`**，但要给它配 `spring.ai.openai.embedding.model`（如 `text-embedding-3-small`，1536 维）才会生效。**不配这行，启动可能成功但入库时报"无 embedding 模型"或维度错**——这是第 2 章最容易卡的点。
+>
+> **DeepSeek 没有 embedding API**——所以 embedding 必须用别的：
+> - **OpenAI `text-embedding-3-small`**（1536 维，要 OpenAI key）——最直接，上面 yaml 就是这种。
+> - **本地 Ollama**（如 `nomic-embed-text`，768 维）——零成本、离线，但要起 Ollama，且 `dimensions` 要改成 768。
+> - **OpenAI 兼容的第三方 embedding 端点**——`base-url` 指过去。
+>
+> **chat 和 embedding 可用不同 key/端点**：`spring.ai.openai.embedding.api-key`/`base-url` 可独立于 chat 设置（[官方支持](https://docs.spring.io/spring-ai/reference/api/embeddings/openai-embeddings.html)）。所以"chat 用 DeepSeek、embedding 用 OpenAI"完全可行——本文就是这个组合。
 
 #### 2.2.3 知识库入库（ETL：文档→切块→向量化→存）
 
@@ -701,15 +714,29 @@ public class KnowledgeBaseTool {
             "用于查询公司产品、内部规章、专业领域资料等网页搜不到的信息。")
     public String searchKnowledgeBase(
             @ToolParam(description = "检索查询语句") String query) {
-        List<Document> hits = vectorStore.similaritySearch(
-                SearchRequest.builder().query(query).topK(3).build());
+        List<Document> hits = vectorStore.similaritySearch(SearchRequest.builder()
+                .query(query)
+                .topK(3)
+                .similarityThreshold(0.6)    // ← 相似度阈值：低于 0.6 的不要，避免塞无关片段干扰 LLM
+                .build());
         if (hits == null || hits.isEmpty()) return "（知识库无相关内容）";
-        return hits.stream()
-                .map(d -> "- " + d.getText())
-                .collect(Collectors.joining("\n"));
+
+        // 返回时带编号 + 来源——给 Agent 引用出处用（见 2.2.5 结果引用）
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < hits.size(); i++) {
+            Document d = hits.get(i);
+            String source = (String) d.getMetadata().getOrDefault("source", "未知来源");
+            sb.append("[").append(i + 1).append("] 来源:").append(source)
+              .append(" | ").append(d.getText()).append("\n");
+        }
+        return sb.toString();
     }
 }
 ```
+
+> **`similarityThreshold(0.6)` 是 RAG 质量的关键**：不设阈值，`topK(3)` 会无脑返回"最像的 3 个"——哪怕相似度只有 0.2（基本无关）。无关片段塞进 prompt 会**严重干扰 LLM**（它可能基于无关片段胡编）。设 0.6（按你的 embedding 模型调，cosine 相似度 0.6+ 一般算相关）过滤掉低质量的。**这是 RAG 质量的第一道关**，比"返回几条"更重要。
+>
+> **返回带来源编号**：每条片段标 `[1] 来源:xxx`。这让 Agent 生成结果时能引用出处（"据[1]产品白皮书..."），而不是凭空给结论——是防幻觉的关键，见 2.2.5。
 
 #### 2.2.5 让 Agent 同时用两个工具
 
@@ -720,7 +747,9 @@ public class KnowledgeBaseTool {
         return chatClient.prompt()
                 .system("你是研究助理。你有两个工具：网页搜索（查公开信息）、知识库搜索（查企业内部资料）。" +
                         "自主决定用哪个、用几次。内部/专业问题优先查知识库；公开/时效问题查网页。" +
-                        "资料足够后给研究结果，资料不足要明说，绝不编造。")
+                        "资料足够后给研究结果，资料不足要明说，绝不编造。\n" +
+                        "引用纪律：结果中每个事实性陈述必须标注来源，" +
+                        "知识库片段用[编号]（如「据[1]产品白皮书」），网页资料标注「据网页搜索」。")
                 .user("研究主题：" + topic)
                 .tools(searchTool, knowledgeBaseTool)      // ← 两个工具都注册
                 .options(ToolCallingChatOptions.builder().maxToolCallIterations(6).build())
@@ -728,6 +757,15 @@ public class KnowledgeBaseTool {
                 .content();
     }
 ```
+
+> **结果引用来源（防幻觉的关键）**：研究 Agent 给结论，用户最关心"这结论哪来的"。如果 Agent 拿知识库片段生成结果却不标出处，用户无法核实——这是幻觉高发区。
+>
+> 做法（两步配合）：
+> 1. **工具返回带编号来源**（上面 KnowledgeBaseTool 已做：`[1] 来源:产品白皮书 | 内容...`）。
+> 2. **system prompt 要求引用**（上面加的"引用纪律"）——LLM 生成时把 `[1]` 带进结果。
+>
+> 这样用户看到"据[1]产品白皮书，产品X采用流式架构"，能去核实。**企业级 RAG 必须做引用**——尤其研究类，结论不可核实等于不可信。这是第 2 章 RAG 质量的第二道关（第一道是相似度阈值）。
+
 
 #### 2.2.6 外部用户的输入审核（防 prompt 注入）
 
@@ -991,7 +1029,80 @@ public class WebSearchMcpTools {
 
 启动 `web-search-mcp`（端口 8081），它就是一个标准 MCP server 了。
 
-#### 3.2.3 主项目 `research-agent` 作 MCP client 接入
+#### 3.2.3 MCP server 必须鉴权（外部用户产品的安全底线）
+
+**痛点**：`web-search-mcp` 监听 8081，按上面配置**任何人能访问 8081 就能调你的搜索工具**——烧你的 DuckDuckGo 配额、将来换 Taviley 还烧你的钱。内网开发没事，**一旦对外，MCP server 必须鉴权**。这是外部用户产品和内部工具（33b）又一个节奏差异——33b 的工具嵌在应用里、随应用一起被保护；本文的 MCP server 是独立暴露的服务，要自己保护。
+
+**调研结论**（[官方 MCP Security 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-security.html)）：Spring AI 有 **MCP Security 模块**，支持 OAuth 2.0 和 API key。生产标准做法：**每次调用 MCP server 必须带 `Authorization: Bearer <token>` 头**。
+
+**最简鉴权（API key 版，够 MCP server 用）**：在 `web-search-mcp` 加 Spring Security，对 MCP 端点要求一个共享 token：
+
+`web-search-mcp` 加依赖：
+```xml
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+```
+
+`web-search-mcp/src/main/java/com/example/mcp/SecurityConfig.java`：
+```java
+package com.example.mcp;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.web.SecurityFilterChain;
+
+@Configuration
+public class SecurityConfig {
+
+    @Value("${mcp.shared-token}")
+    private String sharedToken;
+
+    @Bean
+    SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http.csrf(c -> c.disable())
+            .authorizeHttpRequests(a -> a
+                .requestMatchers(req -> {   // MCP 端点要求 Bearer token
+                    String auth = req.getHeader("Authorization");
+                    return !("Bearer " + sharedToken).equals(auth);
+                }).denyAll()
+                .anyRequest().authenticated())
+            .httpBasic(b -> {});   // 简化：实际用 Bearer 解析，这里给最小示意
+        return http.build();
+    }
+}
+```
+
+`web-search-mcp/application.yaml` 加共享 token：
+```yaml
+mcp:
+  shared-token: ${MCP_SHARED_TOKEN:change-me}   # 生产用强随机值，环境变量注入
+```
+
+主项目 `research-agent` 作 client 时带上 token（yaml）：
+```yaml
+spring:
+  ai:
+    mcp:
+      client:
+        sse:
+          connections:
+            web-search:
+              url: http://localhost:8081
+              # 带上鉴权头（具体写法按 MCP client starter 版本，可能用 headers 配置或拦截器）
+```
+
+> ⚠️ **诚实说明（重要）**：
+> - 上面的 `SecurityConfig` 是**示意**（`httpBasic` + 简化判断），真实生产用 OAuth2/JWT（[Spring 官方 MCP OAuth2 博客](https://spring.io/blog/2025/09/30/spring-ai-mcp-server-security)）。本文给"最小鉴权思路"，完整 OAuth2 超出本文范围。
+> - **已知坑 [issue #2506](https://github.com/spring-projects/spring-ai/issues/2506)**：SSE transport 下，连接时鉴权生效，但**工具执行时认证上下文可能丢失**。生产要测"鉴权是否在工具执行阶段也成立"。
+> - **更稳的架构**：不在每个 MCP server 自己验 JWT，而是**在网关（Spring Cloud Gateway）统一验**，把可信身份透传给下游 MCP server（[生产级模式](https://medium.com/codetodeploy/secure-spring-ai-mcp-servers-gateway-jwt-auth-d7f0141be9d6)）。
+>
+> **核心结论**：MCP server 对外 = 必须鉴权。本文的最小鉴权够你理解"为什么要做、怎么做雏形"，生产按官方 MCP Security 文档上 OAuth2。
+
+#### 3.2.4 主项目 `research-agent` 作 MCP client 接入
 
 pom 加 client 依赖：
 ```xml
@@ -1016,7 +1127,7 @@ spring:
 
 **就这么配——`spring-ai-starter-mcp-client` 自动**：连上 `web-search-mcp` → 发现它的 `search` 工具 → 暴露为 `ToolCallback`。**ChatClient 自动能用，和本地 `@Tool` 没区别**。
 
-#### 3.2.4 主项目去掉本地搜索工具、改用 MCP
+#### 3.2.5 主项目去掉本地搜索工具、改用 MCP
 
 现在搜索能力来自 MCP server，主项目的 `WebSearchTool` 可以删了（或留作 fallback）。`ResearchService` 不再 `.tools(searchTool, knowledgeBaseTool)`，而是 `.tools(knowledgeBaseTool)`——`search` 由 MCP client 自动注入：
 
@@ -1038,7 +1149,7 @@ spring:
 
 > **MCP 工具的自动注入**：`spring-ai-starter-mcp-client` 把连接到的 MCP server 的工具注册成 Bean，ChatClient 调用时自动纳入。你 `.tools(...)` 里只写本地工具，MCP 工具自动可用。这是 MCP client starter 的核心便利。
 
-#### 3.2.5 多工具编排纪律（解根因②）
+#### 3.2.6 多工具编排纪律（解根因②）
 
 Agent 在多工具间乱选/不收敛，靠 **prompt 里的收敛规则** + **maxIterations** 兜底。`CONVERGENCE_RULES` 常量：
 
@@ -1195,6 +1306,9 @@ spring:
       chat:
         model: deepseek-chat
         temperature: 0.3
+      embedding:                              # DeepSeek 无 embedding，用 OpenAI 3-small
+        model: text-embedding-3-small
+        api-key: ${OPENAI_API_KEY}
     vectorstore:
       pgvector:
         dimensions: 1536
@@ -1234,12 +1348,16 @@ resilience4j:
 
 **第 2 章**：
 - ⚠️ **pgvector 启动报错（无 JdbcTemplate）** → [issue #6164](https://github.com/spring-projects/spring-ai/issues/6164)，必须额外加 `spring-boot-starter-jdbc`。最常踩的坑。
-- 入库报维度不匹配 → `dimensions` 要和 embedding 模型输出一致（1536 是 OpenAI 3-small）。
-- `similaritySearch` 查不到 → 库是空的（先 ingest）；或 query 太离谱。
+- ⚠️ **入库报"无 embedding 模型"或维度错** → 没配 `spring.ai.openai.embedding.model`。DeepSeek 没 embedding API，必须配一个（OpenAI 3-small / Ollama / 兼容端点）。见 2.2.2。
+- 入库报维度不匹配 → `dimensions` 要和 embedding 模型输出一致（1536 是 OpenAI 3-small，Ollama 的 nomic 是 768）。
+- `similaritySearch` 查不到 → 库空（先 ingest）；或 `similarityThreshold` 设太高；或 query 太离谱。
+- **结果不带出处/用户无法核实** → 工具返回没带来源编号 + system prompt 没要求引用。见 2.2.5 防幻觉。
 
 **第 3 章**：
-- MCP server 的 `@McpTool` 没注册 → [issue #4392](https://github.com/spring-projects/spring-ai/issues/4392)，早期版本有此 bug；或 starter 名/版本不对（用 `spring-ai-starter-mcp-server-webmvc`）。查[官方 MCP Server 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html)对应版本写法。
-- MCP client 连不上 server → server 没起/端口不对；`spring.ai.mcp.client.sse.connections` 配置写错。
+- ⚠️ **MCP server 对外被白嫖** → 没鉴权，任何人能调你的搜索 server 烧配额。必须加鉴权（OAuth2/API key），见 3.2.3a。
+- MCP server 的 `@McpTool` 没注册 → [issue #4392](https://github.com/spring-projects/spring-ai/issues/4392)，早期版本 bug；或 starter 名/版本不对（用 `spring-ai-starter-mcp-server-webmvc`）。查[官方 MCP Server 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html)。
+- MCP client 连不上 server → server 没起/端口不对/鉴权头没带；`spring.ai.mcp.client.sse.connections` 配置写错。
+- ⚠️ **SSE 下工具执行时鉴权丢失** → [issue #2506](https://github.com/spring-projects/spring-ai/issues/2506)，连接时鉴权生效但工具执行阶段可能丢。生产必测。
 - Agent 用了 MCP 工具但报"工具不存在" → client starter 没自动注册，确认依赖 `spring-ai-starter-mcp-client` 加了。
 
 **第 4 章**：
