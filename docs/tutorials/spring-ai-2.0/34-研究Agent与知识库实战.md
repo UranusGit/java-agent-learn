@@ -247,6 +247,25 @@ public class WebSearchTool {
 
 > ⚠️ **诚实说明**：DuckDuckGo 的 HTML 接口**非官方**，结构可能变、可能被限频。本文用它是因为**零 key 零成本，能把 Agent 逻辑先跑通**。生产请换 Tavily（AI 友好的搜索 API）或第 3 章的 MCP server——**接口（`@Tool search`）不变，只换实现**。如果 DuckDuckGo 接口在你那儿不通，先用一个返回假数据的 mock 顶替，不影响学 Agent 逻辑。
 
+##### 原理：`@Tool` 的 description 是怎么起作用的
+
+第 0 章是固定 workflow（`research()` 里手动调 `searchTool.search()`），`@Tool` 注解这会儿还没真正用上——但第 1 章它就是核心了（LLM 靠它决定调不调）。先讲清它的原理，第 1 章你就懂 LLM 为什么"会调工具"。
+
+**`@Tool(description="...")` 做了什么**：Spring AI 把这个方法的**名字 + description + 参数 schema**，**拼进发给 LLM 的 prompt 里**（作为一段"可用工具清单"）。LLM 看到的请求大致是：
+```
+[系统消息] 你是研究助理...
+[可用工具]
+  - search(query: string): "在互联网上搜索给定关键词，返回相关网页摘要片段..."
+[用户消息] 研究 XX
+```
+LLM 读到这段"工具清单"，结合用户问题，**自己判断**"该不该调 search、传什么 query"——如果决定调，就输出结构化的 tool_call（见第 1 章 ReAct 原理）。
+
+**所以 description 写得好坏，直接决定 LLM 会不会调、调得对不对**：
+- 写清楚（"搜索互联网，用于查公开/最新信息"）→ LLM 知道何时该用。
+- 写得差（"搜索"）→ LLM 不知道这工具具体干嘛，可能不调或乱调。
+
+> 这是 **prompt 工程的一部分**——工具的 description 是写给 LLM 看的"说明书"。企业级 Agent 项目里，工具 description 要像写产品文档一样认真：说清干什么、什么时候用、参数含义。第 1、2 章你加更多工具时，会发现 description 质量 = Agent 智能的一半。
+
 #### 0.2.4 固定 workflow：搜索 → 研究结果
 
 固定两步（第 1 章让 LLM 自主决定几步）：① 调 `search` 拿资料 → ② 把资料喂给 LLM 让它"基于资料写研究结果"。
@@ -460,6 +479,32 @@ public class ResearchService {
 > **`.tools(searchTool)` 的本质**：把工具注册给这次调用。LLM 看到工具的 `@Tool(description=...)`，自己决定要不要调、调几次。框架（`ToolCallingAdvisor`）托管"模型要调→执行→喂回→再决策"的循环，直到模型不再要工具（给出最终答案）。
 >
 > **`maxToolCallIterations(5)` 是关键**：Agent 可能陷入"搜了又搜"的死循环（尤其 prompt 模糊时）。**最大步数是外部用户产品的成本防线**——超过 5 步强制停，防止一个请求烧爆。33b 没这个（内部工具、固定步骤），本文有（外部用户、自主 Agent）。
+
+##### 原理：Agent 循环到底在转什么（ReAct 模式）
+
+照着敲能跑，但要学懂"Agent"的本质，得看清这一轮轮循环内部发生了什么。Agent 用的叫 **ReAct**（Reason + Act，推理+行动）模式：
+
+```
+用户：研究 XX
+  ↓
+[第1轮]
+  Reason：LLM 想"我需要资料 → 该调 search"
+  Act：    LLM 输出结构化的 tool_call（不是普通文本！）：{调 search, 参数:"XX"}
+  ↓ 框架执行 search，把结果塞回去
+[第2轮]
+  Reason：LLM 看 search 结果，想"资料够了/不够"
+  Act：   够了 → 不再请求工具，直接输出最终答案（循环结束）
+          不够 → 再输出一个 tool_call（再搜/换词）
+  ↓
+... 直到 LLM 不再请求工具，或撞 maxIterations 兜底
+```
+
+**三个关键认知**：
+1. **LLM 不是输出文本，是输出结构化的"调用请求"**。底层是 **function calling**——LLM 被训练成能输出 `{"name":"search","arguments":{"query":"XX"}}` 这种结构化 JSON，框架解析它、执行对应方法。这是 Agent 能"自主调工具"的技术基础。
+2. **"自动停"靠的是 LLM 自己判断"够了"**。每轮框架把工具结果喂回 LLM，问"还要调吗"——LLM 觉得信息够了，就不再输出 tool_call，而是输出普通文本（最终答案），循环自然结束。**不是代码判断"够了"，是模型判断**。
+3. **`ToolCallingAdvisor` 托管的就是这个循环**。你写 `.tools()` 一行，框架在底层转这个 Reason→Act→Observe 的圈，直到模型给最终答案或撞步数上限。
+
+> 学懂这点，你就明白为什么 **system prompt 那么重要**（第 2 章的收敛规则、引用纪律）——LLM 每轮的"Reason"都基于 prompt，prompt 讲不清规则，LLM 就乱 Reason（乱调、死循环、不收敛）。Agent 的"智能"一半在模型，一半在你的 prompt。
 
 #### 1.2.2 用 33b 可观测看 Agent 的每一步决策
 
@@ -737,6 +782,37 @@ public class KnowledgeBaseTool {
 > **`similarityThreshold(0.6)` 是 RAG 质量的关键**：不设阈值，`topK(3)` 会无脑返回"最像的 3 个"——哪怕相似度只有 0.2（基本无关）。无关片段塞进 prompt 会**严重干扰 LLM**（它可能基于无关片段胡编）。设 0.6（按你的 embedding 模型调，cosine 相似度 0.6+ 一般算相关）过滤掉低质量的。**这是 RAG 质量的第一道关**，比"返回几条"更重要。
 >
 > **返回带来源编号**：每条片段标 `[1] 来源:xxx`。这让 Agent 生成结果时能引用出处（"据[1]产品白皮书..."），而不是凭空给结论——是防幻觉的关键，见 2.2.5。
+
+##### 原理：向量检索为什么能"语义匹配"
+
+照着 `similaritySearch` 能查，但 RAG 的核心理论是"**为什么把文本变向量、比向量距离，就能找到语义相关的内容**"。学懂这个，你才知道 embedding/阈值/分块为什么那样设。
+
+**embedding 做了什么**：把一段文本映射成一个**高维向量**（比如 1536 个数字）。关键是——语义相近的文本，映射出的向量在空间里**靠得近**。这是 embedding 模型训练出来的能力（它读过海量"意思相近的句子"，学会了把相近意思映射到相近位置）。
+
+```
+向量空间（示意，实际 1536 维无法画）：
+        "如何部署应用" ●
+                     │
+   "应用上线流程" ●  │        ● "今天天气不错"   ← 和部署语义无关，离得远
+                     │
+        "容器化发布" ●
+
+  语义相关的句子 → 向量聚在一块；无关的 → 离得远
+```
+
+**cosine 相似度在算什么**：两个向量的**夹角余弦**。夹角越小（方向越一致），余弦越接近 1（越相似）；方向无关的接近 0；相反的 -1。
+```
+query 向量 ●━━━● 文档向量   夹角小 → cosine≈0.9（高度相关）
+query 向量 ●           ● 文档向量  夹角大 → cosine≈0.2（基本无关）
+```
+所以 `similarityThreshold(0.6)` = "夹角小于某个值（cosine≥0.6）的才算相关，其他丢掉"。
+
+**分块为什么影响质量**：`similaritySearch` 检索的是"文档**片段**"的向量。入库时整篇文档被切成块（第 2 章每 500 字符一块），每块单独向量化。分块策略直接决定检索精度：
+- 切太碎（如每 50 字）：语义不完整，向量不代表完整意思，检索不准。
+- 切太大（如整篇一块）：一块里混了多个主题，检索到它但大部分内容无关。
+- 生产用 `TokenTextSplitter`（按 token 数 + 尽量在语义边界切，如段落/句号处）——比本文"每 500 字符"准。
+
+> 学懂这个，你就明白 RAG 质量三要素：**① embedding 模型好坏**（决定"语义相近→向量相近"准不准）、**② 分块策略**（决定向量代表的意思完不完整）、**③ 阈值**（决定丢不丢低质量）。本文三个都用最简版，生产每个都能深挖——但原理就这些。
 
 #### 2.2.5 让 Agent 同时用两个工具
 
@@ -1028,6 +1104,33 @@ public class WebSearchMcpTools {
 > ⚠️ **诚实说明**：`spring-ai-starter-mcp-server-webmvc` + `@McpTool` 的精确装配在不同 2.0.x 小版本可能有差异（[issue #4392](https://github.com/spring-projects/spring-ai/issues/4392) 报过早期里程碑版的注册问题）。如果你的版本 `@McpTool` 没自动注册，退路是手动用 `SyncMcpToolProvider` 注册——查 [官方 MCP Server Boot Starter 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html) 对应版本的写法。
 
 启动 `web-search-mcp`（端口 8081），它就是一个标准 MCP server 了。
+
+##### 原理：MCP 和普通 HTTP API 到底有什么不同
+
+你一定会问：**我的 `search` 方法加个 `@RestController` 暴露成 HTTP 接口不就行了？为什么非要 MCP？** 这是学 MCP 最该想清楚的问题。
+
+**普通 HTTP API**：你定义 URL、参数、返回，每个 API 都不一样。client 要单独适配——你得写文档告诉调用方"URL 是 `/search`，参数 `query` 走 query string，返回是 JSON"。换个 API 又要重新对接。
+```
+client 调你的 /search：    要知道 URL、参数、返回格式（每个 API 单独适配）
+client 调别人的 /lookup：  又是另一套 URL/参数/返回（再适配一次）
+```
+
+**MCP**：标准化的"**工具发现 + 调用**"协议。client 连上 server 后：
+1. `tools/list`——**自动发现** server 有哪些工具（不用预先知道）。
+2. `tools/call`——**标准方式调用**（工具名 + 参数，不用管 URL/格式细节）。
+3. 工具**自带描述**（`@McpTool(description=...)`）——client 拿到就知道每个工具是干什么的。
+```
+client 连上任意 MCP server：
+  → tools/list 自动发现："哦，你有 search 工具，描述是'搜索网页'，参数是 query"
+  → tools/call 调用："给我调 search，参数 query=XX"
+  换个 MCP server（比如知识库 server）：同样的 tools/list → 同样的调用方式
+```
+
+**为什么这对 AI 友好**：LLM 用工具，需要知道"有什么工具、每个工具干什么、参数是什么"。MCP 把这些**标准化、自描述**——任何 MCP server 的工具，LLM 都能像用本地工具一样用（Spring AI 把 MCP 工具自动注册成 `ToolCallback`，对 ChatClient 和本地 `@Tool` 没区别）。
+
+**一句话区别**：普通 HTTP API 是"**每个接口各自为政**"；MCP 是"**工具自带说明书、标准化的发现与调用协议**"——所以一个 MCP client（你的 Agent、Claude Desktop）能接任意 MCP server、自动用上它的工具，不用为每个 server 写适配代码。**这就是 MCP 的价值**。
+
+> 类比：普通 HTTP API 像"每个电器用不同形状的插头，要单独配插座"；MCP 像"统一了插头标准（USB-C 那种），任何电器任何插座通用"。标准化带来的是**工具生态的可组合性**——你的搜索 server，今天被你的 Agent 用，明天被 Claude Desktop 用，后天被另一个团队的项目用，零适配。
 
 #### 3.2.3 MCP server 必须鉴权（外部用户产品的安全底线）
 
