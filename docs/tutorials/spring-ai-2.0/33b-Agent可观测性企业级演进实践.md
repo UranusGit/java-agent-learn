@@ -581,16 +581,22 @@ import reactor.core.publisher.Sinks;
 @Component
 public class AgentEventBus {
 
-    // autoCancel=false：即使暂时没人订阅，总线也别自动关闭
+    // multicast（非 replay）：新订阅者不获取之前的历史——历史由第 2 章的 Redis 回放负责，不依赖内存缓存。
+    // 如用 replay().all()，日积月累大量事件在内存中会导致 OOM。multicast + Redis 是热冷分层的企业级方案。
+    // autoCancel=false：即使暂时没人订阅，总线也别自动关闭（零订阅者时段常见，后续 SSE 连接会再上来）。
     private final Sinks.Many<AgentEvent> sink =
             Sinks.many().multicast().onBackpressureBuffer(256, false);
 
-    /** 生产者调这个：发射一个事件。 */
+    /** 生产者调这个：发射一个事件。用 tryEmitNext（非阻塞）而不是 emitNext（可重试）——事件总线不能阻塞生产者，
+     * 否则 ChainingService 的写作步骤会被拖慢。缓冲满时事件可丢（第 2 章关键事件落 Redis 兜底），
+     * 生产者绝不能等。这和第 2 章"CRITICAL 事件落库兜底"的策略一致——用持久化解决可靠性，不用 emit 阻塞。 */
     public void emit(AgentEvent event) {
-        sink.tryEmitNext(event);   // 非阻塞塞事件，失败也不抛
+        sink.tryEmitNext(event);
     }
 
-    /** 消费者调这个：只拿某个会话的事件流（SSE 按会话订阅用，内部过滤）。 */
+    /** 消费者调这个：只拿某个会话的事件流。把按 sessionId 过滤收口在总线里（不是留给每个 Controller 自己 filter），
+     * 一是避免重复样板（每处 Controller 手写 .filter(...)），二是第 4 章分片总线时底层改为按 sessionId hash
+     * 路由到对应分片（不是全量过滤），接口签名不变——Controller 对底层升级无感。 */
     public Flux<AgentEvent> subscribe(String sessionId) {
         return sink.asFlux().filter(event -> sessionId.equals(event.sessionId()));
     }
@@ -1466,7 +1472,11 @@ spring:
         DISCARDABLE    // 流式片段（CONTENT_DELTA），背压满优先丢
     }
 
-    // 按事件类型推断默认关键级别：
+    // 按事件类型推断默认关键级别：不依赖调用者每次手动设 criticality，因为同类型的事件关键级别是固定的。
+    // 切换(criticality)这个字段主要服务于第 2 章的分级落库——CRITICAL 类落 Redis 兜底，DISCARDABLE 类背压满优先丢。
+    // 比如 SESSION_STARTED/COMPLETED/FAILED 是会话终态，丢了下游永远不知道会话结束，所以 CRITICAL；
+    // CONTENT_DELTA 是正文片段，偶尔丢一帧不影响最终结果，所以 DISCARDABLE。
+    // NORMAL 是折中：尽力送达、但不单独落库（落入 Redis 会很多不划算，且丢了可以靠重跑恢复）。
     public static Criticality defaultCriticality(EventContent type) {
         return switch (type) {
             case SESSION_STARTED, SESSION_COMPLETED, SESSION_FAILED -> Criticality.CRITICAL;

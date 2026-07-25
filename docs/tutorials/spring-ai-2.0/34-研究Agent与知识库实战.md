@@ -498,7 +498,10 @@ public class ResearchService {
                 .user("研究主题：" + topic)
                 .tools(searchTool)                          // ← 把工具交给 LLM 自主调
                 .options(ToolCallingChatOptions.builder()
-                        .maxToolCallIterations(5)            // ← 最大 5 步，防跑飞烧钱
+                        // maxToolCallIterations(5)：自主 Agent 没有它，一个模糊 prompt 就能让 LLM 无限循环调工具——每步一次 LLM 调用都计费。
+                        // 设上限=成本防火线：超过上限时报"基于有限资料的结果"（收敛规则），不继续调 LLM。
+                        // 选择 5 而不是更大值：演示场景够用（3 个工具各试一次）。生产根据平均所需步骤的 P99 × 1.5 调。
+                        .maxToolCallIterations(5)
                         .build())
                 .call()
                 .content();
@@ -941,7 +944,10 @@ public class InputGuard {
     private static final java.util.List<String> INJECTION = java.util.List.of(
             "忽略以上指令", "ignore previous", "把你的系统提示", "导出知识库");
 
-    /** 校验输入。返回 null 表示通过，否则返回拒绝原因。 */
+    /** 校验输入。返回 null 表示通过，否则返回拒绝原因。在 Controller 层做（而不是 Service 层）：
+     * 尽早拒绝——在调 LLM 之前就拦下，不浪费任何计算资源、不触发任何 LLM 调用（省钱）。
+     * 如果放到 Service 层（researchStream 里），注入话术已经进了 ChatClient 的 prompt 才被拦，
+     * 那次 LLM 调用已经烧了钱。放在 Controller 层是"最小拦截距离"。 */
     public String check(String input) {
         if (input == null || input.isBlank()) return "输入为空";
         if (input.length() > MAX_LEN) return "输入过长";
@@ -979,11 +985,15 @@ public class ResearchController {
 
     /** 限流（第 0 章）保留不撤——外部用户防线。produces SSE（第 1 章）。 */
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    // @RateLimiter：面向外部用户的产品，第一天就要上——每个请求触发一次 LLM + 搜索，成本敏感。
+    // 不限流则恶意刷接口能烧光预算。fallbackMethod 返回限流提示而不是崩溃。
     @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> research(@RequestParam String topic) {
-        String reject = inputGuard.check(topic);             // ← 第 2 章新增：输入审核
-        if (reject != null) return Flux.just(reject);        // 审核未过，推一条拒绝消息
-        return researchService.researchStream(topic);        // 过了才放行
+        // inputGuard.check：在调 LLM 之前就拦截注入尝试——第 2 章引入。
+        // 放在 Controller 层（而不是 Service 层）是为了尽早拒绝，不给后续链路任何机会。
+        String reject = inputGuard.check(topic);
+        if (reject != null) return Flux.just(reject);
+        return researchService.researchStream(topic);
     }
 
     /** 限流降级（同第 0 章）。 */
@@ -1546,12 +1556,13 @@ public class HttpClientConfig {
 
     /**
      * 自定义 RestClient.Builder：设足够长的读超时（180s）。
-     * Spring AI 的 OpenAiChatModel 自动用这个 RestClient.Builder——
-     * Agent 内部的 LLM 调用（含工具循环）都经过这里，超时配置生效。
+     * 注意：Spring AI 的 OpenAI chat client（spring-ai-starter-model-openai）底层走的是 RestClient（同步栈），
+     * 不是 WebClient（Reactor Netty）。所以配超时要自定义 RestClient.Builder Bean——
+     * 你自定义 WebClient.Builder 对 Agent 内部的 LLM 调用不生效（那是给手写 WebClient 用的，如 DuckDuckGo 搜索）。
+     * Agent 内部的 LLM 调用（含工具循环的 ToolCallingAdvisor）都经过这个 RestClient，超时配置生效。
      */
     @Bean
     public RestClient.Builder restClientBuilder() {
-        // 两步：先用 Settings 配超时，再用 ClientHttpRequestFactoryBuilder 把它变成工厂对象
         ClientHttpRequestFactorySettings settings = ClientHttpRequestFactorySettings.builder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .readTimeout(Duration.ofSeconds(180))   // 读超时 180s，覆盖长生成停顿
@@ -1613,14 +1624,16 @@ public class HttpClientConfig {
 
 第 1 章的 `researchStream` 返回 `Flux<String>`。如果中途出错（超时/429 耗尽），错误沿 Flux 往下传——前端收到的是"连接断"，不知道是失败还是还在跑。
 
-解法：`.onErrorResume` 把错误**吞成一条可推给前端的文本**，再正常结束流（而不是让流异常断掉）：
+解法：`.onErrorResume` 把错误**吞成一条可推给前端的文本**，再正常结束流（而不是让流异常断掉）。注意用 onErrorResume（不是 doOnError）——doOnError 只是副作用，执行完错误信号仍然往下传，前端照样断连；onErrorResume 把错误信号替换成一条正常数据，前端收到可读文本后才正常完成。
+
 ```java
     public Flux<String> researchStream(String topic) {
         return chatClient.prompt()....stream().content()
                 .onErrorResume(err -> {
-                    // 错误转成用户可见的一条消息，推给前端后正常结束流
-                    System.err.println("[研究失败] " + err.getMessage());   // 日志（排查用）
-                    return Flux.just("[研究失败] " + err.getMessage());      // 推给前端的一条
+                    // 用 onErrorResume 而不是 doOnError：doOnError 不阻断错误传播——错误照常往下传，前端收到"连接断"。
+                    // onErrorResume 把错误吞成一条用户可读的文本，推给前端后正常结束流。
+                    System.err.println("[研究失败] " + err.getMessage());   // 后端日志（排查用）
+                    return Flux.just("[研究失败] " + err.getMessage());      // 前端收到这条文本
                 });
     }
 ```
