@@ -1,18 +1,20 @@
-# 34 研究型 Agent 与知识库实战：企业级演进手册
+# 34 会话化研究问答系统实战：从单次研究到带记忆的产品级 Agent
 
-> **这份文档是什么**：一份**面向外部用户的研究型 Agent**项目手册。你照着它一步步敲，最后得到一个能"**自主决定查网页还是查知识库、多轮搜集、给出最终研究结果**"的 Agent。每一步都是「上一阶段出问题了才进下一阶段」——一点点演进，不一次性铺架构。
+> **这份文档是什么**：一份**面向外部用户的会话化研究问答系统**项目手册。你照着它一步步敲，最后得到一个能"**多轮对话、自主决定查网页还是查知识库、先规划再并行调研、聚合出研究结果，且会话历史持久化可回看**"的产品级 Agent。每一步都是「上一阶段出问题了才进下一阶段」——一点点演进，不一次性铺架构。
 >
-> **它讲什么**：从"固定 workflow"升级到"**自主研究 Agent**"——用户说"研究一下 XX"，Agent 自己决定调几次工具、查哪个来源、何时收手。涉及 Agent 循环、知识库（pgvector RAG）、MCP 工具、外部用户治理。
+> **它讲什么**：从"固定 workflow"升级到"**自主研究 Agent**"，再到"**会规划、多 Worker 并发调研、流程可追溯、有记忆、可管理的产品级问答系统**"。涉及 Agent 循环、知识库（pgvector RAG）、MCP 工具、Plan-Execute-Aggregate 编排（含 Reactor 多 Worker 并发）、结构化审计日志、会话持久化（ChatMemory 落库 + 会话 CRUD）、外部用户治理。
 >
-> **前置**：你会 Spring AI + WebFlux 基础（调过 ChatClient、写过 Controller）。本文自包含——所需的东西都在文档里一步步搭出来，不依赖你先做别的项目。如果你做过可观测主题的实战，部分章节会更轻松，但不是必须。
+> **前置**：你会 Spring AI + WebFlux 基础（调过 ChatClient、写过 Controller、对 Reactor 的 `Flux`/`Mono`/`flatMap` 有基本认识）。本文自包含——所需的东西都在文档里一步步搭出来，不依赖你先做别的项目。如果你做过可观测主题的实战，部分章节会更轻松，但不是必须。
 >
 > **双项目结构**：本文涉及两个独立项目——
-> - **主项目 `research-agent`**：研究型 Agent（本文主体，含知识库、Agent 循环、MCP client）。
+> - **主项目 `research-agent`**：会话化研究问答系统（本文主体，含知识库、Agent 循环、Plan-Execute 并发编排、审计日志、MCP client、会话持久化）。
 > - **辅助项目 `web-search-mcp`**：一个独立的网页搜索 MCP server（第 3 章建，主项目作为 MCP client 接入它）。
 >
-> **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · DeepSeek · **pgvector**（知识库向量库）· **MCP**（工具协议）· DuckDuckGo（网页搜索，零 key）。
+> **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · DeepSeek · **pgvector**（知识库向量库 + 会话存储同库）· **MCP**（工具协议）· DuckDuckGo（网页搜索，零 key）。
 >
 > ⚠️ **版本前提（重要）**：本文基于 Spring Boot 4.1.x / Spring AI 2.0.0（写作时尚在里程碑/预览阶段，部分 API 如 `@McpTool`、`ToolCallingChatOptions.maxToolCallIterations`、MCP starter 命名随小版本变动）。若你用 GA 稳定版，**少量 API 名以你版本的官方文档为准**——本文遇到易变的点会标注 issue/文档链接。
+>
+> 📌 **本文不涉及多租户与多实例**：为聚焦"单租户、单实例下的会话化问答"主线，**不做**租户隔离、分布式会话同步、水平扩展。这些是企业级演进的下一站（见末尾"后续演进方向"），不在本文范围。
 
 ---
 
@@ -24,6 +26,11 @@
 - [第 2 章：知识库搜索——pgvector RAG](#第-2-章知识库搜索pgvector-rag)
 - [第 3 章：多工具编排与网页搜索 MCP server](#第-3-章多工具编排与网页搜索-mcp-server)
 - [第 4 章：上线后的运营事故](#第-4-章上线后的运营事故)
+- [第 5 章：先规划再调研——Plan 阶段（串行起步）](#第-5-章先规划再调研plan-阶段串行起步)
+- [第 6 章：多 Worker 并发调研——把串行变并行](#第-6-章多-worker-并发调研把串行变并行)
+- [第 7 章：结构化审计日志——整体流程可追溯](#第-7-章结构化审计日志整体流程可追溯)
+- [第 8 章：会话持久化——ChatMemory 落库，刷新不丢历史](#第-8-章会话持久化chatmemory-落库刷新不丢历史)
+- [第 9 章：会话管理 CRUD + 前端对话页——从单次研究到产品](#第-9-章会话管理-crud--前端对话页从单次研究到产品)
 - [附录：双项目结构与踩坑手册](#附录双项目结构与踩坑手册)
 
 ---
@@ -32,13 +39,14 @@
 
 ### 这份文档的边界
 
-讲「**研究型 Agent**」——让 Agent 自主决策、查资料（网页 + 知识库）、给出研究结果，以及支撑它的工程化（Agent 循环、RAG、MCP 工具、外部用户治理）。
+讲「**会话化研究问答系统**」——让 Agent 自主决策、查资料（网页 + 知识库）、先规划再并行调研、给出研究结果，并支撑它的工程化（Agent 循环、RAG、MCP 工具、Plan-Execute 编排、会话持久化与 CRUD、外部用户治理）。
 
 **不讲**：
-- **可观测性的底层搭建**（事件总线、SSE、Observation 深度）：本文用最小手段（日志）让过程可见，聚焦"研究 Agent"主线。等你的项目长大了、需要完整可观测体系时，那是另一个主题。
+- **完整可观测体系**（事件总线、SSE 推前端、OpenTelemetry 深度）：本文聚焦"会话化问答 + 流程可追溯"主线，**只做最小可追溯手段**（结构化审计日志，按会话 ID 串联全流程落库）。等需要前端实时看每步、跨服务 trace 时，那是另一个主题（见末尾"后续演进方向"）。
 - **部署运维**（Docker 编排/k8s/CI-CD）：本文目标是 **IDE 能起、能跑通**。外部依赖只有一个 **PostgreSQL（pgvector）**——`docker run` 一行起一个，不引入容器编排。
+- **多租户与多实例**：本文聚焦单租户单实例。租户隔离、分布式会话同步、水平扩展是企业级下一站（见末尾"后续演进方向"），本文不做。
 
-简单说：**本文教你把"固定 workflow"升级成"自主研究 Agent"，加上知识库和 MCP 工具，在 IDE 里一步步复现**。
+简单说：**本文教你把"固定 workflow"升级成"自主研究 Agent"，再加上知识库、MCP 工具、先规划后调研、会话持久化管理，在 IDE 里一步步复现一个产品级问答系统**。
 
 ### 演进路线（每章一个痛点驱动）
 
@@ -49,8 +57,15 @@
 | 资料不够 | 网页信息不准/不够 → 查内部知识库 | 第 2 章 |
 | 工具多了 | 多工具乱选/重复 → 编排策略 + MCP 工具 | 第 3 章 |
 | 上线 | 对外运营出事故 → 超时/重试/错误归宿 | 第 4 章 |
+| 漏角度 | 隐式 ReAct 没有全局规划，复杂主题查不全 → 先 Plan 再 Execute（串行起步） | 第 5 章 |
+| 太慢 | 串行调研一个个排队，耗时叠加 → 多 Worker 并发（flatMap 限流 + 错误隔离） | 第 6 章 |
+| 可追溯 | "它到底怎么得出这个结论的"说不清 → 结构化审计日志（按会话串联全流程落库） | 第 7 章 |
+| 记忆 | 刷新就丢、无法多轮追问 → 会话历史落库（ChatMemory 持久化） | 第 8 章 |
+| 产品化 | 只有单次研究没法当产品用 → 会话 CRUD + 前端对话页 | 第 9 章 |
 
 > **外部用户产品的纪律**：面向外部用户，**安全/成本痛点会早出现**——所以限流（第0章）、单次预算/最大步数（第1章）、输入审核（第2章）**紧跟各自的痛点**，不是攒到最后讲。
+>
+> **演进纪律**：前 4 章是"把单次研究 Agent 做稳"（能力层）；第 5 章升级"怎么研究得更好"（智能层）；第 6-7 章升级"变成可多轮、可回看的产品"（产品层）。**顺序不要跳**——没有稳定的单次 Agent，会话化只会把不稳定放大 N 倍。
 
 ### 每章的固定结构
 
@@ -1673,24 +1688,1315 @@ git add -A && git commit -m "第4章：上线运营事故——超时/429重试/
 - **外部用户 + 自主 Agent 的事故更早更多**：内部工具能忍的（超时让用户重试、429 偶发），对外不行——用户体验差、成本失控。
 - **每个事故配最小解法**：超时配底层 timeout、429 配重试降级、错误配回调。**不预先堆砌**（连接治理、归档等更深的，等真痛了再加）。
 
-**后续可能演进**（不在本章）：用户中途取消、连接数治理、事件归档查历史——等这些痛点在你产品里真出现，再一个个加。**本文到此是一个能对外运营的研究 Agent**。
+**后续可能演进**（不在本章）：用户中途取消、连接数治理——等这些痛点在你产品里真出现，再一个个加。**本文到此是一个能对外运营的、单次研究 Agent**。
+
+**还差（后面章节解决）**：
+- **复杂主题查不全**：隐式 ReAct 没有"先看全局"，对比类问题容易漏掉某个角度。→ **第 5 章 Plan-Execute**（先规划拆子任务）。
+- **串行太慢**：拆了子任务一个个排队调研，耗时叠加。→ **第 6 章 多 Worker 并发**。
+- **"它怎么得出这结论的"说不清**：结果错了只能翻散落的控制台日志。→ **第 7 章 审计日志**。
+- **刷新就丢、没法多轮**：用户追问"刚才那个再展开"，Agent 已不记得。→ **第 8 章 会话持久化**。
+- **没法当产品用**：只有"输入主题→出结果"一个口子。→ **第 9 章 会话 CRUD + 前端对话页**。
+
+---
+
+> **第 4 章结束。** 第 5 章升级研究方式——从"边想边调的 ReAct"变成"先规划、再执行、后聚合"，让复杂主题查得全。
+
+---
+
+## 第 5 章：先规划再调研——Plan 阶段（串行起步）
+
+### 5.0 场景：复杂主题查不全
+
+第 1-4 章的 Agent 是**隐式 ReAct**——LLM 每轮内部"想一下要不要调工具"，框架转圈直到它觉得够了。上线后用户反馈：
+
+> "我让它对比 A、B、C 三个框架，结果报告里只详写了 A 和 B，C 一笔带过。"
+
+翻日志看：Agent 搜了"A 框架"、"B 框架"，然后**它自己觉得"够了"就收手写报告**——根本没去查 C。ReAct 是"走到哪想到哪"，**没有"先看全局、把所有角度列出来"的规划**，LLM 临场判断容易漏。
+
+**根因**：ReAct 把"规划"和"执行"揉在每一轮里——LLM 边走边想，既没有全局计划，也无法保证覆盖所有角度。
+
+**Plan-Execute 怎么解**：把研究拆成两个明确阶段——
+- **Plan（规划）**：先用一次 LLM 调用，**把主题拆成若干子任务**（"对比 A/B/C" → 拆成"查 A"、"查 B"、"查 C"、"对比三者"）。
+- **Execute（执行）**：**逐个**执行子任务（本章串行，第 6 章改并行），每个子任务用第 1 章的 ReAct Agent 跑一次。
+
+```
+用户："对比 A、B、C 框架"
+  ↓
+Plan：   LLM 拆出 ["查A", "查B", "查C", "对比三者"]   ← 一次 LLM 调用出计划
+  ↓
+Execute：依次执行 4 个子调研（每个是一次 ReAct）       ← 本章串行；第 6 章改并行
+  ↓
+Aggregate：合并 → 最终对比报告                        ← 一次 LLM 调用收口（第 6 章正式做聚合，本章先简单拼接）
+```
+
+> **为什么先串行**：本章的痛点是"漏角度"，解药是"先规划"。**先让 Plan + 串行 Execute 跑通**——只引入"规划"这一个新东西，认知负担小。等串行跑稳了，"太慢"这个新痛点冒出来（第 6 章），再上并行。**不要一上来就 Plan + 并行 + 聚合三件套全堆上**——那是"一蹴而就"，违背本文的演进纪律。
+
+### 5.1 思路：结构化拆任务 + 复用 ReAct
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 拆任务输出 | **结构化 JSON**（子任务字符串列表） | 让 Execute 能程序化遍历，不靠 LLM 二次解析自然语言 |
+| 反序列化方式 | `ChatClient.call().entity(ParameterizedTypeReference)` | Spring AI 原生 API，直接把 LLM 的 JSON 输出反序列化成 `List<String>`，无需手写解析 |
+| 单个子任务怎么执行 | **复用第 1 章的 ReAct**（带工具的 ChatClient 调用） | 不程序化直调 `ToolCallback.call()`——那条路在 MCP 工具上有坑（[issue #2378](https://github.com/spring-projects/spring-ai/issues/2378)）；让 LLM 自己调工具（第 1 章已验证可用）最稳 |
+| 聚合 | 本章先**简单拼接**各子结果 | 聚合是第 6 章并发完成后的独立关注点；本章先串行拿到结果，用最简方式合并 |
+
+> **为什么 Execute 复用 ReAct 而不是直调工具**：第 3 章把网页搜索迁到了 MCP server，主项目里它是"注册进 ChatClient 的工具回调"。理论上可以拿 `ToolCallback` 程序化 `.call(jsonArgs)` 直调——但 [issue #2378](https://github.com/spring-projects/spring-ai/issues/2378) 报告 MCP 工具的 `call` 在带 `ToolContext` 时抛 `UnsupportedOperationException`，这条直调路径不稳。**更稳的做法是：每个子任务就是一次带工具的 ChatClient 调用**（LLM 自主决定调网页还是知识库，和第 1 章一模一样），完全避开直调的坑。
+
+### 5.2 动手
+
+#### 5.2.1 新增 PlanExecuteService（Plan + 串行 Execute）
+
+`src/main/java/com/example/research/plan/PlanExecuteService.java`：
+```java
+package com.example.research.plan;
+
+import com.example.research.tool.KnowledgeBaseTool;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+/**
+ * 第 5 章：Plan-Execute 编排（串行版）。
+ * 把"研究复杂主题"拆成 规划→串行调研 两阶段，替代第 1-4 章 ReAct 的"边想边调"。
+ * 第 6 章会把串行 Execute 改成多 Worker 并发。
+ */
+@Service
+public class PlanExecuteService {
+
+    private final ChatClient chatClient;
+    private final KnowledgeBaseTool knowledgeBaseTool;
+
+    public PlanExecuteService(ChatClient chatClient, KnowledgeBaseTool knowledgeBaseTool) {
+        this.chatClient = chatClient;
+        this.knowledgeBaseTool = knowledgeBaseTool;
+    }
+
+    /** Plan-Execute 入口（串行版）。返回最终拼接结果。 */
+    public String research(String topic) {
+        // 1. Plan：让 LLM 把主题拆成子任务列表
+        List<String> subtasks = plan(topic);
+        System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
+
+        // 2. Execute：串行逐个调研（第 6 章改并行）
+        StringBuilder evidence = new StringBuilder();
+        for (int i = 0; i < subtasks.size(); i++) {
+            String sub = subtasks.get(i);
+            System.out.println("[Execute] (" + (i + 1) + "/" + subtasks.size() + ") 调研: " + sub);
+            String result = executeOne(sub);
+            evidence.append("[子任务").append(i + 1).append("] ").append(sub).append("\n")
+                    .append(result).append("\n\n");
+        }
+        return evidence.toString();
+    }
+
+    /** Plan 阶段：LLM 输出 JSON 子任务数组，.entity() 直接反序列化成 List<String>。 */
+    private List<String> plan(String topic) {
+        return chatClient.prompt()
+                .system("""
+                        你是研究规划员。把用户的研究主题拆成 2-4 个可独立调研的子任务。
+                        规则：
+                        1. 每个子任务要具体、可搜索。
+                        2. 子任务之间覆盖不同角度，避免重复，确保不遗漏主题涉及的各个方面。
+                        只输出 JSON 数组，如 ["子任务1","子任务2"]，不要任何额外文字。
+                        """)
+                .user("研究主题：" + topic)
+                .call()
+                .entity(new ParameterizedTypeReference<>() {});   // 原生 API：LLM 的 JSON 输出 → List<String>
+    }
+
+    /** Execute 单步：复用第 1 章的 ReAct（带工具的 ChatClient 调用，LLM 自主选网页/知识库）。 */
+    private String executeOne(String subtask) {
+        return chatClient.prompt()
+                .system("你是调研员。针对给定的子任务，自主调用工具（网页搜索/知识库）收集资料，" +
+                        "然后给出该子任务的调研结果。资料不足要明说，绝不编造。")
+                .user("子任务：" + subtask)
+                .tools(knowledgeBaseTool)       // 知识库（本地）；网页搜索由 MCP 注册进 ChatClient，自动可用
+                .options(ToolCallingChatOptions.builder()
+                        .maxToolCallIterations(4)   // 每个子任务的步数预算（比顶层 Agent 小，单子任务用不了太多）
+                        .build())
+                .call()
+                .content();
+    }
+}
+```
+
+> **`.entity(new ParameterizedTypeReference<List<String>>() {})` 是真实 API**：Spring AI 的 `CallResponseSpec.entity(PTREF)` 把 LLM 输出当 JSON 反序列化成你给的类型。这是结构化输出能力，这里用在"拆任务"上——**不用手写 JSON 解析，不用 `BeanOutputConverter`**（虽然那 API 也存在，但 `.entity()` 更直接）。
+>
+> **`executeOne` 复用 ReAct**：每个子任务跑一次带工具的 ChatClient 调用，LLM 自己决定调网页（MCP 注册进 ChatClient）还是知识库（`.tools(knowledgeBaseTool)`）。**和第 1 章的 `ResearchService.researchStream` 同构**——只是跑在更小的子任务上，步数预算更紧（4 而不是 6）。
+
+#### 5.2.2 Controller：加 Plan-Execute 入口
+
+原 ReAct 入口 `/api/research`（简单问题）保留不动，加一个 Plan-Execute 入口 `/api/research/deep`（复杂问题）。本章先返回**完整拼接的非流式结果**（流式留到聚合完善后，避免本章一次塞太多）：
+
+`ResearchController` 加：
+```java
+    private final PlanExecuteService planExecuteService;   // 构造函数补注入
+
+    /** Plan-Execute 入口（复杂问题）。本章非流式，返回拼接结果。 */
+    @GetMapping("/deep")
+    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
+    public String researchDeep(@RequestParam String topic) {
+        String reject = inputGuard.check(topic);            // 输入审核不撤（第 2 章）
+        if (reject != null) return reject;
+        return planExecuteService.research(topic);
+    }
+    // 原 /api/research（ReAct 路径）保留不动
+```
+
+> **两套并存**：`/api/research`（ReAct，简单/快速）+ `/api/research/deep`（Plan-Execute，复杂/全面）。本章 deep 是串行 + 简单拼接——**够演示"Plan 让复杂主题查得全"这个痛点被解掉**。聚合质量、并发提速是后面章节的事。
+
+### 5.3 验证
+
+```bash
+# 复杂主题走 Plan-Execute
+curl "http://localhost:8080/api/research/deep?topic=对比TensorRT-LLM、vLLM、SGLang的推理性能"
+
+# 控制台能看到：
+# [Plan] 拆出 4 个子任务: [查TensorRT-LLM性能, 查vLLM性能, 查SGLang性能, 对比三者]
+# [Execute] (1/4) 调研: 查TensorRT-LLM性能
+# [Execute] (2/4) 调研: 查vLLM性能
+# [Execute] (3/4) 调研: 查SGLang性能
+# [Execute] (4/4) 调研: 对比三者
+```
+
+对比 `/api/research`（ReAct）和 `/api/research/deep`（Plan-Execute）：复杂主题下，Plan-Execute **覆盖了三个框架各自 + 对比**（因为 Plan 强制拆全），而 ReAct 可能漏掉某个框架。**痛点被解**——"漏角度"不再发生。
+
+### 5.4 checkpoint
+
+```
+research-agent/src/main/java/com/example/research/
+├── plan/
+│   └── PlanExecuteService.java   （新增：Plan 拆任务 + 串行 Execute）
+└── ResearchController.java       （改：加 /deep 入口）
+```
+
+```bash
+git add -A && git commit -m "第5章：Plan-Execute串行版，先规划拆子任务解决漏角度"
+```
+
+### 5.5 复盘
+
+**做了**：Plan 阶段用 `.entity(PTREF)` 把主题拆成结构化子任务列表；串行 Execute 复用第 1 章 ReAct 逐个调研；两套入口并存（ReAct 简单 / Plan-Execute 复杂）。
+
+**核心跃迁**：从"LLM 边想边调"升级到"**先全局规划、再逐个执行**"。Plan 阶段强制 LLM"先看全局把角度列全"，根治了 ReAct 的"漏角度"。
+
+**工程教训**：
+- **结构化输出是编排的基石**：`.entity(PTREF)` 让 Plan 的输出能被程序遍历——没有它，规划就只是 LLM 吐的一段自然语言，没法程序化执行。
+- **Execute 复用 ReAct 而非直调工具**：MCP 工具的 `ToolCallback.call` 直调有坑（#2378），让 LLM 自己调工具（第 1 章已验证）最稳。
+- **Plan-Execute 不是万能**：简单问题用它 = overhead（多一次规划调用）。按复杂度分流。
+
+**还差**：
+- **串行太慢**：4 个子任务排队，每个几秒，加起来十几秒——用户干等。→ **第 6 章多 Worker 并发**。
+
+---
+
+> **第 5 章结束。** 第 6 章把串行 Execute 改成多 Worker 并发——用 Reactor 的 `flatMap` 限并发，并处理"单个 worker 失败不连累其他"的错误隔离。
+
+---
+
+## 第 6 章：多 Worker 并发调研——把串行变并行
+
+### 6.0 场景：串行太慢
+
+第 5 章 Plan-Execute 上线，"漏角度"解决了，但新痛点冒出来：**慢**。
+
+Plan 拆出 4 个子任务，`for` 循环**一个个串行跑**——每个子任务的 ReAct 要调几次 LLM+工具，单次 5-10 秒，4 个排队就是 20-40 秒。用户在 deep 接口干等大半分钟，体验差。
+
+翻代码看原因：第 5 章的 Execute 是普通 `for` 循环：
+```java
+for (int i = 0; i < subtasks.size(); i++) {
+    String result = executeOne(subtasks.get(i));   // 阻塞调用，前一个跑完才跑下一个
+    ...
+}
+```
+**4 个子任务互不依赖**（Plan 阶段已经保证它们是独立的），却排队跑——纯属浪费。
+
+**根因**：串行 `for` 循环没有利用"子任务互相独立、可以同时跑"的特性。WebFlux 是响应式栈，天然适合并发——但得用对 Reactor 的并发原语。
+
+**本章解法**：把串行 `for` 换成 Reactor 的 `Flux.fromIterable(...).flatMap(...)`，让多个子任务**并发**执行；同时把第 5 章的"简单拼接"升级成真正的 **Aggregate**（一次 LLM 调用收口生成报告）。
+
+> **为什么独立成一章**：并发不是"把 for 改成 flatMap"一句话的事——它带出三个真实工程问题：① 默认并发太高会打爆（限并发）、② 一个 worker 抛异常会取消整个流（错误隔离）、③ 阻塞调用不能占 Netty 线程（切线程）。这三个坑是 Reactor 多 Worker 编程的核心，值得单独一章讲透。
+
+### 6.1 思路：flatMap 限并发 + 错误隔离 + 阻塞切线程
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 并发原语 | **`flatMap`**（不是 `concatMap`/`merge`） | `flatMap` 内部并发、有序订阅、可限并发数；`concatMap` 是串行（等于没并发）；`merge` 不能限并发 |
+| 并发上限 | **`flatMap(fn, concurrency)`** 第二参数，取 `min(子任务数, 上限)` | 默认 256 会瞬间打出几十个 LLM+搜索请求，烧钱+触发 429；按模型速率限 |
+| 错误隔离 | 每个 worker 包 `.onErrorResume(...)` | `flatMap` 默认"一个 worker 抛异常 → 整个流取消"，必须隔离让单个失败不连累其他 |
+| 阻塞调用 | `Mono.fromCallable(...).subscribeOn(boundedElastic)` | LLM/搜索/JDBC 都是阻塞，不能占 Netty event loop（第 2 章纪律） |
+| 聚合 | 并发完成后**一次 LLM 调用**生成报告 | 第 5 章是简单拼接文本，本章升级成真正的 Aggregate（综合+去重+指出矛盾） |
+
+> **三个并发原语的区别（选哪个）**：
+> - `flatMap(fn, concurrency)`：**并发**，内部 N 个同时跑，**可限并发数**，订阅顺序保留。**多 Worker 调研用它**。
+> - `concatMap(fn)`：**串行**，前一个完成才下一个。等于第 5 章的 for 循环，本章不用。
+> - `Flux.merge(...)` / `Flux.flatMap` 无第二参：**全并发**（256），不限速。**危险**，会打爆。
+>
+> 所以并发调研 = `flatMap(fn, concurrency)`——既能并发，又能限速。
+
+#### 原理：`flatMap` 默认会"一个出错全取消"——为什么必须错误隔离
+
+这是 Reactor 并发最容易踩的坑。看默认行为：
+
+```java
+Flux.fromIterable(subtasks)
+    .flatMap(sub -> executeOneReactive(sub))   // 默认 concurrency=256，无错误隔离
+    .collectList()
+```
+
+如果 `subtasks = [A, B, C, D]`，4 个 worker 同时跑。假设 B 的 LLM 调用抛异常（429 耗尽、超时）：
+- **默认行为**：B 的异常沿流往下传 → `collectList` 收到 error 信号 → **整个流取消**，已经在跑的 A/C/D 也被取消 → 用户拿到一个错误，4 个子任务全白跑。
+- **隔离后**：B 自己 `.onErrorResume(e -> Mono.just("[B 调研失败: " + e.getMessage() + "]"))` → B 的异常被吞成一条占位结果 → A/C/D 不受影响 → Aggregate 时 LLM 看到"B 调研失败"，在报告里标注"B 未能获取"。
+
+**所以每个 worker 必须自己兜住异常**——这是"单个失败不连累整体"的关键。和第 4 章"错误要有归宿"是同一条纪律，只是挪到了 worker 粒度。
+
+### 6.2 动手
+
+#### 6.2.1 把 executeOne 改成响应式 + 加错误隔离
+
+第 5 章的 `executeOne` 是阻塞 `String` 返回。本章改成返回 `Mono<String>`——包 `fromCallable` 切到弹性线程，并加 `onErrorResume` 隔离：
+
+`PlanExecuteService` 加方法（保留原 `executeOne` 给第 5 章同步版用，新增响应式版）：
+```java
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+    /**
+     * Execute 单步（响应式版）：阻塞调用切弹性线程 + 错误隔离。
+     * 第 5 章的 executeOne 是同步 String；本章并发版用 Mono。
+     */
+    private Mono<String> executeOneReactive(String subtask) {
+        return Mono.fromCallable(() -> executeOne(subtask))   // executeOne 内部是阻塞的 LLM+工具调用
+                .subscribeOn(Schedulers.boundedElastic())      // 阻塞跑弹性线程，不占 Netty event loop
+                .onErrorResume(err -> {                        // 错误隔离：单个 worker 失败不连累其他
+                    System.err.println("[Execute] 子任务失败: " + subtask + " -> " + err.getMessage());
+                    return Mono.just("[该子任务调研失败: " + err.getMessage() + "]");
+                });
+    }
+```
+
+> **`Mono.fromCallable + subscribeOn(boundedElastic)`**：第 2 章 `KnowledgeBaseTool` 用过同一条纪律。`executeOne` 内部是 `.call()`（同步阻塞的 LLM 调用），直接在响应式链上跑会**阻塞 Netty event loop**（整个服务卡住）。`boundedElastic` 是专为阻塞任务设计的弹性线程池。
+>
+> **`onErrorResume` 在 worker 内部**：注意是包在**每个 worker**上，不是包在整个 `flatMap` 外面——后者只能拿到"流级"错误，救不回已经被取消的其他 worker。
+
+#### 6.2.2 并发 Execute + 真正的 Aggregate
+
+把第 5 章的串行 `research` 改成并发版（新增 `researchParallel`，原 `research` 保留对照）：
+
+```java
+import reactor.core.publisher.Flux;
+
+    /** Plan-Execute 入口（并发版）：Plan → 并发 Execute → Aggregate。 */
+    public String researchParallel(String topic) {
+        // 1. Plan（同第 5 章）
+        List<String> subtasks = plan(topic);
+        System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
+
+        // 2. Execute（并发）：flatMap 限并发，错误隔离
+        //    flatMap 第二参数 = 并发上限。取 min(子任务数, MAX_CONCURRENCY)：
+        //    子任务少时不超过子任务数；多时被 MAX_CONCURRENCY 卡住（防打爆）。
+        List<String> results = Flux.fromIterable(subtasks)
+                .flatMap(
+                        sub -> executeOneReactive(sub),
+                        Math.min(subtasks.size(), MAX_CONCURRENCY))   // ← 限并发，关键
+                .collectList()
+                .block();   // Controller 是同步入口时 block；流式入口见 6.2.4
+
+        // 3. Aggregate（真正的聚合，不再是简单拼接）
+        return aggregate(topic, subtasks, results);
+    }
+
+    /** 最大并发数：按模型速率限制定。DeepSeek 默认限流下，3-4 并发安全。 */
+    private static final int MAX_CONCURRENCY = 4;
+
+    /** Aggregate 阶段：把各子结果汇总成最终报告（一次 LLM 调用收口）。 */
+    private String aggregate(String topic, List<String> subtasks, List<String> results) {
+        String evidence = buildEvidence(topic, subtasks, results);   // 复用拼接逻辑（见下方）
+        return chatClient.prompt()
+                .system("你是研究综合员。基于多个子调研结果，综合成一份结构清晰的研究报告。" +
+                        "整合不同来源信息，指出一致和矛盾之处。若某子任务标注为'调研失败'，" +
+                        "在报告中说明该部分缺失。每个事实尽量标注来自哪个子任务。资料整体不足要明说，绝不编造。")
+                .user(evidence)
+                .call()
+                .content();
+    }
+```
+
+> **`flatMap(sub -> ..., Math.min(subtasks.size(), MAX_CONCURRENCY))` 是核心**：
+> - 第一参数是"每个元素怎么变成 Mono"（`executeOneReactive`）。
+> - **第二参数是并发上限**——不传默认 256，瞬间打出所有子任务的 LLM 调用，烧钱+触发 429。这是并发编排最容易翻车的点。
+> - 取 `min(子任务数, MAX_CONCURRENCY)`：子任务只有 2 个时不超发；子任务有 10 个时被 4 卡住，分批跑。
+>
+> **`.collectList().block()`**：把并发跑完的 `Flux<String>` 收成 `List<String>`，再 block 等结果。**只在同步入口（Controller 返 String）用**；流式入口不能 block（见 6.2.4）。
+>
+> **Aggregate vs 第 5 章拼接**：第 5 章是 `StringBuilder` 把子结果拼成一段文本返回；本章是一次 LLM 调用，让模型综合、去重、指出矛盾、标注失败部分——**这才是真正的聚合**。代价是多一次 LLM 调用，但报告质量高得多。
+
+#### 6.2.3 Controller 切到并发流式版
+
+把 `/api/research/deep` 从调第 5 章的 `research`（串行、非流式）改成调 6.2.4 的 `researchParallelStream`（并发、流式）。**直接用流式版**（前端要 SSE）——`researchParallel`（6.2.2 的同步 block 版）只作为"理解并发逻辑"的参照保留，Controller 不用它（避免同 path 两个方法撞 Spring 映射）：
+
+```java
+    @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
+    public Flux<String> researchDeep(@RequestParam String topic) {
+        String reject = inputGuard.check(topic);
+        if (reject != null) return Flux.just(reject);
+        return planExecuteService.researchParallelStream(topic)   // ← 并发 + 流式
+                .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));   // 错误归宿（第 4 章）
+    }
+    // 原 /api/research（ReAct 路径，第 1-4 章）保留不动
+```
+
+> **一个 `/deep` 流式入口**：不搞同步+流式两个方法——同 path 同 method 两个 `@GetMapping` 会让 Spring 启动报 `Ambiguous mapping`。前端要 SSE 就用流式版；真要同步结果，前端把 SSE 读完整拼接即可（A.5b 页面就是边收边拼）。
+
+#### 6.2.4 researchParallelStream：并发 Execute + 流式 Aggregate
+
+`researchParallelStream`（6.2.2 旁定义）的完整响应式链——Plan→并发 Execute→流式 Aggregate，全程无 block：
+
+```java
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+    /** Plan-Execute 流式版：Plan→并发Execute→Aggregate 流式输出。全程响应式，无 block。 */
+    public Flux<String> researchParallelStream(String topic) {
+        // 阶段1 Plan（阻塞）→ 阶段2 并发 Execute（响应式）→ 阶段3 Aggregate 流式
+        return Mono.fromCallable(() -> plan(topic))                 // Plan 阻塞，包成 Mono
+                .subscribeOn(Schedulers.boundedElastic())            // 跑弹性线程
+                .flatMapMany(subtasks ->
+                        // 阶段2：并发 Execute（每个 worker 是 Mono，flatMap 限并发）
+                        Flux.fromIterable(subtasks)
+                                .flatMap(this::executeOneReactive,
+                                        Math.min(subtasks.size(), MAX_CONCURRENCY))
+                                .collectList()                       // 收成 List<String>（results）
+                                // 阶段3：Aggregate 流式输出最终报告
+                                .flatMapMany(results -> {
+                                    String evidence = buildEvidence(topic, subtasks, results);
+                                    return chatClient.prompt()
+                                            .system("你是研究综合员。基于多个子调研结果综合成研究报告。" +
+                                                    "若某子任务标注为'调研失败'，在报告中说明该部分缺失。")
+                                            .user(evidence)
+                                            .stream()
+                                            .content();
+                                }));
+    }
+
+    /** 拼接 evidence：把各子任务（带编号）和结果汇总成给 Aggregate 的上下文。 */
+    private String buildEvidence(String topic, List<String> subtasks, List<String> results) {
+        StringBuilder sb = new StringBuilder("研究主题：").append(topic).append("\n\n各子调研结果：\n");
+        for (int i = 0; i < results.size(); i++) {
+            String sub = i < subtasks.size() ? subtasks.get(i) : ("子任务" + (i + 1));
+            sb.append("[子任务").append(i + 1).append("] ").append(sub).append("\n")
+                    .append(results.get(i)).append("\n\n");
+        }
+        return sb.toString();
+    }
+```
+
+> **全程响应式无 block**：阶段1 `Mono.fromCallable(plan)` → `flatMapMany` 衔接阶段2（`Flux.flatMap` 并发）→ `collectList` → `flatMapMany` 衔接阶段3（`.stream()` 流式）。**整条链没有 `.block()`**——响应式从头到尾，不会卡调用线程。和 6.2.2 的 `researchParallel`（同步 `block` 版，给同步 Controller 用）是两条独立路径。
+>
+> **`buildEvidence` 抽出来**：6.2.2 的 `aggregate`（同步版）和 6.2.4 的流式版都要拼 evidence，抽成方法复用——6.2.2 的 `aggregate` 内部那段 StringBuilder 逻辑可以改成调 `buildEvidence`，避免重复。
+>
+> **不要把 Execute 也流式推前端**：每个 worker 的中间结果是碎片化的搜索摘要，推出去用户看不懂。除非做 33 号文档那种"过程可见性"（把每步工具调用结构化推前端），那超出本文范围——本文只让**最终报告**可见，过程在第 7 章用审计日志事后可查。
+
+### 6.3 验证
+
+```bash
+# 流式版
+curl -N "http://localhost:8080/api/research/deep?topic=对比TensorRT-LLM、vLLM、SGLang的推理性能"
+
+# 控制台能看到 4 个子任务的 Execute 日志几乎同时出现（而不是一个个排队）：
+# [Plan] 拆出 4 个子任务: [...]
+# [Execute] 子任务失败: xxx -> 429   （若有 worker 触发 429，被 onErrorResume 吞掉，其他继续）
+# 报告流式输出，含"某子任务调研失败"标注（若有失败）
+```
+
+对比第 5 章串行版耗时：4 个子任务串行 ~30s → 并发 ~10s（受最慢的 worker 制约，不是相加）。**痛点被解**——不再干等。
+
+### 6.4 checkpoint
+
+```
+research-agent/src/main/java/com/example/research/plan/PlanExecuteService.java
+  （改：加 executeOneReactive / researchParallel / aggregate / researchParallelStream）
+research-agent/src/main/java/com/example/research/ResearchController.java
+  （改：/deep 切到并发版 + 流式入口）
+```
+
+```bash
+git add -A && git commit -m "第6章：多Worker并发(flatMap限流+错误隔离)+真正Aggregate+流式"
+```
+
+### 6.5 复盘
+
+**做了**：串行 `for` → `flatMap(fn, concurrency)` 并发（限速+错误隔离+阻塞切线程）；第 5 章简单拼接 → 真正 Aggregate（LLM 收口）；加流式输出。
+
+**核心跃迁**：从"子任务排队"到"子任务并发"。耗时从"相加"变成"取最慢的一个"，复杂主题的响应时间量级下降。
+
+**工程教训**（Reactor 多 Worker 并发的三个必守点）：
+- **限并发**：`flatMap` 第二参数必传。默认 256 会打爆——每个并发 worker 一次 LLM 调用，几十并发瞬间触发上游 429。
+- **错误隔离**：每个 worker 包 `onErrorResume`。`flatMap` 默认"一个出错全取消"，不隔离则一个 worker 的 429 让整个调研失败。
+- **阻塞切线程**：LLM/搜索是阻塞调用，`Mono.fromCallable + subscribeOn(boundedElastic)`——不切会卡死 Netty event loop（第 2 章纪律的并发版）。
+
+**何时该并发、何时该串行**：
+- 子任务**互相独立**（Plan 已保证）→ 并发。
+- 子任务**有依赖**（后一个要前一个的结果）→ 串行（`concatMap` 或 for）。
+- **不要为了"快"无脑并发**——并发带来限流/成本/错误处理的复杂度，独立任务才值。
+
+**还差**：
+- **"它怎么得出这报告的"说不清**：并发 Execute 时哪个 worker 查了什么、用了什么工具、耗时多少、有没有失败——这些过程信息只散落在控制台日志。用户质疑报告时没法回溯。→ **第 7 章 审计日志**。
+
+---
+
+> **第 6 章结束。** 第 7 章给并发编排装上"可追溯"——把 Plan/每个 worker/Aggregate 的执行轨迹结构化落库，按会话能查回完整流程。
+
+---
+
+## 第 7 章：结构化审计日志——整体流程可追溯
+
+### 7.0 场景：报告错了，怎么查
+
+第 6 章并发 Plan-Execute 上线，速度快了、覆盖全了，但**新的痛点**：一次问答涉及"1 次规划 + N 个并发 worker + 1 次聚合"，中间任何一步出问题都会让最终报告跑偏。
+
+用户反馈"这份对比报告里 vLLM 的数据不对"——你怎么查？翻控制台日志？问题是：
+- **并发**：4 个 worker 的日志交错打印，`System.out.println` 没法按"哪次问答、哪个 worker"串起来。
+- **事后**：日志是滚动的，过几小时早被刷掉了，事后根本拼不回"那次问答到底查了什么"。
+- **无线索**：即使翻到日志，也不知道"这一堆日志属于用户的哪一次提问"。
+
+**没有可追溯性，AI 系统就是黑箱**——出了问题只能让用户重跑碰运气。这是对外产品的硬伤：用户质疑时你拿不出"我是怎么得出这个结论的"的证据。
+
+**根因**：控制台日志是给人**实时看**的（开发调试），不是给人**事后查**的。可追溯需要的是**按问答回话串联的、结构化的、持久化的执行轨迹**。
+
+**本章解法**：一张 PG 审计表 + 一个 `AuditLogger`——在 Plan、每个 worker、Aggregate 三个节点把"查了什么、用了什么、结果摘要、耗时、成败"结构化落库，用 `session_id + turn_id` 串联，事后能按会话查回完整流程。
+
+> **审计日志 vs 可观测系统**（边界要分清）：
+> - **审计日志（本文做）**：事后查某次问答怎么走的——合规取证、排错、复盘。一张表、按会话查、看关键步骤。
+> - **可观测系统（本文不做）**：实时监控 + 全链路 trace + 指标聚合——OpenTelemetry / Langfuse，带 span、token 计数、性能告警。
+>
+> 你的痛点是"出问题查不回"，一张审计表就解。实时 trace 是更后面的需求（做成本监控、告警时再加，见末尾"后续演进方向"）。
+
+### 7.1 思路：审计表 + 串联键 + fire-and-forget 采集
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 存储 | PG 一张 `research_audit` 表（和 pgvector 同库不同表） | 持久化、能按 session_id 查、能 JOIN 会话表；不引新依赖 |
+| 串联键 | **`session_id` + `turn_id`** | session_id 定位哪个会话（第 8 章正式引入会话；本章先用请求传入的临时 ID）；turn_id 定位会话里第几轮（一次 Plan-Execute 一个 turn） |
+| 粒度 | 每个关键步骤一条：`PLAN` / `SUBTASK` / `AGGREGATE` | 既能看全流程，又不细到 token 级（那是可观测系统干的） |
+| 采集 | 关键节点显式调 `AuditLogger.log(...)` | 不靠 AOP/拦截器（拿不到"这是哪个子任务"的业务语义）；手写一行，语义清晰 |
+| 写入方式 | **fire-and-forget**（`.subscribe()` 触发不等完成） | 审计不是关键路径——写库失败不该让问答失败 |
+
+> **为什么串联键是 `session_id + turn_id` 而不是 `trace_id`**：`trace_id` 是分布式 trace 的概念（一次请求一个，跨服务），本文单实例用不上。你的需求是"回溯某次问答"——一次问答 = 一个 turn，多个 turn 属于一个 session。两层键正好回答"哪次会话的哪一轮，怎么走的"。
+
+### 7.2 动手
+
+#### 7.2.1 审计日志表
+
+在 PG 加一张表（和第 2 章 pgvector 同库）：
+
+```sql
+-- 研究问答的执行轨迹审计表
+CREATE TABLE research_audit (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  VARCHAR(64)  NOT NULL,    -- 会话 ID（第 8 章正式引入；本章先用请求传入的临时 ID）
+    turn_id     VARCHAR(64)  NOT NULL,    -- 本轮问答 ID（一次 Plan-Execute 一个）
+    step_type   VARCHAR(16)  NOT NULL,    -- PLAN / SUBTASK / AGGREGATE
+    query_text  TEXT,                     -- PLAN 的主题 / SUBTASK 的子任务
+    output      TEXT,                     -- 输出摘要（计划 JSON / worker 结果 / 聚合答案，截断）
+    success     BOOLEAN     NOT NULL,     -- 本步成败（worker 失败时 false）
+    duration_ms BIGINT,                   -- 本步耗时
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_audit_session_turn ON research_audit(session_id, turn_id);
+```
+
+> **`output` 截断存**：worker 的搜索结果可能很长，全存费空间。生产截断（如前 500 字）或单独 blob 表。本文演示全存或截断都行，代码里给截断工具方法。
+>
+> **`success` 字段**：第 6 章的 worker 错误隔离会把失败的 worker 吞成占位结果——审计里要记 `success=false`，这样查轨迹时能立刻看到"哪个 worker 挂了"，而不是混在正常结果里。
+
+#### 7.2.2 AuditLogger：结构化采集
+
+`src/main/java/com/example/research/audit/AuditLogger.java`：
+```java
+package com.example.research.audit;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.UUID;
+
+/**
+ * 审计日志：把每次问答的关键步骤落库，按 session_id + turn_id 串联，事后可查。
+ *
+ * 为什么不用 logback / AOP：
+ * - logback 输出到文件/控制台，不按会话串联，并发 worker 的日志交错，事后拼不回。
+ * - AOP 拿不到"这是哪个子任务、用的什么工具"的业务语义。
+ * 所以在 Plan/worker/Aggregate 关键节点显式调 log()，结构化落库。
+ *
+ * 用 JdbcTemplate 不用 JPA：第 2 章已引入 jdbc（pgvector 需要），审计表一两行 SQL，最直接，不引新依赖。
+ */
+@Component
+public class AuditLogger {
+
+    private final JdbcTemplate jdbc;
+    public AuditLogger(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    /** 记录一步。stepType: PLAN / SUBTASK / AGGREGATE。返回 Mono<Void>，调用方 .subscribe() 触发（fire-and-forget）。 */
+    public Mono<Void> log(String sessionId, String turnId, String stepType,
+                          String queryText, String output, boolean success, long durationMs) {
+        // JDBC 阻塞，包 Mono + boundedElastic，不占 Netty event loop（和第 2 章同纪律）
+        return Mono.fromRunnable(() -> jdbc.update(
+                "INSERT INTO research_audit(session_id, turn_id, step_type, query_text, output, success, duration_ms) " +
+                        "VALUES (?,?,?,?,?,?,?)",
+                sessionId, turnId, stepType, queryText, truncate(output), success, durationMs))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
+    }
+
+    /** 生成一个新的 turn_id（一次 Plan-Execute 一个）。 */
+    public static String newTurnId() { return UUID.randomUUID().toString().replace("-", ""); }
+
+    private static String truncate(String s) {
+        if (s == null) return null;
+        return s.length() > 500 ? s.substring(0, 500) + "...(截断)" : s;
+    }
+}
+```
+
+> **`Mono.fromRunnable + boundedElastic`**：JDBC 阻塞，必须切线程（第 2 章纪律）。返回 `Mono<Void>` 让调用方决定怎么触发——**fire-and-forget 用 `.subscribe()`**：调了就返回，不等写库完成，写库失败也不影响主流程。
+>
+> **为什么返回 Mono 而不是直接 void 内部 subscribe**：让调用方能选择——主流程 fire-and-forget（`.subscribe()`），测试时可以 `.block()` 等写完再断言。返回 Mono 比内部偷偷 subscribe 更可控。
+
+#### 7.2.3 在 Plan/worker/Aggregate 三处埋点
+
+改 `PlanExecuteService`——注入 `AuditLogger`，在 PLAN、每个 worker（埋在 `executeOneReactive` 内部，见 7.2.4）、AGGREGATE 三处埋点。编排层只保留 PLAN 和 AGGREGATE 两处，worker 的成败记录集中到 `executeOneReactive`（成功 `doOnNext`、失败 `onErrorResume`）——比把埋点散在 `flatMap` 里清晰。
+
+```java
+    private final AuditLogger auditLogger;   // 构造函数补注入
+
+    public Flux<String> researchParallelStream(String topic, String sessionId) {
+        String turnId = AuditLogger.newTurnId();
+        long planStart = System.currentTimeMillis();
+
+        return Mono.fromCallable(() -> {
+                    List<String> subtasks = plan(topic);
+                    long planDur = System.currentTimeMillis() - planStart;
+                    // 记 PLAN 步
+                    auditLogger.log(sessionId, turnId, "PLAN", topic,
+                            subtasks.toString(), true, planDur).subscribe();
+                    return subtasks;
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(subtasks ->
+                    // 并发 Execute：每个 worker 的审计埋在 executeOneReactive 内部（见 7.2.4）
+                    Flux.fromIterable(subtasks)
+                        .flatMap(sub -> executeOneReactive(sub, sessionId, turnId),
+                                Math.min(subtasks.size(), MAX_CONCURRENCY))   // 限并发
+                        .collectList()
+                        .flatMapMany(results -> {
+                            // AGGREGATE：流式推前端，用 doFinally 记审计元信息（耗时+是否完成）
+                            long aggStart = System.currentTimeMillis();
+                            String evidence = buildEvidence(topic, subtasks, results);
+                            return chatClient.prompt()
+                                    .system("你是研究综合员...")
+                                    .user(evidence)
+                                    .stream()
+                                    .content()
+                                    // 流结束后记 AGGREGATE（doFinally 无论正常完成还是取消/出错都触发）。
+                                    // 注意：记的是"聚合这一步"的元信息（耗时+是否完成），
+                                    // 不存全文——流式逐字推，要在 doFinally 里拿全文得额外累积，这里从简只记耗时。
+                                    .doFinally(signal -> auditLogger.log(
+                                            sessionId, turnId, "AGGREGATE",
+                                            topic, "[流式输出, " + signal + "]", true,
+                                            System.currentTimeMillis() - aggStart).subscribe());
+                        })
+                );
+    }
+```
+
+> **编排层只埋 PLAN 和 AGGREGATE**：worker 的审计在 `executeOneReactive` 内部（7.2.4）——`flatMap` 里直接 `executeOneReactive(sub, sessionId, turnId)`，审计参数传进去，由 worker 自己记成败。**不在编排里写 `doOnNext`/`doOnError`**——那些会被 `executeOneReactive` 内部的 `onErrorResume` 抢先吞掉，拿不到原始异常（见 7.2.4 说明）。
+>
+> **AGGREGATE 用 `doFinally` 记元信息**：流式聚合是逐字推前端的，审计若要存完整全文，得在流上累积（`reduce` 拼回再记）——但那会破坏流式（要么先攒全量、要么每字符一个 Mono，都很糟）。**务实做法：AGGREGATE 审计只记元信息（耗时 + 完成信号）**，不存全文——`doFinally(signal -> ...)` 无论正常完成、取消、出错都触发。要存全文，改成"Aggregate 非流式 `.call()` 拿完整文本先记审计、再整体返回"（牺牲流式换可追溯全文，二选一）。
+>
+> **`doFinally(SignalType)` 是真实 API**：`Flux.doFinally(Consumer<SignalType> afterTerminate)`——流终止（完成/取消/出错）时触发一次，参数是终止类型。用它记"这步什么时候结束的"正好。
+
+#### 7.2.4 worker 粒度埋点：审计挪进 executeOneReactive
+
+把第 6 章 `executeOneReactive`（只做错误隔离）升级为"带审计埋点 + 错误隔离"，worker 粒度的成败记录集中在一处：
+
+```java
+    /** worker：阻塞切线程 + 审计埋点（成功/失败都记）+ 错误隔离。 */
+    private Mono<String> executeOneReactive(String subtask, String sessionId, String turnId) {
+        long start = System.currentTimeMillis();
+        return Mono.fromCallable(() -> executeOne(subtask))
+                .subscribeOn(Schedulers.boundedElastic())
+                .doOnNext(result -> auditLogger.log(sessionId, turnId, "SUBTASK",
+                        subtask, result, true, System.currentTimeMillis() - start).subscribe())
+                .onErrorResume(err -> {
+                    auditLogger.log(sessionId, turnId, "SUBTASK",
+                            subtask, err.toString(), false, System.currentTimeMillis() - start).subscribe();
+                    return Mono.just("[该子任务调研失败: " + err.getMessage() + "]");
+                });
+    }
+```
+
+> 这版埋点集中在 worker 内部——成功/失败都能记到，语义清晰。`PlanExecuteService.researchParallelStream` 里就不用再写 `doOnNext/doOnError` 了，只保留 PLAN 和 AGGREGATE 两处埋点。**这是推荐的写法**——审计逻辑跟着被审计的代码走，而不是散在编排里。
+
+#### 7.2.5 查询接口：按会话回溯完整轨迹
+
+`src/main/java/com/example/research/audit/AuditController.java`：
+```java
+package com.example.research.audit;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 审计查询接口：按会话/轮次回溯 Plan-Execute 的完整执行轨迹。
+ * 用途：报告出错时排查、用户质疑时取证、复盘 Agent 行为。
+ */
+@RestController
+@RequestMapping("/api/audit")
+public class AuditController {
+
+    private final JdbcTemplate jdbc;
+    public AuditController(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    /** 查某会话（可选某轮）的完整执行轨迹，按时间排序。 */
+    @GetMapping
+    public Mono<List<Map<String, Object>>> trace(@RequestParam String sessionId,
+                                                  @RequestParam(required = false) String turnId) {
+        String sql = "SELECT step_type, query_text, output, success, duration_ms, created_at " +
+                     "FROM research_audit WHERE session_id = ? " +
+                     (turnId != null ? "AND turn_id = ? " : "") +
+                     "ORDER BY created_at";
+        Object[] args = turnId != null ? new Object[]{sessionId, turnId} : new Object[]{sessionId};
+        return Mono.fromCallable(() -> jdbc.queryForList(sql, args))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+}
+```
+
+> **JDBC 查询也要 `boundedElastic`**：和写入同一条纪律——`queryForList` 阻塞，不能占 Netty event loop。
+
+#### 7.2.6 Controller 传入 sessionId
+
+第 8 章正式引入会话前，`/deep` 让请求传一个临时 `sessionId`（或后端生成 UUID）：
+```java
+    @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
+    public Flux<String> researchDeepStream(@RequestParam String topic,
+                                            @RequestParam(defaultValue = "") String sessionId) {
+        String reject = inputGuard.check(topic);
+        if (reject != null) return Flux.just(reject);
+        if (sessionId.isBlank()) sessionId = "anon-" + java.util.UUID.randomUUID();  // 第 8 章前用临时 ID
+        return planExecuteService.researchParallelStream(topic, sessionId)
+                .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
+    }
+```
+
+### 7.3 验证
+
+```bash
+# 1. 跑一次深度研究，带上 sessionId
+curl -N "http://localhost:8080/api/research/deep?topic=对比A和B&sessionId=test-001"
+
+# 2. 查这次问答的完整轨迹
+curl "http://localhost:8080/api/audit?sessionId=test-001"
+# 返回（按时间排序）：
+# [PLAN: 主题=对比A和B, output=[查A,查B,对比], success=true, 1.2s]
+# [SUBTASK: 查A, output=..., success=true, 5.3s]
+# [SUBTASK: 查B, output=..., success=false, 2.1s]   ← 失败的 worker 一眼可见
+# [AGGREGATE: output=完整报告, success=true, 4.0s]
+```
+
+现在"它怎么得出这个报告的"完全可查：规划了几个子任务、每个查了什么、是否成功、耗时多少、怎么聚合的——**黑箱打开，整体流程可追溯**。用户质疑时，按 sessionId 查轨迹即可取证。
+
+### 7.4 checkpoint
+
+```
+research-agent/src/main/java/com/example/research/
+├── audit/
+│   ├── AuditLogger.java       （新增：结构化采集落库）
+│   └── AuditController.java   （新增：按会话查轨迹）
+├── plan/PlanExecuteService.java （改：Plan/worker/Aggregate 三处埋点）
+└── 建表 SQL：research_audit（session_id + turn_id 串联）
+```
+
+```bash
+git add -A && git commit -m "第7章：结构化审计日志，按会话串联全流程可追溯"
+```
+
+### 7.5 复盘
+
+**做了**：审计日志表（`session_id + turn_id` 串联）；`AuditLogger` 结构化采集（PLAN/SUBTASK/AGGREGATE + 成败 + 耗时）；埋点集中在 worker 内部（成功失败都能记）；查询接口按会话回溯。
+
+**核心跃迁**：从"散落滚动的控制台日志"升级到"按会话串联的、持久化的、可查询的执行轨迹"。**AI 系统没有可追溯性 = 黑箱**——审计日志是"事后取证"的最小可用形态。
+
+**工程教训**：
+- **审计按业务语义串联**：用 `session_id + turn_id`，不是 `trace_id`（那是分布式 trace 的概念，本文单实例用不上）。串联键要能回答"这次问答怎么走的"。
+- **fire-and-forget**：审计非关键路径，写库失败不该让问答失败。`.subscribe()` 触发即走。
+- **埋点跟着被审计代码走**：worker 粒度的成败记录放进 `executeOneReactive` 内部（成功 doOnNext、失败 onErrorResume），比散在编排里清晰。
+
+**还差**：
+- **`session_id` 还是临时的**（每次问答传一个匿名 ID）：没有真正的"会话"概念，用户追问"刚才那个再展开"时 Agent 不记得上次。→ **第 8 章 会话持久化**（引入真正的 session + ChatMemory 落库，审计和会话 JOIN 起来）。
+
+---
+
+> **第 7 章结束。** 第 8 章给系统装上"记忆"——会话历史落库，刷新不丢、可多轮追问。
+
+---
+
+## 第 8 章：会话持久化——ChatMemory 落库，刷新不丢历史
+
+### 8.0 场景：刷新就丢、没法多轮
+
+第 7 章审计能追溯"单次问答怎么走的"了，但用户提出新需求：**追问**。
+
+> 用户："刚才你对比 vLLM 和 TensorRT-LLM，能展开说说 vLLM 的 PagedAttention 吗？"
+
+Agent 的回答让人崩溃——它**完全不记得上一轮聊了什么**，要么重新研究一遍（浪费、慢），要么答非所问。原因是：**LLM 是无状态的**（第 0.5 阶段讲过——每次调用都是独立请求），前 7 章的每次问答**没有把历史塞回去**。
+
+更糟的是：用户刷新页面，上次的对话全没了——因为连"历史"都没存。
+
+**根因**：前 7 章的 ChatClient **没有挂记忆**——每次 `.call()` 都是裸调用，不带任何上下文。Spring AI 的 `MessageChatMemoryAdvisor`（demo06 已用过）能解决"多轮带历史"，但默认是**内存版**（`InMemoryChatMemoryRepository`），重启就丢。要"刷新不丢 + 可回看"，得把记忆**落库**。
+
+**本章解法**：用 Spring AI 官方的 `JdbcChatMemoryRepository`（PG 持久化）替换默认内存版——会话消息自动存 PG，重启不丢、可多轮追问、能查历史。
+
+> **为什么不自己实现 ChatMemory 落库**：Spring AI 2.0 已经有官方的 `JdbcChatMemoryRepository`（支持 PostgreSQL dialect），starter 一加、bean 一配就行。**自己写一套 ChatMemory → PG 的实现是重复造轮子**，还容易踩 API 坑。本文用官方实现，聚焦"怎么接、怎么和已有 Agent 编排配合"。
+
+### 8.1 思路：JdbcChatMemoryRepository + MessageChatMemoryAdvisor
+
+Spring AI 2.0 的 ChatMemory 体系（先理清概念，再动手）：
+
+```
+ChatMemory（逻辑层：管窗口/裁剪）          ChatMemoryRepository（持久化层：存取）
+┌──────────────────────────┐              ┌──────────────────────────┐
+│ MessageWindowChatMemory  │ ── 持有 ──► │ JdbcChatMemoryRepository │ ← 本章用这个（PG）
+│  .maxMessages(20)        │              │   PostgresDialect         │
+│  （默认实现，自动裁剪超窗） │              │ InMemoryChatMemoryRepo   │ ← 默认（重启丢）
+└──────────────────────────┘              └──────────────────────────┘
+            ▲
+            │ ChatClient 通过 MessageChatMemoryAdvisor 使用它
+            │ .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
+```
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 持久化 | `JdbcChatMemoryRepository` + `PostgresChatMemoryRepositoryDialect` | 官方实现，PG 原生支持；不自己写 |
+| 窗口 | `MessageWindowChatMemory` 默认（maxMessages=20） | 自动裁剪超窗历史（防 context 爆炸），官方默认行为够用 |
+| 接入 | 改第 3 章的 `ChatClientConfig`，给 ChatClient 挂 `MessageChatMemoryAdvisor` | 第 3 章已自定义 ChatClient 注册 MCP 工具——记忆 advisor 必须加在这里，配套改动 |
+| 会话标识 | `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))` | demo06 已验证的写法；sessionId 决定"属于哪个会话" |
+
+> **`ChatMemory.CONVERSATION_ID` 是关键**：它告诉 advisor"这次调用属于哪个会话"——advisor 自动从库里取该会话的历史塞进 prompt，调用完把新消息写回库。**前 7 章没传这个参数，所以每次都是"无上下文裸调用"**。本章传了，多轮就通了。
+
+### 8.2 动手
+
+#### 8.2.1 加依赖 + 建 schema
+
+pom 加（starter 自动配 `JdbcChatMemoryRepository`，但 dialect 要自己选，见 8.2.2）：
+```xml
+        <!-- ChatMemory 落 PG：官方 JDBC repository starter -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-chat-memory-repository-jdbc</artifactId>
+        </dependency>
+```
+
+application.yaml 加 schema 初始化（官方提供 PG 建表脚本，`spring.sql.init` 启动时执行）：
+```yaml
+spring:
+  sql:
+    init:
+      mode: always          # 启动时建表（生产用 Flyway 管理，这里演示用 init）
+      schema-locations: classpath:org/springframework/ai/chat/memory/repository/jdbc/schema-postgresql.sql
+```
+
+> **官方 schema 脚本路径**：`classpath:org/springframework/ai/chat/memory/repository/jdbc/schema-postgresql.sql`——starter jar 里自带的 PG 建表 SQL（建一张 `SPRING_AI_CHAT_MEMORY` 表，字段：`conversation_id` / `content` / `type`（USER/ASSISTANT等）/ `timestamp`）。**不用自己写建表 SQL**，官方提供。
+>
+> ⚠️ **`spring.sql.init.mode: always` 每次启动都执行**——演示用没事（脚本带 `CREATE TABLE`，PG 默认重复建会报错，可加 `IF NOT EXISTS` 或换 `embedded`）。生产用 Flyway/Liquibase 管理迁移，不用 `sql.init`。
+
+#### 8.2.2 配 ChatMemoryRepository bean（选 PG dialect）
+
+starter 会自动配 `JdbcChatMemoryRepository`，但 dialect 要确认选 PG。显式定义一个 bean 最稳（和第 3 章 ChatClientConfig 显式 wiring 同一思路）：
+
+`src/main/java/com/example/research/config/ChatMemoryConfig.java`：
+```java
+package com.example.research.config;
+
+import org.springframework.ai.chat.memory.repository.jdbc.JdbcChatMemoryRepository;
+import org.springframework.ai.chat.memory.repository.jdbc.PostgresChatMemoryRepositoryDialect;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
+
+@Configuration
+public class ChatMemoryConfig {
+
+    /**
+     * ChatMemoryRepository：PG 持久化实现。
+     * starter 自动配 JdbcChatMemoryRepository，但 dialect 要显式选 PostgresChatMemoryRepositoryDialect。
+     * 这样定义后，ChatMemoryAutoConfiguration 会用它造 MessageWindowChatMemory（默认 maxMessages=20）。
+     */
+    @Bean
+    public JdbcChatMemoryRepository chatMemoryRepository(JdbcTemplate jdbcTemplate) {
+        return JdbcChatMemoryRepository.builder()
+                .jdbcTemplate(jdbcTemplate)
+                .dialect(new PostgresChatMemoryRepositoryDialect())
+                .build();
+    }
+}
+```
+
+> **`PostgresChatMemoryRepositoryDialect`**：提供 PG 的 CRUD SQL（SELECT/INSERT/DELETE 消息）。其他库有对应 dialect（`MysqlChatMemoryRepositoryDialect` 等）。
+>
+> **ChatMemory bean 不用手动建**：提供 `ChatMemoryRepository` 后，`ChatMemoryAutoConfiguration` 自动用 `MessageWindowChatMemory.builder().chatMemoryRepository(repo).build()`（默认 maxMessages=20）造 `ChatMemory` bean。要改窗口大小，再手动定义 `MessageWindowChatMemory` bean 覆盖默认。
+
+#### 8.2.3 给 ChatClient 挂记忆 advisor（改第 3 章的 ChatClientConfig）
+
+**这是配套改动**——第 3 章 `ChatClientConfig` 自定义了 ChatClient（注册 MCP 工具），记忆 advisor 必须加在这里，不能新建 ChatClient（否则 MCP 工具就没了）：
+
+```java
+// config/ChatClientConfig.java（第 3 章已有，第 8 章加 MessageChatMemoryAdvisor）
+import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.memory.ChatMemory;
+
+    @Bean
+    public ChatClient chatClient(ChatClient.Builder builder,
+                                  ToolCallbackProvider[] mcpToolProviders,
+                                  ChatMemory chatMemory) {   // ← 第 8 章注入 ChatMemory bean
+        return builder
+                .defaultTools(mcpToolProviders)                            // 第 3 章：MCP 工具
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())  // ← 第 8 章新增：记忆
+                .build();
+    }
+```
+
+> **advisor 加在 `defaultAdvisors`**：这样所有走这个 ChatClient 的调用（ReAct、Plan-Execute 的每个子任务）都自动带记忆。**注意 maxMessages=20 的窗口**：每个会话最多带 20 条历史，超出自动裁剪旧的——防止 context 爆炸。这是 `MessageWindowChatMemory` 的默认行为。
+
+#### 8.2.4 调用时传 sessionId（CONVERSATION_ID）
+
+光挂 advisor 不够——还得告诉它"这次属于哪个会话"。改各处 ChatClient 调用，加 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))`：
+
+以 `PlanExecuteService.executeOne` 为例（ReAct 的 `ResearchService` 同理）：
+```java
+import org.springframework.ai.chat.memory.ChatMemory;
+
+    private String executeOne(String subtask, String sessionId) {
+        return chatClient.prompt()
+                .system("你是调研员...")
+                .user("子任务：" + subtask)
+                .tools(knowledgeBaseTool)
+                .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))   // ← 第 8 章：归属会话
+                .options(ToolCallingChatOptions.builder().maxToolCallIterations(4).build())
+                .call()
+                .content();
+    }
+    // plan() / aggregate() 也同样加 .advisors(...)，让规划、聚合都带历史上下文
+```
+
+> **配套改动（连锁修改）**：`executeOne` 加了 `sessionId` 参数后，调用它的 `executeOneReactive`（第 6/7 章）内部 `executeOne(subtask)` 要同步改成 `executeOne(subtask, sessionId)`，并且 `executeOneReactive` 自己也要把 `sessionId` 透传下去（签名加 `sessionId`）。同理 `researchParallelStream` 拿到 `sessionId` 后一路透传到每个 worker。**这是"改接口要同步改调用方"的标配**——第 8 章给所有 LLM 调用加 sessionId，整条调用链都要跟着传。
+>
+> ⚠️ **多轮记忆与 Plan-Execute 的张力**：Plan-Execute 每次都重新 Plan（拆子任务），但带了历史后，LLM 拆任务时能参考上一轮的结论——比如用户追问"展开 vLLM 的 PagedAttention"，Plan 会拆成"查 PagedAttention 原理"等更聚焦的子任务（而不是泛泛重查）。**记忆让追问更精准**。但要注意：子任务里带的历史会让单次调用 context 变大，token 成本上升——`maxMessages=20` 的窗口就是来控制这个的。
+
+### 8.3 验证
+
+```bash
+# 第一轮：研究 vLLM
+curl -N "http://localhost:8080/api/research/deep?topic=vLLM的推理架构&sessionId=sess-001"
+
+# 第二轮：追问（同 sessionId）——Agent 记得上一轮
+curl -N "http://localhost:8080/api/research/deep?topic=展开说说它的PagedAttention&sessionId=sess-001"
+# 期望：Agent 基于上一轮的 vLLM 结论展开 PagedAttention，而不是重新研究 vLLM 是什么
+
+# 重启应用后再问（同 sessionId）——历史还在（落库了）
+curl -N "http://localhost:8080/api/research/deep?topic=它和TensorRT-LLM比呢&sessionId=sess-001"
+# 期望：重启不丢，Agent 仍记得前两轮
+
+# 直接查库验证历史已持久化
+psql -d research -c "SELECT conversation_id, type, substring(content,1,40) FROM SPRING_AI_CHAT_MEMORY WHERE conversation_id='sess-001';"
+```
+
+**痛点被解**：追问时 Agent 记得上下文；重启后历史不丢；多轮对话成立。
+
+### 8.4 checkpoint
+
+```
+research-agent/
+├── pom.xml                      （加 spring-ai-starter-model-chat-memory-repository-jdbc）
+├── application.yaml             （加 spring.sql.init 建表）
+└── src/main/java/com/example/research/
+    ├── config/
+    │   ├── ChatMemoryConfig.java  （新增：JdbcChatMemoryRepository + PG dialect）
+    │   └── ChatClientConfig.java   （改：加 MessageChatMemoryAdvisor）
+    ├── plan/PlanExecuteService.java （改：各处加 CONVERSATION_ID 参数）
+    └── ResearchService.java        （改：同上）
+```
+
+```bash
+git add -A && git commit -m "第8章：ChatMemory落PG(JdbcChatMemoryRepository)，多轮+重启不丢"
+```
+
+### 8.5 复盘
+
+**做了**：`JdbcChatMemoryRepository` + PG dialect（会话消息落库）；`MessageChatMemoryAdvisor` 挂到 ChatClient；各处调用传 `ChatMemory.CONVERSATION_ID`。
+
+**核心跃迁**：从"无状态单次问答"升级到"有记忆的多轮对话"。LLM 本身无状态，靠 ChatMemory 把历史塞回 prompt 实现多轮；落 PG 让历史持久化。
+
+**工程教训**：
+- **用官方实现别造轮子**：`JdbcChatMemoryRepository` 官方已支持 PG，自己写一套是浪费且易错。
+- **CONVERSATION_ID 是多轮的钥匙**：光挂 advisor 不够，每次调用要传 sessionId 告诉它"属于哪个会话"。
+- **记忆有成本**：带历史让单次 context 变大，token 上升。`maxMessages` 窗口裁剪是平衡——太小丢上下文，太大烧钱。20 是默认，按实际调。
+- **advisor 加在 ChatClient 构建处**：第 3 章已自定义 ChatClient，记忆 advisor 必须加在那里（配套改动），不能新建 ChatClient。
+
+**还差**：
+- **没法当产品用**：会话能记了，但用户**看不到自己的会话列表、没法新建/切换/删除会话、历史只能在库里查**。→ **第 9 章 会话管理 CRUD + 前端对话页**。
+
+---
+
+> **第 8 章结束。** 第 9 章把"能记的 Agent"包成产品——会话 CRUD（新建/列表/历史/删除）+ 前端对话页，从单次研究工具变成可用的问答产品。
+
+---
+
+## 第 9 章：会话管理 CRUD + 前端对话页——从单次研究到产品
+
+### 9.0 场景：会话能记了，但用户用不起来
+
+第 8 章 Agent 有记忆了，但你把它给朋友试用，反馈很直接：
+
+> "我研究完一个主题，想再开一个新的、不相关的主题，怎么办？每次都要手动编一个 sessionId？而且我之前研究过的东西，去哪看？"
+
+对——前 8 章用户**只能用 sessionId 操作**，没有"我的会话列表、新建会话、切换、删除、回看历史"这些**产品级入口**。会话存在库里的消息表（`SPRING_AI_CHAT_MEMORY`）里，但那张表只有 `conversation_id + 消息`，**没有会话标题、创建时间、列表语义**——没法直接拿来当"会话列表"展示。
+
+**根因**：缺一层"会话元信息"——记录每个会话的标题、时间、归属，外加一套 CRUD 接口和一个前端页面。前 8 章把"Agent 能力"做透了，第 9 章是把它**包成产品**。
+
+**本章解法**：
+1. 一张 `research_session` 表（会话元信息：id / title / 创建时间）。
+2. 会话 CRUD 接口：新建 / 列表 / 查某个会话的历史消息 / 改标题 / 删除。
+3. 前端对话页：左侧会话列表 + 右侧对话区，像 ChatGPT 那样的形态。
+
+> **为什么消息表（`SPRING_AI_CHAT_MEMORY`）不够**：那张表是 ChatMemory 的内部存储，按 `conversation_id` 存消息，**没有"会话作为实体"的概念**——没有标题、没有创建时间排序、没有"列出所有会话"的便捷查询。所以另起一张 `research_session` 表管"会话实体"，用 `id` 关联消息表的 `conversation_id`。**两张表分工**：session 表管元信息（列表/标题/时间），消息表管内容（ChatMemory 自动维护）。
+
+### 9.1 思路：会话元信息表 + CRUD + 前端
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 会话元信息 | 新表 `research_session`（id / title / created_at） | 消息表没有列表/标题语义，单独管"会话实体" |
+| 与消息表关联 | `research_session.id = SPRING_AI_CHAT_MEMORY.conversation_id` | 复用 ChatMemory 的存储，不重复存消息 |
+| CRUD 接口 | REST：`POST/GET/PATCH/DELETE /api/sessions` | 标准 REST，前端好对接 |
+| 查历史 | 按 sessionId 查消息表（按时间排序） | 直接读 ChatMemory 的表 |
+| 标题 | 新建时留空，**第一轮问答后用首句自动生成** | 用户不想手动起标题；自动从问题提取 |
+| 前端 | 单页 HTML（左侧列表 + 右侧对话 + SSE 流式） | 复用附录 A.5 的极简风，加会话列表栏 |
+
+### 9.2 动手
+
+#### 9.2.1 会话元信息表
+
+```sql
+CREATE TABLE research_session (
+    id          VARCHAR(64) PRIMARY KEY,          -- 会话 ID（即 ChatMemory 的 conversation_id）
+    title       VARCHAR(200),                     -- 会话标题（第一轮问答后自动生成）
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_session_created ON research_session(created_at DESC);
+```
+
+> **`id` 就是 `conversation_id`**：新建会话生成一个 UUID 当 id，这个 id 同时是传给 `ChatMemory.CONVERSATION_ID` 的值——会话表和消息表通过它关联。**一个 id，两表共用**。
+
+#### 9.2.2 会话 CRUD Service + Controller
+
+`src/main/java/com/example/research/session/SessionService.java`：
+```java
+package com.example.research.session;
+
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+/**
+ * 会话管理：CRUD 会话元信息 + 查历史消息。
+ * 会话元信息存 research_session 表；消息内容复用 ChatMemory（SPRING_AI_CHAT_MEMORY 表）。
+ */
+@Service
+public class SessionService {
+
+    private final JdbcTemplate jdbc;
+    private final ChatMemory chatMemory;   // 用它的 get() 查历史消息（不直接读消息表）
+
+    public SessionService(JdbcTemplate jdbc, ChatMemory chatMemory) {
+        this.jdbc = jdbc;
+        this.chatMemory = chatMemory;
+    }
+
+    /** 新建会话：生成 id，标题先留空（第一轮问答后补）。返回新会话 id。 */
+    public Mono<String> create() {
+        String id = UUID.randomUUID().toString().replace("-", "");
+        return Mono.fromRunnable(() -> jdbc.update(
+                "INSERT INTO research_session(id) VALUES (?)", id))
+                .subscribeOn(Schedulers.boundedElastic())
+                .thenReturn(id);
+    }
+
+    /** 列出所有会话（按创建时间倒序）。 */
+    public Mono<List<Map<String, Object>>> list() {
+        return Mono.fromCallable(() -> jdbc.queryForList(
+                "SELECT id, title, created_at FROM research_session ORDER BY created_at DESC"))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** 查某会话的历史消息（用 ChatMemory.get，按顺序返回）。 */
+    public Mono<List<Message>> history(String sessionId) {
+        return Mono.fromCallable(() -> chatMemory.get(sessionId))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** 改标题（第一轮问答后自动调，或用户手动改名）。 */
+    public Mono<Void> rename(String sessionId, String title) {
+        return Mono.fromRunnable(() -> jdbc.update(
+                "UPDATE research_session SET title = ? WHERE id = ?", title, sessionId))
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
+    }
+
+    /** 删除会话：删元信息 + 删消息（两边都清）。 */
+    public Mono<Void> delete(String sessionId) {
+        return Mono.fromRunnable(() -> {
+                    jdbc.update("DELETE FROM SPRING_AI_CHAT_MEMORY WHERE conversation_id = ?", sessionId);
+                    jdbc.update("DELETE FROM research_session WHERE id = ?", sessionId);
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
+    }
+}
+```
+
+> **历史查询用 `chatMemory.get(sessionId)`**：不直接 SQL 读消息表——ChatMemory 的 `get()` 会按窗口裁剪（maxMessages=20）返回最近的消息。**想看全部历史**（不裁剪）则直接 SQL 读 `SPRING_AI_CHAT_MEMORY`。本文演示用 `chatMemory.get()`，和 Agent 看到的上下文一致。
+>
+> **`ChatMemory.get(String)` 是真实 API**：Spring AI 2.0 的 `ChatMemory` 接口有 `get(String conversationId)` 返回 `List<Message>`。
+
+`src/main/java/com/example/research/session/SessionController.java`：
+```java
+package com.example.research.session;
+
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/sessions")
+public class SessionController {
+
+    private final SessionService sessionService;
+    public SessionController(SessionService sessionService) { this.sessionService = sessionService; }
+
+    /** 新建会话。 */
+    @PostMapping
+    public Mono<Map<String, String>> create() {
+        return sessionService.create().map(id -> Map.of("sessionId", id));
+    }
+
+    /** 列出所有会话。 */
+    @GetMapping
+    public Mono<List<Map<String, Object>>> list() {
+        return sessionService.list();
+    }
+
+    /** 查某会话历史消息。 */
+    @GetMapping("/{sessionId}/history")
+    public Mono<?> history(@PathVariable String sessionId) {
+        return sessionService.history(sessionId);
+    }
+
+    /** 改标题。 */
+    @PatchMapping("/{sessionId}")
+    public Mono<Void> rename(@PathVariable String sessionId, @RequestBody Map<String, String> body) {
+        return sessionService.rename(sessionId, body.getOrDefault("title", ""));
+    }
+
+    /** 删除会话。 */
+    @DeleteMapping("/{sessionId}")
+    public Mono<Void> delete(@PathVariable String sessionId) {
+        return sessionService.delete(sessionId);
+    }
+}
+```
+
+#### 9.2.3 第一轮问答后自动生成标题
+
+新会话标题先空，用户发第一句后，用问题前 20 字当标题（简单版；生产可用 LLM 生成更精炼的标题）：
+
+`ResearchController` 改 `/deep`——若 sessionId 对应的会话没标题，问答开始前补一个：
+```java
+    private final SessionService sessionService;   // 构造函数补注入
+
+    @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
+    public Flux<String> researchDeepStream(@RequestParam String topic,
+                                            @RequestParam String sessionId) {
+        String reject = inputGuard.check(topic);
+        if (reject != null) return Flux.just(reject);
+        // 第一轮问答：用问题前 20 字当标题（若该会话还没标题）
+        String title = topic.length() > 20 ? topic.substring(0, 20) + "…" : topic;
+        return sessionService.rename(sessionId, title)             // 先补标题（幂等：有则覆盖）
+                .thenMany(planExecuteService.researchParallelStream(topic, sessionId))
+                .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
+    }
+```
+
+> **标题用问题前 20 字**：最简方案，用户不用手动起标题。生产可让一个轻量 LLM 生成精炼标题（"研究 vLLM 架构"），但那是额外调用成本，本文用截取够演示。
+
+#### 9.2.4 前端对话页（会话列表 + 对话区 + SSE）
+
+把附录 A.5 的单页 HTML 升级成"左侧会话列表 + 右侧对话"的 ChatGPT 式布局。完整代码见**附录 A.5（第 9 章版）**——下面是核心交互逻辑（不是全部样式）：
+
+```javascript
+// 核心交互（伪代码，完整 HTML 见附录 A.5）
+
+// 进入页面：加载会话列表
+async function loadSessions() {
+    const sessions = await fetch('/api/sessions').then(r => r.json());
+    renderSidebar(sessions);   // 左侧列表，点击切换 currentSessionId
+}
+
+// 点"新建会话"按钮
+async function newSession() {
+    const { sessionId } = await fetch('/api/sessions', { method: 'POST' }).then(r => r.json());
+    currentSessionId = sessionId;
+    clearChat();               // 右侧对话区清空
+    await loadSessions();      // 刷新列表
+}
+
+// 切换到某会话：加载历史
+async function switchSession(sessionId) {
+    currentSessionId = sessionId;
+    const history = await fetch(`/api/sessions/${sessionId}/history`).then(r => r.json());
+    renderHistory(history);    // 把历史消息渲染到对话区
+}
+
+// 发送消息（带 sessionId，SSE 流式）
+async function send() {
+    const topic = input.value;
+    appendUser(topic);
+    const resp = await fetch(`/api/research/deep?topic=${encodeURIComponent(topic)}&sessionId=${currentSessionId}`,
+        { headers: { Accept: 'text/event-stream' } });
+    // 读 SSE 流，逐字追加到 assistant 气泡（同附录 A.5 的流式读取逻辑）
+    ...
+    await loadSessions();      // 刷新标题
+}
+
+// 删除会话
+async function deleteSession(sessionId) {
+    await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+    await loadSessions();
+}
+
+loadSessions();  // 初始化
+```
+
+> **前端三块**：① 左侧会话列表（CRUD）、② 右侧对话区（流式 SSE，同第 6 章）、③ 切换会话时加载历史。**所有交互都对接本章的 CRUD 接口 + 第 6 章的 `/deep` SSE**。
+>
+> **会话隔离**：每个会话有自己的 `sessionId`，发消息时带上——ChatMemory（第 8 章）据此取该会话历史，互不串。**前端"切换会话"就是换 currentSessionId**，后端无需额外状态。
+
+### 9.3 验证
+
+```bash
+# 1. 新建会话
+curl -X POST http://localhost:8080/api/sessions
+# → {"sessionId":"a1b2c3..."}
+
+# 2. 在该会话里研究
+curl -N "http://localhost:8080/api/research/deep?topic=vLLM&sessionId=a1b2c3..."
+
+# 3. 列出会话（标题已自动生成）
+curl http://localhost:8080/api/sessions
+# → [{"id":"a1b2c3...","title":"vLLM","created_at":"..."}]
+
+# 4. 查该会话历史
+curl http://localhost:8080/api/sessions/a1b2c3.../history
+# → [{role:USER,...},{role:ASSISTANT,...}]
+
+# 5. 浏览器打开 http://localhost:8080/index.html
+#    左侧看到会话列表，点"新建"开新会话，右侧流式对话，切换会话加载历史
+```
+
+**痛点被解**：用户能新建/切换/删除会话、看会话列表、回看任意会话历史——从"单次研究工具"变成"可用的问答产品"。
+
+### 9.4 checkpoint
+
+```
+research-agent/src/main/java/com/example/research/
+├── session/
+│   ├── SessionService.java     （新增：会话 CRUD + 查历史）
+│   └── SessionController.java  （新增：REST 接口）
+├── ResearchController.java     （改：/deep 自动补标题）
+├── resources/static/index.html （升级：会话列表 + 对话区，附录 A.5 第9章版）
+└── 建表 SQL：research_session
+```
+
+```bash
+git add -A && git commit -m "第9章：会话CRUD+前端对话页，产品化收口"
+```
+
+### 9.5 复盘
+
+**做了**：会话元信息表（`research_session`）；CRUD 接口（新建/列表/历史/改名/删除）；第一轮自动生成标题；前端对话页（会话列表 + 流式对话 + 历史回看）。
+
+**核心跃迁**：从"研究工具"升级到"问答产品"。用户能管理自己的会话、回看历史、多会话切换——这是产品级的最低门槛。
+
+**工程教训**：
+- **会话元信息和消息内容分表**：消息表（ChatMemory 内部）管内容，`research_session` 管元信息（列表/标题），各司其职。一个 id 两表共用。
+- **标题自动生成**：用户不想手动起标题。最简用问题截取，生产用 LLM 精炼。
+- **历史查询用 `chatMemory.get`**：和 Agent 看到的上下文一致（带窗口裁剪）；想看全量再直接 SQL。
+- **前端会话隔离靠 sessionId**：后端无状态，前端切换会话就是换 currentSessionId。
+
+---
+
+> **第 9 章结束。本文完。** 从固定 workflow（第0章）一路演进：自主 Agent（1）→ 知识库（2）→ MCP（3）→ 生产化（4）→ Plan-Execute（5）→ 多 Worker 并发（6）→ 审计可追溯（7）→ 会话记忆（8）→ 产品化（9），每步痛点驱动。最后得到一个**会规划、多 Worker 并发调研、流程可追溯、有记忆、可管理的产品级研究问答系统**。
 
 ---
 
 ## 附录：双项目结构与踩坑手册
 
-### A.1 双项目结构（第 4 章结束时）
+### A.1 双项目结构（第 9 章结束时，最终态）
 
 ```
-research-agent/                         （主项目：研究 Agent）
-├── pom.xml                             （webflux/openai/actuator/resilience4j/pgvector/jdbc/mcp-client）
+research-agent/                         （主项目：会话化研究问答系统）
+├── pom.xml                             （webflux/openai/actuator/resilience4j/pgvector/jdbc/mcp-client/chat-memory-jdbc）
 ├── src/main/resources/
-│   └── application.yaml                （DeepSeek + PG + 向量库 + MCP client + 限流）
+│   ├── application.yaml                （DeepSeek + PG + 向量库 + MCP client + 限流 + sql.init 建表）
+│   └── static/index.html               （第9章前端：会话列表 + 对话区，附录 A.5）
 └── src/main/java/com/example/research/
     ├── Application.java
-    ├── ResearchService.java            （自主 Agent：.tools() + maxIterations）
-    ├── ResearchController.java         （接口 + 限流 + 输入审核）
-    ├── config/HttpClientConfig.java    （RestClient 超时 + 重试拦截器，第4章）
+    ├── ResearchService.java            （ReAct Agent：简单问题路径）
+    ├── ResearchController.java         （接口 + 限流 + 输入审核 + /deep + 自动标题）
+    ├── config/
+    │   ├── HttpClientConfig.java       （RestClient 超时 + 重试拦截器，第4章）
+    │   ├── ChatClientConfig.java       （MCP 工具 + MessageChatMemoryAdvisor，第3/8章）
+    │   └── ChatMemoryConfig.java       （JdbcChatMemoryRepository + PG dialect，第8章）
+    ├── plan/
+    │   └── PlanExecuteService.java     （Plan + 多Worker并发Execute + Aggregate + 审计埋点，第5/6/7章）
+    ├── audit/
+    │   ├── AuditLogger.java            （结构化采集落库，第7章）
+    │   └── AuditController.java        （按会话查执行轨迹，第7章）
+    ├── session/
+    │   ├── SessionService.java         （会话 CRUD + 查历史，第9章）
+    │   └── SessionController.java      （会话 REST 接口，第9章）
     ├── tool/
     │   └── KnowledgeBaseTool.java      （本地工具：知识库检索；网页搜索来自 MCP）
     ├── kb/
@@ -1703,9 +3009,11 @@ web-search-mcp/                         （独立项目：网页搜索 MCP serve
 └── src/main/java/com/example/mcp/
     ├── Application.java
     └── WebSearchMcpTools.java          （@McpTool search，内部 DuckDuckGo）
+
+PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· research_session（会话）· pgvector 向量表
 ```
 
-### A.2 完整 application.yaml（research-agent，第 4 章结束时）
+### A.2 完整 application.yaml（research-agent，第 9 章结束时）
 
 ```yaml
 spring:
@@ -1735,6 +3043,10 @@ spring:
     url: jdbc:postgresql://localhost:5432/research
     username: postgres
     password: postgres
+  sql:                                       # 第8章：ChatMemory 建表（官方 schema 脚本）
+    init:
+      mode: always
+      schema-locations: classpath:org/springframework/ai/chat/memory/repository/jdbc/schema-postgresql.sql
 server:
   port: 8080
 resilience4j:
@@ -1745,6 +3057,8 @@ resilience4j:
         limit-refresh-period: 1s
         timeout-duration: 0
 ```
+
+> **额外建表**（手动执行，不在 `sql.init` 里）：`research_audit`（第7章审计）、`research_session`（第9章会话元信息）——这两张业务表的 SQL 在各自章节给出，需手动在 PG 执行（生产用 Flyway 管理）。
 
 ### A.3 踩坑手册
 
@@ -1774,6 +3088,30 @@ resilience4j:
 - **以为 `@Retry` 能保护 Agent 循环** → 错。Agent 的 LLM 调用是框架内部发起的，`@Retry` 够不着。Agent 场景的重试靠底层 RestClient 重试拦截器（`ClientHttpRequestInterceptor`，见 4.2）——Spring AI 的 OpenAI client 走 RestClient，重试拦截器对它生效。`@Retry` 只管你显式调的 LLM。
 - **429 重试把服务器打更挂** → 没退避立即重试，加剧过载。必须指数退避或按 `Retry-After` 头等。
 
+**第 5 章**：
+- **Plan 拆出的子任务不是合法 JSON** → LLM 偶尔在 JSON 前后加解释文字，`.entity(PTREF)` 反序列化失败。生产要在 prompt 强约束"只输出 JSON"+ try-catch 退化为单次 ReAct 兜底（见 5.2.1 容错说明）。
+- **Execute 直调 MCP 工具报 `UnsupportedOperationException`** → [issue #2378](https://github.com/spring-projects/spring-ai/issues/2378)，`ToolCallback.call` 带 ToolContext 时 MCP 工具抛异常。本文 Execute 复用 ReAct（让 LLM 自己调工具）避开此坑，别程序化直调。
+
+**第 6 章**：
+- ⚠️ **`flatMap` 没传第二参数（并发上限）** → 默认 256，4 个子任务瞬间打出 256 个请求并发上限被打爆、触发 429。**必传 `flatMap(fn, concurrency)`**，取 `min(子任务数, MAX)`。
+- **一个 worker 抛异常，整个调研失败** → `flatMap` 默认"一个出错取消整个流"。必须每个 worker 包 `onErrorResume` 做错误隔离（见 6.2.1）。
+- **并发后 Netty event loop 卡死** → LLM/搜索是阻塞调用，没 `subscribeOn(boundedElastic)` 切线程会占满 event loop。和第 2 章同一条纪律。
+
+**第 7 章**：
+- **审计的 `doOnError` 拿不到错误** → worker 内部的 `onErrorResume` 已把异常吞成占位，外部 `doOnError` 拿不到原始异常。把审计调用挪进 `executeOneReactive` 的 `onErrorResume` 里（见 7.2.4 推荐写法）。
+- **流式 Aggregate 的审计记不全** → `.stream()` 是逐字推，审计要完整文本得 `.reduce` 拼回再记。或只记元信息（起止时间+长度），不存全文。
+
+**第 8 章**：
+- ⚠️ **ChatMemory 没落库（重启丢）** → 只挂了 `MessageChatMemoryAdvisor` 但用的是默认 `InMemoryChatMemoryRepository`。必须配 `JdbcChatMemoryRepository` + PG dialect（见 8.2.2）。
+- **多轮不生效（Agent 仍不记得历史）** → 光挂 advisor 不够，每次调用要 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))` 传会话标识（见 8.2.4）。
+- **`PostgresChatMemoryRepositoryDialect` 找不到** → 确认加了 `spring-ai-starter-model-chat-memory-repository-jdbc`；包路径 `org.springframework.ai.chat.memory.repository.jdbc`。
+- **建表脚本报"表已存在"** → `spring.sql.init.mode: always` 每次启动执行。生产换 Flyway，或脚本加 `IF NOT EXISTS`。
+
+**第 9 章**：
+- **会话列表为空** → 新建会话只 INSERT `research_session`，没插消息——这是正常的（消息由 ChatMemory 在问答时插）。列表查 session 表，历史查消息表。
+- **查历史用 `chatMemory.get` 只返回最近 20 条** → `MessageWindowChatMemory` 默认窗口裁剪。要看全量历史直接 SQL 读 `SPRING_AI_CHAT_MEMORY`（按 timestamp 排序）。
+- **删会话后消息还在** → `delete` 要同时清 `research_session` 和 `SPRING_AI_CHAT_MEMORY` 两张表（见 9.2.2）。
+
 ### A.4 演进全景图
 
 ```mermaid
@@ -1782,14 +3120,19 @@ flowchart TD
     S1[第1章 自主Agent<br/>ToolCallingAdvisor循环+maxSteps] -->|痛点: 网页不够准| S2
     S2[第2章 知识库RAG<br/>pgvector+双工具+输入审核] -->|痛点: 工具散落难复用| S3
     S3[第3章 MCP+编排<br/>搜索做独立MCP server] -->|痛点: 上线运营| S4
-    S4[第4章 运营事故<br/>超时+429重试+错误归宿]
+    S4[第4章 运营事故<br/>超时+429重试+错误归宿] -->|痛点: 复杂主题漏角度| S5
+    S5[第5章 Plan-Execute<br/>先规划拆子任务串行执行] -->|痛点: 串行太慢| S6
+    S6[第6章 多Worker并发<br/>flatMap限流+错误隔离+Aggregate] -->|痛点: 过程不可追溯| S7
+    S7[第7章 审计日志<br/>按会话串联全流程落库] -->|痛点: 刷新丢/不能多轮| S8
+    S8[第8章 会话持久化<br/>ChatMemory落PG] -->|痛点: 没法当产品用| S9
+    S9[第9章 产品化<br/>会话CRUD+前端对话页]
 ```
 
-### A.5 DeepSeek 极简风调试页面（全章通用）
+### A.5 调试页面（第 0-4 章单次研究版）
 
-放 `src/main/resources/static/index.html`，浏览器打开 `http://localhost:8080/index.html`。
+放 `src/main/resources/static/debug.html`，浏览器打开 `http://localhost:8080/debug.html`。
 
-对接两个接口：`GET /api/research?topic=xxx`（流式研究结果）、`POST /api/kb/ingest`（知识库入库，第2章）。**注意**：工具调用过程在后端控制台日志看（本文用日志可观测），页面只显示流式结果 + 入库面板。
+对接两个接口：`GET /api/research?topic=xxx`（ReAct 流式研究结果）、`POST /api/kb/ingest`（知识库入库，第2章）。**注意**：工具调用过程在后端控制台日志看，页面只显示流式结果 + 入库面板。**这是第 0-4 章阶段的调试页**（单次研究、无会话）；第 9 章产品版页面见 **A.5b**。
 
 ```html
 <!DOCTYPE html>
@@ -2012,7 +3355,164 @@ flowchart TD
 
 > **风格**：和 33b 一致的 DeepSeek 极简风（白底/深色主色/窄列/大留白）。第 1 章风格的折叠状态条。
 >
-> **两个模式**：顶部切换「研究」（输入主题→流式结果）和「知识库入库」（粘贴文本→入库 pgvector，第2章）。研究模式下 Agent 调工具的过程在后端控制台日志看（本文用日志可观测，不发事件给前端）。
+> **两个模式**：顶部切换「研究」（输入主题→流式结果）和「知识库入库」（粘贴文本→入库 pgvector，第2章）。研究模式下 Agent 调工具的过程在后端控制台日志看（本文用日志可观测，不发事件给前端）。这是第 0-4 章阶段的调试页，**没有会话管理**——产品版（会话列表 + 多轮）见 A.5b。
+
+### A.5b 产品版页面（第 9 章：会话列表 + 对话区）
+
+第 9 章把单次研究工具升级成产品——需要"左侧会话列表 + 右侧对话区"的 ChatGPT 式布局。放 `src/main/resources/static/index.html`，浏览器打开 `http://localhost:8080/index.html`。
+
+对接接口：`/api/sessions`（CRUD，第9章）、`/api/sessions/{id}/history`（历史，第9章）、`/api/research/deep`（Plan-Execute 流式，第6章，带 sessionId）。下面是**核心结构 + 交互 JS**（CSS 复用 A.5 的极简风变量，省略重复样式，聚焦会话管理逻辑）：
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>研究问答</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+    <style>
+        /* 复用 A.5 的 :root 变量（--bg/--surface/--border/--accent 等）和 body 基础样式 */
+        :root { --bg:#f7f7f8; --surface:#fff; --border:#ececec; --text:#1a1a1a; --accent:#1a1a1a; }
+        *,*::before,*::after { box-sizing:border-box; }
+        body { font-family:-apple-system,"PingFang SC",sans-serif; margin:0; height:100vh;
+               display:flex; color:var(--text); background:var(--bg); }
+        /* 左侧会话列表 */
+        #sidebar { width:240px; background:var(--surface); border-right:1px solid var(--border);
+                   display:flex; flex-direction:column; flex-shrink:0; }
+        #sidebar .new-btn { margin:12px; padding:8px; border:1px solid var(--border); border-radius:8px;
+                            background:var(--surface); cursor:pointer; text-align:center; }
+        #session-list { flex:1; overflow-y:auto; padding:0 8px; }
+        .session-item { padding:10px 12px; border-radius:8px; cursor:pointer; font-size:14px;
+                        display:flex; justify-content:space-between; align-items:center; }
+        .session-item:hover { background:var(--bg); }
+        .session-item.active { background:#ececec; }
+        .session-item .del { color:#ccc; font-size:12px; }
+        /* 右侧对话区 */
+        #main { flex:1; display:flex; flex-direction:column; }
+        #content { flex:1; overflow-y:auto; padding:24px 0; }
+        .msg { max-width:720px; margin:0 auto 16px; padding:0 24px; }
+        .user { text-align:right; }
+        .user .bubble { display:inline-block; background:var(--accent); color:#fff;
+                        padding:10px 16px; border-radius:12px 12px 4px 12px; max-width:75%; }
+        .assistant .bubble { background:var(--surface); padding:14px 18px; border:1px solid var(--border);
+                             border-radius:12px; min-height:20px; line-height:1.8; }
+        #bar { border-top:1px solid var(--border); padding:12px 24px; }
+        #input-wrap { max-width:720px; margin:0 auto; display:flex; gap:8px;
+                      background:var(--bg); border-radius:22px; padding:4px 4px 4px 18px; border:1px solid var(--border); }
+        #prompt { flex:1; border:none; background:transparent; outline:none; font-size:15px; padding:10px 0; }
+        #send { background:var(--accent); color:#fff; border:none; width:34px; height:34px;
+                border-radius:50%; cursor:pointer; }
+        #send:disabled { background:#d0d0d0; }
+    </style>
+</head>
+<body>
+<div id="sidebar">
+    <div class="new-btn" onclick="newSession()">+ 新建会话</div>
+    <div id="session-list"></div>
+</div>
+<div id="main">
+    <div id="content"><div id="chat"></div></div>
+    <div id="bar"><div id="input-wrap">
+        <input id="prompt" placeholder="研究主题，如：2026向量数据库对比">
+        <button id="send" onclick="send()">➤</button>
+    </div></div>
+</div>
+<script>
+    let currentSessionId = null, sending = false;
+
+    // 加载会话列表
+    async function loadSessions() {
+        const sessions = await fetch('/api/sessions').then(r => r.json());
+        const list = document.getElementById('session-list');
+        list.innerHTML = '';
+        sessions.forEach(s => {
+            const div = document.createElement('div');
+            div.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+            div.innerHTML = `<span>${s.title || '(新会话)'}</span><span class="del" onclick="del(event,'${s.id}')">✕</span>`;
+            div.onclick = () => switchSession(s.id);
+            list.appendChild(div);
+        });
+    }
+
+    async function newSession() {
+        const { sessionId } = await fetch('/api/sessions', { method:'POST' }).then(r => r.json());
+        currentSessionId = sessionId;
+        document.getElementById('chat').innerHTML = '';
+        await loadSessions();
+    }
+
+    async function switchSession(sessionId) {
+        currentSessionId = sessionId;
+        document.getElementById('chat').innerHTML = '';
+        const history = await fetch(`/api/sessions/${sessionId}/history`).then(r => r.json());
+        // history 是 ChatMemory 的 List<Message>，按角色渲染
+        history.forEach(m => appendMsg(m.type || m.role, m.content || m.text));
+        await loadSessions();
+    }
+
+    async function del(e, sessionId) {
+        e.stopPropagation();
+        await fetch(`/api/sessions/${sessionId}`, { method:'DELETE' });
+        if (currentSessionId === sessionId) { currentSessionId = null; document.getElementById('chat').innerHTML=''; }
+        await loadSessions();
+    }
+
+    function appendMsg(role, text) {
+        const chat = document.getElementById('chat');
+        const div = document.createElement('div');
+        div.className = 'msg ' + (role === 'USER' || role === 'user' ? 'user' : 'assistant');
+        div.innerHTML = `<div class="bubble"></div>`;
+        div.querySelector('.bubble').textContent = text;
+        chat.appendChild(div);
+        document.getElementById('content').scrollTop = 1e9;
+        return div.querySelector('.bubble');
+    }
+
+    // 发送：带 sessionId，SSE 流式（/api/research/deep，第6章）
+    async function send() {
+        if (sending || !currentSessionId) { if(!currentSessionId) alert('先新建或选择一个会话'); return; }
+        const input = document.getElementById('prompt');
+        const topic = input.value.trim();
+        if (!topic) return;
+        input.value = '';
+        sending = true;
+        document.getElementById('send').disabled = true;
+        appendMsg('USER', topic);
+        const bubble = appendMsg('ASSISTANT', '');
+        try {
+            const resp = await fetch(`/api/research/deep?topic=${encodeURIComponent(topic)}&sessionId=${currentSessionId}`,
+                { headers:{ Accept:'text/event-stream' } });
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream:true }).replace(/\r\n/g,'\n');
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                    const frame = buffer.slice(0, idx);
+                    for (const line of frame.split('\n')) {
+                        if (line.startsWith('data:')) bubble.textContent += line.slice(5);
+                    }
+                    buffer = buffer.slice(idx + 2);
+                }
+                document.getElementById('content').scrollTop = 1e9;
+            }
+        } catch(e) { bubble.textContent = '[失败] ' + e.message; }
+        sending = false;
+        document.getElementById('send').disabled = false;
+        await loadSessions();   // 刷新标题（第一轮自动生成）
+    }
+
+    document.getElementById('prompt').addEventListener('keydown', e => { if(e.key==='Enter') send(); });
+    loadSessions();   // 初始化
+</script>
+</body>
+</html>
+```
+
+> **和 A.5 调试页的区别**：A.5 是"单次研究 + 入库"两模式（无会话）；A.5b 是"会话列表 + 多轮对话"的产品形态——左侧 CRUD 会话、右侧 SSE 流式对话、切换会话加载历史。**过程可见性**（Plan/worker 执行轨迹）走第 7 章的 `/api/audit?sessionId=xxx` 接口事后查，不在前端实时展示（本文不做前端过程可见，那是 33 号文档的主题）。
 
 ---
 
@@ -2029,4 +3529,4 @@ flowchart TD
 
 ---
 
-*全书完。从固定 workflow（第0章）→ 自主 Agent（第1章）→ 知识库（第2章）→ MCP 工具生态（第3章）→ 上线运营事故（第4章），每步痛点驱动、一步步演进。照着敲，得到一个面向外部用户的、自主研究、带知识库、工具标准化的 Agent 系统。*
+*全书完。从固定 workflow（第0章）→ 自主 Agent（第1章）→ 知识库（第2章）→ MCP 工具生态（第3章）→ 上线运营事故（第4章）→ Plan-Execute 先规划（第5章）→ 多 Worker 并发调研（第6章）→ 审计日志可追溯（第7章）→ 会话记忆持久化（第8章）→ 产品化会话管理（第9章），每步痛点驱动、一步步演进。照着敲，得到一个**会规划、多 Worker 并发调研、流程可追溯、有记忆、可管理的产品级研究问答系统**。*
