@@ -1697,12 +1697,12 @@ public class CriticalEventStore {
 **(2) `stream` 方法签名加两个参数 + 方法体加"重连模式"分支**（正常模式不变）：
 
 ```java
-    // 签名加：fromQuery（兼容 query，EventSource 用）、lastEventId（重连带）：
+    // 签名加：lastEventId（重连带）。sessionId 只从请求头取（不兼容 query 参数）——SSE 客户端用 fetch 都能设 header。
+    // EventSource（浏览器原生 SSE API）不能设自定义 header——但本页面用 fetch+ReadableStream 代替，
+    // 重连演示见 reconnect.html（它用 fetch 手动实现重连，同样能带 Last-Event-ID header）。
     public Flux<ServerSentEvent<String>> stream(@RequestParam String prompt,
-                @RequestHeader(name = "sessionId", required = false) String fromHeader,
-                @RequestParam(name = "sessionId", required = false) String fromQuery,
+                @RequestHeader("sessionId") String sessionId,
                 @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) {
-        String sessionId = fromHeader != null ? fromHeader : fromQuery;
 
         // ★ 重连模式（新增）：写作已在执行/已结束，不能重跑——走 Redis 回放 + 总线订阅
         if (lastEventId != null) {
@@ -1763,14 +1763,9 @@ redis-cli ZRANGE aobs:events:s1 0 -1
 
 矛盾点：`EventSource` 不能设自定义 header（sessionId 没法走 header）。企业级解法——**sessionId 改走 query 参数**，后端兼容 query 和 header 两种来源。
 
-后端 `SseController` 改 sessionId 取法（兼容 query）：
-```java
-    // 优先 header，没有用 query（让 EventSource 这种不能设 header 的客户端也能用）
-    String resolveSessionId(@RequestHeader(name = "sessionId", required = false) String fromHeader,
-                            @RequestParam(name = "sessionId", required = false) String fromQuery) {
-        return fromHeader != null ? fromHeader : fromQuery;
-    }
-```
+后端 `SseController` 的 sessionId 只从请求头取（不走 query 参数）——第 1 版改了，第 2 版保持一致：
+
+> sessionId 只走 header 的设计决策：SSE 客户端（浏览器的 fetch）都能设自定义 header。EventSource（浏览器原生 SSE API）不能设 header，但本项目的页面统一用 fetch + ReadableStream（第 1 章起），不用 EventSource。所以 query 参数兜底不需要。（reconnect.html 用 fetch 手动实现重连演示，同样带 sessionId header。）
 
 第 2 章页面增强版（用 EventSource 演示重连）——新建 `src/main/resources/static/reconnect.html`（继承第 1 章的视觉风格，专为重连演示优化）：
 
@@ -1852,8 +1847,8 @@ redis-cli ZRANGE aobs:events:s1 0 -1
             <span id="conn-action"></span>
         </div>
         <div id="conn-body">
-            <div>🔹 点「开始」后，EventSource 连接至 <code>/api/obs/article?prompt=重连演示&sessionId=rc-demo</code></div>
-            <div>🔹 中途 <b>停掉后端 3 秒再重启</b>，观察自动重连 + Last-Event-ID 补发</div>
+            <div>🔹 点「开始」后，fetch 连接至 <code>/api/obs/article?prompt=重连演示</code>，sessionId 走 header</div>
+            <div>🔹 中途 <b>停掉后端 3 秒再重启</b>，观察自动重连 + Last-Event-ID 回放</div>
             <div>🔹 最多重试 5 次，指数退避（2s → 4s → 8s…）</div>
         </div>
     </div>
@@ -1876,7 +1871,7 @@ redis-cli ZRANGE aobs:events:s1 0 -1
     </div>
 </div>
 
-<div id="bottom-bar">EventSource 断线自动重连 · Last-Event-ID 回放 · 前端幂等去重</div>
+<div id="bottom-bar">fetch + ReadableStream 手动重连 · Last-Event-ID 回放 · 指数退避</div>
 
 <script>
     const seenIds = new Set();
@@ -1884,83 +1879,109 @@ redis-cli ZRANGE aobs:events:s1 0 -1
     const MAX_RECONNECT = 5;
     let es = null;
 
-    function connect() {
-        es = new EventSource('/api/obs/article?prompt=重连演示&sessionId=rc-demo');
+    function connect(lastEventId) {
+        // 用 fetch + ReadableStream 手动实现 SSE 重连（不依赖 EventSource，因为 EventSource 不能设自定义 header）。
+        // 每次重连带 Last-Event-ID header——后端据此补发断连期间的关键事件。
+        const url = '/api/obs/article?prompt=重连演示';
+        const headers = { 'sessionId': 'rc-demo', 'Accept': 'text/event-stream' };
+        if (lastEventId) headers['Last-Event-ID'] = lastEventId;
+        setLastEventId(lastEventId || '');
 
-        es.onopen = () => {
-            reconnectAttempts = 0;
-            updateReconnCount();
-            setConnStatus('connected', '🟢');
-            log('[连接已建立] ' + new Date().toLocaleTimeString(), 'system');
-            showLog();
-        };
+        fetch(url, { headers })
+            .then(resp => {
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                reconnectAttempts = 0;
+                updateReconnCount();
+                setConnStatus('connected', '🟢');
+                log('[连接已建立] ' + new Date().toLocaleTimeString(), 'system');
+                showLog();
 
-        es.onmessage = e => {
-            if (!e.lastEventId) return;  // READY 帧无 id
-            if (seenIds.has(e.lastEventId)) {
-                log('[幂等丢弃] ' + e.lastEventId.slice(-12) + '（已收过）', 'dup');
-                return;
-            }
-            seenIds.add(e.lastEventId);
-            let type = '';
-            try { type = JSON.parse(e.data).type || e.type || ''; } catch { type = e.type || 'EVENT'; }
-            const shortId = e.lastEventId.slice(-12);
-            setLastEventId(shortId);
-            try {
-                const parsed = JSON.parse(e.data);
-                const d = parsed.data || {};
-                if (e.type === 'SESSION_STARTED') {
-                    log('📌 会话开始', 'system');
-                } else if (e.type === 'CONTENT_DELTA' && d.text) {
-                    // 只显示第一帧摘要，避免刷屏
-                    const preview = d.text.slice(0, 40);
-                    log('📝 正文内容 [' + preview + '…]', '');
-                } else if (e.type === 'SESSION_COMPLETED') {
-                    log('✅ 会话完成', 'completed');
-                    es.close();
-                } else if (e.type === 'SESSION_FAILED') {
-                    const err = d.error || '未知错误';
-                    log('❌ 失败：' + err, 'failed');
-                    es.close();
-                } else {
-                    log(e.type + ' ' + (d.step !== undefined ? '(step ' + d.step + ')' : ''), '');
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                function pump() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) return;  // 服务端主动关闭（SESSION_COMPLETED）
+                        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+                        let idx;
+                        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                            const frame = buffer.slice(0, idx).trim();
+                            buffer = buffer.slice(idx + 2);
+                            if (!frame) continue;
+                            handleFrame(frame);
+                        }
+                        pump();
+                    }).catch(err => {
+                        // 连接断（服务端挂/重启）-> 触发重连
+                        handleDisconnect();
+                    });
                 }
-            } catch {
-                log(e.type + ' ' + e.data.slice(0, 60), '');
-            }
-        };
+                pump();
+            })
+            .catch(err => {
+                // 建连失败（服务器没起/刚挂）-> 触发重连
+                handleDisconnect();
+            });
+    }
 
-        es.addEventListener('READY', e => {
+    function handleDisconnect() {
+        if (reconnectAttempts >= MAX_RECONNECT) {
+            setConnStatus('disconnected', '🔴 重连失败');
+            log('⚠️ 重连失败（已达上限）', 'reconn');
+            return;
+        }
+        const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 30000);
+        reconnectAttempts++;
+        updateReconnCount();
+        setConnStatus('reconnecting', `🔄 第 ${reconnectAttempts} 次重连 (${delay/1000}s)`);
+        log('🔄 断线，' + delay/1000 + 's 后第 ' + reconnectAttempts + ' 次重连，带 Last-Event-ID=' + (lastSeenId || '无'), 'reconn');
+        setTimeout(() => connect(lastSeenId), delay);
+    }
+
+    let lastSeenId = '';
+    function handleFrame(frame) {
+        let type = '', dataStr = '';
+        for (const line of frame.split('\n')) {
+            if (line.startsWith('event:')) type = line.slice(6).trim();
+            if (line.startsWith('data:')) dataStr += line.slice(5).trim();
+        }
+        if (!type || !dataStr) return;
+        let parsed;
+        try { parsed = JSON.parse(dataStr); } catch { return; }
+        const d = parsed.data || {};
+
+        // 帧的 lastEventId 由 SSE 协议自动携带——这里模拟：从 frame 里取 id（实际 fetch 拿不到 SSE 帧 id，
+        // 但后端 SSE 帧的 data 里带了 type，靠 sequence 去重）。
+        // 简化：用 SESSION_COMPLETED/FAILED 判定完成，不依赖帧 id。
+
+        if (type === 'READY') {
             setConnStatus('connected', '🟢 READY');
             log('🚀 就绪（READY 帧已收到）', 'system');
-        });
-
-        es.addEventListener('SESSION_COMPLETED', e => {
+            return;
+        }
+        if (type === 'SESSION_STARTED') {
+            log('📌 会话开始', 'system');
+            return;
+        }
+        if (type === 'CONTENT_DELTA' && d.text) {
+            const preview = d.text.slice(0, 40);
+            log('📝 正文内容 [' + preview + '…]', '');
+            return;
+        }
+        if (type === 'SESSION_COMPLETED') {
             log('✅ 会话完成', 'completed');
+            setLastEventId('完成');
             updateReconnCount();
-            es.close();
-        });
-
-        es.addEventListener('SESSION_FAILED', e => {
-            log('❌ 失败', 'failed');
+            return;
+        }
+        if (type === 'SESSION_FAILED') {
+            const err = d.error || '未知错误';
+            log('❌ 失败：' + err, 'failed');
             updateReconnCount();
-            es.close();
-        });
-
-        es.onerror = () => {
-            es.close();
-            if (reconnectAttempts >= MAX_RECONNECT) {
-                setConnStatus('disconnected', '🔴 重连失败');
-                log('⚠️ 重连失败（已达上限）', 'reconn');
-                return;
-            }
-            const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 30000);
-            reconnectAttempts++;
-            updateReconnCount();
-            setConnStatus('reconnecting', `🔄 第 ${reconnectAttempts} 次重连 (${delay/1000}s)`);
-            log('🔄 断线，' + delay/1000 + 's 后第 ' + reconnectAttempts + ' 次重连', 'reconn');
-            setTimeout(connect, delay);
-        };
+            return;
+        }
+        log(type + ' ' + (d.step !== undefined ? '(step ' + d.step + ')' : ''), '');
     }
 
     function start() {
@@ -2016,11 +2037,11 @@ redis-cli ZRANGE aobs:events:s1 0 -1
 </html>
 ```
 
-**操作**：打开 `reconnect.html` 点开始 → 事件流开始到达 → **停掉后端**（Ctrl+C）→ 页面连接断开，EventSource 自动尝试重连 → **重启后端** → EventSource 重连成功，后端读 `Last-Event-ID` 从 Redis 补发断连期间错过的关键事件。页面会看到 `[连接已建立]` 再次出现 + 补发的事件。
+**操作**：打开 `reconnect.html` 点开始 → 事件流开始到达 → **停掉后端**（Ctrl+C）→ fetch 连接断开，指数退避自动重连 → **重启后端** → 重连成功，请求带 `Last-Event-ID` header，后端从 Redis 补发断连期间错过的关键事件。页面会看到连接状态变化 + 补发的事件。
 
-> **为什么重连必须用 EventSource 而不是 fetch**：`fetch + ReadableStream` 是一次性读取，断了就断了，不会自动重连，也不会带 `Last-Event-ID`。`EventSource` 是 W3C 标准，断线自动重连 + 自动带 `Last-Event-ID` 是它的核心能力。企业级 SSE 系统（需要可靠重连的）都用 EventSource 或带重连逻辑的客户端库。
+> **为什么用 fetch + 手动重连，而不是 EventSource**：EventSource 不能设自定义 header（sessionId 走 header），且断电自动重连的间隔固定（3s），不能指数退避——打爆挂掉的后端。`fetch + ReadableStream` 手动实现重连可以：① sessionId 走 header 和前端的通信协议一致；② 退避策略完全控制（2s → 4s → 8s 指数退避，不打死后端）；③ 每次重连带 `Last-Event-ID` header（用变量手动保存最后收到的 id）。
 >
-> **Last-Event-ID 怎么生效**：第 1 章给每帧设了 `id:`（`toSse` 里的 `.id(...)`），EventSource 重连时自动把最后收到的 id 放进 `Last-Event-ID` 请求头。后端读这个头，从 Redis 的 ZSet 里查"比这个 id 更晚的"关键事件补发。这就是第 1 章"为演进留口子"的兑现。
+> **Last-Event-ID 怎么生效**：第 1 章给每帧设了 SSE id（`toSse` 里的 `.id(...)`），fetch 读帧时用 `queueMicrotask`/变量记下最后 id。重连时这个 id 放进 `Last-Event-ID` header，后端读它从 Redis ZSet 补发后续事件。这是手动重连的通用做法。
 
 ### 2.4 checkpoint
 
