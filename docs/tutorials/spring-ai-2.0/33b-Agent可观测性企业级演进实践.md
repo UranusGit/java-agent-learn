@@ -1435,14 +1435,27 @@ spring:
 
 > 本地装 Redis：macOS `brew install redis && brew services start redis`；Docker `docker run -d -p 6379:6379 redis`。
 
-#### 2.2.2 AgentEvent 加 criticality 字段 + 引入 builder
+#### 2.2.2 AgentEvent 加 criticality 字段 + 改用 Lombok @Builder
 
-第 1 章的 AgentEvent 是 4 字段、直接 `new`。第 2 章加 `criticality`（可选——按事件类型推断默认），**可选字段一多，直接 `new` 要传一堆 null 容易错位，这时引入 builder 才有回报**。改动是增量的：
+第 1 章的 AgentEvent 是 4 字段、`of()` 直接 `new`。第 2 章加 `criticality`（可选，按 type 推断默认），**可选字段一加上，直接 `new` 要传 null/手动算默认值容易错，引入 builder 才有回报**。本阶段用手写 Builder 也行，但 `@Builder`（Lombok）更简洁，且 Java 21 + Spring Boot 4.x 下对 record 的 `@Builder` 支持已稳定。
 
-**(1) record 末尾加一个字段 + 一个内部枚举**：
+先在 pom 加 Lombok 依赖：
+
+```xml
+        <!-- Lombok：@Builder / @Slf4j 等，仅编译期 -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+```
+
+然后 AgentEvent 改两处（增量）：
+
+**(1) record 字段列表末尾加 Criticality 字段 + 内部枚举**：
 
 ```java
-// AgentEvent record 字段列表末尾加：
+// AgentEvent record 字段列表末尾加（括号前）：
         Criticality criticality    // ← 第 2 章新增
 ) {
 
@@ -1453,7 +1466,7 @@ spring:
         DISCARDABLE    // 流式片段（CONTENT_DELTA），背压满优先丢
     }
 
-    // 按事件类型枚举推断默认关键级别：
+    // 按事件类型推断默认关键级别：
     public static Criticality defaultCriticality(EventContent type) {
         return switch (type) {
             case SESSION_STARTED, SESSION_COMPLETED, SESSION_FAILED -> Criticality.CRITICAL;
@@ -1461,42 +1474,26 @@ spring:
             default -> Criticality.NORMAL;
         };
     }
-    // ... 原有字段 type/sessionId/timestamp/data 不变 ...
+    // ... 原有 type/sessionId/timestamp/data 不变 ...
 ```
 
-**(2) 把第 1 章的 `of`（直接 new）换成 builder 版**（`of` 签名不变，调用点不用改）：
+**(2) 第 1 章的 `of` 换成 `@Builder` 版**（`of` 签名不变、调用点不用改——Lombok 自动生成 `builder()` 和 `AgentEventBuilder` 类）：
 
 ```java
-    // 替换第 1 章那个直接 new 的 of：
-    public static Builder builder() { return new Builder(); }
+    // 类上加 @Builder（Lombok 在 record 上自动生成 builder() + AgentEventBuilder）
+    // 把第 1 章的 of 改成 builder 调用（criticality 按 type 推断，sequence 由 EventBus 分配）
     public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
-        return builder().type(type).sessionId(sessionId).data(data).build();
-    }
-
-    // 新增 Builder 内部类（criticality 不填则按 type 推断默认）：
-    public static final class Builder {
-        private EventContent type;
-        private String sessionId;
-        private Long timestamp;   // null = 构造时填当前毫秒
-        private Map<String, Object> data = Map.of();
-        private Criticality criticality;   // null = 按 type 推断默认
-
-        public Builder type(EventContent t) { this.type = t; return this; }
-        public Builder sessionId(String s) { this.sessionId = s; return this; }
-        public Builder timestamp(long t) { this.timestamp = t; return this; }
-        public Builder data(Map<String, Object> d) { this.data = d; return this; }
-        public Builder criticality(Criticality c) { this.criticality = c; return this; }
-
-        public AgentEvent build() {
-            if (type == null) throw new IllegalStateException("type 必填");
-            Criticality c = criticality != null ? criticality : defaultCriticality(type);
-            return new AgentEvent(type.name(), sessionId,
-                    timestamp != null ? timestamp : System.currentTimeMillis(), data, c);
-        }
+        return AgentEvent.builder()
+                .type(type.name()).sessionId(sessionId)
+                .timestamp(System.currentTimeMillis()).data(data)
+                .criticality(defaultCriticality(type))
+                .build();
     }
 ```
 
-> **为什么第 2 章才引入 builder**：第 1 章 4 字段全必填，`of(...)` 直接 `new` 最清楚。第 2 章加了可选的 criticality（不填要按 type 推断默认）——直接 `new` 要么传 null、要么每次手动算默认值，容易错。builder 让"可选字段有默认值"自然表达。**不为想象中的复杂度提前设计**：第 1 章 builder 是负担，第 2 章是收益。
+> **为什么 `of` 里显式填 criticality**：`@Builder` 的 `AgentEventBuilder.criticality(...)` 会覆盖默认值——`of` 里用 `defaultCriticality(type)` 推断并显式传，不需要 builder 本身做复杂推断。sequence 在 2.2.4 加，`of` 里填 `0L` 占位。
+>
+> **为什么第 2 章才引入 builder**：第 1 章 4 字段全必填、直接 `new` 最清楚。第 2 章加了可选的 criticality——直接 `new` 传 null 或手动算默认值容易错，builder 让可选字段自然表达。**不为想象中的复杂度提前设计**。
 
 > **第 2 章相对第 1 章的变化**：① record 加 `criticality` 字段；② builder 加 `criticality()` 方法（不填则按 type 推断默认——CRITICAL 事件落库、CONTENT_DELTA 可丢）；③ `defaultCriticality` 改成接受 `EventContent` 枚举（第 1 章是 String）。因为用了 builder，老的 `AgentEvent.of(...)` 调用点**不用改**（of 内部走 builder）。
 >
@@ -1584,23 +1581,29 @@ public class CriticalEventStore {
 
 这一步同时做两件事：关键事件落库（解决丢失）、分配会话内序号（为乱序重排铺路）。
 
-先给 `AgentEvent` 再加 `sequence` 字段（纯加字段，增量改两处）：
+先给 `AgentEvent` 再加 `sequence` 字段（`@Builder` 已自动包含该字段的 setter，增量改**两处**）：
 
-**(1) record 字段列表末尾再加一个**：
+**(1) record 字段列表末尾加 `sequence`**：
 
 ```java
         Criticality criticality,
         long sequence        // ← 第 2 章新增：会话内单调递增序号，0 表示未分配
 ```
 
-**(2) builder 的 `build()` 末尾多传一个 `0L`**（sequence 由 AgentEventBus 分配，构造方填 0）：
+**(2) `of()` 的 builder 调用末尾加 `.sequence(0L)`**——`0` 是占位，EventBus emit 时 `withSequence()` 复制一份改真实序号：
 
 ```java
-            return new AgentEvent(type.name(), sessionId,
-                    timestamp != null ? timestamp : System.currentTimeMillis(), data, c, 0L);   // ← 末尾加 0L
+    public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
+        return AgentEvent.builder()
+                .type(type.name()).sessionId(sessionId)
+                .timestamp(System.currentTimeMillis()).data(data)
+                .criticality(defaultCriticality(type))
+                .sequence(0L)              // ← 加这行
+                .build();
+    }
 ```
 
-> **`sequence` 不进 builder**：它由 AgentEventBus 统一分配（见下方 withSequence），构造方不该自己填。所以 builder 没有序列号方法，`build()` 固定填 0，AgentEventBus emit 时复制一份改 sequence。
+> **`sequence` 由 EventBus 分配**：AgentEvent 构造时填 `0` 占位，EventBus emit 时 `withSequence(event, seq)` 复制一份改真实序号——record 不可变，所以要复制。`AgentEventBuilder` 暴露 `sequence(...)` 是必要的（`withSequence` 要用 record 全参构造复制），但构造方（`of`）只填 `0`。
 
 
 `src/main/java/com/example/aobs/obs/AgentEventBus.java`（在第 1 章基础上增量改）：
