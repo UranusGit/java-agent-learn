@@ -84,7 +84,7 @@
 
 - **包名**：本文用 `com.example.aobs` 演示（aobs = Agent Observability）。你自己敲时换成想要的包名，IDE 全局替换即可。**所有 import 的前缀要跟着换**。
 - **代码完整性**：每个代码块都是完整的、带 import 的、照抄能编译的。不会留半截、不会埋错。
-- **简陋处会标注**：有些代码第一版先写简单版（比如第 4 章前的 EventBus 单 sink），后面章节会改进。改进点一定明确标注「这一版简陋，第 X 章会改」，并说明为什么现在不一次到位。
+- **简陋处会标注**：有些代码第一版先写简单版（比如第 4 章前的 AgentEventBus 单 sink），后面章节会改进。改进点一定明确标注「这一版简陋，第 X 章会改」，并说明为什么现在不一次到位。
 - **每章结尾有 checkpoint**：目录结构 + git 提交命令。养成小步提交的习惯。
 - **前端页面**：验证主要靠调试页面（放 `src/main/resources/static/`，浏览器打开）。页面随章节演进——第 1 章是最简的事件流显示，后面章节逐步增强（工具调用面板、重连演示、租户切换）。每个版本的页面都是完整 HTML，照抄能跑。
 - **企业级方案优先**：每个技术决策讲清"为什么选它、调研背书、否了什么"，不只是"能跑就行"。真实坑（竞态、重复注册、超时）作为"问题→根因→修复"的演进素材，不回避。
@@ -101,7 +101,7 @@
 
 > **为什么一上来就是流式？** 因为现在的 AI 产品没有非流式的用武之地——前端就是流式对话页面（打字机效果是基础体验），后端同步阻塞返回会让用户干等十几秒。流式也不比同步难多少（Spring AI 的 `.stream()` 和 `.call()` 一字之差）。所以**从第 0 章起就是流式**，全文一致，后面不用迁移。
 >
-> **但这一章是「黑盒」**：流式只推送正文文本（`Flux<String>`），**没有任何可观测事件**（没有"现在第几步"、没有 EventBus、没有事件总线）。等它「出事」（第 1 章），才知道该观测什么——那时把 `Flux<String>` 升级成 `Flux<AgentEvent>`，正文变成其中一种事件（CONTENT_DELTA），同时加上 STEP/SESSION 等过程事件。**先让它能干活（流式黑盒），再让它能被观察（第 1 章可观测）。**
+> **但这一章是「黑盒」**：流式只推送正文文本（`Flux<String>`），**没有任何可观测事件**（没有"现在第几步"、没有 AgentEventBus、没有事件总线）。等它「出事」（第 1 章），才知道该观测什么——那时把 `Flux<String>` 升级成 `Flux<AgentEvent>`，正文变成其中一种事件（CONTENT_DELTA），同时加上 STEP/SESSION 等过程事件。**先让它能干活（流式黑盒），再让它能被观察（第 1 章可观测）。**
 
 ### 0.1 思路：先建项目跑通流式业务，不碰可观测性
 
@@ -475,17 +475,17 @@ git commit -m "第0章：流式黑盒写作助手跑通"
 
 这一步同时做两件事：
 1. **事件化**：`ChainingService.run` 从 `Flux<String>`（第 0 章）升级成 `Flux<AgentEvent>`——正文 chunk 包成 `CONTENT_DELTA` 事件，每步前后发 `STEP_START/STEP_END`、整条链发 `SESSION_STARTED/SESSION_COMPLETED`。流式体感不变（还是逐字），但过程全可见。
-2. **总线**：加 EventBus，把事件广播给多个消费者（不止前端 SSE）。
+2. **总线**：加 AgentEventBus，把事件广播给多个消费者（不止前端 SSE）。
 
 **关键决策一：为什么把 `Flux<String>` 升级成 `Flux<AgentEvent>`？**
 
 第 0 章 `Flux<String>` 只能推正文 chunk——**过程信息（第几步、开始/结束、错误）塞不进去**（String 没有类型）。改成 `Flux<AgentEvent>` 后，每个元素是"一个有类型的事件"：CONTENT_DELTA 是正文、STEP_START 是步骤开始、SESSION_COMPLETED 是完成……`run` 一边执行一边把各种事件推给下游，Controller 直接把这个 Flux 当 SSE 流返回。**这就是"过程即数据流"——把执行过程建模成一条事件流。**
 
-**关键决策二：有了 `Flux<AgentEvent>`，为什么还要 EventBus（总线）？**
+**关键决策二：有了 `Flux<AgentEvent>`，为什么还要 AgentEventBus（总线）？**
 
 这是最容易被问倒的点——`run` 已经返回事件流了，直接订阅不就行了？不行，因为 `run` 返回的是**冷流**：每多一个订阅者，就会把整个 `run` **重新执行一遍**（重新调 3 次 LLM、重新烧钱）。但实际有**不止一个消费者**：前端 SSE 要看、日志要记、第 3 章要算成本、第 5 章要按租户归因——每个消费者各订阅一次 = 重跑 N 次 LLM。
 
-解法：`run` 内部把每个事件 **`bus.emit` 广播到 EventBus**（热流），`Flux<AgentEvent>` 只是给"主消费者"（SSE）用的入口。总线用的 `Sinks.Many` 是热流——事件发一次就完，多个消费者共享同一条流。所以代码里你会看到 run 既 `return Flux` 又 `bus.emit`，两者不矛盾：
+解法：`run` 内部把每个事件 **`bus.emit` 广播到 AgentEventBus**（热流），`Flux<AgentEvent>` 只是给"主消费者"（SSE）用的入口。总线用的 `Sinks.Many` 是热流——事件发一次就完，多个消费者共享同一条流。所以代码里你会看到 run 既 `return Flux` 又 `bus.emit`，两者不矛盾：
 
 ```
 run() 返回 Flux<AgentEvent>        ← SSE 订阅它（主消费者，驱动整条链执行）
@@ -494,7 +494,7 @@ run() 返回 Flux<AgentEvent>        ← SSE 订阅它（主消费者，驱动�
 
 > **冷流 vs 热流**（整个架构的地基，第 2 章会亲手体会）：
 > - `Flux<AgentEvent>`（run 返回的）是**冷流**——"被订阅时才执行"，N 个订阅者 = 执行 N 次。它适合"只有一个主消费者驱动执行"。
-> - `Sinks.Many`（EventBus 内部）是**热流**——"与订阅无关，发一次就过"，N 个订阅者共享同一份已发出的事件。它适合"广播给多个消费者"。
+> - `Sinks.Many`（AgentEventBus 内部）是**热流**——"与订阅无关，发一次就过"，N 个订阅者共享同一份已发出的事件。它适合"广播给多个消费者"。
 >
 > 这个"run 冷流驱动 + 总线热流广播"的组合是后面所有演进的地基。第 1 章先记住结论。
 
@@ -535,7 +535,6 @@ public enum EventContent {
 ```java
 package com.example.aobs.obs;
 
-import java.time.Instant;
 import java.util.Map;
 
 /**
@@ -547,41 +546,21 @@ import java.util.Map;
  *   第 2 章：加 criticality（背压降级策略）、sequence（会话内序号）
  *   第 5 章：加 tenantId/userId/agentVersion（成本归因 + 隔离）
  *
- * type 存 String（枚举的 name()），不直接存枚举——这样序列化天然是字符串，
+ * type 存 String（枚举的 name()），不直接存枚举——序列化天然是字符串，
  * 也避免 record 字段依赖枚举类型（跨服务/反序列化更宽松）。
- * 构造用 of(...) 传 EventContent 枚举（编译期校验），内部转 name() 存。
+ * timestamp 用 long（毫秒），不用 Instant——Redis ZSet score、归档表 ts 列、
+ * 前端展示都是毫秒，全程一致，省去 toEpochMilli() 转换。
  */
 public record AgentEvent(
         String type,                  // 事件类型名（EventContent.name()，如 "SESSION_STARTED"）
         String sessionId,             // 属于哪个会话（前端按这个过滤）
-        Instant timestamp,            // 发生时间
+        long timestamp,               // 发生时间（毫秒）
         Map<String, Object> data      // 附加信息（这一步的输入/输出/正文片段等）
 ) {
 
-    /** builder：默认填 timestamp。第 2 章扩展（加 criticality/sequence）。 */
-    public static Builder builder() { return new Builder(); }
-
-    /** 快捷构造：传枚举（编译期校验类型），内部转 name() 存。 */
+    /** 快捷构造：传枚举（编译期校验类型），内部转 name() 存；timestamp 自动填当前毫秒。 */
     public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
-        return builder().type(type).sessionId(sessionId).data(data).build();
-    }
-
-    public static final class Builder {
-        private EventContent type;
-        private String sessionId;
-        private Instant timestamp;
-        private Map<String, Object> data = Map.of();
-
-        public Builder type(EventContent t) { this.type = t; return this; }
-        public Builder sessionId(String s) { this.sessionId = s; return this; }
-        public Builder timestamp(Instant t) { this.timestamp = t; return this; }
-        public Builder data(Map<String, Object> d) { this.data = d; return this; }
-
-        public AgentEvent build() {
-            if (type == null) throw new IllegalStateException("type 必填");
-            return new AgentEvent(type.name(), sessionId,
-                    timestamp != null ? timestamp : Instant.now(), data);
-        }
+        return new AgentEvent(type.name(), sessionId, System.currentTimeMillis(), data);
     }
 }
 ```
@@ -592,12 +571,12 @@ public record AgentEvent(
 > **小白疑问二：为什么用 `Map<String,Object>` 装 data，不定义具体字段？**
 > 不同事件附加信息差别大（SESSION_STARTED 有 input，CONTENT_DELTA 有 text 片段，STEP_END 有 output）。用 Map 灵活，新增事件类型不用改这个类。代价是类型不安全——第 2 章会权衡，先简单。
 >
-> **小白疑问三：为什么用 builder 不用 record 的构造器？**
-> record 字段会随章节长（第 2、5 章继续加）。每次加字段，所有 `new AgentEvent(...)` 调用点都要改参数列表、还容易传错位置（都是 String）。builder 是"按名字赋值"，加新字段时老代码不用改、新字段有默认值——企业项目里 schema 会演进的 DTO 都该用 builder。第 1 章先把 builder 架子立起来。
+> **小白疑问三：为什么不用 builder？**
+> 第 1 章只有 4 个字段，直接 `new`（包在 `of` 里）最清楚。第 2 章加 criticality/sequence 时，`of` 内部填默认值，调用点照样不用改——字段演进靠 `of` 重载兜，不必上 builder。等到第 5 章字段多到"可选字段一堆"时，再引入 builder。**不为想象中的复杂度提前设计**。
 
-#### 1.2.2 EventBus——事件总线（整个方案的心脏）
+#### 1.2.2 AgentEventBus——事件总线（整个方案的心脏）
 
-`src/main/java/com/example/aobs/obs/EventBus.java`：
+`src/main/java/com/example/aobs/obs/AgentEventBus.java`：
 
 ```java
 package com.example.aobs.obs;
@@ -621,7 +600,7 @@ import reactor.core.publisher.Sinks;
  *   buffer 大小按"消费者处理速度 × 瞬时积压窗口"定，256 对调试场景够，生产按 metrics 调。
  */
 @Component
-public class EventBus {
+public class AgentEventBus {
 
     // autoCancel=false：即使暂时没人订阅，总线也别自动关闭
     private final Sinks.Many<AgentEvent> sink =
@@ -632,11 +611,6 @@ public class EventBus {
         sink.tryEmitNext(event);   // 非阻塞塞事件，失败也不抛
     }
 
-    /** 消费者调这个：拿全量事件流（审计/归档消费者用）。 */
-    public Flux<AgentEvent> flux() {
-        return sink.asFlux();
-    }
-
     /** 消费者调这个：只拿某个会话的事件流（SSE 按会话订阅用，内部过滤）。 */
     public Flux<AgentEvent> subscribe(String sessionId) {
         return sink.asFlux().filter(event -> sessionId.equals(event.sessionId()));
@@ -644,11 +618,13 @@ public class EventBus {
 }
 ```
 
-> **`subscribe(sessionId)` 重载**：SSE 接口要"只推某个会话的事件"，把按 sessionId 过滤收口在 EventBus 里，Controller 不用每次手写 `.filter(e -> sessionId.equals(e.sessionId()))`。第 4 章分片总线时，这个方法的实现会从"全量过滤"升级成"按 sessionId 路由到对应分片"——接口签名不变，Controller 无感。
+> **`subscribe(sessionId)`**：SSE 接口要"只推某个会话的事件"，把按 sessionId 过滤收口在 Bus 里，Controller 不用每次手写 `.filter(...)`。第 4 章分片总线时，这个方法的实现会从"全量过滤"升级成"按 sessionId 路由到对应分片"——接口签名不变，Controller 无感。
+>
+> **为什么没有 `flux()` 全量订阅**：归档（第 7 章）是 emit 时同步落库、历史回放（第 8 章）读归档表——都不需要订阅全量事件流。只暴露 `subscribe(sessionId)` 一个消费入口，接口最小。
 
 #### 1.2.3 给 Workflow 埋点 + 事件化（采集）
 
-改 `ChainingService`（在第 0 章流式黑盒基础上）：① 加 EventBus 依赖；② `run` 从 `Flux<String>` 升级成 `Flux<AgentEvent>`——正文 chunk 包成 CONTENT_DELTA，加 STEP_START/STEP_END/SESSION_* 事件；③ 每个事件同时 `bus.emit` 广播。**业务步骤（steps()/Step）完全不动、流式体感不变（还是逐字），只是多了过程事件**。
+改 `ChainingService`（在第 0 章流式黑盒基础上）：① 加 AgentEventBus 依赖；② `run` 从 `Flux<String>` 升级成 `Flux<AgentEvent>`——正文 chunk 包成 CONTENT_DELTA，加 STEP_START/STEP_END/SESSION_* 事件；③ 每个事件同时 `bus.emit` 广播。**业务步骤（steps()/Step）完全不动、流式体感不变（还是逐字），只是多了过程事件**。
 
 > **关于 sessionId 的传递**：第 1 章的 `run` 用同步 for 循环，sessionId 直接当方法参数/局部变量传，简单够用。等到第 3 章讲工具调用的会话隔离时，才会遇到"工具执行线程读不到局部变量"的问题，那时再引入 Reactor Context 传播（`PropagatedContextValue`/`AppContextKeys`）。**第 1 章不需要它**——提前引入只会让人困惑"这玩意儿有什么用"。
 
@@ -660,7 +636,7 @@ public class EventBus {
 package com.example.aobs.workflow;
 
 import com.example.aobs.obs.AgentEvent;
-import com.example.aobs.obs.EventBus;
+import com.example.aobs.obs.AgentEventBus;
 import com.example.aobs.obs.EventContent;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -684,9 +660,9 @@ import java.util.Map;
 public abstract class ChainingService {
 
     protected final ChatClient chatClient;
-    protected final EventBus eventBus;    // ← 新增：广播事件给多消费者
+    protected final AgentEventBus eventBus;    // ← 新增：广播事件给多消费者
 
-    protected ChainingService(ChatClient chatClient, EventBus eventBus) {
+    protected ChainingService(ChatClient chatClient, AgentEventBus eventBus) {
         this.chatClient = chatClient;
         this.eventBus = eventBus;
     }
@@ -771,14 +747,14 @@ public abstract class ChainingService {
     }
 
     /**
-     * 把 FluxSink + EventBus 的"发事件"收口在一个 helper，避免每个 emit 点重复样板。
+     * 把 FluxSink + AgentEventBus 的"发事件"收口在一个 helper，避免每个 emit 点重复样板。
      * 发事件 = 同时推给 SSE 下游（sink.next）和总线（eventBus.emit，供其他消费者）。
      */
     private static final class FluxSinkAdapter {
         private final FluxSink<AgentEvent> sink;
-        private final EventBus bus;
+        private final AgentEventBus bus;
         private final String sessionId;
-        FluxSinkAdapter(FluxSink<AgentEvent> sink, EventBus bus, String sid) {
+        FluxSinkAdapter(FluxSink<AgentEvent> sink, AgentEventBus bus, String sid) {
             this.sink = sink; this.bus = bus; this.sessionId = sid;
         }
         void emit(EventContent type, Map<String, Object> data) {
@@ -799,7 +775,7 @@ public abstract class ChainingService {
 > 1. **`run` 返回的是"冷流"**：不订阅不执行。Controller 把它当 SSE 流返回、浏览器一订阅，整条链才开始跑（这就是 1.1 讲的"冷流驱动执行"）。
 > 2. **控制流是普通 for 循环**：流式链式不一定要堆 Reactor 高阶算子。`Flux.create` 把一个 for 循环包成流，循环里 `payload = full` 一句话把上一步完整输出喂下一步——比 `concatMap`/`expand` 链清晰得多。**企业项目里流式链式的标准写法**就是这种"控制流留同步、推送用响应式"。
 > 3. **`subscribeOn(boundedElastic)`**：for 循环里有 `streamStep` 的 `.block()`（阻塞等本步完整文本）。阻塞必须跑在专为阻塞任务设计的 `boundedElastic` 线程池，**绝不能跑在 Reactor 调度线程**（会拖垮整个事件循环）。这是"在响应式代码里安全使用阻塞"的关键纪律。
-> 4. **每个事件都同时 `bus.emit` + `sink.next`**：`FluxSinkAdapter` 把这俩收口在一处——`sink.next` 推给 SSE 主消费者（冷流下游），`bus.emit` 广播给 EventBus（热流）供日志/成本/归因等其他消费者订阅。
+> 4. **每个事件都同时 `bus.emit` + `sink.next`**：`FluxSinkAdapter` 把这俩收口在一处——`sink.next` 推给 SSE 主消费者（冷流下游），`bus.emit` 广播给 AgentEventBus（热流）供日志/成本/归因等其他消费者订阅。
 > 5. **sessionId 用局部变量**：循环里直接读局部变量 `sessionId`（同步 for 循环，直接可用）。**第 1 章不写 Reactor Context**——那是第 3 章工具线程要读 sessionId 时才引入（见 3.2.3 ContextPropagationConfig）。第 1 章没有跨线程读 sessionId 的需求，提前引入只会让人困惑。
 > 6. **`reduce` 只订阅上游一次**：chunk 既逐字 emit 又拼成完整文本，靠 `reduce` 的累积器在一次订阅里完成（不用 `collectInto` 再订阅一次，避免重跑 LLM）。
 >
@@ -815,7 +791,7 @@ public abstract class ChainingService {
 ```java
 package com.example.aobs.writing;
 
-import com.example.aobs.obs.EventBus;
+import com.example.aobs.obs.AgentEventBus;
 import com.example.aobs.workflow.ChainingService;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
@@ -830,7 +806,7 @@ import java.util.List;
 @Service
 public class ArticleService extends ChainingService {
 
-    public ArticleService(ChatClient chatClient, EventBus eventBus) {
+    public ArticleService(ChatClient chatClient, AgentEventBus eventBus) {
         super(chatClient, eventBus);
     }
 
@@ -876,10 +852,10 @@ import java.util.Map;
 @RequestMapping("/api/obs")
 public class SseController {
 
-    private final EventBus eventBus;
+    private final AgentEventBus eventBus;
     private final ArticleService articleService;
 
-    public SseController(EventBus eventBus, ArticleService articleService) {
+    public SseController(AgentEventBus eventBus, ArticleService articleService) {
         this.eventBus = eventBus;
         this.articleService = articleService;
     }
@@ -904,7 +880,7 @@ public class SseController {
 
     private ServerSentEvent<String> toSse(AgentEvent e) {
         return ServerSentEvent.<String>builder()
-                .id(e.sessionId() + "-" + e.timestamp().toEpochMilli())  // 帧ID（第2章重连用）
+                .id(e.sessionId() + "-" + e.timestamp())  // 帧ID（第2章重连用；timestamp 已是毫秒）
                 .event(e.type())                                          // 事件类型名（已是 String）
                 .data(toJson(e))
                 .build();
@@ -1025,9 +1001,9 @@ public class SseController {
 >
 > **这个页面随章节演进**：第 1 章只显示事件流；第 2 章加重连演示；第 3 章加工具调用面板；第 5 章加租户切换。每章给完整的页面新版本。
 
-#### 1.3.1 给 EventBus 加定向订阅（页面要用的）
+#### 1.3.1 给 AgentEventBus 加定向订阅（页面要用的）
 
-SSE 接口要"只推某个会话的事件"，所以 `EventBus` 补一个带过滤的 `flux` 重载（1.2.4 的 `SseController` 已经用到了 `flux(e -> sessionId.equals(...))`，这里把实现补上）：
+SSE 接口要"只推某个会话的事件"，所以 `AgentEventBus` 补一个带过滤的 `flux` 重载（1.2.4 的 `SseController` 已经用到了 `flux(e -> sessionId.equals(...))`，这里把实现补上）：
 
 ```java
 /** 消费者调这个：拿过滤后的事件流（SSE 按会话订阅用）。 */
@@ -1067,11 +1043,11 @@ SESSION_COMPLETED 14:30:15   {"type":"SESSION_COMPLETED","data":{}}
 
 **关键认知：冷流天然消除了竞态**。看 1.2.4 的 `stream()`：Controller 直接 `return articleService.run(...).map(toSse)`，`run` 返回的是**冷流**（订阅时才执行）。WebFlux 把这条流返回后，**浏览器一订阅，run 才开始跑**——SESSION_STARTED 是在订阅之后才 emit 的，根本不存在"先发后订"的时间差。
 
-> **对比"热流 + 异步触发"的竞态**：如果像老式写法那样——先 `new Thread(() -> run())` 启动任务（往热流 EventBus 里 emit SESSION_STARTED），再 `return eventBus.flux()` 让前端订阅——那就是"先发后订"，热流不缓存历史，SESSION_STARTED 会丢。这是经典的 SSE 竞态。
+> **对比"热流 + 异步触发"的竞态**：如果像老式写法那样——先 `new Thread(() -> run())` 启动任务（往热流 AgentEventBus 里 emit SESSION_STARTED），再 `return eventBus.flux()` 让前端订阅——那就是"先发后订"，热流不缓存历史，SESSION_STARTED 会丢。这是经典的 SSE 竞态。
 >
 > **本方案为什么避开了它**：`run` 返回冷流、Controller 直接返回它、触发就是订阅本身——三件事合一，从架构上消除了竞态。**这是冷流的核心价值之一**：把"触发执行"和"建立订阅"变成同一件事，没有时序缝隙。
 >
-> **那 EventBus（热流）不就白引入了？** 没。EventBus 服务的是**其他消费者**（日志/成本/归因）——它们订阅 EventBus 时确实可能错过已发出的事件，但那不致命（成本统计漏一帧无所谓，关键事件第 2 章落 Redis 兜底）。SSE 这个**主消费者**走冷流，关键路径稳。这就是 1.1 讲的"冷流驱动 + 热流广播"分工的价值。
+> **那 AgentEventBus（热流）不就白引入了？** 没。AgentEventBus 服务的是**其他消费者**（日志/成本/归因）——它们订阅 AgentEventBus 时确实可能错过已发出的事件，但那不致命（成本统计漏一帧无所谓，关键事件第 2 章落 Redis 兜底）。SSE 这个**主消费者**走冷流，关键路径稳。这就是 1.1 讲的"冷流驱动 + 热流广播"分工的价值。
 
 > **页面仍能暴露别的时序问题**：竞态没了，但"页面打开后 fetch 还没返回的那一两秒，用户不知道提交了没"——这个体验问题还在。1.5 用 READY 帧解决它。
 
@@ -1113,14 +1089,14 @@ SESSION_COMPLETED 14:30:15   {"type":"SESSION_COMPLETED","data":{}}
 src/main/java/com/example/aobs/
 ├── Application.java
 ├── workflow/
-│   └── ChainingService.java     （改：加 EventBus + 埋点）
+│   └── ChainingService.java     （改：加 AgentEventBus + 埋点）
 ├── writing/
 │   └── ArticleService.java      （改：构造器）
 │   （ArticleController 第 0 章接口，本章退役删除）
 └── obs/                          ← 新增
     ├── AgentEvent.java           （新增：record + builder + 枚举）
     ├── EventContent.java         （新增：事件类型枚举）
-    ├── EventBus.java             （新增：事件总线 Sinks.Many）
+    ├── AgentEventBus.java             （新增：事件总线 Sinks.Many）
     └── SseController.java        （新增：订阅 run 的 Flux + READY 帧）
 
 src/main/resources/
@@ -1138,7 +1114,7 @@ git add -A && git commit -m "第1章：流式Agent+事件总线+SSE+调试页面
 
 **这一章最该记住的工程教训**：
 1. **冷流驱动执行，天然消除竞态**——`run` 返回冷流，订阅即执行，"触发"和"订阅"合一，没有"先发后订"的时序缝隙。对比老式"热流 + 异步触发"会丢 SESSION_STARTED。**这是冷流的核心价值**。
-2. **冷流 + 热流分工**——run 返回冷流给 SSE 主消费者（驱动执行、关键路径稳）；EventBus（Sinks.Many 热流）广播给其他消费者（日志/成本，漏一帧无所谓）。这是响应式架构的地基设计。
+2. **冷流 + 热流分工**——run 返回冷流给 SSE 主消费者（驱动执行、关键路径稳）；AgentEventBus（Sinks.Many 热流）广播给其他消费者（日志/成本，漏一帧无所谓）。这是响应式架构的地基设计。
 3. **流式链式的标准写法**——`Flux.create` + 普通 for 循环 + `subscribeOn(boundedElastic)`，比堆 Reactor 高阶算子（concatMap/expand）清晰得多。阻塞跑在弹性线程池，安全。
 
 **还差（后面章节解决）**：
@@ -1147,7 +1123,7 @@ git add -A && git commit -m "第1章：流式Agent+事件总线+SSE+调试页面
 - **断了重连会漏**：网络抖动、刷新页面，重连后中间事件没了 → **第 2 章**
 - **只看到 Workflow 步骤**：还没看到工具调用细节、token 消耗 → **第 3 章**
 
-**最该理解的**：整个架构的「心脏」是 `EventBus`（那个 `Sinks.Many`）。生产者和消费者通过它解耦。这个结构是后面所有演进的地基——后面加什么都不改这个骨架，只往里加东西。
+**最该理解的**：整个架构的「心脏」是 `AgentEventBus`（那个 `Sinks.Many`）。生产者和消费者通过它解耦。这个结构是后面所有演进的地基——后面加什么都不改这个骨架，只往里加东西。
 
 ---
 
@@ -1234,13 +1210,12 @@ spring:
 ```java
 package com.example.aobs.obs;
 
-import java.time.Instant;
 import java.util.Map;
 
 public record AgentEvent(
         String type,                // 事件类型名（EventContent.name()）
         String sessionId,
-        Instant timestamp,
+        long timestamp,             // 毫秒（第 1 章起就是 long）
         Map<String, Object> data,
         Criticality criticality    // ← 第 2 章新增
 ) {
@@ -1271,13 +1246,13 @@ public record AgentEvent(
     public static final class Builder {
         private EventContent type;
         private String sessionId;
-        private Instant timestamp;
+        private Long timestamp;   // null = 构造时填当前毫秒
         private Map<String, Object> data = Map.of();
         private Criticality criticality;   // null = 按 type 推断默认
 
         public Builder type(EventContent t) { this.type = t; return this; }
         public Builder sessionId(String s) { this.sessionId = s; return this; }
-        public Builder timestamp(Instant t) { this.timestamp = t; return this; }
+        public Builder timestamp(long t) { this.timestamp = t; return this; }
         public Builder data(Map<String, Object> d) { this.data = d; return this; }
         public Builder criticality(Criticality c) { this.criticality = c; return this; }
 
@@ -1285,7 +1260,7 @@ public record AgentEvent(
             if (type == null) throw new IllegalStateException("type 必填");
             Criticality c = criticality != null ? criticality : defaultCriticality(type);
             return new AgentEvent(type.name(), sessionId,
-                    timestamp != null ? timestamp : Instant.now(), data, c);
+                    timestamp != null ? timestamp : System.currentTimeMillis(), data, c);
         }
     }
 }
@@ -1338,7 +1313,7 @@ public class CriticalEventStore {
         try {
             String json = mapper.writeValueAsString(event);
             String k = key(event.sessionId());
-            redis.opsForZSet().add(k, json, event.timestamp().toEpochMilli());
+            redis.opsForZSet().add(k, json, event.timestamp());   // timestamp 已是毫秒
             redis.expire(k, TTL);   // 每次存都续期：活跃会话保持，会话停止后 30 分钟自动清理整个 key
         } catch (Exception e) {
             System.err.println("[CriticalEventStore] save failed: " + e.getMessage());
@@ -1373,7 +1348,7 @@ public class CriticalEventStore {
 
 > **API 核实**：`opsForZSet().add(key, member, score)`、`rangeByScore(key, min, max)`、`expire(key, Duration)` 都是 `spring-data-redis` 真实方法。`ObjectMapper` 来自 Jackson（Spring Boot 自带，第 1 章 SseController 已引入）。
 
-#### 2.2.4 EventBus 落库关键事件 + 分配序号
+#### 2.2.4 AgentEventBus 落库关键事件 + 分配序号
 
 这一步同时做两件事：关键事件落库（解决丢失）、分配会话内序号（为乱序重排铺路）。
 
@@ -1385,7 +1360,7 @@ public class CriticalEventStore {
 public record AgentEvent(
         String type,                // 事件类型名（EventContent.name()）
         String sessionId,
-        Instant timestamp,
+        long timestamp,             // 毫秒
         Map<String, Object> data,
         Criticality criticality,
         long sequence        // ← 第 2 章新增：会话内单调递增序号，0 表示未分配
@@ -1402,7 +1377,7 @@ public record AgentEvent(
 
     public static Builder builder() { return new Builder(); }
 
-    /** 快捷构造（sequence 默认 0，由 EventBus 分配；criticality 按 type 推断）。 */
+    /** 快捷构造（sequence 默认 0，由 AgentEventBus 分配；criticality 按 type 推断）。 */
     public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
         return builder().type(type).sessionId(sessionId).data(data).build();
     }
@@ -1410,14 +1385,14 @@ public record AgentEvent(
     public static final class Builder {
         private EventContent type;
         private String sessionId;
-        private Instant timestamp;
+        private Long timestamp;
         private Map<String, Object> data = Map.of();
         private Criticality criticality;
-        // sequence 不进 builder：它由 EventBus 统一分配，不该由构造方填
+        // sequence 不进 builder：它由 AgentEventBus 统一分配，不该由构造方填
 
         public Builder type(EventContent t) { this.type = t; return this; }
         public Builder sessionId(String s) { this.sessionId = s; return this; }
-        public Builder timestamp(Instant t) { this.timestamp = t; return this; }
+        public Builder timestamp(long t) { this.timestamp = t; return this; }
         public Builder data(Map<String, Object> d) { this.data = d; return this; }
         public Builder criticality(Criticality c) { this.criticality = c; return this; }
 
@@ -1425,15 +1400,15 @@ public record AgentEvent(
             if (type == null) throw new IllegalStateException("type 必填");
             Criticality c = criticality != null ? criticality : defaultCriticality(type);
             return new AgentEvent(type.name(), sessionId,
-                    timestamp != null ? timestamp : Instant.now(), data, c, 0L);
+                    timestamp != null ? timestamp : System.currentTimeMillis(), data, c, 0L);
         }
     }
 }
 ```
 
-> **第 2 章这步相对上一步（2.2.2）的变化**：record 再加 `sequence` 字段（6 字段）。`sequence` 不进 builder——它由 EventBus 统一分配（见下方 withSequence），构造方不该自己填。所以 builder 没有序列号方法，`build()` 固定填 0，EventBus emit 时复制一份改 sequence。
+> **第 2 章这步相对上一步（2.2.2）的变化**：record 再加 `sequence` 字段（6 字段）。`sequence` 不进 builder——它由 AgentEventBus 统一分配（见下方 withSequence），构造方不该自己填。所以 builder 没有序列号方法，`build()` 固定填 0，AgentEventBus emit 时复制一份改 sequence。
 
-`src/main/java/com/example/aobs/obs/EventBus.java`（修改：落库 + 序号）：
+`src/main/java/com/example/aobs/obs/AgentEventBus.java`（修改：落库 + 序号）：
 
 ```java
 package com.example.aobs.obs;
@@ -1448,7 +1423,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Component
-public class EventBus {
+public class AgentEventBus {
 
     private final Sinks.Many<AgentEvent> sink =
             Sinks.many().multicast().onBackpressureBuffer(256, false);
@@ -1459,7 +1434,7 @@ public class EventBus {
     // 每个会话一个递增计数器（为序号用）
     private final Map<String, AtomicLong> sequences = new ConcurrentHashMap<>();
 
-    public EventBus(ObjectProvider<CriticalEventStore> storeProvider) {
+    public AgentEventBus(ObjectProvider<CriticalEventStore> storeProvider) {
         this.storeProvider = storeProvider;
     }
 
@@ -1485,8 +1460,9 @@ public class EventBus {
                 e.criticality(), seq);
     }
 
-    public Flux<AgentEvent> flux() {
-        return sink.asFlux();
+    /** 按会话订阅（同第 1 章，复用即可）。 */
+    public Flux<AgentEvent> subscribe(String sessionId) {
+        return sink.asFlux().filter(event -> sessionId.equals(event.sessionId()));
     }
 }
 ```
@@ -1518,12 +1494,12 @@ import reactor.core.scheduler.Schedulers;
 @RequestMapping("/api/obs")
 public class SseController {
 
-    private final EventBus eventBus;
+    private final AgentEventBus eventBus;
     private final ArticleService articleService;
     private final ObjectProvider<CriticalEventStore> storeProvider;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public SseController(EventBus eventBus,
+    public SseController(AgentEventBus eventBus,
                          ArticleService articleService,
                          ObjectProvider<CriticalEventStore> storeProvider) {
         this.eventBus = eventBus;
@@ -1551,7 +1527,7 @@ public class SseController {
             Flux<AgentEvent> replay = (store != null)
                     ? Flux.fromIterable(store.findAfter(sessionId, parseTimestampFrom(lastEventId)))
                     : Flux.empty();
-            Flux<AgentEvent> live = eventBus.subscribe(sessionId);   // 按会话订阅（EventBus 内部过滤）
+            Flux<AgentEvent> live = eventBus.subscribe(sessionId);   // 按会话订阅（AgentEventBus 内部过滤）
             return Flux.concat(replay, live)
                     .takeUntil(e -> e.type() == EventContent.SESSION_COMPLETED
                             || e.type() == EventContent.SESSION_FAILED)
@@ -1567,7 +1543,7 @@ public class SseController {
     }
 ```
 
-> **为什么重连不能再订阅 run**：run 是冷流、且代表"一次写作的执行"。重连时那次写作已经在第一次请求里触发了（或已结束），再订阅 run 会**重跑一遍 LLM**——既浪费钱、也不是用户想要的（用户要的是"接着看之前那次"）。所以重连走「Redis 回放关键事件 + EventBus 订阅后续」——这是热流广播的价值兑现：写作只执行一次，事件进 EventBus，重连者从总线接续。
+> **为什么重连不能再订阅 run**：run 是冷流、且代表"一次写作的执行"。重连时那次写作已经在第一次请求里触发了（或已结束），再订阅 run 会**重跑一遍 LLM**——既浪费钱、也不是用户想要的（用户要的是"接着看之前那次"）。所以重连走「Redis 回放关键事件 + AgentEventBus 订阅后续」——这是热流广播的价值兑现：写作只执行一次，事件进 AgentEventBus，重连者从总线接续。
 >
 > **「SSE 心跳」留给产品对外时**：现在内网/IDE 跑，两事件间隔再长连接也不会被断。等产品部署到 nginx/CDN 后面，代理的 60s 空闲超时会断慢生成连接——那时才需要心跳。**现在不做**（演进纪律），方案见第 7 章 7.1。
     /** 帧ID 格式 "sessionId-时间戳"，取时间戳部分。 */
@@ -1580,7 +1556,7 @@ public class SseController {
 
     private ServerSentEvent<String> toSse(AgentEvent e) {
         return ServerSentEvent.<String>builder()
-                .id(e.sessionId() + "-" + e.timestamp().toEpochMilli())
+                .id(e.sessionId() + "-" + e.timestamp())   // timestamp 已是毫秒
                 .event(e.type())              // 事件类型名（已是 String）
                 .data(toJson(e))
                 .build();
@@ -1597,7 +1573,7 @@ public class SseController {
 }
 ```
 
-> **本章两个改进**：① 加 Last-Event-ID 回放（重连补发断连期间的关键事件）；② 拆正常/重连两种模式（正常订阅 run 冷流，重连走 EventBus.subscribe + Redis 回放）。JSON 序列化（ObjectMapper）和线程池（boundedElastic）第 1 章已就位。
+> **本章两个改进**：① 加 Last-Event-ID 回放（重连补发断连期间的关键事件）；② 拆正常/重连两种模式（正常订阅 run 冷流，重连走 AgentEventBus.subscribe + Redis 回放）。JSON 序列化（ObjectMapper）和线程池（boundedElastic）第 1 章已就位。
 >
 > **Jackson 序列化**：`AgentEvent` 的 `type` 字段是 String（存的是枚举 `name()`，如 `"SESSION_STARTED"`），Jackson 直接序列化成字符串。`toSse` 里 `.event(e.type())` 把它作为 SSE 帧的 event 字段，前端按它 `addEventListener` 分发。
 
@@ -1699,7 +1675,7 @@ function add(text, cls) {
 ```
 src/main/java/com/example/aobs/obs/
 ├── AgentEvent.java          （改：加 criticality + sequence）
-├── EventBus.java            （改：落库 + 分配序号）
+├── AgentEventBus.java            （改：落库 + 分配序号）
 ├── CriticalEventStore.java  （新增：Redis 短期兜底）
 └── SseController.java       （改：回放 + 线程池 + ObjectMapper + sessionId 兼容 query）
 
@@ -1982,9 +1958,9 @@ import java.util.Map;
 @Component
 public class ToolObservationHandler implements ObservationHandler<ToolCallingObservationContext> {
 
-    private final EventBus eventBus;
+    private final AgentEventBus eventBus;
 
-    public ToolObservationHandler(EventBus eventBus) {
+    public ToolObservationHandler(AgentEventBus eventBus) {
         this.eventBus = eventBus;
     }
 
@@ -2313,7 +2289,7 @@ git add -A && git commit -m "第3章：Observation订阅工具调用 + 会话隔
 
 日活涨到上万，单实例扛不住，团队决定起 3 个实例做负载均衡。上线第一天就出三个问题：
 
-1. **事件跨实例不通**——用户请求落到实例 A，但 SSE 连接在实例 B。B 订阅的是自己的 `EventBus`，收不到 A 发的事件。前端永远转圈。
+1. **事件跨实例不通**——用户请求落到实例 A，但 SSE 连接在实例 B。B 订阅的是自己的 `AgentEventBus`，收不到 A 发的事件。前端永远转圈。
 2. **序号乱了**——第 2 章的序号是进程内 `ConcurrentHashMap`。同一个会话两步可能落在不同实例，序号从 1、2 变成 1（A）、1（B），重排逻辑废了。
 3. **单总线吞吐到顶**——单实例并发会话涨了，一个 `Sinks.Many` 灌 5w/s，缓冲爆；某个慢 SSE 消费者拖累所有会话。
 
@@ -2374,15 +2350,15 @@ public class SessionStateStore {
 
 > **API 核实**：`opsForHash().increment(key, hashKey, delta)` 是 spring-data-redis 真实方法，原子操作，多实例并发也唯一。
 
-改 `EventBus` 用外置序号：
+改 `AgentEventBus` 用外置序号：
 
 ```java
-// EventBus 构造器注入 SessionStateStore，emit 里改成：
-public class EventBus {
+// AgentEventBus 构造器注入 SessionStateStore，emit 里改成：
+public class AgentEventBus {
     // ... 删掉原来的 sequences ConcurrentHashMap
     private final SessionStateStore stateStore;
 
-    public EventBus(ObjectProvider<CriticalEventStore> storeProvider,
+    public AgentEventBus(ObjectProvider<CriticalEventStore> storeProvider,
                     SessionStateStore stateStore) {
         this.storeProvider = storeProvider;
         this.stateStore = stateStore;
@@ -2483,11 +2459,11 @@ public class RedisStreamBridge {
 >
 > **防回环**：publish 时带 `instance`（本实例 ID），subscribe 时跳过自己发的——否则实例 A 发的事件经 Stream 回到 A 又发一次，无限循环。
 
-改 `EventBus` 接入广播：
+改 `AgentEventBus` 接入广播：
 
 ```java
-// EventBus 加 RedisStreamBridge，emit 里 publish：
-public class EventBus {
+// AgentEventBus 加 RedisStreamBridge，emit 里 publish：
+public class AgentEventBus {
     private final RedisStreamBridge streamBridge;
     // ...
     public void emit(AgentEvent event) {
@@ -2513,7 +2489,7 @@ public class EventBus {
 
 单 sink → N 个 sink，按 sessionId hash 路由。
 
-`src/main/java/com/example/aobs/obs/ShardedEventBus.java`（替换 EventBus）：
+`src/main/java/com/example/aobs/obs/ShardedEventBus.java`（替换 AgentEventBus）：
 
 ```java
 package com.example.aobs.obs;
@@ -2530,7 +2506,7 @@ import java.util.List;
  * 分片总线：按 sessionId hash 路由到 N 个 sink。
  * - 同一会话同分片 → 会话内有序
  * - 慢消费者只影响 1/N 会话 → 爆炸半径小
- * 替换第 1-3 章的单 sink EventBus。
+ * 替换第 1-3 章的单 sink AgentEventBus。
  */
 @Component
 public class ShardedEventBus implements EventBusSPI {
@@ -2611,7 +2587,7 @@ public interface EventBusSPI {
 
 > **关键不变量**：同一 sessionId 永远落同一分片（hash 路由），会话内有序不受分片影响。
 
-改 `SseController` 用定向订阅（`ChainingService`、`ToolObservationHandler` 里的 `EventBus` 也改成 `EventBusSPI`）：
+改 `SseController` 用定向订阅（`ChainingService`、`ToolObservationHandler` 里的 `AgentEventBus` 也改成 `EventBusSPI`）：
 
 ```java
 // SseController 里原来 eventBus.subscribe(sessionId)（单 sink 时是全量过滤）改成：
@@ -2756,7 +2732,7 @@ public record AgentEvent(
         String tenantId,        // ← 第 5 章新增：租户（隔离 + 成本归因）
         String userId,          // ← 第 5 章新增：用户（成本归因 + 限流）
         String agentVersion,    // ← 第 5 章新增：Agent 版本（回滚定位 + 成本归因）
-        Instant timestamp,
+        long timestamp,         // 毫秒
         Map<String, Object> data,
         Criticality criticality,
         long sequence
@@ -2791,7 +2767,7 @@ public record AgentEvent(
         private String tenantId;
         private String userId;
         private String agentVersion = "v1";
-        private Instant timestamp;
+        private Long timestamp;
         private Map<String, Object> data = Map.of();
         private Criticality criticality;
 
@@ -2800,7 +2776,7 @@ public record AgentEvent(
         public Builder tenantId(String t) { this.tenantId = t; return this; }
         public Builder userId(String u) { this.userId = u; return this; }
         public Builder agentVersion(String v) { this.agentVersion = v; return this; }
-        public Builder timestamp(Instant t) { this.timestamp = t; return this; }
+        public Builder timestamp(long t) { this.timestamp = t; return this; }
         public Builder data(Map<String, Object> d) { this.data = d; return this; }
         public Builder criticality(Criticality c) { this.criticality = c; return this; }
 
@@ -2808,7 +2784,7 @@ public record AgentEvent(
             if (type == null) throw new IllegalStateException("type 必填");
             Criticality c = criticality != null ? criticality : defaultCriticality(type);
             return new AgentEvent(type.name(), sessionId, tenantId, userId, agentVersion,
-                    timestamp != null ? timestamp : Instant.now(), data, c, 0L);
+                    timestamp != null ? timestamp : System.currentTimeMillis(), data, c, 0L);
         }
     }
 }
@@ -3465,7 +3441,7 @@ public class EventArchiveService {
             String traceId = org.slf4j.MDC.get("traceId");
             jdbc.update("INSERT INTO event_archive (session_id, seq, type, tenant_id, trace_id, ts, payload) VALUES (?,?,?,?,?,?,?)",
                     event.sessionId(), event.sequence(), event.type(), event.tenantId(), traceId,
-                    event.timestamp().toEpochMilli(), mapper.writeValueAsString(event));
+                    event.timestamp(), mapper.writeValueAsString(event));   // timestamp 已是毫秒
         } catch (Exception e) {
             System.err.println("[Archive] failed: " + e.getMessage());
         }
@@ -3483,7 +3459,7 @@ public class EventArchiveService {
 >
 > ⚠️ `MDC.get("traceId")` 能拿到的前提是 Spring Boot 的 tracing 已配置好（actuator + 一个 tracer 导出端点，如 Zipkin/Tempo）。没配 tracer 时 MDC 里没有 traceId，这列存 null——不影响归档主流程。配了 tracer 后自动有值，无需改这行代码。
 
-EventBus.emit 里归档所有事件（和落 Redis 一起）；SseController 加查询接口 `GET /api/obs/history/{sessionId}`。
+AgentEventBus.emit 里归档所有事件（和落 Redis 一起）；SseController 加查询接口 `GET /api/obs/history/{sessionId}`。
 
 > **为什么 Redis + 归档两层**：Redis 快但短期（内存贵，30min 兜底）；归档慢但长期（磁盘便宜，事后查）。热冷分层，各取所长。
 >
@@ -3645,7 +3621,7 @@ if (sessionService != null) sessionService.fail(sessionId);   // ← 新增
 子类 `ArticleService` 构造器加 SessionService（配套改动）：
 
 ```java
-public ArticleService(ChatClient chatClient, EventBus eventBus, SessionService sessionService) {
+public ArticleService(ChatClient chatClient, AgentEventBus eventBus, SessionService sessionService) {
     super(chatClient, eventBus, sessionService);
 }
 ```
@@ -3696,7 +3672,7 @@ git add -A && git commit -m "第8.1章：会话最小持久化（状态+输入�
 
 复用第 7 章 `event_archive` 表（不新建表）。回放 = `SELECT payload FROM event_archive WHERE session_id=? ORDER BY seq`，每条 payload 本身就是完整的事件 JSON，包成 SSE 帧推出去。
 
-**关键认知：回放是只读重放，不重跑 LLM**。回放读的是历史快照（归档的事件），不触发 `run`、不烧钱。这点和第 2 章"重连走 EventBus 看后续实时事件"完全不同——回放看"过去的全部"，重连看"断连后的增量"。
+**关键认知：回放是只读重放，不重跑 LLM**。回放读的是历史快照（归档的事件），不触发 `run`、不烧钱。这点和第 2 章"重连走 AgentEventBus 看后续实时事件"完全不同——回放看"过去的全部"，重连看"断连后的增量"。
 
 #### 8.2.2 动手
 
@@ -4763,7 +4739,7 @@ ai-writing-assistant/
 │   └── obs/                              # 可观测层（第 1-6 章逐步长出）
 │       ├── AgentEvent.java               # 事件 record + builder（字段随章节长）
 │       ├── EventContent.java             # 事件类型枚举（第1章起逐章加）
-│       ├── EventBus.java / ShardedEventBus.java   # 总线（第1章）/分片总线（第4章）
+│       ├── AgentEventBus.java / ShardedEventBus.java   # 总线（第1章）/分片总线（第4章）
 │       ├── PropagatedContextValue.java   # Reactor Context key + ThreadLocalAccessor（第3章）
 │       ├── AppContextKeys.java           # 上下文注册中心（第3章）
 │       ├── ContextPropagationConfig.java # 开启自动传播（第3章）
@@ -5044,12 +5020,12 @@ logging:
 
 | 章节 | 新增字段 | record 签名（关键字段） | 构造方式 |
 |------|---------|----------------------|---------|
-| 第 1 章 | — | `(String type, sessionId, timestamp, data)` | `builder()...build()` / `of(type, sessionId, data)` |
-| 第 2 章 | `criticality` | `(..., data, criticality)` | builder 加 `criticality()`（不填按 type 推断） |
-| 第 2 章 | `sequence` | `(..., criticality, sequence)` | 不进 builder，EventBus emit 时分配 |
+| 第 1 章 | — | `(String type, sessionId, long timestamp, data)` | `of(type, sessionId, data)`（直接 new，无 builder） |
+| 第 2 章 | `criticality` | `(..., data, criticality)` | 引入 builder（criticality 可选、按 type 推断默认） |
+| 第 2 章 | `sequence` | `(..., criticality, sequence)` | 不进 builder，AgentEventBus emit 时分配 |
 | 第 5 章 | `tenantId`, `userId`, `agentVersion` | `(type, sessionId, tenantId, userId, agentVersion, timestamp, data, ...)` | builder 加 `tenantId()/userId()/agentVersion()` |
 
-> **为什么用 builder 而不是每章改构造器签名**：record 字段随章节长，每加一个字段，所有 `new AgentEvent(...)` 调用点都要改参数列表、还容易传错位置。builder 是"按名字赋值"——加新字段时老调用点不用改（新字段有默认值）。**只有需要归因的 emit 点（SESSION_STARTED/LLM_TOKENS）才显式传 tenantId/userId**，其余靠默认值。这就是第 1 章一开始就用 builder 的回报——字段演进时改动可控。
+> **为什么第 1 章不用 builder、第 2 章才引入**：第 1 章只有 4 字段，`of(...)` 内部直接 `new` 最清楚。第 2 章加 criticality（可选）+ sequence（由 Bus 填）后，直接 new 要传一堆参数还容易错位——这时引入 builder（按名字赋值、可选字段有默认值）才有回报。**不为想象中的复杂度提前设计**。
 >
 > `type` 字段是 `String`（存 `EventContent.name()`，如 `"SESSION_STARTED"`）——构造端用枚举（编译期校验），存储/序列化是字符串（宽松）。序列化时 Jackson 直接输出字符串，前端拿到的 JSON 里 `type` 就是 `"SESSION_STARTED"`。
 
@@ -5529,7 +5505,7 @@ String system = bucket.equals("v2") ? OUTLINE_V2 : OUTLINE_V1;
 // 事件带 promptVersion（第 5 章的 agentVersion 字段，或单独加 promptVersion）
 ```
 
-**指标聚合**：消费者订阅 EventBus，按 `promptVersion` 聚合——成功率、平均 token、平均耗时、（接 A.13 的）用户反馈分布。对比两个桶的指标，决定 v2 是否更好。
+**指标聚合**：消费者订阅 AgentEventBus，按 `promptVersion` 聚合——成功率、平均 token、平均耗时、（接 A.13 的）用户反馈分布。对比两个桶的指标，决定 v2 是否更好。
 
 **为什么不进主体**：分流逻辑是产品迭代工具，和"可观测性"正交。可观测提供数据（事件带 promptVersion），A/B 是数据的**用法**之一。本文把"带版本字段"做进事件（第 5 章），分流和聚合留给产品团队按需搭。
 
