@@ -1066,7 +1066,7 @@ public class SseController {
         document.getElementById('send').disabled = true;
 
         try {
-            const resp = await fetch('/demo/article?prompt=' + encodeURIComponent(prompt), {
+            const resp = await fetch('/api/obs/article?prompt=' + encodeURIComponent(prompt), {
                 headers: { 'sessionId': sessionId, 'Accept': 'text/event-stream' }
             });
             const reader = resp.body.getReader();
@@ -2741,7 +2741,7 @@ private AgentEvent emitTokens(String sessionId, org.springframework.ai.chat.mode
                 const step = d.step !== undefined ? d.step : 0;
                 const tDiv = document.createElement('div');
                 tDiv.className = 'tokens';
-                tDiv.textContent = '💰 ' + (d.totalTokens || 0) + ' tokens · $' + cost.toFixed(4);
+                tDiv.textContent = '💰 ' + (d.totalTokens || 0) + ' tokens';
                 const card = document.getElementById('badge-' + step);
                 if (card && card.parentElement) {
                     card.parentElement.parentElement.querySelector('.step-collapse-body')?.appendChild(tDiv);
@@ -3316,7 +3316,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 1. **租户隔离**：租户 A 的会话/事件/成本，租户 B 绝不能看到。
 2. **成本归因**：每次 token 消耗要算到「哪个租户、哪个用户、哪个 Agent 版本」头上，用于分摊计费。
-3. **多级配额**：第 3 章只有单会话预算。某租户发起一万个会话、每个都不超单会话预算，但租户总成本爆了——要 per-tenant 日预算 + per-user 限流。
+3. **多级配额**：第 3 章只有单会话配额。某租户发起一万个会话、每个都不超单会话配额，但租户总 token 爆了——要 per-tenant 日 token 上限 + per-user 限流。
 
 ### 5.1 思路
 
@@ -3436,14 +3436,14 @@ import java.time.LocalDate;
         this.redis = redis;
     }
 
-    /** per-tenant 日成本累加 + 上限校验。返回 false = 该租户今日预算用尽。 */
-    public boolean checkTenantDailyBudget(String tenantId, double inc, double budgetUsd) {
-        String key = "aobs:quota:tenant:" + tenantId + ":cost:" + LocalDate.now();
-        Double after = redis.opsForValue().increment(key, inc);
-        if (after != null && after == inc) {
-            redis.expire(key, Duration.ofDays(1));   // 首次写设 TTL
+    /** per-tenant 日 token 用量累加 + 上限校验。返回 false = 该租户今日 token 上限用尽。 */
+    public boolean checkTenantDailyTokens(String tenantId, int tokens, int dailyTokenLimit) {
+        String key = "aobs:quota:tenant:" + tenantId + ":tokens:" + LocalDate.now();
+        Long after = redis.opsForValue().increment(key, tokens);
+        if (after != null && after == tokens) {
+            redis.expire(key, Duration.ofDays(1));
         }
-        return after == null || after <= budgetUsd;
+        return after == null || after <= dailyTokenLimit;
     }
 
     /** per-user 速率限制（每分钟 max 次）。返回 false = 触发限流。 */
@@ -3463,7 +3463,7 @@ import java.time.LocalDate;
 
 > **API 核实**：`opsForValue().increment(key, double)`、`opsForZSet().removeRangeByScore/zCard/add` 全部真实存在。
 >
-> **三层配额分工**：per-session 防单次失控（第 3 章的 budgetPerSession）；per-tenant 防租户烧爆总账；per-user 防滥用刷接口。
+> **三层配额分工**：per-session 防单次失控（第 3 章的 tokenLimitPerSession）；per-tenant 防租户烧爆总账；per-user 防滥用刷接口。
 
 #### 5.2.5 在 ChainingService 里接入配额
 
@@ -3473,19 +3473,18 @@ import java.time.LocalDate;
     QUOTA_EXCEEDED     // ← 第 5 章加：配额超限
 ```
 
-`emitTokens` 里（第 3 章烧 token 后发 LLM_TOKENS 的地方），每次算完成本后校验租户预算：
+`emitTokens` 里（第 3 章烧 token 后发 LLM_TOKENS 的地方），每次拿到 token 用量后校验租户配额：
 
 ```java
 private void emitTokens(String sessionId, String tenantId, String userId,
                         ChatResponse response) {
-    // ... 原有 token 统计
-    double cost = costCalculator.calculate(prompt, completion, model);
+    // ... 原有 token 统计（prompt/completion/totalTokens）
 
-    // 租户日预算校验
-    if (!quotaService.checkTenantDailyBudget(tenantId, cost, tenantDailyBudget)) {
+    // 租户日 token 上限校验（按 token 数，不按金额）
+    if (!quotaService.checkTenantDailyTokens(tenantId, totalTokens, tenantDailyTokenLimit)) {
         eventBus.emit(AgentEvent.of(EventContent.QUOTA_EXCEEDED, sessionId, tenantId, userId,
-                Map.of("reason", "tenant-daily-budget", "cost", cost)));
-        throw new RuntimeException("租户日预算超限");
+                Map.of("reason", "tenant-daily-tokens", "totalTokens", totalTokens)));
+        throw new RuntimeException("租户日 token 上限超限");
     }
 }
 ```
@@ -3494,7 +3493,7 @@ private void emitTokens(String sessionId, String tenantId, String userId,
 
 **场景 1：租户隔离（页面演示）**——第 5 章页面加个租户下拉框（`tenantA` / `tenantB`），切换后请求带对应 `X-Tenant-Id`。开两个浏览器窗口分别选不同租户，A 的页面只看 A 的事件、B 的只看 B 的——多租户隔离可视化。
 
-**场景 2：配额拦截**——给 tenantA 设日预算 $0.01，页面跑长任务，事件流里出现 `QUOTA_EXCEEDED`（前端据此提示"额度用尽"）。
+**场景 2：配额拦截**——给 tenantA 设日 token 上限 100000，页面跑长任务，事件流里出现 `QUOTA_EXCEEDED`（前端据此提示"额度用尽"）。
 
 **场景 3：成本归因**——查 Redis 看租户日成本累加：
 ```
@@ -3521,7 +3520,7 @@ git add -A && git commit -m "第5章：多租户隔离 + 成本归因 + 多级�
 
 **做了**：租户隔离（双向校验）、成本归因（userId/tenantId/agentVersion）、多级配额（session/tenant/user）。
 
-**架构变化**：单租户 → 多租户；单级预算 → 三级配额。
+**架构变化**：单租户 → 多租户；单级配额 → 三级配额。
 
 **关于事件 schema 的向后兼容**（和 `agentVersion` 无关——agentVersion 是代码版本，schema 兼容是另一件事）：事件结构会随业务演进（加字段、改结构），企业级要保证：
 - **老前端收到新事件**：新字段加在 `data` Map 里（前端忽略不认识的字段）或 record 末尾（反序列化兼容）——**只加字段不删字段、不改字段类型**。
@@ -5112,7 +5111,7 @@ CREATE TABLE IF NOT EXISTS tenant (
     tenant_id VARCHAR(64) PRIMARY KEY,
     name VARCHAR(128),
     status VARCHAR(16) NOT NULL,          -- ACTIVE/SUSPENDED
-    daily_budget_usd DOUBLE NOT NULL,
+    daily_token_limit INT NOT NULL,
     user_rpm_limit INT NOT NULL,
     api_key_hash VARCHAR(128),            -- SHA-256 哈希（不存明文）
     created_at BIGINT NOT NULL
@@ -5145,12 +5144,12 @@ public class TenantService {
     public TenantService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
     public void create(Tenant t, String plainApiKey) {
-        jdbc.update("INSERT INTO tenant (tenant_id,name,status,daily_budget_usd,user_rpm_limit,api_key_hash,created_at) VALUES (?,?,?,?,?,?,?)",
+        jdbc.update("INSERT INTO tenant (tenant_id,name,status,daily_token_limit,user_rpm_limit,api_key_hash,created_at) VALUES (?,?,?,?,?,?,?)",
                 t.tenantId(), t.name(), t.status().name(), t.dailyBudgetUsd(),
                 t.userRpmLimit(), sha256(plainApiKey), System.currentTimeMillis());
     }
-    public void updateQuota(String id, double budget, int rpm) {
-        jdbc.update("UPDATE tenant SET daily_budget_usd=?, user_rpm_limit=? WHERE tenant_id=?", budget, rpm, id);
+    public void updateQuota(String id, int tokenLimit, int rpm) {
+        jdbc.update("UPDATE tenant SET daily_token_limit=?, user_rpm_limit=? WHERE tenant_id=?", tokenLimit, rpm, id);
     }
     public void setStatus(String id, Tenant.TenantStatus s) {
         jdbc.update("UPDATE tenant SET status=? WHERE tenant_id=?", s.name(), id);
@@ -5159,7 +5158,7 @@ public class TenantService {
         var rs = jdbc.query("SELECT * FROM tenant WHERE tenant_id=?", (r,i) -> new Tenant(
                 r.getString("tenant_id"), r.getString("name"),
                 Tenant.TenantStatus.valueOf(r.getString("status")),
-                r.getDouble("daily_budget_usd"), r.getInt("user_rpm_limit"),
+                r.getDouble("daily_token_limit"), r.getInt("user_rpm_limit"),
                 r.getString("api_key_hash"), r.getLong("created_at")), id);
         return rs.isEmpty() ? null : rs.get(0);
     }
@@ -5167,7 +5166,7 @@ public class TenantService {
         return jdbc.query("SELECT * FROM tenant ORDER BY created_at DESC", (r,i) -> new Tenant(
                 r.getString("tenant_id"), r.getString("name"),
                 Tenant.TenantStatus.valueOf(r.getString("status")),
-                r.getDouble("daily_budget_usd"), r.getInt("user_rpm_limit"),
+                r.getDouble("daily_token_limit"), r.getInt("user_rpm_limit"),
                 r.getString("api_key_hash"), r.getLong("created_at")));
     }
     /** 鉴权：租户存在 + ACTIVE + key 哈希匹配。 */
@@ -5233,8 +5232,8 @@ public class TenantController {
         return Map.of("tenantId", body.get("tenantId"), "apiKey", apiKey, "msg", "妥善保存 apiKey，之后不可见");
     }
     @PutMapping("/{id}/quota")
-    public void quota(@PathVariable String id, @RequestParam double budget, @RequestParam int rpm) {
-        tenantService.updateQuota(id, budget, rpm);
+    public void quota(@PathVariable String id, @RequestParam int tokenLimit, @RequestParam int rpm) {
+        tenantService.updateQuota(id, tokenLimit, rpm);
     }
     @PutMapping("/{id}/status")
     public void status(@PathVariable String id, @RequestParam String s) {
