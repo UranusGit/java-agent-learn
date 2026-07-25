@@ -760,13 +760,15 @@ public class LlmStepExecutor {
     /**
      * 执行单步：发 STEP_START，流式推 CONTENT_DELTA，末尾发 STEP_END（带完整 output）。
      * 全程响应式，不 block——调用方在响应式链里 concatMap 它即可。
+     *
+     * 用 Flux.concat(start, deltas, end) 顺序串起三段，简洁直观。
      */
     public Flux<AgentEvent> executeStep(String system, String userPrompt, String sessionId,
                                         int step, int total) {
         Flux<AgentEvent> start = Flux.just(AgentEvent.of(EventContent.STEP_START, sessionId,
                 Map.of("step", step, "total", total)));
 
-        // 流式调 LLM：每个 chunk 既推 CONTENT_DELTA、又累积进 acc（响应式链内顺序写，安全）
+        // 流式调 LLM：每个 chunk 推 CONTENT_DELTA，同时累积进 StringBuilder
         StringBuilder acc = new StringBuilder();
         Flux<AgentEvent> deltas = chatClient.prompt()
                 .system(system)
@@ -782,20 +784,20 @@ public class LlmStepExecutor {
                     data.put("step", step);
                     return AgentEvent.of(EventContent.CONTENT_DELTA, sessionId, data);
                 });
-        // 步结束：deltas 完成时 acc 已攒齐完整文本，发 STEP_END 带上它（下一步的输入来源）
-        Flux<AgentEvent> end = deltas.thenMany(Flux.defer(() -> {
+
+        // 步结束：Flux.defer 延迟创建，直到 concat 订阅它时 acc 已攒齐（deltas 已跑完）
+        Flux<AgentEvent> end = Flux.defer(() -> {
             Map<String, Object> data = new HashMap<>();
             data.put("step", step);
-            data.put("output", acc.toString());   // 完整 output
+            data.put("output", acc.toString());
             return Flux.just(AgentEvent.of(EventContent.STEP_END, sessionId, data));
-        }));
+        });
 
-        return Flux.concat(start, end);
+        return Flux.concat(start, deltas, end);
     }
-}
 ```
 
-> **`executeStep` 的响应式结构**（关键认知）：`deltas` 流订阅后逐个推 CONTENT_DELTA 并把 chunk 累积进 `acc`；`deltas.thenMany(...)` 在 deltas 流**完成时**执行，这时 `acc` 已攒齐完整文本，发 STEP_END 带上它。**全程订阅一次、不 block**——`acc` 在同一订阅链里被顺序写，响应式安全。
+> **`executeStep` 的响应式结构**：`Flux.concat(start, deltas, end)` 依次订阅三段——start（STEP_START）、deltas（CONTENT_DELTA）、end（STEP_END）。end 用 `Flux.defer` 延迟创建，直到 concat 订阅它时 deltas 已跑完、`acc` 已攒齐完整文本。`acc` 在同一订阅链里被顺序写，**全程订阅一次、不 block**。
 >
 > **`@Component` 让它独立**：第 7 章给 `executeStep` 加 `@Retry` 时，因为是独立 Bean、ChainingService 注入调用它（非自调用），AOP 代理生效，重试真正生效——顺带解决了"自调用绕过代理"的老问题。
 
@@ -928,74 +930,314 @@ public class SseController {
 <head>
     <meta charset="UTF-8">
     <title>AI 写作助手 · 可观测调试台</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
     <style>
-        body { font-family: -apple-system, "PingFang SC", sans-serif; background: #f7f7f8; margin: 0; padding: 24px; }
-        h1 { font-size: 18px; }
-        #bar { display: flex; gap: 8px; margin: 16px 0; }
-        #prompt { flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-        #send { padding: 8px 16px; background: #4d6bfe; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
-        #send:disabled { background: #c5cdfa; }
-        #events { background: #fff; border-radius: 8px; padding: 12px; max-height: 70vh; overflow-y: auto; }
-        .ev { padding: 6px 8px; margin: 4px 0; border-left: 3px solid #4d6bfe; font-size: 13px; background: #fafafa; }
-        .ev b { color: #4d6bfe; }
-        .ev .t { color: #999; font-size: 11px; margin-left: 8px; }
+        *, *::before, *::after { box-sizing: border-box; }
+        body { font-family: -apple-system, "PingFang SC", sans-serif; background: #f7f7f8; margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column; color: #333; }
+
+        /* 顶部标题 */
+        #top-bar { padding: 16px 24px 8px; flex-shrink: 0; }
+        #top-bar h1 { font-size: 18px; margin: 0 0 2px 0; }
+        #top-bar .subtitle { font-size: 13px; color: #888; }
+
+        /* 可滚动内容区 */
+        #content { flex: 1; overflow-y: auto; padding: 0 24px 16px; }
+
+        /* 状态条 */
+        #status-bar { margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; font-size: 13px; background: #f0f4ff; color: #4d6bfe; display: none; align-items: center; gap: 8px; }
+        #status-bar.show { display: flex; }
+        #status-bar .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #c5cdfa; border-top-color: #4d6bfe; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #status-bar.error { background: #fff0f0; color: #c62828; }
+        #status-bar.done { background: #e6f7e6; color: #1b8a1b; }
+
+        /* 中间步：折叠卡片 */
+        .step-collapse { border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 10px; overflow: hidden; background: #fff; }
+        .step-collapse-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; user-select: none; background: #fafafa; transition: background 0.15s; }
+        .step-collapse-header:hover { background: #f0f0f0; }
+        .step-collapse-header .arrow { font-size: 12px; color: #999; transition: transform 0.2s; flex-shrink: 0; }
+        .step-collapse-header .arrow.open { transform: rotate(90deg); }
+        .step-collapse-header .label { font-size: 13px; font-weight: 600; color: #555; }
+        .step-collapse-header .badge { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: #eee; color: #888; margin-left: auto; }
+        .step-collapse-header .badge.done { background: #e6f7e6; color: #1b8a1b; }
+        .step-collapse-header .badge.active { background: #e0f0ff; color: #1a73e8; }
+        .step-collapse-body { display: none; padding: 14px; border-top: 1px solid #e0e0e0; }
+        .step-collapse-body.open { display: block; }
+        .step-collapse-body .preview { font-size: 13px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .step-collapse-body .content { font-size: 14px; line-height: 1.7; }
+        .step-collapse-body .content p { margin: 0.3em 0; }
+
+        /* 最终结果 */
+        #final-result { border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background: #fff; display: none; margin-bottom: 12px; }
+        #final-result.show { display: block; }
+        #final-result .fr-header { padding: 12px 16px; font-size: 15px; font-weight: 600; background: #fafafa; border-bottom: 1px solid #e0e0e0; color: #333; display: flex; align-items: center; gap: 8px; }
+        #final-result .fr-header .icon { font-size: 18px; }
+        #final-result .fr-body { padding: 20px 24px; line-height: 1.8; font-size: 15px; }
+        #final-result .fr-body .cursor { display: inline-block; width: 2px; height: 18px; background: #4d6bfe; animation: blink 0.8s step-end infinite; vertical-align: text-bottom; margin-left: 1px; }
+        @keyframes blink { 50% { opacity: 0; } }
+        #final-result .fr-body h1, #final-result .fr-body h2, #final-result .fr-body h3 { margin: 1em 0 0.5em; }
+        #final-result .fr-body h1 { font-size: 22px; }
+        #final-result .fr-body h2 { font-size: 18px; border-bottom: 1px solid #eee; padding-bottom: 6px; }
+        #final-result .fr-body h3 { font-size: 16px; }
+        #final-result .fr-body p { margin: 0.5em 0; }
+        #final-result .fr-body ul, #final-result .fr-body ol { padding-left: 24px; }
+        #final-result .fr-body li { margin: 0.3em 0; }
+        #final-result .fr-body strong { font-weight: 600; }
+        #final-result .fr-body code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
+        #final-result .fr-body pre { background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
+
+        /* 空状态 */
+        .empty-state { text-align: center; color: #ccc; padding: 60px 20px; font-size: 14px; line-height: 2; }
+
+        /* 底部输入栏 */
+        #bottom-bar { flex-shrink: 0; padding: 12px 24px 16px; background: #fff; border-top: 1px solid #e0e0e0; display: flex; gap: 8px; }
+        #prompt { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; }
+        #prompt:focus { outline: none; border-color: #4d6bfe; }
+        #send { padding: 10px 24px; background: #4d6bfe; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; white-space: nowrap; }
+        #send:disabled { background: #c5cdfa; cursor: not-allowed; }
     </style>
 </head>
 <body>
-<h1>AI 写作助手 · 可观测调试台（第 1 章）</h1>
-<div id="bar">
+<div id="top-bar">
+    <h1>AI 写作助手 · 可观测调试台</h1>
+    <div class="subtitle">输入主题 → 三步链（大纲 → 草稿 → 润色），过程可见</div>
+</div>
+
+<div id="content">
+    <!-- 状态条 -->
+    <div id="status-bar"><span class="spinner"></span><span id="status-text">正在生成…</span></div>
+
+    <!-- 中间步：折叠区 -->
+    <div id="steps-container"></div>
+
+    <!-- 最终结果 -->
+    <div id="final-result">
+        <div class="fr-header"><span class="icon">📄</span> 润色结果</div>
+        <div class="fr-body" id="final-body"></div>
+    </div>
+
+    <div id="empty" class="empty-state">
+        <div>输入主题，点击下方「生成」</div>
+        <div style="margin-top:8px;color:#ddd;">将依次生成大纲、草稿、润色最终稿</div>
+    </div>
+</div>
+
+<!-- 底部输入栏 -->
+<div id="bottom-bar">
     <input id="prompt" placeholder="输入主题，如：AI 的未来" value="AI 的未来">
     <button id="send" onclick="start()">生成</button>
 </div>
-<div id="events"></div>
+
 <script>
     let sending = false;
+    const STEPS = ['大纲', '草稿', '润色'];
+    const stepState = {};
+
     async function start() {
         if (sending) return;
         const prompt = document.getElementById('prompt').value.trim();
         if (!prompt) return;
         const sessionId = 's-' + Date.now();
-        document.getElementById('events').innerHTML = '';
+
+        // 重置
+        document.getElementById('steps-container').innerHTML = '';
+        document.getElementById('final-result').classList.remove('show');
+        document.getElementById('final-body').innerHTML = '';
+        document.getElementById('empty').style.display = 'none';
+        for (const k of Object.keys(stepState)) delete stepState[k];
+        for (let i = 0; i < 3; i++) stepState[i] = 0;
+
+        // 创建中间步折叠卡片（只建第 0、1 步；第 2 步直接展示在底部最终结果）
+        const stepCards = {};
+        for (let i = 0; i < 2; i++) {
+            stepCards[i] = createStepCollapse(i, STEPS[i]);
+        }
+        const finalBody = document.getElementById('final-body');
+
+        setStatus('progress', `🚀 开始生成「${prompt}」…`);
+
         sending = true;
         document.getElementById('send').disabled = true;
 
-        // fetch SSE 接口，用 ReadableStream 逐帧读取（不用 EventSource，因为要带 sessionId header）
-        const resp = await fetch('/api/obs/article?prompt=' + encodeURIComponent(prompt), {
-            headers: { 'sessionId': sessionId, 'Accept': 'text/event-stream' }
-        });
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-            let idx;
-            while ((idx = buffer.indexOf('\n\n')) >= 0) {       // 按空行切 SSE 帧
-                handleFrame(buffer.slice(0, idx));
-                buffer = buffer.slice(idx + 2);
+        try {
+            const resp = await fetch('/demo/article?prompt=' + encodeURIComponent(prompt), {
+                headers: { 'sessionId': sessionId, 'Accept': 'text/event-stream' }
+            });
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                    handleFrame(buffer.slice(0, idx), stepCards, finalBody);
+                    buffer = buffer.slice(idx + 2);
+                }
             }
+        } finally {
+            sending = false;
+            document.getElementById('send').disabled = false;
         }
-        sending = false;
-        document.getElementById('send').disabled = false;
     }
 
-    function handleFrame(frame) {
-        let type = '', data = '';
+    function createStepCollapse(idx, label) {
+        const container = document.getElementById('steps-container');
+        const card = document.createElement('div');
+        card.className = 'step-collapse';
+
+        const header = document.createElement('div');
+        header.className = 'step-collapse-header';
+        header.innerHTML = `
+            <span class="arrow">▶</span>
+            <span class="label">步骤 ${idx + 1}：${label}</span>
+            <span class="badge" id="badge-${idx}">等待中</span>
+        `;
+
+        const body = document.createElement('div');
+        body.className = 'step-collapse-body';
+        body.innerHTML = '<div class="preview" id="preview-' + idx + '">等待内容…</div>';
+
+        header.addEventListener('click', () => {
+            body.classList.toggle('open');
+            header.querySelector('.arrow').classList.toggle('open');
+        });
+
+        card.appendChild(header);
+        card.appendChild(body);
+        container.appendChild(card);
+        return { header, body, card, preview: body.querySelector('.preview') };
+    }
+
+    function handleFrame(frame, stepCards, finalBody) {
+        let type = '', dataStr = '';
         for (const line of frame.split('\n')) {
             if (line.startsWith('event:')) type = line.slice(6).trim();
-            if (line.startsWith('data:')) data += line.slice(5).trim();
+            if (line.startsWith('data:')) dataStr += line.slice(5).trim();
         }
-        if (!type) return;
-        const div = document.createElement('div');
-        div.className = 'ev';
-        div.innerHTML = '<b>' + type + '</b><span class="t">' + new Date().toLocaleTimeString() + '</span><br>' + data;
-        document.getElementById('events').appendChild(div);
-        document.getElementById('events').scrollTop = 99999;
+        if (!type || !dataStr) return;
+
+        let parsed;
+        try { parsed = JSON.parse(dataStr); } catch { return; }
+        const d = parsed.data || {};
+
+        switch (type) {
+            case 'READY':
+                setStatus('progress', '连接已建立，AI 开始思考…');
+                break;
+
+            case 'SESSION_STARTED':
+                setStatus('progress', '会话开始，准备生成…');
+                break;
+
+            case 'STEP_START': {
+                const step = d.step;
+                if (step !== undefined && stepState[step] === 0) {
+                    stepState[step] = 1;
+                    if (step < 2) {
+                        const badge = document.getElementById('badge-' + step);
+                        if (badge) { badge.textContent = '⏳ 生成中'; badge.className = 'badge active'; }
+                        const sc = stepCards[step];
+                        if (sc) { sc.body.classList.add('open'); sc.header.querySelector('.arrow').classList.add('open'); }
+                    }
+                    setStatus('progress', `📝 步骤 ${step + 1}：正在${STEPS[step] || ''}…`);
+                    autoScroll();
+                }
+                break;
+            }
+
+            case 'CONTENT_DELTA': {
+                const step = d.step;
+                const text = d.text || '';
+                if (step === undefined || !text) break;
+                if (step < 2) {
+                    const preview = document.getElementById('preview-' + step);
+                    if (preview) {
+                        if (preview.dataset.acc === undefined) preview.dataset.acc = '';
+                        preview.dataset.acc += text;
+                        const plain = preview.dataset.acc.replace(/\*\*/g, '').replace(/#/g, '').replace(/\n/g, ' ');
+                        preview.textContent = plain.length > 120 ? plain.slice(0, 120) + '…' : plain;
+                    }
+                } else if (step === 2) {
+                    // 第 2 步实时流式展示到最终结果区
+                    if (!finalBody.dataset.acc) finalBody.dataset.acc = '';
+                    finalBody.dataset.acc += text;
+                    const content = finalBody.dataset.acc;
+                    try { finalBody.innerHTML = marked.parse(content) + '<span class="cursor">▌</span>'; }
+                    catch { finalBody.textContent = content + '▌'; }
+                    document.getElementById('final-result').classList.add('show');
+                    autoScroll();
+                }
+                break;
+            }
+
+            case 'STEP_END': {
+                const step = d.step;
+                const output = d.output || '';
+                if (step === undefined) break;
+                stepState[step] = 2;
+
+                if (step < 2) {
+                    const badge = document.getElementById('badge-' + step);
+                    if (badge) { badge.textContent = '✅ 完成'; badge.className = 'badge done'; }
+                    const sc = stepCards[step];
+                    if (sc) {
+                        sc.body.innerHTML = '';
+                        const contentDiv = document.createElement('div');
+                        contentDiv.className = 'content';
+                        try { contentDiv.innerHTML = marked.parse(output); } catch { contentDiv.textContent = output; }
+                        sc.body.appendChild(contentDiv);
+                        sc.body.classList.remove('open');
+                        sc.header.querySelector('.arrow').classList.remove('open');
+                    }
+                    setStatus('progress', `✅ 步骤 ${step + 1}（${STEPS[step]}）完成，进入下一步…`);
+                    autoScroll();
+                }
+
+                // 第 2 步（润色结果）展示到最终结果区
+                if (step === 2) {
+                    try { finalBody.innerHTML = marked.parse(output); } catch { finalBody.textContent = output; }
+                    document.getElementById('final-result').classList.add('show');
+                    setStatus('done', '✅ 生成完成');
+                    autoScroll();
+                }
+                break;
+            }
+
+            case 'SESSION_COMPLETED':
+                if (stepState[2] !== 2) setStatus('done', '✅ 会话完成');
+                break;
+
+            case 'SESSION_FAILED': {
+                const err = d.error || '未知错误';
+                setStatus('error', '❌ 生成失败：' + err);
+                break;
+            }
+        }
+    }
+
+    function autoScroll() {
+        const el = document.getElementById('content');
+        el.scrollTop = el.scrollHeight;
+    }
+
+    function setStatus(mode, msg) {
+        const bar = document.getElementById('status-bar');
+        bar.className = 'show ' + mode;
+        bar.innerHTML = '';
+        if (mode === 'progress') bar.innerHTML = '<span class="spinner"></span>';
+        else if (mode === 'done') bar.innerHTML = '<span>✅</span>';
+        else if (mode === 'error') bar.innerHTML = '<span>❌</span>';
+        const span = document.createElement('span');
+        span.id = 'status-text';
+        span.textContent = msg;
+        bar.appendChild(span);
     }
 </script>
 </body>
 </html>
+
 ```
 
 > **页面怎么读事件**：后端返回的是标准 SSE 流（每帧有 `event:` 行和 `data:` 行，帧间空行分隔）。前端用 `fetch + ReadableStream` 逐块读、按空行切帧。没用浏览器原生 `EventSource`，因为 `EventSource` 不能设自定义 header（`sessionId` 走 header）。
@@ -1319,7 +1561,7 @@ public class CriticalEventStore {
      * 读某会话中，指定时间戳之后的所有事件（重连回放用）。
      * @param afterEpochMs 只读这个时间戳之后的事件
      */
-    public List<AgentEvent> findAfter(String sessionId, long afterEpochMs) {
+     public List<AgentEvent> findAfter(String sessionId, long afterEpochMs) {
         Set<String> jsonSet = redis.opsForZSet().rangeByScore(
                 key(sessionId), afterEpochMs + 1, Double.MAX_VALUE);
         if (jsonSet == null) return List.of();
@@ -1332,8 +1574,8 @@ public class CriticalEventStore {
             }
         }
         return result;
-    }
-}
+     }
+   }
 ```
 
 > **API 核实**：`opsForZSet().add(key, member, score)`、`rangeByScore(key, min, max)`、`expire(key, Duration)` 都是 `spring-data-redis` 真实方法。`ObjectMapper` 来自 Jackson（Spring Boot 自带，第 1 章 SseController 已引入）。
