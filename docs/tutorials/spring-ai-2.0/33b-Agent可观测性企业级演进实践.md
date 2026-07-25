@@ -2430,9 +2430,7 @@ return Flux.concat(start, end);   // start 同第 1 章
 `emitTokens` 方法（加到 LlmStepExecutor）：
 
 ```java
-private final CostCalculator costCalculator;   // 构造器注入（第 3 章新增）
-
-/** 取 Usage 发 LLM_TOKENS 事件。流式下 Usage 在最后一个 response 的 metadata 里。返回 null=不发自定义事件。 */
+/** 取 Usage 发 LLM_TOKENS 事件（只统计 token 用量，不算成本）。返回 null=不发事件。 */
 private AgentEvent emitTokens(String sessionId, org.springframework.ai.chat.model.ChatResponse response) {
     try {
         if (response == null) return null;
@@ -2441,41 +2439,16 @@ private AgentEvent emitTokens(String sessionId, org.springframework.ai.chat.mode
         int prompt = usage.getPromptTokens() == null ? 0 : usage.getPromptTokens();
         int completion = usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens();
         String model = response.getMetadata().getModel();
-        double cost = costCalculator.calculate(prompt, completion, model);
         return AgentEvent.of(EventContent.LLM_TOKENS, sessionId,
                 Map.of("promptTokens", prompt, "completionTokens", completion,
-                        "totalTokens", prompt + completion, "model", String.valueOf(model),
-                        "costUsd", cost));
+                        "totalTokens", prompt + completion, "model", String.valueOf(model)));
     } catch (Exception ignore) {
         return null;   // 统计失败不影响主流程
     }
 }
-```java
-
-> LlmStepExecutor 构造器加 `CostCalculator`：`public LlmStepExecutor(ChatClient chatClient, CostCalculator costCalculator)`。
-
-/** 取 Usage 发 LLM_TOKENS 事件。流式下 Usage 在最后一个 response 的 metadata 里。 */
-private void emitTokens(String sessionId, org.springframework.ai.chat.model.ChatResponse response) {
-    try {
-        if (response == null) return;
-        var usage = response.getMetadata().getUsage();
-        if (usage == null) return;
-        int prompt = usage.getPromptTokens() == null ? 0 : usage.getPromptTokens();
-        int completion = usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens();
-        String model = response.getMetadata().getModel();
-        double cost = costCalculator.calculate(prompt, completion, model);
-
-        eventBus.emit(AgentEvent.of(EventContent.LLM_TOKENS, sessionId,
-                Map.of("promptTokens", prompt,
-                        "completionTokens", completion,
-                        "totalTokens", prompt + completion,
-                        "model", String.valueOf(model),
-                        "costUsd", cost)));
-    } catch (Exception ignore) {
-        // 统计失败不影响主流程
-    }
-}
 ```
+
+> **只统计 token 用量，不算成本**：成本计算（按模型单价算美元）是业务逻辑，不是可观测的必需。本文聚焦"能看到每次 LLM 消耗了多少 token"——有了 token 数，想算成本随时在消费者端按单价乘一下就行，不需要专门的 CostCalculator 类。去掉成本计算器，让主线更聚焦。
 
 > **API 核实**：`stream().chatResponse()` 返回 `Flux<ChatResponse>`（流式版，每个 chunk 一个）；`getMetadata().getUsage()` → `Usage.getPromptTokens()/getCompletionTokens()`、`ChatResponseMetadata.getModel()` 全部真实存在。流式下 Usage 只在最后一个 chunk 有值（前面 chunk 的 Usage 是 null），所以用 `last[0]` 记最后一个。
 >
@@ -2491,40 +2464,7 @@ private void emitTokens(String sessionId, org.springframework.ai.chat.model.Chat
 > ```
 > `contextWrite` 是声明性的（定义流的上下文，不触发执行），放在 `Flux.concat(...)` 链尾最直观。import `com.example.aobs.obs.AppContextKeys` 和 `reactor.util.context.Context`。这是第 3 章相对第 1 章的补充改动——为了让工具执行线程能读到 sessionId（工具会话隔离）。
 
-#### 3.2.5 成本计算器
-
-`src/main/java/com/example/aobs/obs/CostCalculator.java`（新增）：
-
-```java
-package com.example.aobs.obs;
-
-import org.springframework.stereotype.Component;
-
-import java.util.Map;
-
-/**
- * 按 model 单价算成本。单价来自 DeepSeek/OpenAI 官方定价（美元/1K tokens）。
- * 这里用近似值，真实场景从配置读、随官方调价改。
- */
- @Component
- public class CostCalculator {
-
-    // 每模型「(输入价, 输出价)」美元/1K tokens
-    private final Map<String, double[]> pricing = Map.of(
-            "deepseek-chat", new double[]{0.00027, 0.00110},    // DeepSeek 近似
-            "deepseek-v4-flash", new double[]{0.00014, 0.00028},
-            "gpt-4o", new double[]{0.00250, 0.01000}
-    );
-    private static final double[] DEFAULT = {0.0003, 0.001};
-
-    public double calculate(int promptTokens, int completionTokens, String model) {
-        double[] p = pricing.getOrDefault(model == null ? "" : model, DEFAULT);
-        return promptTokens / 1000.0 * p[0] + completionTokens / 1000.0 * p[1];
-    }
- }
-```
-
-> `ChainingService` 要注入 `CostCalculator`（构造器加参数），别忘了同步改 `ArticleService` 构造器——这是第 0 章讲过的「配套改动」纪律。
+> **不做成本计算器**：有了 token 用量（promptTokens/completionTokens），想算成本在消费者端按单价乘一下就行（如 `cost = promptTokens/1000 * 0.00027`），不需要专门的类。去掉它，第 3 章主线更聚焦"工具可见 + token 可见"。
 
 ### 3.3 验证（页面演示 + 一个真实坑）
 
@@ -2544,8 +2484,6 @@ import java.util.Map;
         #top-bar { padding: 16px 24px 8px; flex-shrink: 0; }
         #top-bar h1 { font-size: 18px; margin: 0 0 2px 0; }
         #top-bar .subtitle { font-size: 13px; color: #888; }
-        #top-bar .cost-info { float: right; font-size: 13px; color: #888; padding-top: 4px; }
-        #top-bar .cost-info b { color: #e67e22; }
     
         #content { flex: 1; overflow-y: auto; padding: 0 24px 16px; }
     
@@ -2608,7 +2546,6 @@ import java.util.Map;
 <div id="top-bar">
     <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><h1>AI 写作助手 · 可观测调试台</h1></div>
-        <div class="cost-info">💰 本次成本：<b id="costVal">$0.0000</b></div>
     </div>
     <div class="subtitle">第 3 章：工具调用 + token 消耗可见</div>
 </div>
@@ -2632,7 +2569,7 @@ import java.util.Map;
 </div>
 
 <script>
-    let sending = false, totalCost = 0;
+    let sending = false;
     const STEPS = ['大纲', '草稿', '润色'];
     const stepState = {};
     const stepTools = {};
@@ -2649,7 +2586,6 @@ import java.util.Map;
         document.getElementById('empty').style.display = 'none';
         for (const k of Object.keys(stepState)) delete stepState[k];
         for (const k of Object.keys(stepTools)) delete stepTools[k];
-        totalCost = 0; document.getElementById('costVal').textContent = '$0.0000';
     
         const stepCards = {};
         for (let i = 0; i < 2; i++) {
@@ -2801,9 +2737,6 @@ import java.util.Map;
             }
     
             case 'LLM_TOKENS': {
-                const cost = Number(d.costUsd || 0);
-                totalCost += cost;
-                document.getElementById('costVal').textContent = '$' + totalCost.toFixed(4);
                 // 在对应步骤的折叠卡片后追加 token 提示
                 const step = d.step !== undefined ? d.step : 0;
                 const tDiv = document.createElement('div');
@@ -2840,7 +2773,7 @@ import java.util.Map;
                 if (step === 2) {
                     try { finalBody.innerHTML = marked.parse(output); } catch { finalBody.textContent = output; }
                     document.getElementById('final-result').classList.add('show');
-                    setStatus('done', `✅ 生成完成 · 总成本 $${totalCost.toFixed(4)}`);
+                    setStatus('done', `✅ 生成完成`);
                     autoScroll();
                 }
                 break;
@@ -2888,11 +2821,9 @@ import java.util.Map;
 
 事件流里会多出：
 - `TOOL_CALL`（绿色，带 tool=countWords、args、result——工具的参数和返回值都看得见！）
-- `LLM_TOKENS`（橙色，每次 LLM 调用后，带 promptTokens/completionTokens/costUsd）
 
 **对照第 1 章的"只看到步骤"**：现在工具的黑盒打开了——你能看到 LLM 调了什么工具、传了什么参数、工具返回了什么。这就是 Observation 订阅的价值。
 
-**观察成本**：页面右上角实时累加本次写作的总成本（把所有 `LLM_TOKENS` 的 `costUsd` 加起来，通常零点几美分）。
 
 #### 一个真实坑：TOOL_CALL 事件发了两遍
 
@@ -2923,13 +2854,11 @@ src/main/java/com/example/aobs/
 │   ├── AppContextKeys.java            （新增：上下文注册中心）
 │   ├── ContextPropagationConfig.java  （新增：开启自动传播）
 │   ├── ToolObservationHandler.java    （新增：订阅工具 Observation）
-│   └── CostCalculator.java            （新增）
 ├── workflow/
 │   └── LlmStepExecutor.java           （改：executeStep 取 Usage 发 LLM_TOKENS）
 └── writing/
     ├── WritingTools.java              （新增）
-    └── ArticleService.java            （改：构造器加 CostCalculator）
-```
+    └── ArticleService.java            （改：构造器）```
 pom 加了 `spring-boot-starter-actuator`。
 
 ```
@@ -3494,7 +3423,7 @@ import java.time.LocalDate;
 
 /**
  * 三层配额：session / tenant / user。都基于 Redis。
- * 配套第 3 章的 CostCalculator——每次烧 token 后调 check，超限拦截。
+ * 配套第 3 章的 LLM_TOKENS 事件——每次烧 token 后调 check，超限拦截。
  */
  @Component
  public class QuotaService {
@@ -5430,7 +5359,6 @@ ai-writing-assistant/
 │       ├── SessionStateStore.java        # 会话状态外置（第4章）
 │       ├── RedisStreamBridge.java        # 跨实例广播（第4章）
 │       ├── ToolObservationHandler.java   # 订阅工具 Observation（第3章）
-│       ├── CostCalculator.java           # 成本计算（第3章）
 │       ├── QuotaService.java             # 多级配额（第5章）
 │       ├── SseController.java            # SSE 推送
 │       ├── ResilientExternal.java        # 降级门面（第6章）
@@ -5897,7 +5825,6 @@ public class TokenAwareChatMemory implements ChatMemory {
 <main id="main">
     <header id="header">
         <div><span class="title">AI 写作助手</span><span class="sub">可观测调试台</span></div>
-        <div class="cost">本次成本：<b id="costVal">$0.0000</b></div>
     </header>
     <div id="chat"></div>
     <div id="status">输入主题，回车发送</div>
@@ -5908,7 +5835,7 @@ public class TokenAwareChatMemory implements ChatMemory {
 </main>
 
 <script>
-    let sending = false, controller = null, currentSession = null, totalCost = 0;
+    let sending = false, controller = null, currentSession = null;
     document.getElementById('prompt').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 
     // 新建对话：清空右侧，生成新 sessionId（不入历史列表，直到发送后服务端落库）
@@ -5916,7 +5843,6 @@ public class TokenAwareChatMemory implements ChatMemory {
         if (sending) return;
         currentSession = 's-' + Date.now();
         document.getElementById('chat').innerHTML = '';
-        totalCost = 0; document.getElementById('costVal').textContent = '$0.0000';
         document.getElementById('status').textContent = '已开新对话';
         document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
     }
@@ -6081,8 +6007,6 @@ public class TokenAwareChatMemory implements ChatMemory {
         } else if (type !== 'SESSION_COMPLETED' && type !== 'READY') {
             renderStep(proc, type, data);
             if (type === 'LLM_TOKENS') {
-                totalCost += Number(data.costUsd || 0);
-                document.getElementById('costVal').textContent = '$' + totalCost.toFixed(4);
             }
         }
         document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
@@ -6119,7 +6043,6 @@ public class TokenAwareChatMemory implements ChatMemory {
 > **一个页面覆盖全部章节**：
 > - **第 1-3 章**：右侧对话区实时展示事件流（CONTENT_DELTA 打字机 + STEP_START/END + TOOL_CALL + LLM_TOKENS）。
 > - **第 5 章**：左侧栏租户下拉，切换后请求带 `X-Tenant-Id` + `X-Tenant-Key`（第 8 章 8.6 鉴权）。
-> - **第 7 章**：成本实时累加（右上角 `LLM_TOKENS.costUsd`）。
 > - **第 8 章**：左侧会话列表（调 `/api/session/list`）、点会话回放（`/api/session/replay`）、中断/失败的点"续传"（`/api/session/resume`）、新对话带 `Idempotency-Key`（第 8 章 8.5 幂等）。
 >
 > **实时/回放/续传共用一套帧解析**：三种模式都是 SSE 流，前端 `handleFrame` 统一处理（回放模式 `isReplay=true` 把事件追加到聊天区，实时模式写传入的气泡）。**统一 SSE 协议让"实时看/回放看/续传看"用同一套前端代码**——这是事件流架构的回报。
