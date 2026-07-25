@@ -1568,7 +1568,7 @@ public class CriticalEventStore {
 > - **会话级 key + TTL**：每个会话一个 key（`aobs:events:{sessionId}`），`expire` 30 分钟。会话活跃时每次 save 续期；会话结束后 30 分钟 Redis 自动删整个 key——无需手动清理。
 > - **为什么不在 ZSet 内删旧成员**：ZSet 没有按 score 自动过期成员的能力。靠 key 级 TTL 已够（单会话关键事件就几条，30 分钟内不会撑爆）。
 > - **超长会话的兜底**：如果业务有写几小时的超长会话，ZSet 会一直长——那时加 `opsForZSet().removeRangeByScore(k, 0, now - 1h)` 定期剪掉 1 小时前的成员（保留最近窗口用于回放）。本项目 30 分钟 TTL 够用，不预先实现（演进纪律）。
-```
+```java
     /**
      * 读某会话中，指定时间戳之后的所有事件（重连回放用）。
      * @param afterEpochMs 只读这个时间戳之后的事件
@@ -1600,14 +1600,14 @@ public class CriticalEventStore {
 
 **(1) record 字段列表末尾加 `sequence`**：
 
-```
+```java
         Criticality criticality,
         long sequence        // ← 第 2 章新增：会话内单调递增序号，0 表示未分配
 ```
 
 **(2) `of()` 的 builder 调用末尾加 `.sequence(0L)`**——`0` 是占位，EventBus emit 时 `withSequence()` 复制一份改真实序号：
 
-```
+```java
     public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
         return AgentEvent.builder()
                 .type(type.name()).sessionId(sessionId)
@@ -1625,7 +1625,7 @@ public class CriticalEventStore {
 
 **(1) 加两个字段 + 改构造器**（注入 CriticalEventStore 用于关键事件落库；sequences 给每个会话分配序号）：
 
-```
+```java
     // 字段（sink 不变）：
     private final ObjectProvider<CriticalEventStore> storeProvider;   // 有 Redis 就用，没有也能启动
     private final Map<String, AtomicLong> sequences = new ConcurrentHashMap<>();   // 每会话序号计数器
@@ -1640,7 +1640,7 @@ public class CriticalEventStore {
 
 **(2) `emit` 方法体改造**（第 1 章只 `sink.tryEmitNext(event)`，现在加序号分配 + 关键事件落库）：
 
-```
+```java
     public void emit(AgentEvent event) {
         // 1. 分配会话内序号
         long seq = sequences.computeIfAbsent(event.sessionId(), k -> new AtomicLong())
@@ -1660,7 +1660,7 @@ public class CriticalEventStore {
 
 **(3) 加一个私有 helper**（record 不可变，复制一份改 sequence）：
 
-```
+```java
     private static AgentEvent withSequence(AgentEvent e, long seq) {
         return new AgentEvent(e.type(), e.sessionId(), e.timestamp(), e.data(),
                 e.criticality(), seq);
@@ -1682,7 +1682,7 @@ public class CriticalEventStore {
 
 **(1) 加一个字段 + 改构造器**（注入 CriticalEventStore 用于重连回放）：
 
-```
+```java
     // 字段（eventBus/articleService/mapper 不变）：
     private final ObjectProvider<CriticalEventStore> storeProvider;
     
@@ -1698,7 +1698,7 @@ public class CriticalEventStore {
 
 **(2) `stream` 方法签名加两个参数 + 方法体加"重连模式"分支**（正常模式不变）：
 
-```
+```java
     // 签名加：lastEventId（重连带）。sessionId 只从请求头取（不兼容 query 参数）——SSE 客户端用 fetch 都能设 header。
     // EventSource（浏览器原生 SSE API）不能设自定义 header——但本页面用 fetch+ReadableStream 代替，
     // 重连演示见 reconnect.html（它用 fetch 手动实现重连，同样能带 Last-Event-ID header）。
@@ -1730,7 +1730,7 @@ public class CriticalEventStore {
 
 **(3) 加一个私有 helper**（从 Last-Event-ID 解析时间戳，回放用）：
 
-```
+```java
     /** 帧ID 格式 "sessionId-时间戳"，取时间戳部分。 */
     private long parseTimestampFrom(String lastEventId) {
         int idx = lastEventId.lastIndexOf('-');
@@ -2450,7 +2450,7 @@ private AgentEvent emitTokens(String sessionId, org.springframework.ai.chat.mode
         return null;   // 统计失败不影响主流程
     }
 }
-```
+```java
 
 > LlmStepExecutor 构造器加 `CostCalculator`：`public LlmStepExecutor(ChatClient chatClient, CostCalculator costCalculator)`。
 
@@ -2495,7 +2495,7 @@ private void emitTokens(String sessionId, org.springframework.ai.chat.model.Chat
 
 `src/main/java/com/example/aobs/obs/CostCalculator.java`（新增）：
 
-```
+```java
 package com.example.aobs.obs;
 
 import org.springframework.stereotype.Component;
@@ -2986,7 +2986,7 @@ git add -A && git commit -m "第3章：Observation订阅工具调用 + 会话隔
 
 `src/main/java/com/example/aobs/obs/SessionStateStore.java`（新增）：
 
-```
+```java
 package com.example.aobs.obs;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -3025,7 +3025,7 @@ import java.time.Duration;
 
 改 `AgentEventBus` 用外置序号：
 
-```
+```java
 // AgentEventBus 构造器注入 SessionStateStore，emit 里改成：
 public class AgentEventBus {
     // ... 删掉原来的 sequences ConcurrentHashMap
@@ -3052,7 +3052,7 @@ public class AgentEventBus {
 
 `src/main/java/com/example/aobs/obs/RedisStreamBridge.java`（新增）：
 
-```
+```java
 package com.example.aobs.obs;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -3134,7 +3134,7 @@ import java.util.Map;
 
 改 `AgentEventBus` 接入广播：
 
-```
+```java
 // AgentEventBus 加 RedisStreamBridge，emit 里 publish：
 public class AgentEventBus {
     private final RedisStreamBridge streamBridge;
@@ -3164,7 +3164,7 @@ public class AgentEventBus {
 
 `src/main/java/com/example/aobs/obs/ShardedEventBus.java`（替换 AgentEventBus）：
 
-```
+```java
 package com.example.aobs.obs;
 
 import org.springframework.beans.factory.ObjectProvider;
@@ -3244,7 +3244,7 @@ import java.util.List;
 
 抽个接口让 Controller 依赖抽象不依赖具体：
 
-```
+```java
 // src/main/java/com/example/aobs/obs/EventBusSPI.java
 package com.example.aobs.obs;
 
@@ -3262,7 +3262,7 @@ public interface EventBusSPI {
 
 改 `SseController` 用定向订阅（`ChainingService`、`ToolObservationHandler` 里的 `AgentEventBus` 也改成 `EventBusSPI`）：
 
-```
+```java
 // SseController 里原来 eventBus.subscribe(sessionId)（单 sink 时是全量过滤）改成：
 Flux<AgentEvent> live = eventBus.fluxFor(sessionId);   // 分片定向，省 N-1 倍过滤
 ```
@@ -3273,7 +3273,7 @@ Flux<AgentEvent> live = eventBus.fluxFor(sessionId);   // 分片定向，省 N-1
 
 `src/main/java/com/example/aobs/obs/EventSequencer.java`（新增）：
 
-```
+```java
 package com.example.aobs.obs;
 
 import reactor.core.publisher.Flux;
@@ -3405,7 +3405,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 **(1) record 字段列表里，在 sessionId 后面插三个字段**：
 
-```
+```java
         String type,
         String sessionId,
         String tenantId,        // ← 第 5 章新增：租户（隔离 + 成本归因）
@@ -3417,7 +3417,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 **(2) 加一个带租户的 `of` 重载**（老的 `of(type, sessionId, data)` 保留，不用改老调用点）：
 
-```
+```java
     /** 第 5 章快捷构造：带租户/用户。 */
     public static AgentEvent of(EventContent type, String sessionId, String tenantId, String userId,
                                 Map<String, Object> data) {
@@ -3428,7 +3428,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 **(3) Builder 加三个字段 + 三个 setter + build 多传三个**：
 
-```
+```java
     // Builder 里加字段（agentVersion 默认 "v1"）：
     private String tenantId;
     private String userId;
@@ -3450,7 +3450,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 `SseController` 加请求头（第 0 章的 ArticleController 已在第 1 章退役）：
 
-```
+```java
 @GetMapping(value = "/article", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 public Flux<ServerSentEvent<String>> stream(
         @RequestParam String prompt,
@@ -3466,7 +3466,7 @@ public Flux<ServerSentEvent<String>> stream(
 
 `SseController` 的实时流加租户过滤：
 
-```
+```java
 Flux<AgentEvent> live = eventBus.fluxFor(sessionId)
         .filter(e -> {
             // 纵深防御：tenantId 必须双向匹配，null 一律拒绝
@@ -3483,7 +3483,7 @@ Flux<AgentEvent> live = eventBus.fluxFor(sessionId)
 
 `src/main/java/com/example/aobs/obs/QuotaService.java`（新增）：
 
-```
+```java
 package com.example.aobs.obs;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -3544,7 +3544,7 @@ import java.time.LocalDate;
 
 `emitTokens` 里（第 3 章烧 token 后发 LLM_TOKENS 的地方），每次算完成本后校验租户预算：
 
-```
+```java
 private void emitTokens(String sessionId, String tenantId, String userId,
                         ChatResponse response) {
     // ... 原有 token 统计
@@ -3670,7 +3670,7 @@ prompt v2: "你是写作助手。根据大纲写一篇 800 字草稿，分段清
 
 `src/main/java/com/example/aobs/obs/ResilientExternal.java`（新增）：
 
-```
+```java
 package com.example.aobs.obs;
 
 import org.springframework.stereotype.Component;
@@ -3702,7 +3702,7 @@ import java.util.function.Supplier;
 
 `src/main/java/com/example/aobs/obs/ObsHealthIndicator.java`（新增）：
 
-```
+```java
 package com.example.aobs.obs;
 
 import org.springframework.boot.actuate.health.Health;
@@ -3748,7 +3748,7 @@ Spring AI 的 OpenAI starter 底层用 RestClient/WebClient，默认读超时对
 
 最稳的做法——自定义 `RestClient.Builder`/`WebClient.Builder` Bean，设足够长的读超时（覆盖 LLM 生成的自然停顿）：
 
-```
+```java
 package com.example.aobs.config;
 
 import io.netty.channel.ChannelOption;
@@ -3896,7 +3896,7 @@ git add -A && git commit -m "第6章：灾备降级 + 健康检查 + 超时/错�
 
 **解法：SSE 心跳**。后端每 15 秒发一个注释帧（`: heartbeat`），让代理看到"连接还活着"，不判空闲。在 `SseController.stream` 的事件流上 merge 一个定时心跳：
 
-```
+```java
 // 心跳：每 15s 发注释帧（: 开头的行，EventSource 不当事件派发，只保活）
 Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(15))
         .map(i -> ServerSentEvent.<String>builder().comment("heartbeat").build());
@@ -3932,7 +3932,7 @@ return events.mergeWith(heartbeat)
 ```
 
 把 `@Retry` 加在 `LlmStepExecutor.executeStep` 上（429/超时退避重试，耗尽降级）——**这是第 1 章把单步执行抽成独立 Bean 的回报兑现**：
-```
+```java
     @io.github.resilience4j.retry.annotation.Retry(name = "llmCall", fallbackMethod = "executeStepFallback")
     public Flux<AgentEvent> executeStep(String system, String userPrompt, String sessionId,
                                         int step, int total) {
@@ -3982,7 +3982,7 @@ resilience4j:
 
 **解法：前端 abort + 后端 doOnCancel**。前端 fetch 时保存 AbortController，点停止调 abort：
 
-```
+```java
 const controller = new AbortController();
 fetch('/api/obs/article?prompt=...', { signal: controller.signal, headers: {...} });
 // 用户点"停止"：
@@ -3996,7 +3996,7 @@ controller.abort();   // 断开 SSE 连接
 ```
 
 后端 SSE 流被断开时 WebFlux 取消 Flux，用 `doOnCancel` 捕获，发 `SESSION_CANCELLED`、释放资源：
-```
+```java
 return events.mergeWith(heartbeat)
         .takeUntilOther(events.then())
         .doOnCancel(() -> eventBus.emit(AgentEvent.of(EventContent.SESSION_CANCELLED, sessionId, Map.of())));
@@ -4012,7 +4012,7 @@ return events.mergeWith(heartbeat)
 
 **解法：连接计数 + 超限拒绝**：
 
-```
+```java
 @Component
 public class SseConnectionLimiter {
     private static final int MAX_GLOBAL = 1000;          // 全局上限
@@ -4026,7 +4026,7 @@ public class SseConnectionLimiter {
 ```
 
 `SseController.stream` 里用，`doFinally` 保证无论怎么结束都释放：
-```
+```java
     public Flux<ServerSentEvent<String>> stream(...) {
         if (!limiter.tryAcquire()) {
             return Flux.error(new IllegalStateException("连接数已达上限，请稍后重试"));
@@ -4086,7 +4086,7 @@ CREATE INDEX IF NOT EXISTS idx_archive_tenant_time ON event_archive(tenant_id, t
 ```
 
 归档服务 `EventArchiveService`（归档 + 查询）：
-```
+```java
 @Service
 public class EventArchiveService {
     private final JdbcTemplate jdbc;
@@ -4190,7 +4190,7 @@ AgentEventBus.emit 里归档所有事件（和落 Redis 一起）；SseControlle
 
 `src/main/java/com/example/aobs/session/SessionStatus.java`（新增）：
 
-```
+```java
 package com.example.aobs.session;
 
 /** 会话生命周期状态。第 8.1 章只有这三个；8.4 加 INTERRUPTED。 */
@@ -4219,7 +4219,7 @@ CREATE TABLE IF NOT EXISTS session_record (
 
 `src/main/java/com/example/aobs/session/SessionService.java`（新增，最小 CRUD）：
 
-```
+```java
 package com.example.aobs.session;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -4260,7 +4260,7 @@ public class SessionService {
 
 接入 `ChainingService.run`——在 SESSION_STARTED/COMPLETED/FAILED 时调 SessionService。**只加三个调用，不动 run 的执行逻辑**：
 
-```
+```java
 // ChainingService 构造器加 SessionService（老的无 SessionService 构造器保留兼容，内部传 null）
 protected final SessionService sessionService;
 
@@ -4338,7 +4338,7 @@ git add -A && git commit -m "第8.1章：会话最小持久化（状态+输入�
 
 `src/main/java/com/example/aobs/session/SessionReplayController.java`（新增）：
 
-```
+```java
 package com.example.aobs.session;
 
 import org.springframework.http.MediaType;
@@ -4462,7 +4462,7 @@ CREATE INDEX IF NOT EXISTS idx_session_tenant_status ON session_record(tenant_id
 
 `SessionRecord` DTO（新增，行映射 + 给列表返回用）：
 
-```
+```java
 package com.example.aobs.session;
 
 import java.sql.ResultSet;
@@ -4484,7 +4484,7 @@ public record SessionRecord(
 
 `SessionService` 扩展——start 带 tenantId、加 get/list（在 8.1 基础上追加方法）：
 
-```
+```java
 // start 签名加 tenantId
 public void start(String sessionId, String tenantId, String input, int totalSteps) {
     long now = System.currentTimeMillis();
@@ -4514,7 +4514,7 @@ public List<SessionRecord> list(String tenantId, SessionStatus status, int page,
 
 **鉴权过滤器**——所有 `/api/**` 统一校验租户身份：
 
-```
+```java
 package com.example.aobs.session;
 
 import org.springframework.http.HttpStatus;
@@ -4553,7 +4553,7 @@ import reactor.core.publisher.Mono;
 
 **先把 8.2 的 `SessionReplayController` 升级依赖**——8.2 只注入了 `JdbcTemplate`，本阶段要用 `SessionService`（查会话做鉴权）和保留 `JdbcTemplate`（查归档）。同时把 8.2 内联的 SSE 构造抽成 helper，后面续传/列表都要复用：
 
-```
+```java
 @RestController
 @RequestMapping("/api/session")
 public class SessionReplayController {
@@ -4588,7 +4588,7 @@ public class SessionReplayController {
 
 然后回放接口加鉴权：
 
-```
+```java
 @GetMapping(value = "/replay/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 public Flux<ServerSentEvent<String>> replay(@PathVariable String sessionId,
                                             @RequestHeader("X-Tenant-Id") String tenantId) {
@@ -4603,7 +4603,7 @@ public Flux<ServerSentEvent<String>> replay(@PathVariable String sessionId,
 
 列表接口（SessionReplayController 加）：
 
-```
+```java
 @GetMapping("/list")
 public Map<String, Object> list(@RequestHeader("X-Tenant-Id") String tenantId,
                                 @RequestParam(required = false) String status,
@@ -4671,7 +4671,7 @@ git add -A && git commit -m "第8.3章：会话列表+租户鉴权（防越权�
 
 **先给 `SessionStatus` 加 INTERRUPTED**（8.1 只有 ACTIVE/COMPLETED/FAILED，本阶段要用中断状态）：
 
-```
+```java
 public enum SessionStatus {
     ACTIVE, COMPLETED, FAILED,
     INTERRUPTED   // ← 8.4 加：中断（停机/崩溃，可续传）
@@ -4693,7 +4693,7 @@ ALTER TABLE session_record ADD COLUMN IF NOT EXISTS last_step INT DEFAULT -1;   
 
 `SessionRecord` DTO 同步加 `lastStep` 字段（8.3 定义的 record 追加，fromRow 加 `rs.getInt("last_step")`）：
 
-```
+```java
 public record SessionRecord(
         String sessionId, String tenantId, String status,
         String inputText, String outputText, int totalSteps,
@@ -4704,7 +4704,7 @@ public record SessionRecord(
 
 `SessionService` 加 advanceStep / markInterrupted（在 8.3 基础上追加）：
 
-```
+```java
 /** 每步完成时更新 last_step（续传依据）。 */
 public void advanceStep(String sessionId, int lastStep) {
     jdbc.update("UPDATE session_record SET last_step=?, updated_at=? WHERE session_id=?",
@@ -4745,7 +4745,7 @@ public void markInterrupted() {
 
 `ChainingService` 加 `runFrom`（从 fromStep 接着跑，用 LlmStepExecutor + concatMap，和 run 同一套响应式风格），run 调 runFrom(..., 0)：
 
-```
+```java
 /**
  * 从 fromStep 开始跑。fromStep=0 等价全新执行。续传时 fromStep = last_step + 1。
  * 续传的第一步，其输入（上一步输出）从归档取（getStepOutput）。
@@ -4817,7 +4817,7 @@ public Flux<AgentEvent> run(String input, String sessionId) {
 
 续传接口（SessionReplayController 加）：
 
-```
+```java
 @PostMapping(value = "/resume/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 public Flux<ServerSentEvent<String>> resume(@PathVariable String sessionId,
                                             @RequestHeader("X-Tenant-Id") String tenantId) {
@@ -4835,7 +4835,7 @@ public Flux<ServerSentEvent<String>> resume(@PathVariable String sessionId,
 
 优雅停机标记（`@PreDestroy`）+ 开启优雅停机：
 
-```
+```java
 @Component
 public class ShutdownHook {
     private final SessionService sessionService;
@@ -4908,7 +4908,7 @@ git add -A && git commit -m "第8.4章：断点续传（last_step+runFrom+停机
 
 **（a）PII 脱敏** `PiiMasker`：
 
-```
+```java
 package com.example.aobs.session;
 
 import org.springframework.stereotype.Component;
@@ -4943,7 +4943,7 @@ ALTER TABLE session_record ADD COLUMN IF NOT EXISTS input_text_raw TEXT;  -- 加
 
 `SessionRecord` 再加 `inputTextRaw` 字段（8.4 的 record 再追加，fromRow 加 `rs.getString("input_text_raw")`）：
 
-```
+```java
 public record SessionRecord(
         String sessionId, String tenantId, String status,
         String inputText, String inputTextRaw,    // ← 8.5 加（加密原文）
@@ -4952,7 +4952,7 @@ public record SessionRecord(
 ) { /* fromRow 同步加 rs.getString("input_text_raw") */ }
 ```
 
-```
+```java
 package com.example.aobs.session;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -5006,7 +5006,7 @@ aobs:
 
 **先给 `SessionService` 加这两个依赖**（8.1 的构造器只有 JdbcTemplate，本阶段 start 要用 piiMasker/cryptoService）：
 
-```
+```java
 // SessionService 构造器升级（替换 8.1 的单参构造器）
 private final PiiMasker piiMasker;
 private final CryptoService cryptoService;
@@ -5019,7 +5019,7 @@ public SessionService(JdbcTemplate jdbc, PiiMasker piiMasker, CryptoService cryp
 
 `SessionService.start` 改为：脱敏版存 `input_text`、加密原文存 `input_text_raw`：
 
-```
+```java
 public void start(String sessionId, String tenantId, String rawInput, int totalSteps) {
     long now = System.currentTimeMillis();
     jdbc.update("MERGE INTO session_record (session_id, status, tenant_id, input_text, input_text_raw, total_steps, started_at, updated_at) KEY(session_id) VALUES (?,?,?,?,?,?,?,?)",
@@ -5032,7 +5032,7 @@ public void start(String sessionId, String tenantId, String rawInput, int totalS
 
 续传接口改用加密原文（修 8.4 暴露的问题）：
 
-```
+```java
 // resume 接口里：input 取加密原文并解密
 String rawInput = cryptoService.decrypt(rec.inputTextRaw());
 return articleService.runFrom(rawInput, sessionId, tenantId, fromStep).map(this::toSse);
@@ -5042,7 +5042,7 @@ return articleService.runFrom(rawInput, sessionId, tenantId, fromStep).map(this:
 
 **（c）幂等键** `IdempotencyService`（Redis SETNX）：
 
-```
+```java
 package com.example.aobs.session;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -5069,7 +5069,7 @@ public class IdempotencyService {
 
 SSE 接口开头加幂等检查（重复 key 引导走回放）：
 
-```
+```java
 if (idemKey != null && !idempotencyService.tryAcquire(idemKey, sessionId)) {
     String existing = idempotencyService.getExistingSession(idemKey);
     return Flux.just(sse("IDEMPOTENT_REPLAY", "{\"existingSession\":\"" + existing + "\"}"));
@@ -5080,7 +5080,7 @@ if (idemKey != null && !idempotencyService.tryAcquire(idemKey, sessionId)) {
 
 **（d）TTL 清理 + 僵尸回收** `ArchiveRetentionJob`：
 
-```
+```java
 package com.example.aobs.session;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -5190,7 +5190,7 @@ CREATE TABLE IF NOT EXISTS tenant (
 
 `Tenant` + `TenantService`：
 
-```
+```java
 package com.example.aobs.tenant;
 
 public record Tenant(String tenantId, String name, TenantStatus status,
@@ -5199,7 +5199,7 @@ public record Tenant(String tenantId, String name, TenantStatus status,
 }
 ```
 
-```
+```java
 package com.example.aobs.tenant;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -5258,7 +5258,7 @@ public class TenantService {
 
 `TenantAuthFilter` 升级（8.3 的基础上加 key 校验）：
 
-```
+```java
 @Component
 public class TenantAuthFilter implements WebFilter {
     private final TenantService tenantService;
@@ -5285,7 +5285,7 @@ public class TenantAuthFilter implements WebFilter {
 
 管理接口（运营用）：
 
-```
+```java
 @RestController
 @RequestMapping("/api/admin/tenant")
 public class TenantController {
@@ -5781,7 +5781,7 @@ groups:
 | **混合** | 生产主流 | 保留最近 N 条原文 + 之前的摘要，兼顾近期细节和长期记忆 |
 
 **按 token 裁剪的最小实现**（伪代码）：
-```
+```java
 public class TokenAwareChatMemory implements ChatMemory {
     private final TokenCountEstimator estimator = new JTokkitTokenCountEstimator();
     private final long maxTokens;
@@ -5799,7 +5799,7 @@ public class TokenAwareChatMemory implements ChatMemory {
 
 **布局参照 DeepSeek 官网**（`chat.deepseek.com` 的对话骨架）：**左侧会话历史栏 + 右侧对话区 + 底部输入框**。本文只做对话功能，不做多模态/文件上传。一个页面覆盖全部章节——左侧栏整合会话历史（第 8 章回放/续传）+ 租户切换（第 5 章）；右侧对话区实时展示事件流（CONTENT_DELTA 打字机 + 工具/token 面板）。
 
-```
+```java
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -6166,7 +6166,7 @@ public class TokenAwareChatMemory implements ChatMemory {
 
 **分流**（按 userId 稳定 hash，保证同一用户总进同一桶）：
 
-```
+```java
 @Component
 public class AbRouter {
     /** 按 userId + 实验名 hash 分桶。返回桶名（如 "v1"/"v2"）。 */
@@ -6178,7 +6178,7 @@ public class AbRouter {
 }
 ```
 
-```
+```java
 // ChainingService.run 里，根据分桶选 prompt 版本
 String bucket = abRouter.bucket(ctx.userId(), "outline-prompt", List.of("v1", "v2"));
 String system = bucket.equals("v2") ? OUTLINE_V2 : OUTLINE_V1;
@@ -6199,7 +6199,7 @@ String system = bucket.equals("v2") ? OUTLINE_V2 : OUTLINE_V1;
 
 1. **用户显式反馈**（便宜、主观）：用户点 👍/👎。加一个 `SESSION_FEEDBACK` 事件：
 
-```
+```java
 // EventContent 加 SESSION_FEEDBACK
 // 前端在生成完成后显示 👍/👎，点击后 POST /api/session/{id}/feedback?score=1（或 -1）
 // 后端发事件 + 落库（session_record 加 feedback_score 列）
@@ -6209,7 +6209,7 @@ eventBus.emit(AgentEvent.of(EventContent.SESSION_FEEDBACK, sessionId,
 
 2. **LLM-as-judge**（贵、客观）：用另一个 LLM 给生成结果打分。成本高（每次额外一次 LLM 调用），通常只对**采样**的会话做（比如 10%）：
 
-```
+```java
 // 生成完成后，10% 概率触发评审
 if (random.nextDouble() < 0.1) {
     String judgePrompt = "给以下文章打分(1-5)，从流畅度/结构/准确性评价：" + output;
