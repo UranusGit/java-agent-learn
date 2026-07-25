@@ -786,46 +786,19 @@ public abstract class ChainingService {
 
 因为父类构造器加了参数，子类 `ArticleService` 跟着改（**配套改动**，改了构造器要同步子类才能编译）：
 
-`src/main/java/com/example/aobs/writing/ArticleService.java`（改构造器）：
+`src/main/java/com/example/aobs/writing/ArticleService.java`（增量改：只动构造器，`steps()` 不变）：
+
+第 0 章的 ArticleService 构造器只注入 `ChatClient`。父类（ChainingService）第 1 章加了 `AgentEventBus` 依赖，子类构造器要跟着传：
 
 ```java
-package com.example.aobs.writing;
-
-import com.example.aobs.obs.AgentEventBus;
-import com.example.aobs.workflow.ChainingService;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.stereotype.Service;
-
-import java.util.List;
-
-/**
- * 写作助手（流式版）：大纲 → 草稿 → 润色。
- * 每步声明 system prompt + 「上一步输出 → 本步 user prompt」。
- * 注意：steps() 只声明「这步干什么」，不直接调 LLM——执行（流式、埋点）全在基类 run()。
- */
-@Service
-public class ArticleService extends ChainingService {
-
-    public ArticleService(ChatClient chatClient, AgentEventBus eventBus) {
-        super(chatClient, eventBus);
-    }
-
-    @Override
-    protected List<Step> steps() {
-        return List.of(
-                // 第 0 步：主题 → 大纲（首步 payload 就是用户输入的主题）
-                new Step("你是写作助手。根据主题生成大纲，只输出大纲本身。",
-                        (topic, sid) -> topic),
-                // 第 1 步：大纲 → 草稿（上一步输出的大纲直接当 user prompt）
-                new Step("你是写作助手。根据大纲写一篇草稿，只输出草稿正文。",
-                        (outline, sid) -> outline),
-                // 第 2 步：草稿 → 润色（上一步输出的草稿直接当 user prompt）
-                new Step("你是写作助手。润色这篇草稿让它更流畅自然，只输出最终文本。",
-                        (draft, sid) -> draft)
-        );
-    }
+// 替换第 0 章的构造器（steps() 完全不变，原样保留）：
+public ArticleService(ChatClient chatClient, AgentEventBus eventBus) {
+    super(chatClient, eventBus);   // ← 多传一个 eventBus
 }
+// import 补：com.example.aobs.obs.AgentEventBus
 ```
+
+> **配套改动纪律**：改了父类构造器，所有子类构造器都要跟着改——否则编译错。IDE 会报红，按报错逐个修。这是企业项目里"改一个签名"的真实成本。
 
 #### 1.2.4 SSE Controller——把事件推给客户端
 
@@ -1203,31 +1176,25 @@ spring:
 
 > 本地装 Redis：macOS `brew install redis && brew services start redis`；Docker `docker run -d -p 6379:6379 redis`。
 
-#### 2.2.2 AgentEvent 加 criticality 字段
+#### 2.2.2 AgentEvent 加 criticality 字段 + 引入 builder
 
-`src/main/java/com/example/aobs/obs/AgentEvent.java`（修改）：
+第 1 章的 AgentEvent 是 4 字段、直接 `new`。第 2 章加 `criticality`（可选——按事件类型推断默认），**可选字段一多，直接 `new` 要传一堆 null 容易错位，这时引入 builder 才有回报**。改动是增量的：
+
+**(1) record 末尾加一个字段 + 一个内部枚举**：
 
 ```java
-package com.example.aobs.obs;
-
-import java.util.Map;
-
-public record AgentEvent(
-        String type,                // 事件类型名（EventContent.name()）
-        String sessionId,
-        long timestamp,             // 毫秒（第 1 章起就是 long）
-        Map<String, Object> data,
+// AgentEvent record 字段列表末尾加：
         Criticality criticality    // ← 第 2 章新增
 ) {
 
-    /** 事件关键级别，决定背压满时降级策略。 */
+    // record 体里加这个枚举（决定背压满时降级策略）：
     public enum Criticality {
         CRITICAL,      // 终态类，绝不能丢，落库兜底
         NORMAL,        // 阶段/步骤事件，尽力送达
         DISCARDABLE    // 流式片段（CONTENT_DELTA），背压满优先丢
     }
 
-    /** 按事件类型枚举推断默认关键级别。 */
+    // 按事件类型枚举推断默认关键级别：
     public static Criticality defaultCriticality(EventContent type) {
         return switch (type) {
             case SESSION_STARTED, SESSION_COMPLETED, SESSION_FAILED -> Criticality.CRITICAL;
@@ -1235,14 +1202,19 @@ public record AgentEvent(
             default -> Criticality.NORMAL;
         };
     }
+    // ... 原有字段 type/sessionId/timestamp/data 不变 ...
+```
 
+**(2) 把第 1 章的 `of`（直接 new）换成 builder 版**（`of` 签名不变，调用点不用改）：
+
+```java
+    // 替换第 1 章那个直接 new 的 of：
     public static Builder builder() { return new Builder(); }
-
-    /** 第 2 章快捷构造：自动填 timestamp + 默认 criticality。 */
     public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
         return builder().type(type).sessionId(sessionId).data(data).build();
     }
 
+    // 新增 Builder 内部类（criticality 不填则按 type 推断默认）：
     public static final class Builder {
         private EventContent type;
         private String sessionId;
@@ -1263,8 +1235,9 @@ public record AgentEvent(
                     timestamp != null ? timestamp : System.currentTimeMillis(), data, c);
         }
     }
-}
 ```
+
+> **为什么第 2 章才引入 builder**：第 1 章 4 字段全必填，`of(...)` 直接 `new` 最清楚。第 2 章加了可选的 criticality（不填要按 type 推断默认）——直接 `new` 要么传 null、要么每次手动算默认值，容易错。builder 让"可选字段有默认值"自然表达。**不为想象中的复杂度提前设计**：第 1 章 builder 是负担，第 2 章是收益。
 
 > **第 2 章相对第 1 章的变化**：① record 加 `criticality` 字段；② builder 加 `criticality()` 方法（不填则按 type 推断默认——CRITICAL 事件落库、CONTENT_DELTA 可丢）；③ `defaultCriticality` 改成接受 `EventContent` 枚举（第 1 章是 String）。因为用了 builder，老的 `AgentEvent.of(...)` 调用点**不用改**（of 内部走 builder）。
 >
@@ -1352,92 +1325,45 @@ public class CriticalEventStore {
 
 这一步同时做两件事：关键事件落库（解决丢失）、分配会话内序号（为乱序重排铺路）。
 
-先给 `AgentEvent` 再加 `sequence` 字段：
+先给 `AgentEvent` 再加 `sequence` 字段（纯加字段，增量改两处）：
 
-`src/main/java/com/example/aobs/obs/AgentEvent.java`（再加字段）：
+**(1) record 字段列表末尾再加一个**：
 
 ```java
-public record AgentEvent(
-        String type,                // 事件类型名（EventContent.name()）
-        String sessionId,
-        long timestamp,             // 毫秒
-        Map<String, Object> data,
         Criticality criticality,
         long sequence        // ← 第 2 章新增：会话内单调递增序号，0 表示未分配
-) {
-    public enum Criticality { CRITICAL, NORMAL, DISCARDABLE }
-
-    public static Criticality defaultCriticality(EventContent type) {
-        return switch (type) {
-            case SESSION_STARTED, SESSION_COMPLETED, SESSION_FAILED -> Criticality.CRITICAL;
-            case CONTENT_DELTA -> Criticality.DISCARDABLE;
-            default -> Criticality.NORMAL;
-        };
-    }
-
-    public static Builder builder() { return new Builder(); }
-
-    /** 快捷构造（sequence 默认 0，由 AgentEventBus 分配；criticality 按 type 推断）。 */
-    public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
-        return builder().type(type).sessionId(sessionId).data(data).build();
-    }
-
-    public static final class Builder {
-        private EventContent type;
-        private String sessionId;
-        private Long timestamp;
-        private Map<String, Object> data = Map.of();
-        private Criticality criticality;
-        // sequence 不进 builder：它由 AgentEventBus 统一分配，不该由构造方填
-
-        public Builder type(EventContent t) { this.type = t; return this; }
-        public Builder sessionId(String s) { this.sessionId = s; return this; }
-        public Builder timestamp(long t) { this.timestamp = t; return this; }
-        public Builder data(Map<String, Object> d) { this.data = d; return this; }
-        public Builder criticality(Criticality c) { this.criticality = c; return this; }
-
-        public AgentEvent build() {
-            if (type == null) throw new IllegalStateException("type 必填");
-            Criticality c = criticality != null ? criticality : defaultCriticality(type);
-            return new AgentEvent(type.name(), sessionId,
-                    timestamp != null ? timestamp : System.currentTimeMillis(), data, c, 0L);
-        }
-    }
-}
 ```
 
-> **第 2 章这步相对上一步（2.2.2）的变化**：record 再加 `sequence` 字段（6 字段）。`sequence` 不进 builder——它由 AgentEventBus 统一分配（见下方 withSequence），构造方不该自己填。所以 builder 没有序列号方法，`build()` 固定填 0，AgentEventBus emit 时复制一份改 sequence。
-
-`src/main/java/com/example/aobs/obs/AgentEventBus.java`（修改：落库 + 序号）：
+**(2) builder 的 `build()` 末尾多传一个 `0L`**（sequence 由 AgentEventBus 分配，构造方填 0）：
 
 ```java
-package com.example.aobs.obs;
+            return new AgentEvent(type.name(), sessionId,
+                    timestamp != null ? timestamp : System.currentTimeMillis(), data, c, 0L);   // ← 末尾加 0L
+```
 
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.stereotype.Component;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Sinks;
+> **`sequence` 不进 builder**：它由 AgentEventBus 统一分配（见下方 withSequence），构造方不该自己填。所以 builder 没有序列号方法，`build()` 固定填 0，AgentEventBus emit 时复制一份改 sequence。
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
-@Component
-public class AgentEventBus {
+`src/main/java/com/example/aobs/obs/AgentEventBus.java`（在第 1 章基础上增量改）：
 
-    private final Sinks.Many<AgentEvent> sink =
-            Sinks.many().multicast().onBackpressureBuffer(256, false);
+**(1) 加两个字段 + 改构造器**（注入 CriticalEventStore 用于关键事件落库；sequences 给每个会话分配序号）：
 
-    // ObjectProvider：有 Redis 就用 CriticalEventStore，没有也能启动（开发环境容错）
-    private final ObjectProvider<CriticalEventStore> storeProvider;
+```java
+    // 字段（sink 不变）：
+    private final ObjectProvider<CriticalEventStore> storeProvider;   // 有 Redis 就用，没有也能启动
+    private final Map<String, AtomicLong> sequences = new ConcurrentHashMap<>();   // 每会话序号计数器
 
-    // 每个会话一个递增计数器（为序号用）
-    private final Map<String, AtomicLong> sequences = new ConcurrentHashMap<>();
-
+    // 构造器（替换第 1 章的无参默认构造）：
     public AgentEventBus(ObjectProvider<CriticalEventStore> storeProvider) {
         this.storeProvider = storeProvider;
     }
+    // import 补：org.springframework.beans.factory.ObjectProvider、
+    //           java.util.concurrent.ConcurrentHashMap / atomic.AtomicLong
+```
 
+**(2) `emit` 方法体改造**（第 1 章只 `sink.tryEmitNext(event)`，现在加序号分配 + 关键事件落库）：
+
+```java
     public void emit(AgentEvent event) {
         // 1. 分配会话内序号
         long seq = sequences.computeIfAbsent(event.sessionId(), k -> new AtomicLong())
@@ -1450,22 +1376,22 @@ public class AgentEventBus {
             store.save(sequenced);
         }
 
-        // 3. 推总线
+        // 3. 推总线（第 1 章的原逻辑，只是 event 换成 sequenced）
         sink.tryEmitNext(sequenced);
     }
+```
 
-    /** record 不可变，复制一份改 sequence。 */
+**(3) 加一个私有 helper**（record 不可变，复制一份改 sequence）：
+
+```java
     private static AgentEvent withSequence(AgentEvent e, long seq) {
         return new AgentEvent(e.type(), e.sessionId(), e.timestamp(), e.data(),
                 e.criticality(), seq);
     }
-
-    /** 按会话订阅（同第 1 章，复用即可）。 */
-    public Flux<AgentEvent> subscribe(String sessionId) {
-        return sink.asFlux().filter(event -> sessionId.equals(event.sessionId()));
-    }
-}
 ```
+
+`subscribe(sessionId)` 不变，沿用第 1 章的。
+
 
 > **为什么用 `AtomicLong`？**
 > 序号要「自增」且线程安全。`AtomicLong.incrementAndGet()` 原子操作，多线程同时 emit 不会拿到重复序号。`ConcurrentHashMap` 保证「每会话一个计数器」的可见性。
@@ -1475,66 +1401,48 @@ public class AgentEventBus {
 
 #### 2.2.5 SseController 加回放 + 重连模式
 
-`src/main/java/com/example/aobs/obs/SseController.java`（大改）：
+第 1 章的 SseController 只处理"正常请求"（订阅 run 冷流）。第 2 章加"重连请求"（带 Last-Event-ID 时，从 Redis 回放关键事件 + 订阅总线后续）。增量改三处：
+
+**(1) 加一个字段 + 改构造器**（注入 CriticalEventStore 用于重连回放）：
 
 ```java
-package com.example.aobs.obs;
-
-import com.example.aobs.writing.ArticleService;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.http.MediaType;
-import org.springframework.http.codec.ServerSentEvent;
-import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
-
-@RestController
-@RequestMapping("/api/obs")
-public class SseController {
-
-    private final AgentEventBus eventBus;
-    private final ArticleService articleService;
+    // 字段（eventBus/articleService/mapper 不变）：
     private final ObjectProvider<CriticalEventStore> storeProvider;
-    private final ObjectMapper mapper = new ObjectMapper();
 
-    public SseController(AgentEventBus eventBus,
-                         ArticleService articleService,
+    // 构造器（替换第 1 章的两参构造）：
+    public SseController(AgentEventBus eventBus, ArticleService articleService,
                          ObjectProvider<CriticalEventStore> storeProvider) {
         this.eventBus = eventBus;
         this.articleService = articleService;
         this.storeProvider = storeProvider;
     }
+    // import 补：org.springframework.beans.factory.ObjectProvider
+```
 
-    /**
-     * 两种模式：
-     *   - 正常请求（无 Last-Event-ID）：订阅 run 的冷流，订阅即触发写作（第 1 章方案）。
-     *   - 重连请求（带 Last-Event-ID）：写作已在执行/已结束，不能重跑——走「Redis 回放 + 总线订阅」，
-     *     补发断连期间的关键事件，再接实时事件。
-     */
-    @GetMapping(value = "/article", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+**(2) `stream` 方法签名加两个参数 + 方法体加"重连模式"分支**（正常模式不变）：
+
+```java
+    // 签名加：fromQuery（兼容 query，EventSource 用）、lastEventId（重连带）：
     public Flux<ServerSentEvent<String>> stream(@RequestParam String prompt,
-                                                @RequestHeader(name = "sessionId", required = false) String fromHeader,
-                                                @RequestParam(name = "sessionId", required = false) String fromQuery,
-                                                @RequestHeader(value = "Last-Event-ID", required = false)
-                                                    String lastEventId) {
-        String sessionId = fromHeader != null ? fromHeader : fromQuery;   // 兼容 query（EventSource 用）
+                @RequestHeader(name = "sessionId", required = false) String fromHeader,
+                @RequestParam(name = "sessionId", required = false) String fromQuery,
+                @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) {
+        String sessionId = fromHeader != null ? fromHeader : fromQuery;
 
-        // 重连模式：回放 + 总线订阅
+        // ★ 重连模式（新增）：写作已在执行/已结束，不能重跑——走 Redis 回放 + 总线订阅
         if (lastEventId != null) {
             CriticalEventStore store = storeProvider.getIfAvailable();
             Flux<AgentEvent> replay = (store != null)
                     ? Flux.fromIterable(store.findAfter(sessionId, parseTimestampFrom(lastEventId)))
                     : Flux.empty();
-            Flux<AgentEvent> live = eventBus.subscribe(sessionId);   // 按会话订阅（AgentEventBus 内部过滤）
+            Flux<AgentEvent> live = eventBus.subscribe(sessionId);   // AgentEventBus 内部按会话过滤
             return Flux.concat(replay, live)
                     .takeUntil(e -> e.type() == EventContent.SESSION_COMPLETED
                             || e.type() == EventContent.SESSION_FAILED)
                     .map(this::toSse);
         }
 
-        // 正常模式：直接订阅 run 冷流（订阅即触发），流首插 READY（第 1 章）
+        // 正常模式（第 1 章原逻辑，不变）：订阅 run 冷流 + 流首 READY
         ServerSentEvent<String> ready = ServerSentEvent.<String>builder()
                 .id(sessionId + "-ready").event("READY").data("{\"type\":\"READY\"}").build();
         return articleService.run(prompt, sessionId)
@@ -1543,9 +1451,9 @@ public class SseController {
     }
 ```
 
-> **为什么重连不能再订阅 run**：run 是冷流、且代表"一次写作的执行"。重连时那次写作已经在第一次请求里触发了（或已结束），再订阅 run 会**重跑一遍 LLM**——既浪费钱、也不是用户想要的（用户要的是"接着看之前那次"）。所以重连走「Redis 回放关键事件 + AgentEventBus 订阅后续」——这是热流广播的价值兑现：写作只执行一次，事件进 AgentEventBus，重连者从总线接续。
->
-> **「SSE 心跳」留给产品对外时**：现在内网/IDE 跑，两事件间隔再长连接也不会被断。等产品部署到 nginx/CDN 后面，代理的 60s 空闲超时会断慢生成连接——那时才需要心跳。**现在不做**（演进纪律），方案见第 7 章 7.1。
+**(3) 加一个私有 helper**（从 Last-Event-ID 解析时间戳，回放用）：
+
+```java
     /** 帧ID 格式 "sessionId-时间戳"，取时间戳部分。 */
     private long parseTimestampFrom(String lastEventId) {
         int idx = lastEventId.lastIndexOf('-');
@@ -1553,29 +1461,14 @@ public class SseController {
         try { return Long.parseLong(lastEventId.substring(idx + 1)); }
         catch (NumberFormatException e) { return 0; }
     }
-
-    private ServerSentEvent<String> toSse(AgentEvent e) {
-        return ServerSentEvent.<String>builder()
-                .id(e.sessionId() + "-" + e.timestamp())   // timestamp 已是毫秒
-                .event(e.type())              // 事件类型名（已是 String）
-                .data(toJson(e))
-                .build();
-    }
-
-    /** 用 ObjectMapper（第 1 章已引入，本章沿用）。 */
-    private String toJson(AgentEvent e) {
-        try {
-            return mapper.writeValueAsString(e);
-        } catch (Exception ex) {
-            return "{\"type\":\"" + e.type() + "\"}";
-        }
-    }
-}
 ```
 
-> **本章两个改进**：① 加 Last-Event-ID 回放（重连补发断连期间的关键事件）；② 拆正常/重连两种模式（正常订阅 run 冷流，重连走 AgentEventBus.subscribe + Redis 回放）。JSON 序列化（ObjectMapper）和线程池（boundedElastic）第 1 章已就位。
+`toSse` / `toJson` 不变，沿用第 1 章。
+```
+
+> **为什么重连不能再订阅 run**：run 是冷流、且代表"一次写作的执行"。重连时那次写作已经在第一次请求里触发了（或已结束），再订阅 run 会**重跑一遍 LLM**——既浪费钱、也不是用户想要的（用户要的是"接着看之前那次"）。所以重连走「Redis 回放关键事件 + AgentEventBus 订阅后续」——这是热流广播的价值兑现：写作只执行一次，事件进 AgentEventBus，重连者从总线接续。
 >
-> **Jackson 序列化**：`AgentEvent` 的 `type` 字段是 String（存的是枚举 `name()`，如 `"SESSION_STARTED"`），Jackson 直接序列化成字符串。`toSse` 里 `.event(e.type())` 把它作为 SSE 帧的 event 字段，前端按它 `addEventListener` 分发。
+> **「SSE 心跳」留给产品对外时**：现在内网/IDE 跑，两事件间隔再长连接也不会被断。等产品部署到 nginx/CDN 后面，代理的 60s 空闲超时会断慢生成连接——那时才需要心跳。**现在不做**（演进纪律），方案见第 7 章 7.1。
 
 > **「事后查历史」留给以后**：到这里 Redis 兜底 + 重连回放已经解决了"不丢"。但"事后查历史"（用户说"我昨天那次有问题"，Redis 早清了）是另一个能力——它要长期归档存储。**这不是第 2 章的痛点**（第 2 章只解决"实时/短期不丢"），所以现在不做。等到真有"查历史"的需求（产品成熟到要排查历史会话）再做，方案见第 7 章 7.5（归档）和第 8 章（历史回放）。
 
@@ -2007,10 +1900,10 @@ public class ToolObservationHandler implements ObservationHandler<ToolCallingObs
 
 流式下 token 信息在**最后一个流式响应**的 metadata 里。第 1 章的 `streamStep` 用 `.stream().content()` 只拿文本——这里改成 `.stream().chatResponse()` 拿完整响应（每个 chunk 是一个 `ChatResponse`，最后一个含 `Usage`）。reduce 累积文本的同时，把最后一个 chunk 的 Usage 取出发 `LLM_TOKENS`。
 
-`src/main/java/com/example/aobs/workflow/ChainingService.java`（改 streamStep + 加 emitTokens）：
+`src/main/java/com/example/aobs/workflow/ChainingService.java`（增量改：替换第 1 章的 `streamStep` 方法体 + 加 `emitTokens` 方法）：
 
 ```java
-// streamStep 改：用 chatResponse() 流，reduce 时同时累积文本和记录最后一个 response
+// 替换第 1 章的 streamStep 方法体（用 chatResponse() 流，reduce 时同时累积文本和记录最后一个 response）
 private String streamStep(String system, String userPrompt, String sessionId, int step, FluxSinkAdapter out) {
     org.springframework.ai.chat.model.ChatResponse[] last = {null};   // 装最后一个 chunk（含 Usage）
 
@@ -2723,74 +2616,50 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 #### 5.2.1 AgentEvent 加归因字段
 
-`src/main/java/com/example/aobs/obs/AgentEvent.java`（再加字段）：
+第 5 章加三个归因字段（tenantId/userId/agentVersion）。增量改三处：
+
+**(1) record 字段列表里，在 sessionId 后面插三个字段**：
 
 ```java
-public record AgentEvent(
-        String type,            // 事件类型名（EventContent.name()）
+        String type,
         String sessionId,
         String tenantId,        // ← 第 5 章新增：租户（隔离 + 成本归因）
         String userId,          // ← 第 5 章新增：用户（成本归因 + 限流）
         String agentVersion,    // ← 第 5 章新增：Agent 版本（回滚定位 + 成本归因）
-        long timestamp,         // 毫秒
-        Map<String, Object> data,
-        Criticality criticality,
-        long sequence
-) {
-    public enum Criticality { CRITICAL, NORMAL, DISCARDABLE }
+        long timestamp,
+        // ... 后面 data/criticality/sequence 不变 ...
+```
 
-    public static Criticality defaultCriticality(EventContent type) {
-        return switch (type) {
-            case SESSION_STARTED, SESSION_COMPLETED, SESSION_FAILED -> Criticality.CRITICAL;
-            case CONTENT_DELTA -> Criticality.DISCARDABLE;
-            default -> Criticality.NORMAL;
-        };
-    }
+**(2) 加一个带租户的 `of` 重载**（老的 `of(type, sessionId, data)` 保留，不用改老调用点）：
 
-    public static Builder builder() { return new Builder(); }
-
+```java
     /** 第 5 章快捷构造：带租户/用户。 */
     public static AgentEvent of(EventContent type, String sessionId, String tenantId, String userId,
                                 Map<String, Object> data) {
         return builder().type(type).sessionId(sessionId)
                 .tenantId(tenantId).userId(userId).data(data).build();
     }
-
-    /** 第 1-4 章的旧 of（无租户）保留兼容。 */
-    public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
-        return builder().type(type).sessionId(sessionId).data(data).build();
-    }
-
-    public static final class Builder {
-        private EventContent type;
-        private String sessionId;
-        private String tenantId;
-        private String userId;
-        private String agentVersion = "v1";
-        private Long timestamp;
-        private Map<String, Object> data = Map.of();
-        private Criticality criticality;
-
-        public Builder type(EventContent t) { this.type = t; return this; }
-        public Builder sessionId(String s) { this.sessionId = s; return this; }
-        public Builder tenantId(String t) { this.tenantId = t; return this; }
-        public Builder userId(String u) { this.userId = u; return this; }
-        public Builder agentVersion(String v) { this.agentVersion = v; return this; }
-        public Builder timestamp(long t) { this.timestamp = t; return this; }
-        public Builder data(Map<String, Object> d) { this.data = d; return this; }
-        public Builder criticality(Criticality c) { this.criticality = c; return this; }
-
-        public AgentEvent build() {
-            if (type == null) throw new IllegalStateException("type 必填");
-            Criticality c = criticality != null ? criticality : defaultCriticality(type);
-            return new AgentEvent(type.name(), sessionId, tenantId, userId, agentVersion,
-                    timestamp != null ? timestamp : System.currentTimeMillis(), data, c, 0L);
-        }
-    }
-}
 ```
 
-> **第 5 章相对第 2 章的变化**：record 加 `tenantId`/`userId`/`agentVersion` 三个归因字段；builder 加对应方法。**因为用 builder，老的 `of(type, sessionId, data)` 调用点不用改**（第 5 章新增了带租户的 of 重载，老 of 保留）。只有需要归因的 emit 点（SESSION_STARTED/LLM_TOKENS 等）改成传 tenantId/userId——`ChainingService.run` 签名加 tenantId/userId，Controller 从请求头取，按 IDE 报错逐个修。
+**(3) Builder 加三个字段 + 三个 setter + build 多传三个**：
+
+```java
+    // Builder 里加字段（agentVersion 默认 "v1"）：
+    private String tenantId;
+    private String userId;
+    private String agentVersion = "v1";
+
+    // 加三个 setter：
+    public Builder tenantId(String t) { this.tenantId = t; return this; }
+    public Builder userId(String u) { this.userId = u; return this; }
+    public Builder agentVersion(String v) { this.agentVersion = v; return this; }
+
+    // build() 的 new AgentEvent(...) 开头多传三个：
+    return new AgentEvent(type.name(), sessionId, tenantId, userId, agentVersion,
+            timestamp != null ? timestamp : System.currentTimeMillis(), data, c, 0L);
+```
+
+> **第 5 章相对第 2 章的变化**：record 加三个归因字段；builder 加对应方法。**因为用 builder，老的 `of(type, sessionId, data)` 调用点不用改**（第 5 章新增了带租户的 of 重载，老 of 保留）。只有需要归因的 emit 点（SESSION_STARTED/LLM_TOKENS 等）改成传 tenantId/userId——`ChainingService.run` 签名加 tenantId/userId，Controller 从请求头取，按 IDE 报错逐个修。
 
 #### 5.2.2 Controller 从请求头取租户/用户
 
