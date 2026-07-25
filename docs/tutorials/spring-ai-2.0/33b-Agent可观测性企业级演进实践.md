@@ -68,7 +68,7 @@
 
 | 阶段 | 一句话 | 适用体量 |
 |------|-------|---------|
-| 第 0 章 | 黑盒 Agent | 起点 |
+| 第 0 章 | 流式黑盒 Agent（只推正文，过程不可见） | 起点 |
 | 第 1 章 | 最小可见性：采集→总线→SSE | 单实例、内部工具 |
 | 第 2 章 | 可靠性：不丢、不乱序、能重连 | 单实例、有真实用户 |
 | 第 3 章 | 工具调用与 token 可见 | 单实例、Agent 调工具 |
@@ -97,18 +97,21 @@
 
 你所在的团队要做一个「AI 写作助手」：用户输入主题，AI 生成文章。技术上用 Spring AI 调 DeepSeek，分三步（生成大纲 → 写草稿 → 润色）。
 
-这一章结束时，你有一个**能跑但完全黑盒**的 Agent——调一次，等十几秒，出结果，中间一无所知。
+这一章结束时，你有一个**能跑但完全黑盒**的流式 Agent——用户提交主题，文章**逐字流式冒出来**（打字机效果），但中间一无所知：不知道现在第几步、看不到大纲、没有耗时记录。
 
-> 为什么从黑盒开始？因为真实项目就是这样：**先让它能干活，再让它能被观察**。一上来就铺可观测性架构是过度设计。我们要等它「出事」，才知道该观测什么。这个「出事」会在第 1 章发生。
+> **为什么一上来就是流式？** 因为现在的 AI 产品没有非流式的用武之地——前端就是流式对话页面（打字机效果是基础体验），后端同步阻塞返回会让用户干等十几秒。流式也不比同步难多少（Spring AI 的 `.stream()` 和 `.call()` 一字之差）。所以**从第 0 章起就是流式**，全文一致，后面不用迁移。
+>
+> **但这一章是「黑盒」**：流式只推送正文文本（`Flux<String>`），**没有任何可观测事件**（没有"现在第几步"、没有 EventBus、没有事件总线）。等它「出事」（第 1 章），才知道该观测什么——那时把 `Flux<String>` 升级成 `Flux<AgentEvent>`，正文变成其中一种事件（CONTENT_DELTA），同时加上 STEP/SESSION 等过程事件。**先让它能干活（流式黑盒），再让它能被观察（第 1 章可观测）。**
 
-### 0.1 思路：先建项目跑通业务，不碰可观测性
+### 0.1 思路：先建项目跑通流式业务，不碰可观测性
 
-这一步零可观测性，只把业务链路跑通。关键决策两个：
+这一步零可观测性，只把流式业务链路跑通。关键决策三个：
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
-| Web 框架 | WebFlux（不是 Web） | SSE 和 Spring AI 流式都是响应式，WebFlux 天然契合；后面不用迁移 |
+| Web 框架 | WebFlux（不是 Web） | 流式/SSE 都是响应式，WebFlux 天然契合；后面不用迁移 |
 | 业务结构 | 抽象基类 + 具体子类 | 第 1 章要给基类加可观测性，抽象出来好统一改 |
+| 推送方式 | `Flux<String>` 流式文本 | 用户看到逐字生成；第 1 章升级成 `Flux<AgentEvent>` 加事件 |
 
 ### 0.2 动手
 
@@ -149,7 +152,7 @@ ai-writing-assistant/
     </properties>
 
     <dependencies>
-        <!-- WebFlux：HTTP 接口和 SSE 都靠它（注意不是 spring-boot-starter-web） -->
+        <!-- WebFlux：HTTP 接口和流式/SSE 都靠它（注意不是 spring-boot-starter-web） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
@@ -194,7 +197,7 @@ ai-writing-assistant/
 ```
 
 > **小白疑问：为什么用 WebFlux 不是 Web？**
-> Web（spring-boot-starter-web）基于 Servlet，阻塞模型，一个请求占一个线程。WebFlux 基于 Reactor，响应式非阻塞。我们要做的 SSE 推送（后面会大量用）在 WebFlux 下天然契合（返回 `Flux<ServerSentEvent>` 就行）。所以从一开始就用 WebFlux，后面不用迁移。
+> Web（spring-boot-starter-web）基于 Servlet，阻塞模型。WebFlux 基于 Reactor，响应式非阻塞。流式生成（`.stream()`）和 SSE 推送在 WebFlux 下天然契合（返回 `Flux` 就行）。所以从一开始就用 WebFlux，后面不用迁移。
 >
 > **重要**：不要同时引 `spring-boot-starter-web` 和 `spring-boot-starter-webflux`，会冲突。只用 WebFlux。
 
@@ -240,7 +243,7 @@ public class Application {
 
 `@SpringBootApplication` 是组合注解（开启自动装配 + 组件扫描）。扫描范围是 `com.example.aobs` 及子包，所以后面所有类放这个包下。
 
-#### 0.2.4 业务核心：三步链式 Workflow
+#### 0.2.4 业务核心：三步链式流式 Workflow
 
 用「抽象基类 + 具体子类」结构（模板方法模式），因为第 1 章要给基类加可观测性。
 
@@ -251,13 +254,16 @@ package com.example.aobs.workflow;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
-import java.util.function.BiFunction;
 
 /**
- * 三步链式 Workflow 的抽象基类。
- * 子类只要声明「这三步分别做什么」（实现 steps()），run() 负责按顺序串起来执行。
+ * 三步链式流式 Workflow 的抽象基类（黑盒版）。
+ * 子类声明「这三步分别做什么」（实现 steps()），run() 负责按顺序串起来、流式推送正文。
+ *
+ * 这是黑盒：只推正文文本（Flux<String>），没有任何过程事件。
+ * 第 1 章会把它升级成 Flux<AgentEvent>，加上 STEP/SESSION 等可观测事件。
  */
 public abstract class ChainingService {
 
@@ -267,29 +273,66 @@ public abstract class ChainingService {
         this.chatClient = chatClient;
     }
 
-    /** 子类声明步骤链。每步入参是（上一步输出, sessionId），出参是本步输出。 */
-    protected abstract List<BiFunction<String, String, String>> steps();
+    /** 一步：system prompt + 「上一步输出 → 本步 user prompt」。 */
+    public record Step(String system, java.util.function.BiFunction<String, String, String> toUserPrompt) {}
 
-    /** 执行整条链：把上一步输出喂给下一步当输入。 */
-    public String run(String input, String sessionId) {
-        String payload = input;
-        for (BiFunction<String, String, String> step : steps()) {
-            payload = step.apply(payload, sessionId);
-        }
-        return payload;
+    /** 子类声明步骤链。 */
+    protected abstract List<Step> steps();
+
+    /**
+     * 执行整条链，流式推送最终步的正文文本。
+     *
+     * 流式 + 链式的标准写法：控制流用普通 for 循环（人人读懂），整体放进
+     * Flux.create + subscribeOn(boundedElastic)。每步用 .stream() 拿文本 chunk，
+     * 上一步完整输出（攒齐）喂下一步。阻塞循环跑在弹性线程池，不占 Reactor 线程。
+     */
+    public Flux<String> run(String input, String sessionId) {
+        List<Step> stepList = steps();
+        return Flux.<String>create(sink -> {
+                    String payload = input;   // 上一步完整输出，首步是用户输入
+                    for (int step = 0; step < stepList.size(); step++) {
+                        Step s = stepList.get(step);
+                        String userPrompt = s.toUserPrompt().apply(payload, sessionId);
+                        // 本步流式跑：每来一个 chunk 推给下游（用户看打字机），最后攒齐喂下一步
+                        payload = streamStep(s.system(), userPrompt, sessionId, sink);
+                    }
+                    sink.complete();
+                })
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
     }
 
-    /** 调一次 LLM。子类的步骤里用这个。 */
-    protected String call(String system, String prompt, String sessionId) {
+    /**
+     * 单步流式调 LLM：每个 chunk 推给下游（sink.next），同时攒进 StringBuilder。
+     * 用 reduce 拼完整文本（只订阅上游一次），最后 block 取回——喂下一步。
+     *
+     * block 安全：run 整体 subscribeOn(boundedElastic)，这里阻塞的是弹性线程，
+     * 不是 Reactor 调度线程（符合 boundedElastic "专为阻塞任务设计"的用途）。
+     */
+    private String streamStep(String system, String userPrompt, String sessionId,
+                              reactor.core.publisher.FluxSink<String> sink) {
         return chatClient.prompt()
                 .system(system)
-                .user(prompt)
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
-                .call()
-                .content();
+                .user(userPrompt)
+                .stream()
+                .content()
+                .filter(chunk -> chunk != null && !chunk.isEmpty())
+                .reduce(new StringBuilder(), (sb, chunk) -> {
+                    sb.append(chunk);
+                    sink.next(chunk);   // 流式推给下游（黑盒：只推文本，没事件）
+                    return sb;
+                })
+                .map(StringBuilder::toString)
+                .block();
     }
 }
 ```
+
+> **读这段代码的关键认知**：
+> 1. **`run` 返回 `Flux<String>`**：每个 String 是一个正文 chunk。Controller 把它当 SSE 流返回，浏览器订阅后正文逐字到达——打字机效果。
+> 2. **三步之间靠 `payload = streamStep(...)` 串**：每步流式跑完（reduce 把 chunk 拼成完整文本），完整文本喂下一步。链式 + 流式两全。
+> 3. **`subscribeOn(boundedElastic)`**：for 循环里有 `.block()`（阻塞等本步完整文本）。阻塞必须跑在 `boundedElastic`（专为阻塞任务的线程池），**绝不能跑在 Reactor 调度线程**。
+> 4. **这是黑盒**：只推正文 chunk，没有"现在第几步""大纲是什么""耗时多少"——这些第 1 章加。
 
 `src/main/java/com/example/aobs/writing/ArticleService.java`：
 
@@ -301,9 +344,8 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.function.BiFunction;
 
-/** 写作助手：大纲 → 草稿 → 润色。 */
+/** 写作助手：大纲 → 草稿 → 润色。只声明三步，执行（流式、链式）全在基类。 */
 @Service
 public class ArticleService extends ChainingService {
 
@@ -312,27 +354,37 @@ public class ArticleService extends ChainingService {
     }
 
     @Override
-    protected List<BiFunction<String, String, String>> steps() {
+    protected List<Step> steps() {
         return List.of(
-                (topic, sid) -> call("你是写作助手。根据主题生成大纲，只输出大纲本身。", topic, sid),
-                (outline, sid) -> call("你是写作助手。根据大纲写一篇草稿，只输出草稿正文。", outline, sid),
-                (draft, sid) -> call("你是写作助手。润色这篇草稿让它更流畅自然，只输出最终文本。", draft, sid)
+                // 第 0 步：主题 → 大纲（首步 payload 是用户输入的主题）
+                new Step("你是写作助手。根据主题生成大纲，只输出大纲本身。",
+                        (topic, sid) -> topic),
+                // 第 1 步：大纲 → 草稿
+                new Step("你是写作助手。根据大纲写一篇草稿，只输出草稿正文。",
+                        (outline, sid) -> outline),
+                // 第 2 步：草稿 → 润色（只有这步的 chunk 推给用户看——前两步内部消化）
+                new Step("你是写作助手。润色这篇草稿让它更流畅自然，只输出最终文本。",
+                        (draft, sid) -> draft)
         );
     }
 }
 ```
 
+> **注意：前两步的 chunk 用户看不到**。第 0、1 步（大纲、草稿）的 chunk 虽然也 `sink.next` 推了，但它们是"中间产物"——用户只想看最终润色后的文章。第 1 章加可观测后，前两步会变成 STEP 事件（折叠面板里看），只有第 2 步的 chunk 作为正文流给用户。**第 0 章黑盒先不区分，三步的 chunk 都推**（验证时你会看到大纲→草稿→润色三段文本连着流出来，这正好说明"黑盒不分步可见"）。
+
 > **小白疑问：`@Service` 和构造器注入**
 > `@Service` 告诉 Spring「这是个 Bean，帮我管理」。`ChatClient` 通过构造器传进来，Spring 看到该类型 Bean 自动注入。这是 Spring 推荐写法（比 `@Autowired` 字段注入更利于测试）。
 
-#### 0.2.5 HTTP 接口
+#### 0.2.5 HTTP 接口（流式 SSE）
 
 `src/main/java/com/example/aobs/writing/ArticleController.java`：
 
 ```java
 package com.example.aobs.writing;
 
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
 
 @RestController
 @RequestMapping("/api/article")
@@ -344,14 +396,20 @@ public class ArticleController {
         this.articleService = articleService;
     }
 
-    /** 生成文章。curl "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1" */
-    @GetMapping
-    public String generate(@RequestParam String prompt,
-                           @RequestHeader String sessionId) {
+    /**
+     * 流式生成文章。返回 Flux<String> + text/event-stream = SSE 流。
+     * 用法：curl -N "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1"
+     * （-N 关闭缓冲，才能看到逐字实时到达）
+     */
+    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<String> generate(@RequestParam String prompt,
+                                 @RequestHeader String sessionId) {
         return articleService.run(prompt, sessionId);
     }
 }
 ```
+
+> **`Flux<String>` + `text/event-stream` = SSE**：WebFlux 看到 Controller 返回 `Flux` 且 produces 是 `text/event-stream`，自动把每个 String 包成一个 SSE 帧推给客户端。客户端（浏览器/curl）逐帧收到，看到打字机效果。**不用手写 SSE 帧格式**——WebFlux 替你做。
 
 ### 0.3 验证
 
@@ -362,10 +420,12 @@ mvn spring-boot:run
 看到 `Started Application in x.xxx seconds` 就是起来了。另开终端：
 
 ```bash
-curl "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1"
+curl -N "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1"
 ```
 
-等约 10-15 秒（三次 LLM 调用），返回一篇润色过的文章。
+（`-N` 关闭 curl 缓冲，否则它攒够一批才显示，看不到逐字效果。）
+
+你会看到正文**逐字实时冒出来**（先是大纲的 chunk，接着草稿，最后润色版——三段连着流）。整个过程约 10-15 秒（三次 LLM 调用），但**用户全程看到在动**，不是干等。
 
 ### 0.4 checkpoint
 
@@ -373,23 +433,24 @@ curl "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1"
 src/main/java/com/example/aobs/
 ├── Application.java
 ├── workflow/
-│   └── ChainingService.java
+│   └── ChainingService.java     # 流式黑盒：Flux<String> run
 └── writing/
-    ├── ArticleService.java
-    └── ArticleController.java
+    ├── ArticleService.java      # 三步声明
+    └── ArticleController.java   # SSE 流式接口
 ```
 
 ```bash
 git init && git add -A
-git commit -m "第0章：黑盒写作助手跑通"
+git commit -m "第0章：流式黑盒写作助手跑通"
 ```
 
 ### 0.5 复盘
 
-产品能跑了。但试着回答这些：
-- 用户说「这次特别慢」——你知道是三步里哪步慢吗？**不知道。**
-- 想看中间的大纲——能看到吗？**不能。**
+产品能跑了，而且是流式的——用户不用干等。但它是**黑盒**，试着回答这些：
+- 用户说「这次特别慢」——你知道是三步里哪步慢吗？**不知道。**（你只看到一串文本，不知道现在跑到第几步）
+- 想看中间的大纲——能看到吗？**能，但它和草稿、润色混在一起流出来**，分不清哪段是哪步。
 - 想加日志记录每步耗时——要不要改业务代码？**要。**
+- 想知道这次烧了多少 token——**不知道。**
 
 **黑盒的代价：内部不可见，每次想知道多一点都要改业务代码。** 第 1 章解决这个问题。
 
@@ -399,13 +460,13 @@ git commit -m "第0章：黑盒写作助手跑通"
 
 ### 1.0 场景
 
-产品上线给团队内部试用。一周后同事反馈「有时候特别慢，偶尔还超时」。你打开日志，只有 `ArticleService.run` 的开始结束，中间一片空白。本地复现三次都正常（问题是偶发的）。
+产品上线给团队内部试用。一周后同事反馈「有时候特别慢，偶尔还超时」。你打开页面看——正文在逐字流（第 0 章的流式黑盒跑得挺顺），但**慢的时候你完全不知道卡在哪**：流到一半停了，是第 1 步草稿慢、还是第 2 步润色慢、还是网络抖？日志里只有一串 chunk，看不出"现在第几步"。本地复现三次都正常（问题是偶发的）。
 
-**你意识到：看不到 Agent 内部，根本没法定位偶发问题。** 决定给它装「监控屏」——让三步执行的每一步都能被实时看到。
+**你意识到：流式只解决了"用户不干等"，没解决"过程不可见"。** 决定给它装「监控屏」——让三步执行的每一步、每个阶段都能被实时看到（不只是正文 chunk）。
 
 ### 1.1 思路：三层最小架构
 
-要做什么：把第 0 章那个"等十几秒出一坨文本"的同步黑盒，改造成**边生成边把每一步、每个 token 片段实时推出去**的流式 Agent。拆成三层：
+要做什么：把第 0 章那个流式黑盒（`Flux<String>`，只推正文 chunk）**升级成可观测的流式 Agent**——`run` 改返回 `Flux<AgentEvent>`，正文 chunk 变成其中一种事件（CONTENT_DELTA），同时加上 STEP/SESSION 等过程事件，让"现在第几步、大纲是什么、何时完成"全可见。拆成三层：
 
 ```
 [写作 Workflow 流式每一步]  ——emit 事件——>  [事件总线]  ——订阅——>  [SSE 推给 curl/浏览器]
@@ -413,12 +474,12 @@ git commit -m "第0章：黑盒写作助手跑通"
 ```
 
 这一步同时做两件事：
-1. **流式化**：`ChainingService.run` 从同步 `String` 改成 `Flux<AgentEvent>`——三步链式，每步用 Spring AI 的 `.stream()` 逐字推送 `CONTENT_DELTA`，用户看到打字机效果而不是干等。
-2. **可观测**：每步前后发 `STEP_START/STEP_END`、整条链发 `SESSION_STARTED/SESSION_COMPLETED`，过程全可见。
+1. **事件化**：`ChainingService.run` 从 `Flux<String>`（第 0 章）升级成 `Flux<AgentEvent>`——正文 chunk 包成 `CONTENT_DELTA` 事件，每步前后发 `STEP_START/STEP_END`、整条链发 `SESSION_STARTED/SESSION_COMPLETED`。流式体感不变（还是逐字），但过程全可见。
+2. **总线**：加 EventBus，把事件广播给多个消费者（不止前端 SSE）。
 
-**关键决策一：为什么让 `run` 自己返回 `Flux<AgentEvent>`？**
+**关键决策一：为什么把 `Flux<String>` 升级成 `Flux<AgentEvent>`？**
 
-第 0 章同步 `run` 返回一个 `String`，调用方拿到结果就完事——但这样**过程对外不可见**。改成 `Flux<AgentEvent>` 后，`run` 本身就是"事件流"：它一边执行一边把事件推给下游。Controller 直接把这个 Flux 当 SSE 流返回，**不用额外组装**。这是响应式编程里最自然的"过程即数据流"写法。
+第 0 章 `Flux<String>` 只能推正文 chunk——**过程信息（第几步、开始/结束、错误）塞不进去**（String 没有类型）。改成 `Flux<AgentEvent>` 后，每个元素是"一个有类型的事件"：CONTENT_DELTA 是正文、STEP_START 是步骤开始、SESSION_COMPLETED 是完成……`run` 一边执行一边把各种事件推给下游，Controller 直接把这个 Flux 当 SSE 流返回。**这就是"过程即数据流"——把执行过程建模成一条事件流。**
 
 **关键决策二：有了 `Flux<AgentEvent>`，为什么还要 EventBus（总线）？**
 
@@ -580,9 +641,9 @@ public class EventBus {
 }
 ```
 
-#### 1.2.3 给 Workflow 埋点 + 流式化（采集）
+#### 1.2.3 给 Workflow 埋点 + 事件化（采集）
 
-改 `ChainingService`：① 加 EventBus 依赖；② `run` 从同步 `String` 改成 `Flux<AgentEvent>` 流式三步链；③ 每步用 `.stream()` 逐字推送 `CONTENT_DELTA`；④ 每个事件同时 `bus.emit` 广播。**业务步骤（steps()）完全不动**。
+改 `ChainingService`（在第 0 章流式黑盒基础上）：① 加 EventBus 依赖；② `run` 从 `Flux<String>` 升级成 `Flux<AgentEvent>`——正文 chunk 包成 CONTENT_DELTA，加 STEP_START/STEP_END/SESSION_* 事件；③ 每个事件同时 `bus.emit` 广播。**业务步骤（steps()/Step）完全不动、流式体感不变（还是逐字），只是多了过程事件**。
 
 > **关于 sessionId 的传递**：第 1 章的 `run` 用同步 for 循环，sessionId 直接当方法参数/局部变量传，简单够用。等到第 3 章讲工具调用的会话隔离时，才会遇到"工具执行线程读不到局部变量"的问题，那时再引入 Reactor Context 传播（`PropagatedContextValue`/`AppContextKeys`）。**第 1 章不需要它**——提前引入只会让人困惑"这玩意儿有什么用"。
 
@@ -787,6 +848,8 @@ public class ArticleService extends ChainingService {
 
 #### 1.2.4 SSE Controller——把事件推给客户端
 
+> **处理第 0 章的 `ArticleController`**：第 0 章的 `/api/article` 接口返回 `Flux<String>`、调 `articleService.run(...)`。现在 `run` 返回类型变成了 `Flux<AgentEvent>`，`ArticleController` 会编译错。**删掉 `ArticleController`**（第 0 章的纯文本流接口，到此退役）——第 1 章起统一用下面的 `SseController`（`/api/obs/article`，事件流）。后面章节的 curl 验证也都改用 `/api/obs/article`。
+
 `src/main/java/com/example/aobs/obs/SseController.java`：
 
 ```java
@@ -985,7 +1048,7 @@ STEP_START        14:30:05   {"type":"STEP_START","data":{"step":"1","total":"3"
 SESSION_COMPLETED 14:30:15   {"type":"SESSION_COMPLETED","data":{}}
 ```
 
-**对比第 0 章的黑盒**：那个等 15 秒出一坨文本；这个**生成过程中正文逐字冒出来**（CONTENT_DELTA 像打字机），还能看到「现在第几步、上一步产出了什么」。这就是「流式 + 可观测」的体感。
+**对比第 0 章的黑盒**：那个也是逐字流正文，但**只有一串文本**，分不清现在第几步、看不到大纲是什么；这个每步有 STEP_START/STEP_END，过程事件和正文交织，你能看到「现在第几步、上一步产出了什么」。这就是「可观测」的体感——流式体感没变（还是打字机），但过程透明了。
 
 ### 1.4 用页面验证 → 顺带搞懂"冷流为什么天然无竞态"
 
@@ -1043,8 +1106,8 @@ src/main/java/com/example/aobs/
 ├── workflow/
 │   └── ChainingService.java     （改：加 EventBus + 埋点）
 ├── writing/
-│   ├── ArticleService.java      （改：构造器）
-│   └── ArticleController.java
+│   └── ArticleService.java      （改：构造器）
+│   （ArticleController 第 0 章接口，本章退役删除）
 └── obs/                          ← 新增
     ├── AgentEvent.java           （新增：record + builder + 枚举）
     ├── EventContent.java         （新增：事件类型枚举）
@@ -1062,7 +1125,7 @@ git add -A && git commit -m "第1章：流式Agent+事件总线+SSE+调试页面
 
 ### 1.7 复盘
 
-**做了**：把第 0 章的同步黑盒改造成流式 Agent——`run` 返回 `Flux<AgentEvent>`，三步链式边生成边推 `CONTENT_DELTA`（打字机效果）；搭起三层骨架（采集→总线→SSE）；给了第一个调试页面；并加了 READY 帧给前端就绪信号。
+**做了**：把第 0 章的流式黑盒（`Flux<String>`）升级成可观测流式 Agent（`Flux<AgentEvent>`）——正文 chunk 包成 CONTENT_DELTA，加 STEP/SESSION 过程事件；搭起三层骨架（采集→总线→SSE）；给了第一个调试页面；并加了 READY 帧给前端就绪信号。流式体感不变，过程透明了。
 
 **这一章最该记住的工程教训**：
 1. **冷流驱动执行，天然消除竞态**——`run` 返回冷流，订阅即执行，"触发"和"订阅"合一，没有"先发后订"的时序缝隙。对比老式"热流 + 异步触发"会丢 SESSION_STARTED。**这是冷流的核心价值**。
@@ -2752,7 +2815,7 @@ public record AgentEvent(
 
 #### 5.2.2 Controller 从请求头取租户/用户
 
-`SseController`、`ArticleController` 加请求头：
+`SseController` 加请求头（第 0 章的 ArticleController 已在第 1 章退役）：
 
 ```java
 @GetMapping(value = "/article", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -3138,7 +3201,7 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 ```bash
 redis-cli shutdown   # 或 docker stop redis
 curl http://localhost:8080/actuator/health   # DOWN（但应用没挂）
-curl "http://localhost:8080/api/article?prompt=test" -H "sessionId: s6"   # 写作仍工作（降级）
+curl -N "http://localhost:8080/api/obs/article?prompt=test" -H "sessionId: s6"   # 写作仍工作（降级）
 ```
 **关键验证**：Redis 挂了，写作主流程不挂，只是可观测降级——这就是「绝不拖垮主链路」。
 
@@ -4676,8 +4739,8 @@ ai-writing-assistant/
 │   │   └── ChainingService.java          # 业务基类（流式 run + 续传 runFrom + 埋点）
 │   ├── writing/
 │   │   ├── ArticleService.java           # 写作助手
-│   │   ├── ArticleController.java        # 同步接口
 │   │   └── WritingTools.java             # @Tool 工具
+│   │   （ArticleController 第0章接口，第1章起退役）
 │   ├── session/                          # 会话持久化与历史（第8章）
 │   │   ├── SessionStatus.java            # 状态枚举
 │   │   ├── SessionRecord.java            # 会话概要 DTO
@@ -4739,7 +4802,7 @@ ai-writing-assistant/
 第3章：Observation订阅工具调用 + 会话隔离 + token成本
 第2章：事件可靠性——分级落库、序号、重连回放（页面演示）
 第1章：事件总线+SSE+调试页面+READY握手消除竞态
-第0章：黑盒写作助手跑通
+第0章：流式黑盒写作助手跑通
 ```
 
 ### A.3 踩坑手册（每章容易卡的地方）
@@ -4795,7 +4858,7 @@ ai-writing-assistant/
 
 ```mermaid
 flowchart TD
-    S0[第0章 黑盒 Agent] -->|事故: 看不到内部| S1
+    S0[第0章 流式黑盒 Agent<br/>只推正文,过程不可见] -->|事故: 看不到过程| S1
     S1[第1章 三层骨架<br/>采集-总线-SSE] -->|投诉: 事件丢/乱/漏| S2
     S2[第2章 可靠性<br/>分级落库+序号+回放] -->|需求: 调工具算钱| S3
     S3[第3章 工具与token<br/>Observation订阅+旁路统计] -->|体量: 上多实例| S4
