@@ -453,8 +453,8 @@ package com.example.aobs.obs;
  *   - 编译期校验：拼错事件名 IDE 立刻报红，不会等到运行时才发现。
  *   - 一处定义、处处引用：后面所有 emit 点、前端对照表都从这里取。
  *
- * 字段随章节长：第 1 章这几个；第 3 章加 TOOL_CALL/LLM_TOKENS；
- * 第 5 章加 QUOTA_EXCEEDED；第 7 章加 SESSION_CANCELLED。只加不删（schema 演进纪律，见第 5 章）。
+ * 字段随章节长：第 1 章这几个；后面章节用到新事件时再往枚举里加。
+ * 只加不删（schema 演进纪律，见第 5 章）。
  */
 public enum EventContent {
     // —— 会话生命周期（第 1 章）——
@@ -463,14 +463,7 @@ public enum EventContent {
     CONTENT_DELTA,      // 流式正文片段
     STEP_END,           // 某步结束
     SESSION_COMPLETED,  // 会话正常完成
-    SESSION_FAILED,     // 会话失败
-    // —— 工具与成本（第 3 章）——
-    TOOL_CALL,          // 工具调用（参数/返回）
-    LLM_TOKENS,         // LLM token 消耗 + 成本
-    // —— 治理（第 5/7 章）——
-    QUOTA_EXCEEDED,     // 配额超限（第 5 章）
-    SESSION_CANCELLED,  // 用户取消（第 7 章）
-    STEP_RESUMED;       // 续传起点（第 8 章）
+    SESSION_FAILED;     // 会话失败
 
     /** 序列化名。和枚举名一致，单独抽方法是为了日后改序列化格式时只改一处。 */
     public String wireName() { return name(); }
@@ -1509,7 +1502,7 @@ public class SseController {
 
 > **为什么重连不能再订阅 run**：run 是冷流、且代表"一次写作的执行"。重连时那次写作已经在第一次请求里触发了（或已结束），再订阅 run 会**重跑一遍 LLM**——既浪费钱、也不是用户想要的（用户要的是"接着看之前那次"）。所以重连走「Redis 回放关键事件 + EventBus 订阅后续」——这是热流广播的价值兑现：写作只执行一次，事件进 EventBus，重连者从总线接续。
 >
-> **「SSE 心跳」留给产品对外时**：现在内网/IDE 跑，两事件间隔再长连接也不会被断。等产品部署到 nginx/CDN 后面，代理的 60s 空闲超时会断慢生成连接——那时才需要心跳。**现在不做**（演进纪律），方案见附录 A.10。
+> **「SSE 心跳」留给产品对外时**：现在内网/IDE 跑，两事件间隔再长连接也不会被断。等产品部署到 nginx/CDN 后面，代理的 60s 空闲超时会断慢生成连接——那时才需要心跳。**现在不做**（演进纪律），方案见第 7 章 7.1。
     /** 帧ID 格式 "sessionId-时间戳"，取时间戳部分。 */
     private long parseTimestampFrom(String lastEventId) {
         int idx = lastEventId.lastIndexOf('-');
@@ -1541,7 +1534,7 @@ public class SseController {
 >
 > **Jackson 序列化枚举 record**：`AgentEvent` 的 `type` 字段现在是 `EventContent` 枚举。Jackson 默认把枚举序列化成 `name()`（即 `"SESSION_STARTED"`），前端拿到的 JSON 里 `type` 还是字符串——和手写 JSON 时代兼容。`toSse` 里 `.event(e.typeName())` 同步取序列化名，保证 SSE 的 event 字段也是字符串。
 
-> **「事后查历史」留给以后**：到这里 Redis 兜底 + 重连回放已经解决了"不丢"。但"事后查历史"（用户说"我昨天那次有问题"，Redis 早清了）是另一个能力——它要长期归档存储。**这不是第 2 章的痛点**（第 2 章只解决"实时/短期不丢"），所以现在不做。等到真有"查历史"的需求（产品成熟到要排查历史会话）再做，方案见附录 A.10。
+> **「事后查历史」留给以后**：到这里 Redis 兜底 + 重连回放已经解决了"不丢"。但"事后查历史"（用户说"我昨天那次有问题"，Redis 早清了）是另一个能力——它要长期归档存储。**这不是第 2 章的痛点**（第 2 章只解决"实时/短期不丢"），所以现在不做。等到真有"查历史"的需求（产品成熟到要排查历史会话）再做，方案见第 7 章 7.5（归档）和第 8 章（历史回放）。
 
 ### 2.3 验证（用页面 + Redis CLI）
 
@@ -1886,6 +1879,16 @@ public class ContextPropagationConfig {
 > **API 核实**：`io.micrometer.context.ThreadLocalAccessor`（getKey/getValue/setValue）来自 `context-propagation` 库（Spring Boot webflux/actuator 传递带入）；`ContextRegistry.getInstance().registerThreadLocalAccessor(accessor)` 接受 `ThreadLocalAccessor` 实例；`reactor.core.publisher.Hooks.enableAutomaticContextPropagation()` 是 Reactor 3.5+ 的全局开关。
 >
 > **这是第 3 章最核心的技术点**：流式 Agent 下"请求级上下文（sessionId/tenantId）怎么跨线程到达框架内部回调"。答案就是 Reactor Context + Micrometer Context Propagation 自动传播。同步模型用不到它（同线程 ThreadLocal 够用），流式模型必须用它。
+
+**先给 `EventContent` 枚举加两个值**（第 1 章只有 6 个会话生命周期事件，本章要用工具/token 事件）：
+
+```java
+public enum EventContent {
+    SESSION_STARTED, STEP_START, CONTENT_DELTA, STEP_END, SESSION_COMPLETED, SESSION_FAILED,
+    TOOL_CALL,     // ← 第 3 章加：工具调用（参数/返回）
+    LLM_TOKENS     // ← 第 3 章加：LLM token 消耗 + 成本
+}
+```
 
 **(b) Observation Handler——订阅工具调用，发 TOOL_CALL 事件**：
 
@@ -2837,6 +2840,12 @@ public class QuotaService {
 
 #### 5.2.5 在 ChainingService 里接入配额
 
+**先给 `EventContent` 加 QUOTA_EXCEEDED**（第 3 章加到 TOOL_CALL/LLM_TOKENS，本章加配额超限事件）：
+
+```java
+    QUOTA_EXCEEDED     // ← 第 5 章加：配额超限
+```
+
 `call` 方法里，每次烧 token 后校验租户预算：
 
 ```java
@@ -3278,6 +3287,12 @@ fetch('/api/obs/article?prompt=...', { signal: controller.signal, headers: {...}
 controller.abort();   // 断开 SSE 连接
 ```
 
+**先给 `EventContent` 加 SESSION_CANCELLED**（前面章节没这个事件，本章取消生成要用）：
+
+```java
+    SESSION_CANCELLED   // ← 第 7 章加：用户取消
+```
+
 后端 SSE 流被断开时 WebFlux 取消 Flux，用 `doOnCancel` 捕获，发 `SESSION_CANCELLED`、释放资源：
 ```java
 return events.mergeWith(heartbeat)
@@ -3467,7 +3482,7 @@ EventBus.emit 里归档所有事件（和落 Redis 一起）；SseController 加
 
 加一张 `session_record` 表（会话概要，一个会话一行），和第 7 章的 `event_archive`（事件流，一个会话 N 行）**分开**。原因：列表查询要扫概要（小表），回放要扫事件（大表）——读多写少的概要、写多读少的事件，分开存是企业级数据建模的常规。
 
-`SessionStatus` 先给最小三个状态：`ACTIVE`（进行中）、`COMPLETED`（完成）、`FAILED`（失败）。后面阶段再加 `INTERRUPTED`/`EXPIRED`。
+`SessionStatus` 先给最小三个状态：`ACTIVE`（进行中）、`COMPLETED`（完成）、`FAILED`（失败）。8.4 会加 `INTERRUPTED`（中断）。
 
 #### 8.1.2 动手
 
@@ -3476,13 +3491,11 @@ EventBus.emit 里归档所有事件（和落 Redis 一起）；SseController 加
 ```java
 package com.example.aobs.session;
 
-/** 会话生命周期状态。本阶段只用到前三个；INTERRUPTED/EXPIRED 后续阶段加。 */
+/** 会话生命周期状态。第 8.1 章只有这三个；8.4 加 INTERRUPTED。 */
 public enum SessionStatus {
     ACTIVE,        // 进行中
     COMPLETED,     // 正常完成
-    FAILED,        // 失败
-    INTERRUPTED,   // 中断（第 8.4 章加，停机/崩溃）
-    EXPIRED        // 过期（第 8.5 章加，TTL 清理）
+    FAILED         // 失败
 }
 ```
 
@@ -3950,6 +3963,15 @@ git add -A && git commit -m "第8.3章：会话列表+租户鉴权（防越权�
 #### 8.4.2 动手
 
 > **本阶段最重要的重构：`run` 执行体搬进 `runFrom`**。8.1 给 `run` 加的执行体（`Flux.create` + for 循环 + sessionService 三调用）现在**整个移到 `runFrom`** 里，并加 `fromStep` 分支（fromStep=0 走 SESSION_STARTED，>0 走 STEP_RESUMED）。`run` 变成两个薄壳重载，都委托 `runFrom`。**构造器不动**（8.1 加的 SessionService 字段继续用）。
+
+**先给 `SessionStatus` 加 INTERRUPTED**（8.1 只有 ACTIVE/COMPLETED/FAILED，本阶段要用中断状态）：
+
+```java
+public enum SessionStatus {
+    ACTIVE, COMPLETED, FAILED,
+    INTERRUPTED   // ← 8.4 加：中断（停机/崩溃，可续传）
+}
+```
 
 `session_record` 加 `last_step` 列：
 
@@ -4841,7 +4863,7 @@ flowchart TD
             <artifactId>spring-boot-configuration-processor</artifactId>
             <optional>true</optional>
         </dependency>
-        <!-- Resilience4j：LLM 重试/降级（第6章 6.2.6） -->
+        <!-- Resilience4j：LLM 重试/降级（第7章 7.2） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-aop</artifactId>
@@ -4851,7 +4873,7 @@ flowchart TD
             <artifactId>resilience4j-spring-boot3</artifactId>
             <version>2.2.0</version>
         </dependency>
-        <!-- 事件归档：JDBC + H2（第2章 2.2.6；生产换 ES/ClickHouse） -->
+        <!-- 事件归档：JDBC + H2（第7章 7.5；生产换 ES/ClickHouse） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
@@ -4910,11 +4932,14 @@ spring:
   sql:
     init:
       mode: always                             # 启动建表（IF NOT EXISTS）
+  lifecycle:
+    timeout-per-shutdown-phase: 30s            # 优雅停机（第8章 8.4）
 
 server:
-  port: ${SERVER_PORT:8080}                 # 多实例用环境变量改端口
+  port: ${SERVER_PORT:8080}                    # 多实例用环境变量改端口
+  shutdown: graceful                           # 优雅停机（第8章 8.4）
 
-management:                                  # Actuator 端点（第6章）
+management:                                    # Actuator 端点（第6章）
   endpoints:
     web:
       exposure:
@@ -4923,7 +4948,7 @@ management:                                  # Actuator 端点（第6章）
     health:
       show-details: always
 
-resilience4j:                                # LLM 重试/降级（第7章 7.2）
+resilience4j:                                  # LLM 重试/降级（第7章 7.2）
   retry:
     instances:
       llmCall:
@@ -4935,11 +4960,9 @@ resilience4j:                                # LLM 重试/降级（第7章 7.2�
           - org.springframework.web.client.HttpServerErrorException
           - java.net.SocketTimeoutException
 
-server:
-  shutdown: graceful                         # 优雅停机（A.8）
-spring:
-  lifecycle:
-    timeout-per-shutdown-phase: 30s
+aobs:                                          # 第8章 8.5 加密原文用的密钥（生产走 KMS）
+  crypto:
+    key: ${AOBS_CRYPTO_KEY:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f}
 
 logging:
   level:
