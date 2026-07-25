@@ -273,8 +273,19 @@ public abstract class ChainingService {
         this.chatClient = chatClient;
     }
 
-    /** 一步：system prompt + 「上一步输出 → 本步 user prompt」。 */
-    public record Step(String system, java.util.function.BiFunction<String, String, String> toUserPrompt) {}
+    /**
+     * 一步：system prompt + 「上一步输出 → 本步输入」的预处理函数。
+     *
+     * 为什么用结构化的 Step 而不是裸 String：链式工作流的「一步」天然需要两个字段——
+     * system 指令 + 输入预处理。写作链的预处理恰好恒等（上一步输出原样喂下一步），
+     * 但翻译链会 `prev -> "翻成英文：" + prev`、RAG 链会 `prev -> 检索结果 + prev`——
+     * 这些是真实业务需求，必须有地方放。Step 就是放它们的结构。**结构正确，只是当前
+     * 业务简单**；以后业务复杂了不用改 Step 签名（开闭原则）。
+     *
+     * prepareInput 是 Function（上一步输出 → 本步输入），不带 sessionId——sessionId
+     * 是会话级上下文，归基类 run 管（传给 streamStep），不进预处理函数。职责聚焦。
+     */
+    public record Step(String system, java.util.function.Function<String, String> prepareInput) {}
 
     /** 子类声明步骤链。 */
     protected abstract List<Step> steps();
@@ -292,7 +303,8 @@ public abstract class ChainingService {
                     String payload = input;   // 上一步完整输出，首步是用户输入
                     for (int step = 0; step < stepList.size(); step++) {
                         Step s = stepList.get(step);
-                        String userPrompt = s.toUserPrompt().apply(payload, sessionId);
+                        // 预处理上一步输出 → 本步输入（写作链恒等，其他链可能转换）
+                        String userPrompt = s.prepareInput().apply(payload);
                         // 本步流式跑：每来一个 chunk 推给下游（用户看打字机），最后攒齐喂下一步
                         payload = streamStep(s.system(), userPrompt, sessionId, sink);
                     }
@@ -356,15 +368,12 @@ public class ArticleService extends ChainingService {
     @Override
     protected List<Step> steps() {
         return List.of(
-                // 第 0 步：主题 → 大纲（首步 payload 是用户输入的主题）
-                new Step("你是写作助手。根据主题生成大纲，只输出大纲本身。",
-                        (topic, sid) -> topic),
-                // 第 1 步：大纲 → 草稿
-                new Step("你是写作助手。根据大纲写一篇草稿，只输出草稿正文。",
-                        (outline, sid) -> outline),
+                // 第 0 步：主题 → 大纲（首步输入是用户输入的主题；预处理恒等）
+                new Step("你是写作助手。根据主题生成大纲，只输出大纲本身。", topic -> topic),
+                // 第 1 步：大纲 → 草稿（上一步输出原样喂下一步）
+                new Step("你是写作助手。根据大纲写一篇草稿，只输出草稿正文。", outline -> outline),
                 // 第 2 步：草稿 → 润色（只有这步的 chunk 推给用户看——前两步内部消化）
-                new Step("你是写作助手。润色这篇草稿让它更流畅自然，只输出最终文本。",
-                        (draft, sid) -> draft)
+                new Step("你是写作助手。润色这篇草稿让它更流畅自然，只输出最终文本。", draft -> draft)
         );
     }
 }
@@ -667,10 +676,10 @@ public abstract class ChainingService {
         this.eventBus = eventBus;
     }
 
-    /** 一步链：system prompt + 「把上一步输出转成本步 user prompt」的函数。 */
-    public record Step(String system, java.util.function.BiFunction<String, String, String> toUserPrompt) {}
+    /** 一步：system + 输入预处理（同第 0 章，结构不变）。 */
+    public record Step(String system, java.util.function.Function<String, String> prepareInput) {}
 
-    /** 子类声明步骤链。每步给 system 和「上一步输出 → 本步 user prompt」。 */
+    /** 子类声明步骤链。 */
     protected abstract List<Step> steps();
 
     /**
@@ -696,7 +705,7 @@ public abstract class ChainingService {
                         Step s = stepList.get(step);
                         out.emit(EventContent.STEP_START,
                                 Map.of("step", step, "total", total));
-                        String userPrompt = s.toUserPrompt().apply(payload, sessionId);
+                        String userPrompt = s.prepareInput().apply(payload);
                         String full = streamStep(s.system(), userPrompt, sessionId, step, out);  // 流式 + 累积
                         out.emit(EventContent.STEP_END,
                                 Map.of("step", step, "output", truncate(full, 80)));
@@ -3974,10 +3983,11 @@ public Flux<AgentEvent> runFrom(String input, String sessionId, String tenantId,
                 for (int step = fromStep; step < total; step++) {
                     Step s = stepList.get(step);
                     out.emit(EventContent.STEP_START, Map.of("step", step, "total", total));
-                    // 续传的第一步：输入从归档取（上一步输出）；否则用循环累积的 payload
-                    String userPrompt = (step == fromStep && fromStep > 0)
-                            ? s.toUserPrompt().apply(sessionService.getStepOutput(sessionId, step - 1), sessionId)
-                            : s.toUserPrompt().apply(payload, sessionId);
+                    // 续传的第一步：输入从归档取（上一步输出）；否则用循环累积的 payload。再过 prepareInput。
+                    String prevOutput = (step == fromStep && fromStep > 0)
+                            ? sessionService.getStepOutput(sessionId, step - 1)
+                            : payload;
+                    String userPrompt = s.prepareInput().apply(prevOutput);
                     String full = streamStep(s.system(), userPrompt, sessionId, step, out);
                     out.emit(EventContent.STEP_END, Map.of("step", step, "output", truncate(full, 80)));
                     sessionService.advanceStep(sessionId, step);   // 记录进度
