@@ -1563,15 +1563,17 @@ public class CriticalEventStore {
     }
 ```
 
+
 > **Redis 清理策略（防内存撑爆）**：
 > - **会话级 key + TTL**：每个会话一个 key（`aobs:events:{sessionId}`），`expire` 30 分钟。会话活跃时每次 save 续期；会话结束后 30 分钟 Redis 自动删整个 key——无需手动清理。
 > - **为什么不在 ZSet 内删旧成员**：ZSet 没有按 score 自动过期成员的能力。靠 key 级 TTL 已够（单会话关键事件就几条，30 分钟内不会撑爆）。
 > - **超长会话的兜底**：如果业务有写几小时的超长会话，ZSet 会一直长——那时加 `opsForZSet().removeRangeByScore(k, 0, now - 1h)` 定期剪掉 1 小时前的成员（保留最近窗口用于回放）。本项目 30 分钟 TTL 够用，不预先实现（演进纪律）。
+```
     /**
      * 读某会话中，指定时间戳之后的所有事件（重连回放用）。
      * @param afterEpochMs 只读这个时间戳之后的事件
      */
-     public List<AgentEvent> findAfter(String sessionId, long afterEpochMs) {
+      public List<AgentEvent> findAfter(String sessionId, long afterEpochMs) {
         Set<String> jsonSet = redis.opsForZSet().rangeByScore(
                 key(sessionId), afterEpochMs + 1, Double.MAX_VALUE);
         if (jsonSet == null) return List.of();
@@ -1584,8 +1586,8 @@ public class CriticalEventStore {
             }
         }
         return result;
-     }
-   }
+      }
+      }
 ```
 
 > **API 核实**：`opsForZSet().add(key, member, score)`、`rangeByScore(key, min, max)`、`expire(key, Duration)` 都是 `spring-data-redis` 真实方法。`ObjectMapper` 来自 Jackson（Spring Boot 自带，第 1 章 SseController 已引入）。
@@ -1598,14 +1600,14 @@ public class CriticalEventStore {
 
 **(1) record 字段列表末尾加 `sequence`**：
 
-```java
+```
         Criticality criticality,
         long sequence        // ← 第 2 章新增：会话内单调递增序号，0 表示未分配
 ```
 
 **(2) `of()` 的 builder 调用末尾加 `.sequence(0L)`**——`0` 是占位，EventBus emit 时 `withSequence()` 复制一份改真实序号：
 
-```java
+```
     public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
         return AgentEvent.builder()
                 .type(type.name()).sessionId(sessionId)
@@ -1623,11 +1625,11 @@ public class CriticalEventStore {
 
 **(1) 加两个字段 + 改构造器**（注入 CriticalEventStore 用于关键事件落库；sequences 给每个会话分配序号）：
 
-```java
+```
     // 字段（sink 不变）：
     private final ObjectProvider<CriticalEventStore> storeProvider;   // 有 Redis 就用，没有也能启动
     private final Map<String, AtomicLong> sequences = new ConcurrentHashMap<>();   // 每会话序号计数器
-
+    
     // 构造器（替换第 1 章的无参默认构造）：
     public AgentEventBus(ObjectProvider<CriticalEventStore> storeProvider) {
         this.storeProvider = storeProvider;
@@ -1638,19 +1640,19 @@ public class CriticalEventStore {
 
 **(2) `emit` 方法体改造**（第 1 章只 `sink.tryEmitNext(event)`，现在加序号分配 + 关键事件落库）：
 
-```java
+```
     public void emit(AgentEvent event) {
         // 1. 分配会话内序号
         long seq = sequences.computeIfAbsent(event.sessionId(), k -> new AtomicLong())
                 .incrementAndGet();
         AgentEvent sequenced = withSequence(event, seq);
-
+    
         // 2. 关键事件先落库（兜底）
         CriticalEventStore store = storeProvider.getIfAvailable();
         if (store != null && sequenced.criticality() == AgentEvent.Criticality.CRITICAL) {
             store.save(sequenced);
         }
-
+    
         // 3. 推总线（第 1 章的原逻辑，只是 event 换成 sequenced）
         sink.tryEmitNext(sequenced);
     }
@@ -1658,7 +1660,7 @@ public class CriticalEventStore {
 
 **(3) 加一个私有 helper**（record 不可变，复制一份改 sequence）：
 
-```java
+```
     private static AgentEvent withSequence(AgentEvent e, long seq) {
         return new AgentEvent(e.type(), e.sessionId(), e.timestamp(), e.data(),
                 e.criticality(), seq);
@@ -1680,10 +1682,10 @@ public class CriticalEventStore {
 
 **(1) 加一个字段 + 改构造器**（注入 CriticalEventStore 用于重连回放）：
 
-```java
+```
     // 字段（eventBus/articleService/mapper 不变）：
     private final ObjectProvider<CriticalEventStore> storeProvider;
-
+    
     // 构造器（替换第 1 章的两参构造）：
     public SseController(AgentEventBus eventBus, ArticleService articleService,
                          ObjectProvider<CriticalEventStore> storeProvider) {
@@ -1696,14 +1698,14 @@ public class CriticalEventStore {
 
 **(2) `stream` 方法签名加两个参数 + 方法体加"重连模式"分支**（正常模式不变）：
 
-```java
+```
     // 签名加：lastEventId（重连带）。sessionId 只从请求头取（不兼容 query 参数）——SSE 客户端用 fetch 都能设 header。
     // EventSource（浏览器原生 SSE API）不能设自定义 header——但本页面用 fetch+ReadableStream 代替，
     // 重连演示见 reconnect.html（它用 fetch 手动实现重连，同样能带 Last-Event-ID header）。
     public Flux<ServerSentEvent<String>> stream(@RequestParam String prompt,
                 @RequestHeader("sessionId") String sessionId,
                 @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) {
-
+    
         // ★ 重连模式（新增）：写作已在执行/已结束，不能重跑——走 Redis 回放 + 总线订阅
         if (lastEventId != null) {
             CriticalEventStore store = storeProvider.getIfAvailable();
@@ -1716,7 +1718,7 @@ public class CriticalEventStore {
                             || EventContent.SESSION_FAILED.name().equals(e.type()))
                     .map(this::toSse);
         }
-
+    
         // 正常模式（第 1 章原逻辑，不变）：订阅 run 冷流 + 流首 READY
         ServerSentEvent<String> ready = ServerSentEvent.<String>builder()
                 .id(sessionId + "-ready").event("READY").data("{\"type\":\"READY\"}").build();
@@ -1728,7 +1730,7 @@ public class CriticalEventStore {
 
 **(3) 加一个私有 helper**（从 Last-Event-ID 解析时间戳，回放用）：
 
-```java
+```
     /** 帧ID 格式 "sessionId-时间戳"，取时间戳部分。 */
     private long parseTimestampFrom(String lastEventId) {
         int idx = lastEventId.lastIndexOf('-');
@@ -2249,6 +2251,7 @@ public class PropagatedContextValue<T> implements ThreadLocalAccessor<T> {
 ```
 
 `src/main/java/com/example/aobs/obs/AppContextKeys.java`：
+
 ```java
 package com.example.aobs.obs;
 
@@ -2492,7 +2495,7 @@ private void emitTokens(String sessionId, org.springframework.ai.chat.model.Chat
 
 `src/main/java/com/example/aobs/obs/CostCalculator.java`（新增）：
 
-```java
+```
 package com.example.aobs.obs;
 
 import org.springframework.stereotype.Component;
@@ -2503,8 +2506,8 @@ import java.util.Map;
  * 按 model 单价算成本。单价来自 DeepSeek/OpenAI 官方定价（美元/1K tokens）。
  * 这里用近似值，真实场景从配置读、随官方调价改。
  */
-@Component
-public class CostCalculator {
+ @Component
+ public class CostCalculator {
 
     // 每模型「(输入价, 输出价)」美元/1K tokens
     private final Map<String, double[]> pricing = Map.of(
@@ -2518,7 +2521,7 @@ public class CostCalculator {
         double[] p = pricing.getOrDefault(model == null ? "" : model, DEFAULT);
         return promptTokens / 1000.0 * p[0] + completionTokens / 1000.0 * p[1];
     }
-}
+ }
 ```
 
 > `ChainingService` 要注入 `CostCalculator`（构造器加参数），别忘了同步改 `ArticleService` 构造器——这是第 0 章讲过的「配套改动」纪律。
@@ -2527,7 +2530,7 @@ public class CostCalculator {
 
 第 3 章把页面升级为"工具 + token 可见"版——替换 `src/main/resources/static/index.html`（继承第 1 章的折叠卡片/状态条/最终结果区骨架，加上 TOOL_CALL/LLM_TOKENS 可视化）：
 
-```html
+```
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -2543,16 +2546,16 @@ public class CostCalculator {
         #top-bar .subtitle { font-size: 13px; color: #888; }
         #top-bar .cost-info { float: right; font-size: 13px; color: #888; padding-top: 4px; }
         #top-bar .cost-info b { color: #e67e22; }
-
+    
         #content { flex: 1; overflow-y: auto; padding: 0 24px 16px; }
-
+    
         #status-bar { margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; font-size: 13px; background: #f0f4ff; color: #4d6bfe; display: none; align-items: center; gap: 8px; }
         #status-bar.show { display: flex; }
         #status-bar .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #c5cdfa; border-top-color: #4d6bfe; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
         @keyframes spin { to { transform: rotate(360deg); } }
         #status-bar.error { background: #fff0f0; color: #c62828; }
         #status-bar.done { background: #e6f7e6; color: #1b8a1b; }
-
+    
         .step-collapse { border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 10px; overflow: hidden; background: #fff; }
         .step-collapse-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; user-select: none; background: #fafafa; transition: background 0.15s; }
         .step-collapse-header:hover { background: #f0f0f0; }
@@ -2574,7 +2577,7 @@ public class CostCalculator {
         /* token 事件 */
         .tokens { font-size: 12px; color: #aaa; text-align: right; padding: 2px 0; }
         .tokens b { color: #e67e22; }
-
+    
         #final-result { border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background: #fff; display: none; margin-bottom: 12px; }
         #final-result.show { display: block; }
         #final-result .fr-header { padding: 12px 16px; font-size: 15px; font-weight: 600; background: #fafafa; border-bottom: 1px solid #e0e0e0; color: #333; display: flex; align-items: center; gap: 8px; }
@@ -2589,9 +2592,9 @@ public class CostCalculator {
         #final-result .fr-body p { margin: 0.5em 0; }
         #final-result .fr-body code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
         #final-result .fr-body pre { background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
-
+    
         .empty-state { text-align: center; color: #ccc; padding: 60px 20px; font-size: 14px; line-height: 2; }
-
+    
         #bottom-bar { flex-shrink: 0; padding: 12px 24px 16px; background: #fff; border-top: 1px solid #e0e0e0; display: flex; gap: 8px; align-items: center; }
         #prompt { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; }
         #prompt:focus { outline: none; border-color: #4d6bfe; }
@@ -2639,7 +2642,7 @@ public class CostCalculator {
         const prompt = document.getElementById('prompt').value.trim();
         if (!prompt) return;
         const sessionId = 's-' + Date.now();
-
+    
         document.getElementById('steps-container').innerHTML = '';
         document.getElementById('final-result').classList.remove('show');
         document.getElementById('final-body').innerHTML = '';
@@ -2647,19 +2650,19 @@ public class CostCalculator {
         for (const k of Object.keys(stepState)) delete stepState[k];
         for (const k of Object.keys(stepTools)) delete stepTools[k];
         totalCost = 0; document.getElementById('costVal').textContent = '$0.0000';
-
+    
         const stepCards = {};
         for (let i = 0; i < 2; i++) {
             stepCards[i] = createStepCollapse(i, STEPS[i]);
             stepTools[i] = [];
         }
         const finalBody = document.getElementById('final-body');
-
+    
         setStatus('progress', `🚀 开始生成「${prompt}」…`);
-
+    
         sending = true;
         document.getElementById('send').disabled = true;
-
+    
         try {
             const resp = await fetch('/api/obs/article?prompt=' + encodeURIComponent(prompt), {
                 headers: { 'sessionId': sessionId, 'Accept': 'text/event-stream' }
@@ -2682,12 +2685,12 @@ public class CostCalculator {
             document.getElementById('send').disabled = false;
         }
     }
-
+    
     function createStepCollapse(idx, label) {
         const container = document.getElementById('steps-container');
         const card = document.createElement('div');
         card.className = 'step-collapse';
-
+    
         const header = document.createElement('div');
         header.className = 'step-collapse-header';
         header.innerHTML = `
@@ -2695,27 +2698,27 @@ public class CostCalculator {
             <span class="label">步骤 ${idx + 1}：${label}</span>
             <span class="badge" id="badge-${idx}">等待中</span>
         `;
-
+    
         const body = document.createElement('div');
         body.className = 'step-collapse-body';
         body.innerHTML = '<div class="preview" id="preview-' + idx + '">等待内容…</div>';
-
+    
         header.addEventListener('click', () => {
             body.classList.toggle('open');
             header.querySelector('.arrow').classList.toggle('open');
         });
-
+    
         card.appendChild(header);
         card.appendChild(body);
         container.appendChild(card);
-
+    
         // 工具容器
         const toolBox = document.createElement('div'); toolBox.id = 'tools-' + idx; toolBox.style.display = 'none';
         body.prepend(toolBox);
-
+    
         return { header, body, card, preview: body.querySelector('.preview'), toolBox };
     }
-
+    
     function handleFrame(frame, stepCards, finalBody) {
         let type = '', dataStr = '';
         for (const line of frame.split('\n')) {
@@ -2726,16 +2729,16 @@ public class CostCalculator {
         let parsed;
         try { parsed = JSON.parse(dataStr); } catch { return; }
         const d = parsed.data || {};
-
+    
         switch (type) {
             case 'READY':
                 setStatus('progress', '连接已建立，AI 开始思考…');
                 break;
-
+    
             case 'SESSION_STARTED':
                 setStatus('progress', '会话开始，准备生成…');
                 break;
-
+    
             case 'STEP_START': {
                 const step = d.step;
                 if (step !== undefined && stepState[step] === undefined) {
@@ -2751,7 +2754,7 @@ public class CostCalculator {
                 }
                 break;
             }
-
+    
             case 'CONTENT_DELTA': {
                 const step = d.step;
                 const text = d.text || '';
@@ -2774,7 +2777,7 @@ public class CostCalculator {
                 }
                 break;
             }
-
+    
             case 'TOOL_CALL': {
                 const step = d.step !== undefined ? d.step : (Object.keys(stepTools).length || 0);
                 const toolName = d.tool || 'unknown';
@@ -2796,7 +2799,7 @@ public class CostCalculator {
                 autoScroll();
                 break;
             }
-
+    
             case 'LLM_TOKENS': {
                 const cost = Number(d.costUsd || 0);
                 totalCost += cost;
@@ -2812,7 +2815,7 @@ public class CostCalculator {
                 }
                 break;
             }
-
+    
             case 'STEP_END': {
                 const step = d.step;
                 const output = d.output || '';
@@ -2842,11 +2845,11 @@ public class CostCalculator {
                 }
                 break;
             }
-
+    
             case 'SESSION_COMPLETED':
                 if (stepState[2] !== 2) setStatus('done', '✅ 会话完成');
                 break;
-
+    
             case 'SESSION_FAILED': {
                 const err = d.error || '未知错误';
                 setStatus('error', '❌ 生成失败：' + err);
@@ -2854,12 +2857,12 @@ public class CostCalculator {
             }
         }
     }
-
+    
     function autoScroll() {
         const el = document.getElementById('content');
         el.scrollTop = el.scrollHeight;
     }
-
+    
     function setStatus(mode, msg) {
         const bar = document.getElementById('status-bar');
         bar.className = 'show ' + mode;
@@ -2929,7 +2932,7 @@ src/main/java/com/example/aobs/
 ```
 pom 加了 `spring-boot-starter-actuator`。
 
-```bash
+```
 git add -A && git commit -m "第3章：Observation订阅工具调用 + 会话隔离 + token成本"
 ```
 
@@ -2983,7 +2986,7 @@ git add -A && git commit -m "第3章：Observation订阅工具调用 + 会话隔
 
 `src/main/java/com/example/aobs/obs/SessionStateStore.java`（新增）：
 
-```java
+```
 package com.example.aobs.obs;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -2995,8 +2998,8 @@ import java.time.Duration;
  * 会话状态外置存储。Redis Hash 存 per-session 状态，TTL 30 分钟。
  * 进程内无状态 → 多实例任意节点都能正确读写。
  */
-@Component
-public class SessionStateStore {
+ @Component
+ public class SessionStateStore {
 
     private static final Duration TTL = Duration.ofMinutes(30);
     private final StringRedisTemplate redis;
@@ -3015,14 +3018,14 @@ public class SessionStateStore {
         redis.expire(key(sid), TTL);
         return n == null ? 0 : n;
     }
-}
+ }
 ```
 
 > **API 核实**：`opsForHash().increment(key, hashKey, delta)` 是 spring-data-redis 真实方法，原子操作，多实例并发也唯一。
 
 改 `AgentEventBus` 用外置序号：
 
-```java
+```
 // AgentEventBus 构造器注入 SessionStateStore，emit 里改成：
 public class AgentEventBus {
     // ... 删掉原来的 sequences ConcurrentHashMap
@@ -3033,7 +3036,7 @@ public class AgentEventBus {
         this.storeProvider = storeProvider;
         this.stateStore = stateStore;
     }
-
+    
     public void emit(AgentEvent event) {
         // 序号从 Redis 拿（多实例唯一）
         long seq = stateStore.nextSequence(event.sessionId());
@@ -3049,7 +3052,7 @@ public class AgentEventBus {
 
 `src/main/java/com/example/aobs/obs/RedisStreamBridge.java`（新增）：
 
-```java
+```
 package com.example.aobs.obs;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -3066,8 +3069,8 @@ import java.util.Map;
  * Redis Stream 跨实例广播。
  * publish：本实例发的事件写 Stream；subscribe：拉别实例的事件回灌本地总线。
  */
-@Component
-public class RedisStreamBridge {
+ @Component
+ public class RedisStreamBridge {
 
     private static final String STREAM_KEY = "aobs:events:stream";
     private final StringRedisTemplate redis;
@@ -3122,7 +3125,7 @@ public class RedisStreamBridge {
     private void sleepQuiet(long ms) {
         try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
-}
+ }
 ```
 
 > **API 核实**：`opsForStream().add(key, Map)`、`read(StreamReadOptions, StreamOffset)` 是 spring-data-redis 真实方法。
@@ -3131,7 +3134,7 @@ public class RedisStreamBridge {
 
 改 `AgentEventBus` 接入广播：
 
-```java
+```
 // AgentEventBus 加 RedisStreamBridge，emit 里 publish：
 public class AgentEventBus {
     private final RedisStreamBridge streamBridge;
@@ -3146,7 +3149,7 @@ public class AgentEventBus {
     public void init() {
         streamBridge.subscribeRemote(this::acceptLocal);   // 订阅别实例事件
     }
-
+    
     private void acceptLocal(AgentEvent event) {
         sink.tryEmitNext(event);   // 别实例的事件回灌本地 sink
     }
@@ -3161,7 +3164,7 @@ public class AgentEventBus {
 
 `src/main/java/com/example/aobs/obs/ShardedEventBus.java`（替换 AgentEventBus）：
 
-```java
+```
 package com.example.aobs.obs;
 
 import org.springframework.beans.factory.ObjectProvider;
@@ -3178,8 +3181,8 @@ import java.util.List;
  * - 慢消费者只影响 1/N 会话 → 爆炸半径小
  * 替换第 1-3 章的单 sink AgentEventBus。
  */
-@Component
-public class ShardedEventBus implements EventBusSPI {
+ @Component
+ public class ShardedEventBus implements EventBusSPI {
 
     private static final int SHARDS = 16;
     private final Sinks.Many<AgentEvent>[] sinks;
@@ -3236,12 +3239,12 @@ public class ShardedEventBus implements EventBusSPI {
         return new AgentEvent(e.type(), e.sessionId(), e.timestamp(), e.data(),
                 e.criticality(), seq);
     }
-}
+ }
 ```
 
 抽个接口让 Controller 依赖抽象不依赖具体：
 
-```java
+```
 // src/main/java/com/example/aobs/obs/EventBusSPI.java
 package com.example.aobs.obs;
 
@@ -3259,7 +3262,7 @@ public interface EventBusSPI {
 
 改 `SseController` 用定向订阅（`ChainingService`、`ToolObservationHandler` 里的 `AgentEventBus` 也改成 `EventBusSPI`）：
 
-```java
+```
 // SseController 里原来 eventBus.subscribe(sessionId)（单 sink 时是全量过滤）改成：
 Flux<AgentEvent> live = eventBus.fluxFor(sessionId);   // 分片定向，省 N-1 倍过滤
 ```
@@ -3270,7 +3273,7 @@ Flux<AgentEvent> live = eventBus.fluxFor(sessionId);   // 分片定向，省 N-1
 
 `src/main/java/com/example/aobs/obs/EventSequencer.java`（新增）：
 
-```java
+```
 package com.example.aobs.obs;
 
 import reactor.core.publisher.Flux;
@@ -3287,7 +3290,7 @@ import java.util.*;
  * per-stream 的重排状态，不能跨流共享。用 ConcurrentHashMap 是防御性
  * （万一被误做成共享单例，至少不崩），但正确用法仍是每流一个。
  */
-public class EventSequencer {
+ public class EventSequencer {
 
     private final Duration window;
     private final Map<String, PriorityQueue<AgentEvent>> buffers = new java.util.concurrent.ConcurrentHashMap<>();
@@ -3318,12 +3321,12 @@ public class EventSequencer {
         }
         return out;
     }
-}
+ }
 ```
 
 `SseController` 流里加 `.transform(sequencer::reorder)`：
 
-```java
+```
 Flux<ServerSentEvent<String>> events = Flux.concat(replay, live)
         .transform(new EventSequencer(Duration.ofMillis(100))::reorder)   // ← 重排
         .takeUntil(e -> EventContent.SESSION_COMPLETED.name().equals(e.type())
@@ -3334,7 +3337,7 @@ Flux<ServerSentEvent<String>> events = Flux.concat(replay, live)
 ### 4.3 验证（双实例 + 页面演示跨实例）
 
 **场景 1：跨实例事件通**——起两个实例（不同端口）：
-```bash
+```
 SERVER_PORT=8081 mvn spring-boot:run &
 SERVER_PORT=8082 mvn spring-boot:run &
 ```
@@ -3342,7 +3345,7 @@ SERVER_PORT=8082 mvn spring-boot:run &
 **页面演示**（这是 curl 难演示的，必须页面）：浏览器开两个 tab，分别打开 `http://localhost:8081/index.html` 和 `http://localhost:8082/index.html`。在 8081 的页面点「生成」（触发任务），在 **8082 的页面**也能看到同一个会话的事件流——因为事件经 Redis Stream 跨实例广播了。这就是多实例可观测的关键：**不管请求落在哪个实例，任何实例的页面都能订阅到事件**。
 
 **场景 2：序号全局唯一**——查 Redis：
-```bash
+```
 redis-cli HGET aobs:session:s4:state seq
 ```
 跨实例多次请求后，seq 持续递增、不重复（序号生成走 Redis，不靠单机内存）。
@@ -3358,7 +3361,7 @@ src/main/java/com/example/aobs/obs/
 └── EventSequencer.java        （新增）
 ```
 
-```bash
+```
 git add -A && git commit -m "第4章：规模化——状态外置、分片总线、跨实例广播、序号重排"
 ```
 
@@ -3402,7 +3405,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 **(1) record 字段列表里，在 sessionId 后面插三个字段**：
 
-```java
+```
         String type,
         String sessionId,
         String tenantId,        // ← 第 5 章新增：租户（隔离 + 成本归因）
@@ -3414,7 +3417,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 **(2) 加一个带租户的 `of` 重载**（老的 `of(type, sessionId, data)` 保留，不用改老调用点）：
 
-```java
+```
     /** 第 5 章快捷构造：带租户/用户。 */
     public static AgentEvent of(EventContent type, String sessionId, String tenantId, String userId,
                                 Map<String, Object> data) {
@@ -3425,17 +3428,17 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 **(3) Builder 加三个字段 + 三个 setter + build 多传三个**：
 
-```java
+```
     // Builder 里加字段（agentVersion 默认 "v1"）：
     private String tenantId;
     private String userId;
     private String agentVersion = "v1";
-
+    
     // 加三个 setter：
     public Builder tenantId(String t) { this.tenantId = t; return this; }
     public Builder userId(String u) { this.userId = u; return this; }
     public Builder agentVersion(String v) { this.agentVersion = v; return this; }
-
+    
     // build() 的 new AgentEvent(...) 开头多传三个：
     return new AgentEvent(type.name(), sessionId, tenantId, userId, agentVersion,
             timestamp != null ? timestamp : System.currentTimeMillis(), data, c, 0L);
@@ -3447,7 +3450,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 `SseController` 加请求头（第 0 章的 ArticleController 已在第 1 章退役）：
 
-```java
+```
 @GetMapping(value = "/article", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 public Flux<ServerSentEvent<String>> stream(
         @RequestParam String prompt,
@@ -3463,7 +3466,7 @@ public Flux<ServerSentEvent<String>> stream(
 
 `SseController` 的实时流加租户过滤：
 
-```java
+```
 Flux<AgentEvent> live = eventBus.fluxFor(sessionId)
         .filter(e -> {
             // 纵深防御：tenantId 必须双向匹配，null 一律拒绝
@@ -3480,7 +3483,7 @@ Flux<AgentEvent> live = eventBus.fluxFor(sessionId)
 
 `src/main/java/com/example/aobs/obs/QuotaService.java`（新增）：
 
-```java
+```
 package com.example.aobs.obs;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -3493,8 +3496,8 @@ import java.time.LocalDate;
  * 三层配额：session / tenant / user。都基于 Redis。
  * 配套第 3 章的 CostCalculator——每次烧 token 后调 check，超限拦截。
  */
-@Component
-public class QuotaService {
+ @Component
+ public class QuotaService {
 
     private final StringRedisTemplate redis;
 
@@ -3524,7 +3527,7 @@ public class QuotaService {
         redis.expire(key, Duration.ofMinutes(1));
         return true;
     }
-}
+ }
 ```
 
 > **API 核实**：`opsForValue().increment(key, double)`、`opsForZSet().removeRangeByScore/zCard/add` 全部真实存在。
@@ -3535,13 +3538,13 @@ public class QuotaService {
 
 **先给 `EventContent` 加 QUOTA_EXCEEDED**（第 3 章加到 TOOL_CALL/LLM_TOKENS，本章加配额超限事件）：
 
-```java
+```
     QUOTA_EXCEEDED     // ← 第 5 章加：配额超限
 ```
 
 `emitTokens` 里（第 3 章烧 token 后发 LLM_TOKENS 的地方），每次算完成本后校验租户预算：
 
-```java
+```
 private void emitTokens(String sessionId, String tenantId, String userId,
                         ChatResponse response) {
     // ... 原有 token 统计
@@ -3563,7 +3566,7 @@ private void emitTokens(String sessionId, String tenantId, String userId,
 **场景 2：配额拦截**——给 tenantA 设日预算 $0.01，页面跑长任务，事件流里出现 `QUOTA_EXCEEDED`（前端据此提示"额度用尽"）。
 
 **场景 3：成本归因**——查 Redis 看租户日成本累加：
-```bash
+```
 redis-cli GET aobs:quota:tenant:tenantA:cost:2026-07-22
 ```
 
@@ -3579,7 +3582,7 @@ src/main/java/com/example/aobs/obs/
 └── ...（ChainingService/Controller 配套加 tenantId/userId）
 ```
 
-```bash
+```
 git add -A && git commit -m "第5章：多租户隔离 + 成本归因 + 多级配额"
 ```
 
@@ -3655,7 +3658,7 @@ prompt v2: "你是写作助手。根据大纲写一篇 800 字草稿，分段清
 
 `pom.xml` 加：
 
-```xml
+```
 <!-- Actuator：健康检查、监控指标 -->
 <dependency>
     <groupId>org.springframework.boot</groupId>
@@ -3667,7 +3670,7 @@ prompt v2: "你是写作助手。根据大纲写一篇 800 字草稿，分段清
 
 `src/main/java/com/example/aobs/obs/ResilientExternal.java`（新增）：
 
-```java
+```
 package com.example.aobs.obs;
 
 import org.springframework.stereotype.Component;
@@ -3678,8 +3681,8 @@ import java.util.function.Supplier;
  * 降级门面：所有外部依赖（Redis、Langfuse、DeepSeek）调用经此。
  * 失败 → 打点 + 返回 fallback，绝不抛异常到主链路。
  */
-@Component
-public class ResilientExternal {
+ @Component
+ public class ResilientExternal {
 
     public <T> T call(String dependency, Supplier<T> action, T fallback) {
         try {
@@ -3690,7 +3693,7 @@ public class ResilientExternal {
             return fallback;
         }
     }
-}
+ }
 ```
 
 把 `RedisStreamBridge.publish`、`CriticalEventStore.save` 里的调用用 `ResilientExternal.call` 包一层（失败不再静默吞，而是打点）。这样 Redis 挂了，写作照常，只是跨实例广播失效——降级而非熔断。
@@ -3699,7 +3702,7 @@ public class ResilientExternal {
 
 `src/main/java/com/example/aobs/obs/ObsHealthIndicator.java`（新增）：
 
-```java
+```
 package com.example.aobs.obs;
 
 import org.springframework.boot.actuate.health.Health;
@@ -3716,8 +3719,8 @@ import org.springframework.stereotype.Component;
  * （Spring Boot 的 redis starter 其实已自动注册了 RedisHealthIndicator，
  *  这里手写一份是为了演示「自定义健康检查」怎么写。）
  */
-@Component
-public class ObsHealthIndicator implements HealthIndicator {
+ @Component
+ public class ObsHealthIndicator implements HealthIndicator {
 
     private final StringRedisTemplate redis;
 
@@ -3734,7 +3737,7 @@ public class ObsHealthIndicator implements HealthIndicator {
             return Health.down().withDetail("redis", e.getMessage()).build();
         }
     }
-}
+ }
 ```
 
 > **API 核实**：`HealthIndicator`、`Health.up()/down()` 是 Spring Boot Actuator 标准 API；`StringRedisTemplate.hasKey(K)` 来自 `RedisTemplate`（已核实存在）。访问 `http://localhost:8080/actuator/health` 看到 `{"status":"UP"}` 或 `"DOWN"`。
@@ -3745,7 +3748,7 @@ Spring AI 的 OpenAI starter 底层用 RestClient/WebClient，默认读超时对
 
 最稳的做法——自定义 `RestClient.Builder`/`WebClient.Builder` Bean，设足够长的读超时（覆盖 LLM 生成的自然停顿）：
 
-```java
+```
 package com.example.aobs.config;
 
 import io.netty.channel.ChannelOption;
@@ -3762,8 +3765,8 @@ import java.util.concurrent.TimeUnit;
  * 给底层 HTTP 客户端设足够长的超时——LLM 生成有自然停顿（尤其长文本、调工具前后），
  * 默认超时会把正常停顿误判成卡死，抛 StreamResetException: CANCEL（事故 A）。
  */
-@Configuration
-public class HttpClientConfig {
+ @Configuration
+ public class HttpClientConfig {
 
     @Bean
     public WebClient.Builder webClientBuilder() {
@@ -3774,7 +3777,7 @@ public class HttpClientConfig {
 
         return WebClient.builder().clientConnector(new ReactorClientHttpConnector(httpClient));
     }
-}
+ }
 ```
 
 > **为什么 180 秒**：DeepSeek 长文本生成 + 多步 workflow，单次 LLM 调用可能到 60-90 秒（含停顿）。180 秒留足余量。太短=误杀（事故 A）；太长=真卡死时用户等太久。企业级按 P99 生成耗时 × 2-3 倍设。
@@ -3797,7 +3800,7 @@ public class HttpClientConfig {
 
 在 `application.yaml` 暴露 Actuator 端点：
 
-```yaml
+```
 management:
   endpoints:
     web:
@@ -3820,7 +3823,7 @@ management:
 ### 6.3 验证（页面 + curl 演示灾备与事故修复）
 
 **启动 + 健康检查**：
-```bash
+```
 mvn spring-boot:run
 curl http://localhost:8080/actuator/health   # {"status":"UP"}
 ```
@@ -3830,7 +3833,7 @@ curl http://localhost:8080/actuator/health   # {"status":"UP"}
 **事故 B 复测（错误有归宿）**——临时把 DeepSeek key 改错（或断网），页面跑一次。前端收到 `SESSION_FAILED` 事件（带 error 信息），页面停止转圈、显示错误——而不是像修复前那样无限转圈 + 后端刷 ErrorCallbackNotImplemented。
 
 **灾备：模拟 Redis 挂**：
-```bash
+```
 redis-cli shutdown   # 或 docker stop redis
 curl http://localhost:8080/actuator/health   # DOWN（但应用没挂）
 curl -N "http://localhost:8080/api/obs/article?prompt=test" -H "sessionId: s6"   # 写作仍工作（降级）
@@ -3849,7 +3852,7 @@ src/main/java/com/example/aobs/
 ```
 SseController **无需改**（冷流方案 + run 的 onErrorResume 已兜住事故B，见 6.2.5）。pom 加了 actuator。
 
-```bash
+```
 git add -A && git commit -m "第6章：灾备降级 + 健康检查 + 超时/错误修复 + 监控"
 ```
 
@@ -3893,7 +3896,7 @@ git add -A && git commit -m "第6章：灾备降级 + 健康检查 + 超时/错�
 
 **解法：SSE 心跳**。后端每 15 秒发一个注释帧（`: heartbeat`），让代理看到"连接还活着"，不判空闲。在 `SseController.stream` 的事件流上 merge 一个定时心跳：
 
-```java
+```
 // 心跳：每 15s 发注释帧（: 开头的行，EventSource 不当事件派发，只保活）
 Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(15))
         .map(i -> ServerSentEvent.<String>builder().comment("heartbeat").build());
@@ -3916,7 +3919,7 @@ return events.mergeWith(heartbeat)
 
 **解法：Resilience4j 重试 + 降级**。加依赖：
 
-```xml
+```
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-aop</artifactId>
@@ -3929,13 +3932,13 @@ return events.mergeWith(heartbeat)
 ```
 
 把 `@Retry` 加在 `LlmStepExecutor.executeStep` 上（429/超时退避重试，耗尽降级）——**这是第 1 章把单步执行抽成独立 Bean 的回报兑现**：
-```java
+```
     @io.github.resilience4j.retry.annotation.Retry(name = "llmCall", fallbackMethod = "executeStepFallback")
     public Flux<AgentEvent> executeStep(String system, String userPrompt, String sessionId,
                                         int step, int total) {
         // ... 第 1 章的 executeStep 逻辑不变（STEP_START → CONTENT_DELTA× → STEP_END）
     }
-
+    
     /** 重试耗尽降级：发一条降级 CONTENT_DELTA + STEP_END，并发 SESSION_FAILED 信号。 */
     public Flux<AgentEvent> executeStepFallback(String system, String userPrompt, String sessionId,
                                                 int step, int total, Throwable t) {
@@ -3953,7 +3956,7 @@ return events.mergeWith(heartbeat)
 > **流式重试的注意点**：流式 `.stream()` 的失败分两种——① 建连就失败（429/超时），重试整步合理；② 流到一半断（事故 A），重试会从头再流一次（已 emit 的 CONTENT_DELTA 会重复，前端需按 step+offset 去重）。生产里对第 ② 种更精细的处理是"断点续传"，本文先用"整步重试 + 前端容忍重复"的简单方案。
 
 `application.yaml` 配重试：
-```yaml
+```
 resilience4j:
   retry:
     instances:
@@ -3979,7 +3982,7 @@ resilience4j:
 
 **解法：前端 abort + 后端 doOnCancel**。前端 fetch 时保存 AbortController，点停止调 abort：
 
-```js
+```
 const controller = new AbortController();
 fetch('/api/obs/article?prompt=...', { signal: controller.signal, headers: {...} });
 // 用户点"停止"：
@@ -3988,12 +3991,12 @@ controller.abort();   // 断开 SSE 连接
 
 **先给 `EventContent` 加 SESSION_CANCELLED**（前面章节没这个事件，本章取消生成要用）：
 
-```java
+```
     SESSION_CANCELLED   // ← 第 7 章加：用户取消
 ```
 
 后端 SSE 流被断开时 WebFlux 取消 Flux，用 `doOnCancel` 捕获，发 `SESSION_CANCELLED`、释放资源：
-```java
+```
 return events.mergeWith(heartbeat)
         .takeUntilOther(events.then())
         .doOnCancel(() -> eventBus.emit(AgentEvent.of(EventContent.SESSION_CANCELLED, sessionId, Map.of())));
@@ -4009,7 +4012,7 @@ return events.mergeWith(heartbeat)
 
 **解法：连接计数 + 超限拒绝**：
 
-```java
+```
 @Component
 public class SseConnectionLimiter {
     private static final int MAX_GLOBAL = 1000;          // 全局上限
@@ -4023,7 +4026,7 @@ public class SseConnectionLimiter {
 ```
 
 `SseController.stream` 里用，`doFinally` 保证无论怎么结束都释放：
-```java
+```
     public Flux<ServerSentEvent<String>> stream(...) {
         if (!limiter.tryAcquire()) {
             return Flux.error(new IllegalStateException("连接数已达上限，请稍后重试"));
@@ -4045,7 +4048,7 @@ public class SseConnectionLimiter {
 **解法：事件归档到 JDBC（本文用 H2，生产换 ES/ClickHouse）**。Redis 短期 + 归档长期，热冷分层。
 
 加 H2 依赖：
-```xml
+```
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
@@ -4057,7 +4060,7 @@ public class SseConnectionLimiter {
 ```
 
 `application.yaml`（文件存储，IDE 重启不丢）：
-```yaml
+```
 spring:
   datasource:
     url: jdbc:h2:file:./data/aobs-events
@@ -4070,7 +4073,7 @@ spring:
 ```
 
 `src/main/resources/schema.sql`：
-```sql
+```
 CREATE TABLE IF NOT EXISTS event_archive (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     session_id VARCHAR(64) NOT NULL,
@@ -4083,7 +4086,7 @@ CREATE INDEX IF NOT EXISTS idx_archive_tenant_time ON event_archive(tenant_id, t
 ```
 
 归档服务 `EventArchiveService`（归档 + 查询）：
-```java
+```
 @Service
 public class EventArchiveService {
     private final JdbcTemplate jdbc;
@@ -4103,7 +4106,7 @@ public class EventArchiveService {
             System.err.println("[Archive] failed: " + e.getMessage());
         }
     }
-
+    
     /** 按会话查历史（事后排查）。 */
     public List<Map<String, Object>> findBySession(String sessionId) {
         return jdbc.queryForList(
@@ -4187,7 +4190,7 @@ AgentEventBus.emit 里归档所有事件（和落 Redis 一起）；SseControlle
 
 `src/main/java/com/example/aobs/session/SessionStatus.java`（新增）：
 
-```java
+```
 package com.example.aobs.session;
 
 /** 会话生命周期状态。第 8.1 章只有这三个；8.4 加 INTERRUPTED。 */
@@ -4200,7 +4203,7 @@ public enum SessionStatus {
 
 `src/main/resources/schema.sql`（在 `event_archive` 之后追加）：
 
-```sql
+```
 -- 第 8.1 章：会话概要（和事件归档分开）
 CREATE TABLE IF NOT EXISTS session_record (
     session_id VARCHAR(64) PRIMARY KEY,
@@ -4216,7 +4219,7 @@ CREATE TABLE IF NOT EXISTS session_record (
 
 `src/main/java/com/example/aobs/session/SessionService.java`（新增，最小 CRUD）：
 
-```java
+```
 package com.example.aobs.session;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -4228,7 +4231,7 @@ public class SessionService {
 
     private final JdbcTemplate jdbc;
     public SessionService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
-
+    
     /** 开始会话（SESSION_STARTED 时调）。MERGE 做 upsert，重复调不报错。 */
     public void start(String sessionId, String input, int totalSteps) {
         long now = System.currentTimeMillis();
@@ -4236,14 +4239,14 @@ public class SessionService {
         jdbc.update("MERGE INTO session_record (session_id, status, input_text, total_steps, started_at, updated_at) KEY(session_id) VALUES (?,?,?,?,?,?)",
                 sessionId, SessionStatus.ACTIVE.name(), input, totalSteps, now, now);
     }
-
+    
     /** 正常完成（SESSION_COMPLETED 时调），回填输出。 */
     public void complete(String sessionId, String output) {
         long now = System.currentTimeMillis();
         jdbc.update("UPDATE session_record SET status=?, output_text=?, ended_at=?, updated_at=? WHERE session_id=?",
                 SessionStatus.COMPLETED.name(), output, now, now, sessionId);
     }
-
+    
     /** 失败（SESSION_FAILED 时调）。 */
     public void fail(String sessionId) {
         long now = System.currentTimeMillis();
@@ -4257,7 +4260,7 @@ public class SessionService {
 
 接入 `ChainingService.run`——在 SESSION_STARTED/COMPLETED/FAILED 时调 SessionService。**只加三个调用，不动 run 的执行逻辑**：
 
-```java
+```
 // ChainingService 构造器加 SessionService（老的无 SessionService 构造器保留兼容，内部传 null）
 protected final SessionService sessionService;
 
@@ -4277,7 +4280,7 @@ if (sessionService != null) sessionService.fail(sessionId);   // ← 新增
 
 子类 `ArticleService` 构造器加 SessionService（配套改动）：
 
-```java
+```
 public ArticleService(ChatClient chatClient, AgentEventBus eventBus, SessionService sessionService) {
     super(chatClient, eventBus, sessionService);
 }
@@ -4287,7 +4290,7 @@ public ArticleService(ChatClient chatClient, AgentEventBus eventBus, SessionServ
 
 启动应用，页面点「生成」跑完一次。查库：
 
-```bash
+```
 # H2 文件库用任意工具或加 /h2-console；这里示意 SQL
 SELECT session_id, status, input_text, substr(output_text,1,40), started_at FROM session_record;
 ```
@@ -4311,7 +4314,7 @@ src/main/java/.../workflow/ChainingService.java （改：run 接 SessionService�
 src/main/java/.../writing/ArticleService.java   （改：构造器）
 ```
 
-```bash
+```
 git add -A && git commit -m "第8.1章：会话最小持久化（状态+输入输出落库）"
 ```
 
@@ -4335,7 +4338,7 @@ git add -A && git commit -m "第8.1章：会话最小持久化（状态+输入�
 
 `src/main/java/com/example/aobs/session/SessionReplayController.java`（新增）：
 
-```java
+```
 package com.example.aobs.session;
 
 import org.springframework.http.MediaType;
@@ -4353,9 +4356,9 @@ import java.util.Map;
  *
  * ⚠️ 本阶段先不做鉴权（8.3 会暴露并修）。
  */
-@RestController
-@RequestMapping("/api/session")
-public class SessionReplayController {
+ @RestController
+ @RequestMapping("/api/session")
+ public class SessionReplayController {
 
     private final JdbcTemplate jdbc;
 
@@ -4387,7 +4390,7 @@ public class SessionReplayController {
         int j = payload.indexOf("\"", i + 8);
         return j < 0 ? "EVENT" : payload.substring(i + 8, j);
     }
-}
+ }
 ```
 
 > **API 核实**：`JdbcTemplate.queryForList(sql, args)` 返回 `List<Map<String,Object>>`；`Flux.fromIterable(...).map(...)` 是标准 Reactor；`ServerSentEvent.builder()` 是 WebFlux 的 SSE 帧。归档表的 `payload` 列在第 7 章存的是 `ObjectMapper.writeValueAsString(event)` 完整 JSON，这里原样包成 SSE data。
@@ -4400,7 +4403,7 @@ public class SessionReplayController {
 
 页面跑完一次写作（8.1 已落库 + 归档有事件）。然后用浏览器或 curl 回放：
 
-```bash
+```
 curl -N "http://localhost:8080/api/session/replay/s-1700000000000"
 ```
 
@@ -4421,7 +4424,7 @@ src/main/java/com/example/aobs/session/
 └── SessionReplayController.java   ← 新增：回放接口
 ```
 
-```bash
+```
 git add -A && git commit -m "第8.2章：历史回放（归档事件按sequence重放成SSE）"
 ```
 
@@ -4452,14 +4455,14 @@ git add -A && git commit -m "第8.2章：历史回放（归档事件按sequence�
 
 `session_record` 加 `tenant_id` 列（改 schema）：
 
-```sql
+```
 ALTER TABLE session_record ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(64);
 CREATE INDEX IF NOT EXISTS idx_session_tenant_status ON session_record(tenant_id, status);
 ```
 
 `SessionRecord` DTO（新增，行映射 + 给列表返回用）：
 
-```java
+```
 package com.example.aobs.session;
 
 import java.sql.ResultSet;
@@ -4481,7 +4484,7 @@ public record SessionRecord(
 
 `SessionService` 扩展——start 带 tenantId、加 get/list（在 8.1 基础上追加方法）：
 
-```java
+```
 // start 签名加 tenantId
 public void start(String sessionId, String tenantId, String input, int totalSteps) {
     long now = System.currentTimeMillis();
@@ -4511,7 +4514,7 @@ public List<SessionRecord> list(String tenantId, SessionStatus status, int page,
 
 **鉴权过滤器**——所有 `/api/**` 统一校验租户身份：
 
-```java
+```
 package com.example.aobs.session;
 
 import org.springframework.http.HttpStatus;
@@ -4525,8 +4528,8 @@ import reactor.core.publisher.Mono;
  * 租户鉴权过滤器：校验 X-Tenant-Id（本阶段先只校验存在性，8.6 加 X-Tenant-Key 真鉴权）。
  * 放过静态资源和调试端点（生产收紧）。
  */
-@Component
-public class TenantAuthFilter implements WebFilter {
+ @Component
+ public class TenantAuthFilter implements WebFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
@@ -4543,14 +4546,14 @@ public class TenantAuthFilter implements WebFilter {
         exchange.getAttributes().put("tenantId", tenantId);   // Controller 取用
         return chain.filter(exchange);
     }
-}
+ }
 ```
 
 回放接口加鉴权（改 SessionReplayController）：
 
 **先把 8.2 的 `SessionReplayController` 升级依赖**——8.2 只注入了 `JdbcTemplate`，本阶段要用 `SessionService`（查会话做鉴权）和保留 `JdbcTemplate`（查归档）。同时把 8.2 内联的 SSE 构造抽成 helper，后面续传/列表都要复用：
 
-```java
+```
 @RestController
 @RequestMapping("/api/session")
 public class SessionReplayController {
@@ -4558,14 +4561,14 @@ public class SessionReplayController {
     private final JdbcTemplate jdbc;
     private final SessionService sessionService;          // ← 8.3 新增（鉴权查会话）
     private final ArticleService articleService;          // ← 8.4 续传要用，这里一起注入（8.4 才调）
-
+    
     public SessionReplayController(JdbcTemplate jdbc, SessionService sessionService,
                                    ArticleService articleService) {
         this.jdbc = jdbc;
         this.sessionService = sessionService;
         this.articleService = articleService;
     }
-
+    
     // helper：构造错误帧（鉴权失败/会话不存在用）
     private ServerSentEvent<String> errorSse(String msg) {
         return ServerSentEvent.<String>builder().event("ERROR")
@@ -4576,7 +4579,7 @@ public class SessionReplayController {
         return ServerSentEvent.<String>builder().event(e.type())
                 .data(/* 序列化 e，用 ObjectMapper */ "").build();
     }
-
+    
     // ... 8.2 的 extractType / 原 replay 逻辑保留，replay 改成下面带鉴权版 ...
 }
 ```
@@ -4585,7 +4588,7 @@ public class SessionReplayController {
 
 然后回放接口加鉴权：
 
-```java
+```
 @GetMapping(value = "/replay/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 public Flux<ServerSentEvent<String>> replay(@PathVariable String sessionId,
                                             @RequestHeader("X-Tenant-Id") String tenantId) {
@@ -4600,7 +4603,7 @@ public Flux<ServerSentEvent<String>> replay(@PathVariable String sessionId,
 
 列表接口（SessionReplayController 加）：
 
-```java
+```
 @GetMapping("/list")
 public Map<String, Object> list(@RequestHeader("X-Tenant-Id") String tenantId,
                                 @RequestParam(required = false) String status,
@@ -4640,7 +4643,7 @@ src/main/java/com/example/aobs/session/
 src/main/resources/schema.sql    （改：session_record 加 tenant_id）
 ```
 
-```bash
+```
 git add -A && git commit -m "第8.3章：会话列表+租户鉴权（防越权）"
 ```
 
@@ -4668,7 +4671,7 @@ git add -A && git commit -m "第8.3章：会话列表+租户鉴权（防越权�
 
 **先给 `SessionStatus` 加 INTERRUPTED**（8.1 只有 ACTIVE/COMPLETED/FAILED，本阶段要用中断状态）：
 
-```java
+```
 public enum SessionStatus {
     ACTIVE, COMPLETED, FAILED,
     INTERRUPTED   // ← 8.4 加：中断（停机/崩溃，可续传）
@@ -4677,20 +4680,20 @@ public enum SessionStatus {
 
 **`EventContent` 也加 `STEP_RESUMED`**（续传开始时发这个事件，让前端知道"从第 N 步接着跑"）：
 
-```java
+```
     SESSION_CANCELLED,  // 用户取消（第 7 章）
     STEP_RESUMED;       // ← 8.4 加：续传起点
 ```
 
 `session_record` 加 `last_step` 列：
 
-```sql
+```
 ALTER TABLE session_record ADD COLUMN IF NOT EXISTS last_step INT DEFAULT -1;   -- -1=未开始
 ```
 
 `SessionRecord` DTO 同步加 `lastStep` 字段（8.3 定义的 record 追加，fromRow 加 `rs.getInt("last_step")`）：
 
-```java
+```
 public record SessionRecord(
         String sessionId, String tenantId, String status,
         String inputText, String outputText, int totalSteps,
@@ -4701,7 +4704,7 @@ public record SessionRecord(
 
 `SessionService` 加 advanceStep / markInterrupted（在 8.3 基础上追加）：
 
-```java
+```
 /** 每步完成时更新 last_step（续传依据）。 */
 public void advanceStep(String sessionId, int lastStep) {
     jdbc.update("UPDATE session_record SET last_step=?, updated_at=? WHERE session_id=?",
@@ -4723,7 +4726,7 @@ public void markInterrupted() {
  * 生产正确做法：归档 payload 里带 step 字段（或 event_archive 加 step 列），SQL 按 step 过滤。
  * 本教学先用简化版，多轮续传的精确取值留给生产。
  */
-public String getStepOutput(String sessionId, int step) {
+ public String getStepOutput(String sessionId, int step) {
     try {
         var payloads = jdbc.queryForList(
                 "SELECT payload FROM event_archive WHERE session_id=? AND type=? ORDER BY seq DESC LIMIT 1",
@@ -4735,20 +4738,20 @@ public String getStepOutput(String sessionId, int step) {
         int j = p.indexOf("\"", i + 10);
         return j < 0 ? null : p.substring(i + 10, j);
     } catch (Exception e) { return null; }
-}
+ }
 ```
 
 > **STEP_END 带完整 output（第 1 章已改）**：第 1 章的 STEP_END 携带完整 output（不是 truncate 摘要），所以续传从归档取 STEP_END 的 output 喂下一步，是完整文本。但归档存的事件是从总线落库的——若归档链路对 output 做了截断（某些实现会），续传拿到的就是不完整的。**最稳的续传**：中间产物单独存 Redis（第 4 章 SessionStateStore，key=`aobs:session:{sid}:stepOut:{step}`），不依赖事件归档。本教学从 STEP_END 取（够用），生产建议单独存。
 
 `ChainingService` 加 `runFrom`（从 fromStep 接着跑，用 LlmStepExecutor + concatMap，和 run 同一套响应式风格），run 调 runFrom(..., 0)：
 
-```java
+```
 /**
  * 从 fromStep 开始跑。fromStep=0 等价全新执行。续传时 fromStep = last_step + 1。
  * 续传的第一步，其输入（上一步输出）从归档取（getStepOutput）。
  * 全程响应式，用 LlmStepExecutor（独立 Bean）执行单步——第 7 章的 @Retry 在续传路径也生效。
  */
-public Flux<AgentEvent> runFrom(String input, String sessionId, String tenantId, int fromStep) {
+ public Flux<AgentEvent> runFrom(String input, String sessionId, String tenantId, int fromStep) {
     java.util.List<Step> stepList = steps();
     int total = stepList.size();
 
@@ -4797,7 +4800,7 @@ public Flux<AgentEvent> runFrom(String input, String sessionId, String tenantId,
                 eventBus.emit(failed);
                 return Flux.just(failed);
             });
-}
+ }
 
 /** 全新执行（带租户，第 8 章入口）。 */
 public Flux<AgentEvent> run(String input, String sessionId, String tenantId) {
@@ -4814,7 +4817,7 @@ public Flux<AgentEvent> run(String input, String sessionId) {
 
 续传接口（SessionReplayController 加）：
 
-```java
+```
 @PostMapping(value = "/resume/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 public Flux<ServerSentEvent<String>> resume(@PathVariable String sessionId,
                                             @RequestHeader("X-Tenant-Id") String tenantId) {
@@ -4832,7 +4835,7 @@ public Flux<ServerSentEvent<String>> resume(@PathVariable String sessionId,
 
 优雅停机标记（`@PreDestroy`）+ 开启优雅停机：
 
-```java
+```
 @Component
 public class ShutdownHook {
     private final SessionService sessionService;
@@ -4842,7 +4845,7 @@ public class ShutdownHook {
 }
 ```
 
-```yaml
+```
 # application.yaml
 server:
   shutdown: graceful
@@ -4877,7 +4880,7 @@ src/main/java/.../obs/EventContent.java          （改：加 STEP_RESUMED）
 src/main/resources/schema.sql     （改：session_record 加 last_step）
 ```
 
-```bash
+```
 git add -A && git commit -m "第8.4章：断点续传（last_step+runFrom+停机标记INTERRUPTED）"
 ```
 
@@ -4905,7 +4908,7 @@ git add -A && git commit -m "第8.4章：断点续传（last_step+runFrom+停机
 
 **（a）PII 脱敏** `PiiMasker`：
 
-```java
+```
 package com.example.aobs.session;
 
 import org.springframework.stereotype.Component;
@@ -4934,13 +4937,13 @@ public class PiiMasker {
 
 **（b）加密原文** `CryptoService`（AES-GCM）+ session_record 加列：
 
-```sql
+```
 ALTER TABLE session_record ADD COLUMN IF NOT EXISTS input_text_raw TEXT;  -- 加密原文（续传用）
 ```
 
 `SessionRecord` 再加 `inputTextRaw` 字段（8.4 的 record 再追加，fromRow 加 `rs.getString("input_text_raw")`）：
 
-```java
+```
 public record SessionRecord(
         String sessionId, String tenantId, String status,
         String inputText, String inputTextRaw,    // ← 8.5 加（加密原文）
@@ -4949,7 +4952,7 @@ public record SessionRecord(
 ) { /* fromRow 同步加 rs.getString("input_text_raw") */ }
 ```
 
-```java
+```
 package com.example.aobs.session;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -4995,7 +4998,7 @@ public class CryptoService {
 }
 ```
 
-```yaml
+```
 aobs:
   crypto:
     key: ${AOBS_CRYPTO_KEY:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f}
@@ -5003,7 +5006,7 @@ aobs:
 
 **先给 `SessionService` 加这两个依赖**（8.1 的构造器只有 JdbcTemplate，本阶段 start 要用 piiMasker/cryptoService）：
 
-```java
+```
 // SessionService 构造器升级（替换 8.1 的单参构造器）
 private final PiiMasker piiMasker;
 private final CryptoService cryptoService;
@@ -5016,7 +5019,7 @@ public SessionService(JdbcTemplate jdbc, PiiMasker piiMasker, CryptoService cryp
 
 `SessionService.start` 改为：脱敏版存 `input_text`、加密原文存 `input_text_raw`：
 
-```java
+```
 public void start(String sessionId, String tenantId, String rawInput, int totalSteps) {
     long now = System.currentTimeMillis();
     jdbc.update("MERGE INTO session_record (session_id, status, tenant_id, input_text, input_text_raw, total_steps, started_at, updated_at) KEY(session_id) VALUES (?,?,?,?,?,?,?,?)",
@@ -5029,7 +5032,7 @@ public void start(String sessionId, String tenantId, String rawInput, int totalS
 
 续传接口改用加密原文（修 8.4 暴露的问题）：
 
-```java
+```
 // resume 接口里：input 取加密原文并解密
 String rawInput = cryptoService.decrypt(rec.inputTextRaw());
 return articleService.runFrom(rawInput, sessionId, tenantId, fromStep).map(this::toSse);
@@ -5039,7 +5042,7 @@ return articleService.runFrom(rawInput, sessionId, tenantId, fromStep).map(this:
 
 **（c）幂等键** `IdempotencyService`（Redis SETNX）：
 
-```java
+```
 package com.example.aobs.session;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -5066,7 +5069,7 @@ public class IdempotencyService {
 
 SSE 接口开头加幂等检查（重复 key 引导走回放）：
 
-```java
+```
 if (idemKey != null && !idempotencyService.tryAcquire(idemKey, sessionId)) {
     String existing = idempotencyService.getExistingSession(idemKey);
     return Flux.just(sse("IDEMPOTENT_REPLAY", "{\"existingSession\":\"" + existing + "\"}"));
@@ -5077,7 +5080,7 @@ if (idemKey != null && !idempotencyService.tryAcquire(idemKey, sessionId)) {
 
 **（d）TTL 清理 + 僵尸回收** `ArchiveRetentionJob`：
 
-```java
+```
 package com.example.aobs.session;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -5106,7 +5109,7 @@ public class ArchiveRetentionJob {
             jdbc.update("DELETE FROM session_record WHERE session_id=?", sid);
         }
     }
-
+    
     /** 每 5 分钟回收僵尸 ACTIVE（kill -9 遗留）：超 10 分钟没更新 = 卡死，转 INTERRUPTED。 */
     @Scheduled(fixedDelay = 300_000)
     public void reapZombieActive() {
@@ -5149,7 +5152,7 @@ src/main/resources/schema.sql   （改：session_record 加 input_text_raw）
 src/main/java/.../Application.java （改：加 @EnableScheduling）
 ```
 
-```bash
+```
 git add -A && git commit -m "第8.5章：治理配套（脱敏+加密+幂等+TTL+僵尸回收）"
 ```
 
@@ -5173,7 +5176,7 @@ git add -A && git commit -m "第8.5章：治理配套（脱敏+加密+幂等+TTL
 
 `tenant` 表：
 
-```sql
+```
 CREATE TABLE IF NOT EXISTS tenant (
     tenant_id VARCHAR(64) PRIMARY KEY,
     name VARCHAR(128),
@@ -5187,7 +5190,7 @@ CREATE TABLE IF NOT EXISTS tenant (
 
 `Tenant` + `TenantService`：
 
-```java
+```
 package com.example.aobs.tenant;
 
 public record Tenant(String tenantId, String name, TenantStatus status,
@@ -5196,7 +5199,7 @@ public record Tenant(String tenantId, String name, TenantStatus status,
 }
 ```
 
-```java
+```
 package com.example.aobs.tenant;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -5255,7 +5258,7 @@ public class TenantService {
 
 `TenantAuthFilter` 升级（8.3 的基础上加 key 校验）：
 
-```java
+```
 @Component
 public class TenantAuthFilter implements WebFilter {
     private final TenantService tenantService;
@@ -5282,7 +5285,7 @@ public class TenantAuthFilter implements WebFilter {
 
 管理接口（运营用）：
 
-```java
+```
 @RestController
 @RequestMapping("/api/admin/tenant")
 public class TenantController {
@@ -5317,7 +5320,7 @@ public class TenantController {
 
 > ⚠️ **运营接口 `/api/admin/**` 本阶段不加鉴权**（教学演示，`TenantAuthFilter` 放行了它）。生产里必须给运营接口加独立鉴权（OAuth2 / Basic Auth / IP 白名单 / 单独的运营 token）——否则任何人都能建租户、改配额、停用，比业务接口越权更严重。
 
-```bash
+```
 # 运营建租户（拿到 apiKey）
 curl -X POST http://localhost:8080/api/admin/tenant -H "Content-Type: application/json" \
   -d '{"tenantId":"tenantA","name":"客户A"}'
@@ -5347,7 +5350,7 @@ src/main/java/.../session/TenantAuthFilter.java （改：加 X-Tenant-Key 校验
 src/main/resources/schema.sql             （改：加 tenant 表）
 ```
 
-```bash
+```
 git add -A && git commit -m "第8.6章：多租户管理（CRUD+配额+停用+真鉴权）"
 ```
 
@@ -5513,7 +5516,7 @@ ai-writing-assistant/
 
 ### A.4 演进全景图
 
-```mermaid
+```
 flowchart TD
     S0[第0章 同步黑盒 Agent<br/>一次性返回,过程不可见+用户干等] -->|事故: 看不到过程+干等| S1
     S1[第1章 三层骨架<br/>采集-总线-SSE] -->|投诉: 事件丢/乱/漏| S2
@@ -5532,7 +5535,7 @@ flowchart TD
 
 照着这个最终版核对依赖，缺啥补啥：
 
-```xml
+```
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -5546,16 +5549,16 @@ flowchart TD
         <version>4.1.0</version>
         <relativePath/>
     </parent>
-
+    
     <groupId>com.example.aobs</groupId>
     <artifactId>ai-writing-assistant</artifactId>
     <version>0.1.0-SNAPSHOT</version>
-
+    
     <properties>
         <java.version>21</java.version>
         <spring-ai.version>2.0.0</spring-ai.version>
     </properties>
-
+    
     <dependencies>
         <!-- WebFlux：HTTP 接口 + SSE（第0章） -->
         <dependency>
@@ -5603,7 +5606,7 @@ flowchart TD
             <artifactId>h2</artifactId>
         </dependency>
     </dependencies>
-
+    
     <dependencyManagement>
         <dependencies>
             <dependency>
@@ -5615,7 +5618,7 @@ flowchart TD
             </dependency>
         </dependencies>
     </dependencyManagement>
-
+    
     <build>
         <plugins>
             <plugin>
@@ -5631,7 +5634,7 @@ flowchart TD
 
 ### A.6 完整 application.yaml（第 8 章结束时）
 
-```yaml
+```
 spring:
   ai:
     openai:
@@ -5723,7 +5726,7 @@ logging:
 **优雅停机**：
 - SSE 是长连接 + 后台有异步写作任务，`kill -9` 会硬断连接、丢失进行中的会话。
 - 最小做法：开 Spring Boot 的优雅停机 + 给写作任务设超时：
-  ```yaml
+```
   server:
     shutdown: graceful          # 等进行中的请求结束
   spring:
@@ -5742,7 +5745,7 @@ logging:
 
 **成本告警闭环**：
 第 5 章算了成本指标（`tenant_daily_cost_usd`），但要"烧钱时主动知道"，得接告警。Prometheus alertmanager 规则示例（`alerts.yml`）：
-```yaml
+  ```
 groups:
   - name: llm-cost
     rules:
@@ -5778,7 +5781,7 @@ groups:
 | **混合** | 生产主流 | 保留最近 N 条原文 + 之前的摘要，兼顾近期细节和长期记忆 |
 
 **按 token 裁剪的最小实现**（伪代码）：
-```java
+```
 public class TokenAwareChatMemory implements ChatMemory {
     private final TokenCountEstimator estimator = new JTokkitTokenCountEstimator();
     private final long maxTokens;
@@ -5796,7 +5799,7 @@ public class TokenAwareChatMemory implements ChatMemory {
 
 **布局参照 DeepSeek 官网**（`chat.deepseek.com` 的对话骨架）：**左侧会话历史栏 + 右侧对话区 + 底部输入框**。本文只做对话功能，不做多模态/文件上传。一个页面覆盖全部章节——左侧栏整合会话历史（第 8 章回放/续传）+ 租户切换（第 5 章）；右侧对话区实时展示事件流（CONTENT_DELTA 打字机 + 工具/token 面板）。
 
-```html
+```
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -5836,7 +5839,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         .session-item .badge.failed { background: #fdecea; color: var(--red); }
         .session-item .resume-btn { float: right; font-size: 11px; color: var(--accent); display: none; }
         .session-item:hover .resume-btn { display: inline; }
-
+    
         /* 右侧主区 */
         #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
         #header { padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--surface);
@@ -5845,7 +5848,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         #header .sub { color: var(--muted); font-size: 13px; margin-left: 8px; }
         #header .cost { font-size: 13px; color: var(--text-2); }
         #header .cost b { color: var(--orange); }
-
+    
         #chat { flex: 1; overflow-y: auto; padding: 32px 0; }
         .msg { max-width: 720px; margin: 0 auto; padding: 0 24px; }
         .user { display: flex; justify-content: flex-end; margin-bottom: 16px; }
@@ -5865,7 +5868,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         .step.resume-marker { border-left-color: var(--orange); color: var(--orange); font-style: italic; }
         .step .label { font-weight: 600; margin-right: 6px; }
         .step .kv { color: var(--muted); margin-right: 8px; } .step .kv b { color: var(--text-2); }
-
+    
         #bar { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 24px; flex-shrink: 0; }
         #input-wrap { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: center;
                       background: var(--bg); border-radius: 22px; padding: 4px 4px 4px 18px; border: 1px solid var(--border); }
@@ -5917,7 +5920,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         document.getElementById('status').textContent = '已开新对话';
         document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
     }
-
+    
     // 加载左侧历史会话列表（第 8 章 /api/session/list）
     async function loadSessions() {
         const tenant = document.getElementById('tenant').value;
@@ -5936,7 +5939,7 @@ public class TokenAwareChatMemory implements ChatMemory {
             box.appendChild(div);
         }
     }
-
+    
     // 回放历史会话（第 8 章 /api/session/replay）——把归档事件流渲染到右侧
     async function replay(sessionId) {
         if (sending) return;
@@ -5961,7 +5964,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         document.getElementById('status').textContent = '回放完成';
         loadSessions();
     }
-
+    
     // 续传（第 8 章 /api/session/resume）——从断点接着跑
     async function resume(sessionId) {
         if (sending) return;
@@ -5973,7 +5976,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         await pump(resp);
         loadSessions();
     }
-
+    
     // 发送新消息（第 1 章 /api/obs/article，带租户 + 幂等键）
     async function send() {
         if (sending) return;
@@ -5983,30 +5986,30 @@ public class TokenAwareChatMemory implements ChatMemory {
         input.value = '';
         sending = true;
         document.getElementById('send').disabled = true;
-
+    
         if (!currentSession) currentSession = 's-' + Date.now();
         const sessionId = currentSession;
         const tenant = document.getElementById('tenant').value;
-
+    
         const chat = document.getElementById('chat');
         const u = document.createElement('div'); u.className = 'msg user';
         u.innerHTML = '<div class="bubble"></div>';
         u.querySelector('.bubble').textContent = prompt;
         chat.appendChild(u);
-
+    
         const proc = document.createElement('details'); proc.className = 'process';
         proc.innerHTML = '<summary>执行过程</summary>'; proc.open = true;
         chat.appendChild(proc);
-
+    
         const a = document.createElement('div'); a.className = 'msg assistant';
         a.innerHTML = '<div class="bubble empty">生成中...</div>';
         chat.appendChild(a);
         chat.scrollTop = chat.scrollHeight;
-
+    
         const headers = { 'sessionId': sessionId, 'Accept': 'text/event-stream',
                           'Idempotency-Key': sessionId + '-' + Date.now() };
         if (tenant) { headers['X-Tenant-Id'] = tenant; headers['X-Tenant-Key'] = 'demo-key-' + tenant; }
-
+    
         controller = new AbortController();
         try {
             const resp = await fetch('/api/obs/article?prompt=' + encodeURIComponent(prompt), { headers, signal: controller.signal });
@@ -6019,7 +6022,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         sending = false;
         document.getElementById('send').disabled = false;
     }
-
+    
     // 通用：读 SSE 流，按帧分发（实时/回放/续传共用）
     async function pump(resp, proc, assistantEl) {
         const reader = resp.body.getReader();
@@ -6036,7 +6039,7 @@ public class TokenAwareChatMemory implements ChatMemory {
             }
         }
     }
-
+    
     // 帧处理：实时模式（写到传入的 proc/assistantEl）vs 回放模式（追加到聊天区）
     function handleFrame(frame, proc, assistantEl, isReplay) {
         let type = '', dataStr = '';
@@ -6046,7 +6049,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         }
         if (!type) return;
         let data = {}; try { data = JSON.parse(dataStr).data || JSON.parse(dataStr); } catch(e) { data = {}; }
-
+    
         // 回放模式：CONTENT_DELTA 也追加到聊天区（用临时气泡）；STEP_* 进折叠面板
         if (isReplay && !proc) {
             if (type === 'CONTENT_DELTA') {
@@ -6069,7 +6072,7 @@ public class TokenAwareChatMemory implements ChatMemory {
             document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
             return;
         }
-
+    
         // 实时模式
         if (type === 'CONTENT_DELTA') {
             const bubble = assistantEl.querySelector('.bubble');
@@ -6084,7 +6087,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         }
         document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
     }
-
+    
     function renderStep(proc, type, data) {
         const step = document.createElement('div');
         let cls = '', label = type, kvs = [];
@@ -6100,7 +6103,7 @@ public class TokenAwareChatMemory implements ChatMemory {
         step.innerHTML = html;
         proc.appendChild(step);
     }
-
+    
     // 启动：开新对话 + 加载历史
     newChat();
     loadSessions();
@@ -6163,7 +6166,7 @@ public class TokenAwareChatMemory implements ChatMemory {
 
 **分流**（按 userId 稳定 hash，保证同一用户总进同一桶）：
 
-```java
+```
 @Component
 public class AbRouter {
     /** 按 userId + 实验名 hash 分桶。返回桶名（如 "v1"/"v2"）。 */
@@ -6175,7 +6178,7 @@ public class AbRouter {
 }
 ```
 
-```java
+```
 // ChainingService.run 里，根据分桶选 prompt 版本
 String bucket = abRouter.bucket(ctx.userId(), "outline-prompt", List.of("v1", "v2"));
 String system = bucket.equals("v2") ? OUTLINE_V2 : OUTLINE_V1;
@@ -6196,7 +6199,7 @@ String system = bucket.equals("v2") ? OUTLINE_V2 : OUTLINE_V1;
 
 1. **用户显式反馈**（便宜、主观）：用户点 👍/👎。加一个 `SESSION_FEEDBACK` 事件：
 
-```java
+```
 // EventContent 加 SESSION_FEEDBACK
 // 前端在生成完成后显示 👍/👎，点击后 POST /api/session/{id}/feedback?score=1（或 -1）
 // 后端发事件 + 落库（session_record 加 feedback_score 列）
@@ -6206,7 +6209,7 @@ eventBus.emit(AgentEvent.of(EventContent.SESSION_FEEDBACK, sessionId,
 
 2. **LLM-as-judge**（贵、客观）：用另一个 LLM 给生成结果打分。成本高（每次额外一次 LLM 调用），通常只对**采样**的会话做（比如 10%）：
 
-```java
+```
 // 生成完成后，10% 概率触发评审
 if (random.nextDouble() < 0.1) {
     String judgePrompt = "给以下文章打分(1-5)，从流畅度/结构/准确性评价：" + output;
