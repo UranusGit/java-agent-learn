@@ -1848,6 +1848,7 @@ redis-cli ZRANGE aobs:events:s1 0 -1
         </div>
         <div id="conn-body">
             <div>🔹 点「开始」后，fetch 连接至 <code>/api/obs/article?prompt=重连演示</code>，sessionId 走 header</div>
+            <div>🔹 输入框可填 Last-Event-ID（如 <code>rc-demo-1700000010</code>），测试从指定位置回放</div>
             <div>🔹 中途 <b>停掉后端 3 秒再重启</b>，观察自动重连 + Last-Event-ID 回放</div>
             <div>🔹 最多重试 5 次，指数退避（2s → 4s → 8s…）</div>
         </div>
@@ -1856,6 +1857,7 @@ redis-cli ZRANGE aobs:events:s1 0 -1
     <!-- 控制栏 -->
     <div id="controls">
         <button id="start-btn" onclick="start()">▶ 开始演示</button>
+        <input id="last-event-id-input" placeholder="输入 Last-Event-ID（可选）" style="flex:1;max-width:300px;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px;color:#555;" title="填了则连接时带这个值，测试后端回放效果；留空则从头开始">
         <span id="last-event-id" style="font-size:12px;color:#bbb;"></span>
     </div>
 
@@ -1866,8 +1868,8 @@ redis-cli ZRANGE aobs:events:s1 0 -1
     </div>
 
     <div id="empty" class="empty-state">
-        <div>点击「开始演示」，体验 EventSource 自动重连</div>
-        <div style="margin-top:8px;color:#ddd;">断线后 Last-Event-ID 自动回放已收到的事件</div>
+        <div>点击「开始演示」，体验 fetch + ReadableStream 手动重连</div>
+        <div style="margin-top:8px;color:#ddd;">在输入框中填 Last-Event-ID 可测试从指定位置回放（留空则从头开始）</div>
     </div>
 </div>
 
@@ -1990,12 +1992,15 @@ redis-cli ZRANGE aobs:events:s1 0 -1
         seenIds.clear();
         reconnectAttempts = 0;
         updateReconnCount();
-        setLastEventId('');
+        // 取用户输入的 Last-Event-ID（用于测试重连接口不留空则从头开始）
+        const customId = document.getElementById('last-event-id-input').value.trim();
+        setLastEventId(customId);
+        lastSeenId = customId;   // 传给 connect，首次连接就带这个值——后端据此回放
         setConnStatus('connecting', '⏳ 连接中…');
         document.getElementById('start-btn').disabled = true;
         document.getElementById('conn-body').classList.add('show');
-        log('🔄 正在建立 EventSource 连接…', 'system');
-        connect();
+        log('🔄 正在建立 SSE 连接（sessionId via header）…', 'system');
+        connect(customId);
     }
 
     function setConnStatus(mode, text) {
