@@ -84,7 +84,7 @@
 
 - **包名**：本文用 `com.example.aobs` 演示（aobs = Agent Observability）。你自己敲时换成想要的包名，IDE 全局替换即可。**所有 import 的前缀要跟着换**。
 - **代码完整性**：每个代码块都是完整的、带 import 的、照抄能编译的。不会留半截、不会埋错。
-- **简陋处会标注**：有些代码第一版先写简单版（比如手写 JSON），后面章节会改进。改进点一定明确标注「这一版简陋，第 X 章会改」，并说明为什么现在不一次到位。
+- **简陋处会标注**：有些代码第一版先写简单版（比如第 4 章前的 EventBus 单 sink），后面章节会改进。改进点一定明确标注「这一版简陋，第 X 章会改」，并说明为什么现在不一次到位。
 - **每章结尾有 checkpoint**：目录结构 + git 提交命令。养成小步提交的习惯。
 - **前端页面**：验证主要靠调试页面（放 `src/main/resources/static/`，浏览器打开）。页面随章节演进——第 1 章是最简的事件流显示，后面章节逐步增强（工具调用面板、重连演示、租户切换）。每个版本的页面都是完整 HTML，照抄能跑。
 - **企业级方案优先**：每个技术决策讲清"为什么选它、调研背书、否了什么"，不只是"能跑就行"。真实坑（竞态、重复注册、超时）作为"问题→根因→修复"的演进素材，不回避。
@@ -525,9 +525,8 @@ public enum EventContent {
     STEP_END,           // 某步结束
     SESSION_COMPLETED,  // 会话正常完成
     SESSION_FAILED;     // 会话失败
-
-    /** 序列化名。和枚举名一致，单独抽方法是为了日后改序列化格式时只改一处。 */
-    public String wireName() { return name(); }
+    // 枚举值直接用 name() 转字符串（如 "SESSION_STARTED"），不需要额外方法。
+    // 后面章节用到新事件时往这里加枚举值（第 3 章加 TOOL_CALL/LLM_TOKENS，依此类推）。
 }
 ```
 
@@ -548,25 +547,24 @@ import java.util.Map;
  *   第 2 章：加 criticality（背压降级策略）、sequence（会话内序号）
  *   第 5 章：加 tenantId/userId/agentVersion（成本归因 + 隔离）
  *
- * 构造方式：用 builder（见下方），不直接 new。builder 默认填 timestamp 和 criticality。
+ * type 存 String（枚举的 name()），不直接存枚举——这样序列化天然是字符串，
+ * 也避免 record 字段依赖枚举类型（跨服务/反序列化更宽松）。
+ * 构造用 of(...) 传 EventContent 枚举（编译期校验），内部转 name() 存。
  */
 public record AgentEvent(
-        EventContent type,            // 事件类型（枚举，不拼字符串）
+        String type,                  // 事件类型名（EventContent.name()，如 "SESSION_STARTED"）
         String sessionId,             // 属于哪个会话（前端按这个过滤）
         Instant timestamp,            // 发生时间
         Map<String, Object> data      // 附加信息（这一步的输入/输出/正文片段等）
 ) {
 
-    /** builder：默认填 timestamp，criticality 第 2 章加（这里先不出现，第 2 章扩展 builder）。 */
+    /** builder：默认填 timestamp。第 2 章扩展（加 criticality/sequence）。 */
     public static Builder builder() { return new Builder(); }
 
-    /** 第 1 章的快捷构造（后续章节扩展参数时新增重载，不删旧的）。 */
+    /** 快捷构造：传枚举（编译期校验类型），内部转 name() 存。 */
     public static AgentEvent of(EventContent type, String sessionId, Map<String, Object> data) {
         return builder().type(type).sessionId(sessionId).data(data).build();
     }
-
-    /** 事件类型名（序列化用，对前端就是字符串 "SESSION_STARTED" 等）。 */
-    public String typeName() { return type.wireName(); }
 
     public static final class Builder {
         private EventContent type;
@@ -581,15 +579,15 @@ public record AgentEvent(
 
         public AgentEvent build() {
             if (type == null) throw new IllegalStateException("type 必填");
-            return new AgentEvent(type, sessionId,
+            return new AgentEvent(type.name(), sessionId,
                     timestamp != null ? timestamp : Instant.now(), data);
         }
     }
 }
 ```
 
-> **小白疑问一：为什么用枚举 `EventContent` 不用字符串？**
-> 字符串散落各处，拼错 `"SESSION_STATRED"`（拼错字母）IDE 不报错、运行时才暴露。枚举把"所有合法事件类型"集中在一处，拼错编译期就拦住，后面所有 emit 点、前端对照表都从这里取。
+> **小白疑问一：为什么 `type` 存 String，却用 `EventContent` 枚举构造？**
+> 构造端用枚举（`of(EventContent.SESSION_STARTED, ...)`）——拼错编译期就拦住，这是枚举的价值。存储端存 String（`"SESSION_STARTED"`）——序列化天然是字符串、record 不依赖枚举类型（反序列化/跨服务更宽松）。**枚举管"构造期安全"，String 管"存储/传输宽松"**，各取所长。
 >
 > **小白疑问二：为什么用 `Map<String,Object>` 装 data，不定义具体字段？**
 > 不同事件附加信息差别大（SESSION_STARTED 有 input，CONTENT_DELTA 有 text 片段，STEP_END 有 output）。用 Map 灵活，新增事件类型不用改这个类。代价是类型不安全——第 2 章会权衡，先简单。
@@ -634,12 +632,19 @@ public class EventBus {
         sink.tryEmitNext(event);   // 非阻塞塞事件，失败也不抛
     }
 
-    /** 消费者调这个：拿事件流。 */
+    /** 消费者调这个：拿全量事件流（审计/归档消费者用）。 */
     public Flux<AgentEvent> flux() {
         return sink.asFlux();
     }
+
+    /** 消费者调这个：只拿某个会话的事件流（SSE 按会话订阅用，内部过滤）。 */
+    public Flux<AgentEvent> subscribe(String sessionId) {
+        return sink.asFlux().filter(event -> sessionId.equals(event.sessionId()));
+    }
 }
 ```
+
+> **`subscribe(sessionId)` 重载**：SSE 接口要"只推某个会话的事件"，把按 sessionId 过滤收口在 EventBus 里，Controller 不用每次手写 `.filter(e -> sessionId.equals(e.sessionId()))`。第 4 章分片总线时，这个方法的实现会从"全量过滤"升级成"按 sessionId 路由到对应分片"——接口签名不变，Controller 无感。
 
 #### 1.2.3 给 Workflow 埋点 + 事件化（采集）
 
@@ -856,6 +861,7 @@ public class ArticleService extends ChainingService {
 package com.example.aobs.obs;
 
 import com.example.aobs.writing.ArticleService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
@@ -899,29 +905,32 @@ public class SseController {
     private ServerSentEvent<String> toSse(AgentEvent e) {
         return ServerSentEvent.<String>builder()
                 .id(e.sessionId() + "-" + e.timestamp().toEpochMilli())  // 帧ID（第2章重连用）
-                .event(e.typeName())                                      // 枚举 → 序列化名
+                .event(e.type())                                          // 事件类型名（已是 String）
                 .data(toJson(e))
                 .build();
     }
 
-    /** 简易 JSON 序列化。⚠️ 简陋版：第 2 章会换成 ObjectMapper。 */
+    /** 用 ObjectMapper 序列化（Spring Boot 自带，直接 new 即可）。 */
+    private final ObjectMapper mapper = new ObjectMapper();
     private String toJson(AgentEvent e) {
-        return "{\"type\":\"" + e.typeName() + "\",\"data\":" + mapToJson(e.data()) + "}";
-    }
-
-    private String mapToJson(Map<String, Object> m) {
-        StringBuilder sb = new StringBuilder("{");
-        m.forEach((k, v) -> sb.append("\"").append(k).append("\":\"")
-                .append(String.valueOf(v).replace("\"", "'")).append("\","));
-        if (sb.length() > 1) sb.setLength(sb.length() - 1);
-        return sb.append("}").toString();
+        try {
+            return mapper.writeValueAsString(e);
+        } catch (Exception ex) {
+            return "{\"type\":\"" + e.type() + "\"}";
+        }
     }
 }
 ```
 
 > **关于 `new Thread(...)`**：这是第一版的偷懒做法，第 2 章会换成响应式线程池。真实项目不该用裸 `new Thread`（无上限、开销大），但第 1 章先聚焦「让事件流通起来」，每章只引入一个新难点。
 >
-> **关于手写 JSON**：同样简陋，第 2 章换 `ObjectMapper`。**为什么现在不一次到位？** 因为第一版要让你看清「SSE 帧长什么样」（手动拼 JSON 最直观），等你看懂了再换健壮实现。
+> **关于 JSON 序列化**：直接用 Jackson 的 `ObjectMapper`（Spring Boot 自带），不手写拼 JSON——手写要处理转义、嵌套、null，容易错；ObjectMapper 一次搞定。`AgentEvent` 是 record，Jackson 自动序列化所有字段（type/sessionId/timestamp/data）。
+>
+> **为什么返回 `Flux<ServerSentEvent<String>>` 而不是 `Flux<String>`**（企业级 SSE 的关键选择）：
+> - `Flux<String>` + `text/event-stream` 也能走 SSE，但**只能填帧的 `data` 字段**——每帧一个字符串，没有 event 类型、没有 id、没有心跳。
+> - `ServerSentEvent` 能控制 SSE 帧的**全部字段**：`.event(type)` 让每帧带不同事件类型（前端 `addEventListener('CONTENT_DELTA', ...)` 分流）、`.id(...)` 给每帧编号（第 2 章重连靠 Last-Event-ID）、`.comment("heartbeat")` 发心跳注释帧（第 7 章保活）。
+> - 真实企业级 SSE（ChatGPT/Claude/DeepSeek 的对话流、运维大屏、协作工具）凡是要"多事件类型/重连/心跳"的，都用 `ServerSentEvent` 或等价手写帧。**第 0 章黑盒只推正文，用 `Flux<String>` 对；第 1 章起要事件分流，必须 `ServerSentEvent`**——这是从黑盒到企业级的必然升级，不是风格选择。
+> - `ServerSentEvent<String>` 的 `<String>` 指 data 字段是字符串（SSE 传输文本，对象要先 `toJson` 序列化）。显式传 String 比传对象更可控（精确控制 JSON 格式、处理序列化异常）。
 >
 > **关于竞态**：上面 ⚠️ 标的那段，是这一章最值钱的教训——我们故意先不修，让 1.4 的测试把它"逼"出来。企业项目里很多问题不是 review 看出来的，是测试/压测跑出来的。
 
@@ -1137,7 +1146,6 @@ git add -A && git commit -m "第1章：流式Agent+事件总线+SSE+调试页面
 - **事件可能乱序**：埋点在不同时机发，理论上可能乱序到达 → **第 2 章**
 - **断了重连会漏**：网络抖动、刷新页面，重连后中间事件没了 → **第 2 章**
 - **只看到 Workflow 步骤**：还没看到工具调用细节、token 消耗 → **第 3 章**
-- **手写 JSON 简陋**：要换 ObjectMapper → **第 2 章**
 
 **最该理解的**：整个架构的「心脏」是 `EventBus`（那个 `Sinks.Many`）。生产者和消费者通过它解耦。这个结构是后面所有演进的地基——后面加什么都不改这个骨架，只往里加东西。
 
@@ -1145,7 +1153,7 @@ git add -A && git commit -m "第1章：流式Agent+事件总线+SSE+调试页面
 
 > **第 1 章结束。**
 >
-> 第 2 章会让它「可靠」（不丢、不乱、能重连），并兑现上面两个改进承诺（线程池、ObjectMapper）。可靠性机制用页面演示（尤其重连——curl 做不了，页面是唯一直观手段），遇到问题就修——和这一章一样的"页面验证 → 暴露问题 → 修复"节奏。
+> 第 2 章会让它「可靠」（不丢、不乱、能重连）。可靠性机制用页面演示（尤其重连——curl 做不了，页面是唯一直观手段），遇到问题就修——和这一章一样的"页面验证 → 暴露问题 → 修复"节奏。
 
 ---
 
@@ -1161,7 +1169,7 @@ git add -A && git commit -m "第1章：流式Agent+事件总线+SSE+调试页面
 
 这一章逐个解决。先解决最痛的——**事件丢失**。
 
-> 这一章还顺带兑现第 1 章两个承诺：`new Thread` 换线程池、手写 JSON 换 ObjectMapper。
+> 这一章聚焦可靠性（不丢、不乱、能重连）。线程池（`subscribeOn(boundedElastic)`）和 JSON 序列化（ObjectMapper）第 1 章已就位，本章不重复。
 
 ### 2.1 思路
 
@@ -1230,7 +1238,7 @@ import java.time.Instant;
 import java.util.Map;
 
 public record AgentEvent(
-        EventContent type,
+        String type,                // 事件类型名（EventContent.name()）
         String sessionId,
         Instant timestamp,
         Map<String, Object> data,
@@ -1260,8 +1268,6 @@ public record AgentEvent(
         return builder().type(type).sessionId(sessionId).data(data).build();
     }
 
-    public String typeName() { return type.wireName(); }
-
     public static final class Builder {
         private EventContent type;
         private String sessionId;
@@ -1278,7 +1284,7 @@ public record AgentEvent(
         public AgentEvent build() {
             if (type == null) throw new IllegalStateException("type 必填");
             Criticality c = criticality != null ? criticality : defaultCriticality(type);
-            return new AgentEvent(type, sessionId,
+            return new AgentEvent(type.name(), sessionId,
                     timestamp != null ? timestamp : Instant.now(), data, c);
         }
     }
@@ -1365,7 +1371,7 @@ public class CriticalEventStore {
 }
 ```
 
-> **API 核实**：`opsForZSet().add(key, member, score)`、`rangeByScore(key, min, max)`、`expire(key, Duration)` 都是 `spring-data-redis` 真实方法。`ObjectMapper` 来自 Jackson（Spring Boot 自带）。这是第 1 章承诺的「手写 JSON 换 ObjectMapper」。
+> **API 核实**：`opsForZSet().add(key, member, score)`、`rangeByScore(key, min, max)`、`expire(key, Duration)` 都是 `spring-data-redis` 真实方法。`ObjectMapper` 来自 Jackson（Spring Boot 自带，第 1 章 SseController 已引入）。
 
 #### 2.2.4 EventBus 落库关键事件 + 分配序号
 
@@ -1377,7 +1383,7 @@ public class CriticalEventStore {
 
 ```java
 public record AgentEvent(
-        EventContent type,
+        String type,                // 事件类型名（EventContent.name()）
         String sessionId,
         Instant timestamp,
         Map<String, Object> data,
@@ -1401,8 +1407,6 @@ public record AgentEvent(
         return builder().type(type).sessionId(sessionId).data(data).build();
     }
 
-    public String typeName() { return type.wireName(); }
-
     public static final class Builder {
         private EventContent type;
         private String sessionId;
@@ -1420,7 +1424,7 @@ public record AgentEvent(
         public AgentEvent build() {
             if (type == null) throw new IllegalStateException("type 必填");
             Criticality c = criticality != null ? criticality : defaultCriticality(type);
-            return new AgentEvent(type, sessionId,
+            return new AgentEvent(type.name(), sessionId,
                     timestamp != null ? timestamp : Instant.now(), data, c, 0L);
         }
     }
@@ -1493,7 +1497,7 @@ public class EventBus {
 > **为什么用 `ObjectProvider` 不直接 `@Autowired`？**
 > 直接注入的话，没装 Redis 时 `StringRedisTemplate` 创建失败、整个应用起不来。`ObjectProvider.getIfAvailable()` 是「有就用、没有跳过」，让应用无 Redis 也能跑（只是没兜底）。开发体验上的小体贴。
 
-#### 2.2.5 SseController 加回放 + 换线程池 + 换 ObjectMapper
+#### 2.2.5 SseController 加回放 + 重连模式
 
 `src/main/java/com/example/aobs/obs/SseController.java`（大改）：
 
@@ -1547,7 +1551,7 @@ public class SseController {
             Flux<AgentEvent> replay = (store != null)
                     ? Flux.fromIterable(store.findAfter(sessionId, parseTimestampFrom(lastEventId)))
                     : Flux.empty();
-            Flux<AgentEvent> live = eventBus.flux().filter(e -> sessionId.equals(e.sessionId()));
+            Flux<AgentEvent> live = eventBus.subscribe(sessionId);   // 按会话订阅（EventBus 内部过滤）
             return Flux.concat(replay, live)
                     .takeUntil(e -> e.type() == EventContent.SESSION_COMPLETED
                             || e.type() == EventContent.SESSION_FAILED)
@@ -1577,25 +1581,25 @@ public class SseController {
     private ServerSentEvent<String> toSse(AgentEvent e) {
         return ServerSentEvent.<String>builder()
                 .id(e.sessionId() + "-" + e.timestamp().toEpochMilli())
-                .event(e.typeName())          // 枚举 → 序列化名（"SESSION_STARTED" 等）
+                .event(e.type())              // 事件类型名（已是 String）
                 .data(toJson(e))
                 .build();
     }
 
-    /** 用 ObjectMapper（替换第1章手写 JSON）。 */
+    /** 用 ObjectMapper（第 1 章已引入，本章沿用）。 */
     private String toJson(AgentEvent e) {
         try {
             return mapper.writeValueAsString(e);
         } catch (Exception ex) {
-            return "{\"type\":\"" + e.typeName() + "\"}";
+            return "{\"type\":\"" + e.type() + "\"}";
         }
     }
 }
 ```
 
-> **三个改进（都是第 1 章承诺）**：① 加 Last-Event-ID 回放；② 触发方式（run 冷流，订阅即触发，不再需要 `Mono.fromRunnable`）；③ 手写 JSON → ObjectMapper。
+> **本章两个改进**：① 加 Last-Event-ID 回放（重连补发断连期间的关键事件）；② 拆正常/重连两种模式（正常订阅 run 冷流，重连走 EventBus.subscribe + Redis 回放）。JSON 序列化（ObjectMapper）和线程池（boundedElastic）第 1 章已就位。
 >
-> **Jackson 序列化枚举 record**：`AgentEvent` 的 `type` 字段现在是 `EventContent` 枚举。Jackson 默认把枚举序列化成 `name()`（即 `"SESSION_STARTED"`），前端拿到的 JSON 里 `type` 还是字符串——和手写 JSON 时代兼容。`toSse` 里 `.event(e.typeName())` 同步取序列化名，保证 SSE 的 event 字段也是字符串。
+> **Jackson 序列化**：`AgentEvent` 的 `type` 字段是 String（存的是枚举 `name()`，如 `"SESSION_STARTED"`），Jackson 直接序列化成字符串。`toSse` 里 `.event(e.type())` 把它作为 SSE 帧的 event 字段，前端按它 `addEventListener` 分发。
 
 > **「事后查历史」留给以后**：到这里 Redis 兜底 + 重连回放已经解决了"不丢"。但"事后查历史"（用户说"我昨天那次有问题"，Redis 早清了）是另一个能力——它要长期归档存储。**这不是第 2 章的痛点**（第 2 章只解决"实时/短期不丢"），所以现在不做。等到真有"查历史"的需求（产品成熟到要排查历史会话）再做，方案见第 7 章 7.5（归档）和第 8 章（历史回放）。
 
@@ -1716,7 +1720,7 @@ git add -A && git commit -m "第2章：事件可靠性——分级落库、序�
 - ✅ 重连漏事件 → Last-Event-ID 回放
 - 🟡 事件乱序 → 序号字段加好了，重排逻辑第 4 章再写
 
-**兑现改进承诺**：✅ ObjectMapper（手写 JSON 退役）。线程池第 1 章已用 `subscribeOn(boundedElastic)` 解决（run 冷流自带）。
+**本章新增**：关键事件落 Redis 兜底、Last-Event-ID 重连回放、序号字段。ObjectMapper 和线程池第 1 章已就位。
 
 **引入新依赖**：Redis（项目从零依赖变成有一个）。
 
@@ -2610,8 +2614,8 @@ public interface EventBusSPI {
 改 `SseController` 用定向订阅（`ChainingService`、`ToolObservationHandler` 里的 `EventBus` 也改成 `EventBusSPI`）：
 
 ```java
-// SseController 里原来 eventBus.flux().filter(sessionId) 改成：
-Flux<AgentEvent> live = eventBus.fluxFor(sessionId);   // 定向，省 N-1 倍过滤
+// SseController 里原来 eventBus.subscribe(sessionId)（单 sink 时是全量过滤）改成：
+Flux<AgentEvent> live = eventBus.fluxFor(sessionId);   // 分片定向，省 N-1 倍过滤
 ```
 
 #### 4.2.4 序号重排（终于用上了）
@@ -2747,7 +2751,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 
 ```java
 public record AgentEvent(
-        EventContent type,
+        String type,            // 事件类型名（EventContent.name()）
         String sessionId,
         String tenantId,        // ← 第 5 章新增：租户（隔离 + 成本归因）
         String userId,          // ← 第 5 章新增：用户（成本归因 + 限流）
@@ -2781,8 +2785,6 @@ public record AgentEvent(
         return builder().type(type).sessionId(sessionId).data(data).build();
     }
 
-    public String typeName() { return type.wireName(); }
-
     public static final class Builder {
         private EventContent type;
         private String sessionId;
@@ -2805,7 +2807,7 @@ public record AgentEvent(
         public AgentEvent build() {
             if (type == null) throw new IllegalStateException("type 必填");
             Criticality c = criticality != null ? criticality : defaultCriticality(type);
-            return new AgentEvent(type, sessionId, tenantId, userId, agentVersion,
+            return new AgentEvent(type.name(), sessionId, tenantId, userId, agentVersion,
                     timestamp != null ? timestamp : Instant.now(), data, c, 0L);
         }
     }
@@ -3462,7 +3464,7 @@ public class EventArchiveService {
             // 取不到（没在 Observation 作用域内）就存 null，不阻塞归档。
             String traceId = org.slf4j.MDC.get("traceId");
             jdbc.update("INSERT INTO event_archive (session_id, seq, type, tenant_id, trace_id, ts, payload) VALUES (?,?,?,?,?,?,?)",
-                    event.sessionId(), event.sequence(), event.typeName(), event.tenantId(), traceId,
+                    event.sessionId(), event.sequence(), event.type(), event.tenantId(), traceId,
                     event.timestamp().toEpochMilli(), mapper.writeValueAsString(event));
         } catch (Exception e) {
             System.err.println("[Archive] failed: " + e.getMessage());
@@ -3935,8 +3937,8 @@ public class SessionReplayController {
     }
     // helper：AgentEvent → SSE 帧（8.4 续传的 runFrom 返回 Flux<AgentEvent>，要转 SSE）
     private ServerSentEvent<String> toSse(AgentEvent e) {
-        return ServerSentEvent.<String>builder().event(e.typeName())
-                .data(/* 序列化 e，用 ObjectMapper 或第 1 章的 toJson */ "").build();
+        return ServerSentEvent.<String>builder().event(e.type())
+                .data(/* 序列化 e，用 ObjectMapper */ "").build();
     }
 
     // ... 8.2 的 extractType / 原 replay 逻辑保留，replay 改成下面带鉴权版 ...
@@ -5042,14 +5044,14 @@ logging:
 
 | 章节 | 新增字段 | record 签名（关键字段） | 构造方式 |
 |------|---------|----------------------|---------|
-| 第 1 章 | — | `(EventContent type, sessionId, timestamp, data)` | `builder()...build()` / `of(type, sessionId, data)` |
+| 第 1 章 | — | `(String type, sessionId, timestamp, data)` | `builder()...build()` / `of(type, sessionId, data)` |
 | 第 2 章 | `criticality` | `(..., data, criticality)` | builder 加 `criticality()`（不填按 type 推断） |
 | 第 2 章 | `sequence` | `(..., criticality, sequence)` | 不进 builder，EventBus emit 时分配 |
 | 第 5 章 | `tenantId`, `userId`, `agentVersion` | `(type, sessionId, tenantId, userId, agentVersion, timestamp, data, ...)` | builder 加 `tenantId()/userId()/agentVersion()` |
 
 > **为什么用 builder 而不是每章改构造器签名**：record 字段随章节长，每加一个字段，所有 `new AgentEvent(...)` 调用点都要改参数列表、还容易传错位置。builder 是"按名字赋值"——加新字段时老调用点不用改（新字段有默认值）。**只有需要归因的 emit 点（SESSION_STARTED/LLM_TOKENS）才显式传 tenantId/userId**，其余靠默认值。这就是第 1 章一开始就用 builder 的回报——字段演进时改动可控。
 >
-> `type` 字段是 `EventContent` 枚举（不是 String），序列化时 Jackson 自动用 `name()`，前端拿到的 JSON 里还是 `"SESSION_STARTED"` 字符串。`typeName()` 是代码里取序列化名的快捷方法。
+> `type` 字段是 `String`（存 `EventContent.name()`，如 `"SESSION_STARTED"`）——构造端用枚举（编译期校验），存储/序列化是字符串（宽松）。序列化时 Jackson 直接输出字符串，前端拿到的 JSON 里 `type` 就是 `"SESSION_STARTED"`。
 
 ### A.8 生产化清单（上线前必过）
 
