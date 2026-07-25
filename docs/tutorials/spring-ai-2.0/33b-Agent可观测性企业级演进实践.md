@@ -1547,12 +1547,15 @@ public class CriticalEventStore {
         return "aobs:events:" + sessionId;
     }
 
-    /** 存一个事件，score 用时间戳，天然按发生顺序。 */
+    /** 存一个事件，score 用时间戳，天然按发生顺序。
+     * 注意：调用方（AgentEventBus.emit）已按 criticality 过滤——只传 CRITICAL 级事件进来。
+     * 如果在别处直接调这个方法，请自行确保不存 DISCARDABLE 级别的频繁事件
+     * （如 CONTENT_DELTA 流式正文，每步几十上百条，塞 Redis 既不必要也浪费性能）。 */
     public void save(AgentEvent event) {
         try {
             String json = mapper.writeValueAsString(event);
             String k = key(event.sessionId());
-            redis.opsForZSet().add(k, json, event.timestamp());   // timestamp 已是毫秒
+            redis.opsForZSet().add(k, json, event.timestamp());
             redis.expire(k, TTL);   // 每次存都续期：活跃会话保持，会话停止后 30 分钟自动清理整个 key
         } catch (Exception e) {
             System.err.println("[CriticalEventStore] save failed: " + e.getMessage());
