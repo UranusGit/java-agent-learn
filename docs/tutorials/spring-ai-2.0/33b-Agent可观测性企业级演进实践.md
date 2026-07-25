@@ -6195,6 +6195,7 @@ if (random.nextDouble() < 0.1) {
 - [03-Tool调用](./03-Tool调用.md) / [03-Advisor链全解](./03-Advisor链全解.md) —— 工具与 Advisor（第 3 章前置）
 - [15-可观测性与成本治理](./15-可观测性与成本治理.md) —— 成本计量、Langfuse（第 3、5 章）
 - [26-AI工程的SRE实践](./26-AI工程的SRE实践.md) —— SLO、Runbook（第 6 章）
+- [Reactor Sinks入门](../附录/Reactor%20Sinks入门.md) —— 事件总线的底层原理（全文通用）
 
 ---
 
