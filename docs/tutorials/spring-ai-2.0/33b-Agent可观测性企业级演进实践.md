@@ -1941,19 +1941,19 @@ redis-cli ZRANGE aobs:events:s1 0 -1
 
     let lastSeenId = '';
     function handleFrame(frame) {
-        let type = '', dataStr = '';
+        let type = '', dataStr = '', frameId = '';
         for (const line of frame.split('\n')) {
             if (line.startsWith('event:')) type = line.slice(6).trim();
+            if (line.startsWith('id:'))    frameId = line.slice(3).trim();   // ← 取每帧的 id
             if (line.startsWith('data:')) dataStr += line.slice(5).trim();
         }
+        // 保存最后收到的 id（重连时当 Last-Event-ID 发回去）
+        if (frameId) lastSeenId = frameId;
+
         if (!type || !dataStr) return;
         let parsed;
         try { parsed = JSON.parse(dataStr); } catch { return; }
         const d = parsed.data || {};
-
-        // 帧的 lastEventId 由 SSE 协议自动携带——这里模拟：从 frame 里取 id（实际 fetch 拿不到 SSE 帧 id，
-        // 但后端 SSE 帧的 data 里带了 type，靠 sequence 去重）。
-        // 简化：用 SESSION_COMPLETED/FAILED 判定完成，不依赖帧 id。
 
         if (type === 'READY') {
             setConnStatus('connected', '🟢 READY');
@@ -2039,9 +2039,9 @@ redis-cli ZRANGE aobs:events:s1 0 -1
 
 **操作**：打开 `reconnect.html` 点开始 → 事件流开始到达 → **停掉后端**（Ctrl+C）→ fetch 连接断开，指数退避自动重连 → **重启后端** → 重连成功，请求带 `Last-Event-ID` header，后端从 Redis 补发断连期间错过的关键事件。页面会看到连接状态变化 + 补发的事件。
 
-> **为什么用 fetch + 手动重连，而不是 EventSource**：EventSource 不能设自定义 header（sessionId 走 header），且断电自动重连的间隔固定（3s），不能指数退避——打爆挂掉的后端。`fetch + ReadableStream` 手动实现重连可以：① sessionId 走 header 和前端的通信协议一致；② 退避策略完全控制（2s → 4s → 8s 指数退避，不打死后端）；③ 每次重连带 `Last-Event-ID` header（用变量手动保存最后收到的 id）。
+> **为什么用 fetch + 手动重连，而不是 EventSource**：EventSource 不能设自定义 header（sessionId 走 header），且断电自动重连的间隔固定（3s），不能指数退避——打爆挂掉的后端。`fetch + ReadableStream` 手动实现重连可以：① sessionId 走 header、和前端的通信协议一致；② 退避策略完全控制（2s → 4s → 8s，不打死后端）；③ 每次重连带 `Last-Event-ID` header。
 >
-> **Last-Event-ID 怎么生效**：第 1 章给每帧设了 SSE id（`toSse` 里的 `.id(...)`），fetch 读帧时用 `queueMicrotask`/变量记下最后 id。重连时这个 id 放进 `Last-Event-ID` header，后端读它从 Redis ZSet 补发后续事件。这是手动重连的通用做法。
+> **Last-Event-ID 从哪来、怎么生效**：每帧 SSE 的 `id:` 行由后端 `toSse().id(sessionId+"-"+timestamp)` 生成，前端 `handleFrame` 从帧文本提取 `id:` 值存入 `lastSeenId` 变量。断线重连时 `connect(lastSeenId)` 把这个值放进 `Last-Event-ID` header 发回。后端解析它（`parseTimestampFrom` 提取时间戳部分），从 Redis ZSet 查"比这个时间戳晚"的关键事件补发。**id 是回放的游标**——告诉了后端"我收到哪了，之后的再发给我"。
 
 ### 2.4 checkpoint
 
