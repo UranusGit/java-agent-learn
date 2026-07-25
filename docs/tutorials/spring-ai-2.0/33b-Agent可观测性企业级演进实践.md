@@ -273,11 +273,8 @@ public abstract class ChainingService {
         this.chatClient = chatClient;
     }
 
-    /** 一步：system prompt + 「上一步输出 → 本步 user prompt」。 */
-    public record Step(String system, java.util.function.BiFunction<String, String, String> toUserPrompt) {}
-
-    /** 子类声明步骤链。 */
-    protected abstract List<Step> steps();
+    /** 子类声明步骤链——每步是一个 system 指令（上一步输出原样当下一步输入）。 */
+    protected abstract List<String> steps();
 
     /**
      * 执行整条链，流式推送最终步的正文文本。
@@ -287,14 +284,12 @@ public abstract class ChainingService {
      * 上一步完整输出（攒齐）喂下一步。阻塞循环跑在弹性线程池，不占 Reactor 线程。
      */
     public Flux<String> run(String input, String sessionId) {
-        List<Step> stepList = steps();
+        List<String> systems = steps();
         return Flux.<String>create(sink -> {
                     String payload = input;   // 上一步完整输出，首步是用户输入
-                    for (int step = 0; step < stepList.size(); step++) {
-                        Step s = stepList.get(step);
-                        String userPrompt = s.toUserPrompt().apply(payload, sessionId);
+                    for (int step = 0; step < systems.size(); step++) {
                         // 本步流式跑：每来一个 chunk 推给下游（用户看打字机），最后攒齐喂下一步
-                        payload = streamStep(s.system(), userPrompt, sessionId, sink);
+                        payload = streamStep(systems.get(step), payload, sessionId, sink);
                     }
                     sink.complete();
                 })
@@ -354,17 +349,14 @@ public class ArticleService extends ChainingService {
     }
 
     @Override
-    protected List<Step> steps() {
+    protected List<String> steps() {
         return List.of(
-                // 第 0 步：主题 → 大纲（首步 payload 是用户输入的主题）
-                new Step("你是写作助手。根据主题生成大纲，只输出大纲本身。",
-                        (topic, sid) -> topic),
+                // 第 0 步：主题 → 大纲（首步输入是用户输入的主题）
+                "你是写作助手。根据主题生成大纲，只输出大纲本身。",
                 // 第 1 步：大纲 → 草稿
-                new Step("你是写作助手。根据大纲写一篇草稿，只输出草稿正文。",
-                        (outline, sid) -> outline),
+                "你是写作助手。根据大纲写一篇草稿，只输出草稿正文。",
                 // 第 2 步：草稿 → 润色（只有这步的 chunk 推给用户看——前两步内部消化）
-                new Step("你是写作助手。润色这篇草稿让它更流畅自然，只输出最终文本。",
-                        (draft, sid) -> draft)
+                "你是写作助手。润色这篇草稿让它更流畅自然，只输出最终文本。"
         );
     }
 }
@@ -624,7 +616,7 @@ public class AgentEventBus {
 
 #### 1.2.3 给 Workflow 埋点 + 事件化（采集）
 
-改 `ChainingService`（在第 0 章流式黑盒基础上）：① 加 AgentEventBus 依赖；② `run` 从 `Flux<String>` 升级成 `Flux<AgentEvent>`——正文 chunk 包成 CONTENT_DELTA，加 STEP_START/STEP_END/SESSION_* 事件；③ 每个事件同时 `bus.emit` 广播。**业务步骤（steps()/Step）完全不动、流式体感不变（还是逐字），只是多了过程事件**。
+改 `ChainingService`（在第 0 章流式黑盒基础上）：① 加 AgentEventBus 依赖；② `run` 从 `Flux<String>` 升级成 `Flux<AgentEvent>`——正文 chunk 包成 CONTENT_DELTA，加 STEP_START/STEP_END/SESSION_* 事件；③ 每个事件同时 `bus.emit` 广播。**业务步骤（steps()）完全不动、流式体感不变（还是逐字），只是多了过程事件**。
 
 > **关于 sessionId 的传递**：第 1 章的 `run` 用同步 for 循环，sessionId 直接当方法参数/局部变量传，简单够用。等到第 3 章讲工具调用的会话隔离时，才会遇到"工具执行线程读不到局部变量"的问题，那时再引入 Reactor Context 传播（`PropagatedContextValue`/`AppContextKeys`）。**第 1 章不需要它**——提前引入只会让人困惑"这玩意儿有什么用"。
 
@@ -667,11 +659,8 @@ public abstract class ChainingService {
         this.eventBus = eventBus;
     }
 
-    /** 一步链：system prompt + 「把上一步输出转成本步 user prompt」的函数。 */
-    public record Step(String system, java.util.function.BiFunction<String, String, String> toUserPrompt) {}
-
-    /** 子类声明步骤链。每步给 system 和「上一步输出 → 本步 user prompt」。 */
-    protected abstract List<Step> steps();
+    /** 子类声明步骤链——每步是一个 system 指令（上一步输出原样当下一步输入）。 */
+    protected abstract List<String> steps();
 
     /**
      * 执行整条链，返回事件流。
@@ -686,18 +675,16 @@ public abstract class ChainingService {
     public Flux<AgentEvent> run(String input, String sessionId) {
         return Flux.<AgentEvent>create(sink -> {
                     FluxSinkAdapter out = new FluxSinkAdapter(sink, eventBus, sessionId);
-                    List<Step> stepList = steps();
-                    int total = stepList.size();
+                    List<String> systems = steps();
+                    int total = systems.size();
 
                     out.emit(EventContent.SESSION_STARTED, Map.of("input", input));
 
                     String payload = input;   // 上一步完整输出，首步是用户 input
                     for (int step = 0; step < total; step++) {
-                        Step s = stepList.get(step);
                         out.emit(EventContent.STEP_START,
                                 Map.of("step", step, "total", total));
-                        String userPrompt = s.toUserPrompt().apply(payload, sessionId);
-                        String full = streamStep(s.system(), userPrompt, sessionId, step, out);  // 流式 + 累积
+                        String full = streamStep(systems.get(step), payload, sessionId, step, out);  // 流式 + 累积
                         out.emit(EventContent.STEP_END,
                                 Map.of("step", step, "output", truncate(full, 80)));
                         payload = full;   // ← 本步完整输出喂下一步，一句话解决
@@ -708,12 +695,8 @@ public abstract class ChainingService {
                 })
                 .onErrorResume(err -> {
                     // 出错：发 SESSION_FAILED（前端收到后停止转圈），不把异常抛给下游
-                    AgentEvent failed = AgentEvent.builder()
-                            .type(EventContent.SESSION_FAILED)
-                            .sessionId(sessionId)
-                            .data(Map.of("error",
-                                    err.getClass().getSimpleName() + ": " + err.getMessage()))
-                            .build();
+                    AgentEvent failed = AgentEvent.of(EventContent.SESSION_FAILED, sessionId,
+                            Map.of("error", err.getClass().getSimpleName() + ": " + err.getMessage()));
                     eventBus.emit(failed);
                     return Flux.just(failed);
                 })
@@ -758,7 +741,7 @@ public abstract class ChainingService {
             this.sink = sink; this.bus = bus; this.sessionId = sid;
         }
         void emit(EventContent type, Map<String, Object> data) {
-            AgentEvent e = AgentEvent.builder().type(type).sessionId(sessionId).data(data).build();
+            AgentEvent e = AgentEvent.of(type, sessionId, data);
             bus.emit(e);        // 广播给其他消费者（热流）
             sink.next(e);       // 推给 SSE 主消费者（冷流下游）
         }
@@ -3959,8 +3942,8 @@ public String getStepOutput(String sessionId, int step) {
 public Flux<AgentEvent> runFrom(String input, String sessionId, String tenantId, int fromStep) {
     return Flux.<AgentEvent>create(sink -> {
                 FluxSinkAdapter out = new FluxSinkAdapter(sink, eventBus, sessionId);
-                java.util.List<Step> stepList = steps();
-                int total = stepList.size();
+                java.util.List<String> systems = steps();
+                int total = systems.size();
 
                 if (fromStep == 0) {
                     sessionService.start(sessionId, tenantId, input, total);
@@ -3972,13 +3955,12 @@ public Flux<AgentEvent> runFrom(String input, String sessionId, String tenantId,
 
                 String payload = input;
                 for (int step = fromStep; step < total; step++) {
-                    Step s = stepList.get(step);
                     out.emit(EventContent.STEP_START, Map.of("step", step, "total", total));
                     // 续传的第一步：输入从归档取（上一步输出）；否则用循环累积的 payload
                     String userPrompt = (step == fromStep && fromStep > 0)
-                            ? s.toUserPrompt().apply(sessionService.getStepOutput(sessionId, step - 1), sessionId)
-                            : s.toUserPrompt().apply(payload, sessionId);
-                    String full = streamStep(s.system(), userPrompt, sessionId, step, out);
+                            ? sessionService.getStepOutput(sessionId, step - 1)
+                            : payload;
+                    String full = streamStep(systems.get(step), userPrompt, sessionId, step, out);
                     out.emit(EventContent.STEP_END, Map.of("step", step, "output", truncate(full, 80)));
                     sessionService.advanceStep(sessionId, step);   // 记录进度
                     payload = full;
