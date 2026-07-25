@@ -2853,21 +2853,23 @@ src/main/java/com/example/aobs/
 │   ├── PropagatedContextValue.java    （新增：Reactor Context key + ThreadLocalAccessor）
 │   ├── AppContextKeys.java            （新增：上下文注册中心）
 │   ├── ContextPropagationConfig.java  （新增：开启自动传播）
-│   ├── ToolObservationHandler.java    （新增：订阅工具 Observation）
+│   └── ToolObservationHandler.java    （新增：订阅工具 Observation）
 ├── workflow/
 │   └── LlmStepExecutor.java           （改：executeStep 取 Usage 发 LLM_TOKENS）
 └── writing/
     ├── WritingTools.java              （新增）
-    └── ArticleService.java            （改：构造器）```
+    └── ArticleService.java            （改：构造器）
+```
+
 pom 加了 `spring-boot-starter-actuator`。
 
-```
-git add -A && git commit -m "第3章：Observation订阅工具调用 + 会话隔离 + token成本"
+```bash
+git add -A && git commit -m "第3章：Observation订阅工具调用 + 会话隔离 + token用量"
 ```
 
 ### 3.5 复盘
 
-**做了**：工具调用过程可见（订阅原生 Observation）、token/成本统计（旁路 Usage）、工具事件正确标会话（上下文传播）。
+**做了**：工具调用过程可见（订阅原生 Observation）、token 用量统计（旁路 Usage）、工具事件正确标会话（上下文传播）。
 
 **学到的三个模式**：
 - **订阅式采集**：不自己拦工具，订阅框架原生发的 Observation。能用框架能力就不自己包底层。
@@ -2879,9 +2881,9 @@ git add -A && git commit -m "第3章：Observation订阅工具调用 + 会话隔
 
 **还差**：
 - 单实例扛不住高并发 → **第 4 章**
-- 成本只能看单次，没有「这个租户花了多少」→ **第 5 章**
+- token 用量只能看单次，没有「这个租户用了多少」→ **第 5 章**
 
-> **注意**：第 3 章后项目还是**单实例**。如果你的产品日活不过千、不要多租户，**停在第 3 章就够了**——已经是一个可靠、可见、能算钱的单实例 Agent。第 4 章开始是「量大了/要对外卖」才需要的。
+> **注意**：第 3 章后项目还是**单实例**。如果你的产品日活不过千、不要多租户，**停在第 3 章就够了**——已经是一个可靠、可见、能算量的单实例 Agent。第 4 章开始是「量大了/要对外卖」才需要的。
 
 ---
 
@@ -5387,7 +5389,7 @@ ai-writing-assistant/
 第6章：灾备降级 + 健康检查 + 超时/错误修复 + 监控
 第5章：多租户隔离 + 成本归因 + 多级配额
 第4章：规模化——状态外置、分片总线、跨实例广播、序号重排
-第3章：Observation订阅工具调用 + 会话隔离 + token成本
+第3章：Observation订阅工具调用 + 会话隔离 + token用量
 第2章：事件可靠性——分级落库、序号、重连回放（页面演示）
 第1章：事件总线+SSE+调试页面+READY握手消除竞态
 第0章：同步黑盒写作助手跑通
