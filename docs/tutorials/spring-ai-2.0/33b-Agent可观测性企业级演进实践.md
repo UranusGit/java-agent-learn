@@ -1756,64 +1756,248 @@ redis-cli ZRANGE aobs:events:s1 0 -1
     }
 ```
 
-第 2 章页面增强版（用 EventSource 演示重连）——新建 `src/main/resources/static/reconnect.html`：
+第 2 章页面增强版（用 EventSource 演示重连）——新建 `src/main/resources/static/reconnect.html`（继承第 1 章的视觉风格，专为重连演示优化）：
 
 ```html
 <!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><title>重连回放演示</title>
-<style>body{font-family:sans-serif;padding:24px} .ev{padding:4px 8px;margin:2px 0;border-left:3px solid #4d6bfe;font-size:13px} .reconn{color:#e67e22;font-weight:bold} .dup{color:#999;font-style:italic}</style>
-</head><body>
-<h2>重连回放演示（第 2 章）</h2>
-<p>sessionId 走 query。点开始后，中途 <b>停掉后端 3 秒再重启</b>，看 EventSource 自动重连 + Last-Event-ID 回放。</p>
-<button onclick="start()">开始（sessionId=rc-demo）</button>
-<div id="events"></div>
-<script>
-// 幂等去重：记录已收到的帧 id（对应后端 sequence）。回放可能重复投递，这里去重。
-const seenIds = new Set();
-let reconnectAttempts = 0;          // 重连次数（指数退避用）
-const MAX_RECONNECT = 5;            // 最大重连次数，超了放弃（避免无限打爆后端）
-let es = null;
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>重连回放演示 · 第 2 章</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+        body { font-family: -apple-system, "PingFang SC", sans-serif; background: #f7f7f8; margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column; color: #333; }
 
-function connect() {
-    // EventSource：sessionId 走 query；断线自动重连，自动带 Last-Event-ID 头
-    es = new EventSource('/api/obs/article?prompt=重连演示&sessionId=rc-demo');
-    es.onopen = () => { reconnectAttempts = 0; add('[连接已建立]', 'reconn'); };
-    es.onmessage = e => {
-        if (e.lastEventId && seenIds.has(e.lastEventId)) {
-            add('[重复帧已丢弃] ' + e.lastEventId, 'dup');   // 幂等：已收过的丢弃
-            return;
-        }
-        if (e.lastEventId) seenIds.add(e.lastEventId);
-        add(e.data);
-    };
-    es.addEventListener('SESSION_COMPLETED', e => { add('[完成]'); es.close(); });
-    // 重连退避：EventSource 默认 3s 固定重连，会打爆挂掉的后端。这里接管——
-    // onerror 时主动 close，按指数退避（2s/4s/8s...）自己重连，超阈值放弃。
-    es.onerror = () => {
-        es.close();
-        if (reconnectAttempts >= MAX_RECONNECT) {
-            add('[重连失败，请稍后手动重试]', 'reconn');
-            return;
-        }
-        const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 30000); // 指数退避，上限 30s
-        reconnectAttempts++;
-        add('[' + delay/1000 + 's 后第 ' + reconnectAttempts + ' 次重连]', 'reconn');
-        setTimeout(connect, delay);
-    };
-}
-function start() {
-    document.getElementById('events').innerHTML = '';
-    seenIds.clear();
-    reconnectAttempts = 0;
-    connect();
-}
-function add(text, cls) {
-    const d = document.createElement('div');
-    d.className = 'ev ' + (cls || '');
-    d.textContent = new Date().toLocaleTimeString() + '  ' + text;
-    document.getElementById('events').appendChild(d);
-}
-</script></body></html>
+        #top-bar { padding: 16px 24px 8px; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; }
+        #top-bar h1 { font-size: 18px; margin: 0; }
+        #top-bar .sub { font-size: 13px; color: #888; }
+
+        #content { flex: 1; overflow-y: auto; padding: 0 24px 16px; }
+
+        /* 连接状态卡片 */
+        #conn-card { margin-bottom: 12px; border-radius: 8px; overflow: hidden; border: 1px solid #e0e0e0; background: #fff; }
+        #conn-header { padding: 14px 16px; display: flex; align-items: center; gap: 10px; background: #fafafa; }
+        #conn-dot { width: 10px; height: 10px; border-radius: 50%; background: #bbb; flex-shrink: 0; }
+        #conn-dot.connected { background: #1b8a1b; box-shadow: 0 0 4px #1b8a1b66; }
+        #conn-dot.disconnected { background: #c62828; }
+        #conn-dot.reconnecting { background: #e67e22; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        #conn-status { font-size: 14px; font-weight: 500; flex: 1; }
+        #conn-action { font-size: 12px; color: #888; }
+        #conn-body { display: none; padding: 12px 16px; border-top: 1px solid #e0e0e0; font-size: 13px; color: #666; background: #fcfcfc; }
+        #conn-body.show { display: block; }
+        #conn-body code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+        /* 控制栏 */
+        #controls { padding: 0 0 12px; display: flex; gap: 8px; align-items: center; }
+        #start-btn { padding: 10px 24px; background: #4d6bfe; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; }
+        #start-btn:disabled { background: #c5cdfa; cursor: not-allowed; }
+        #start-btn:active { transform: scale(0.97); }
+        #info { font-size: 13px; color: #888; }
+        #info b { color: #e67e22; }
+
+        /* 事件日志 */
+        #log { background: #fff; border-radius: 8px; border: 1px solid #e0e0e0; overflow: hidden; display: none; }
+        #log.show { display: block; }
+        #log-header { padding: 10px 16px; font-size: 13px; font-weight: 600; color: #555; background: #fafafa; border-bottom: 1px solid #e0e0e0; }
+        #log-body { padding: 8px 12px; max-height: 50vh; overflow-y: auto; }
+
+        .ev { padding: 6px 8px; margin: 3px 0; border-left: 3px solid #4d6bfe; border-radius: 0 4px 4px 0; font-size: 13px; background: #fafafa; }
+        .ev.system { border-left-color: #888; background: #f5f5f5; color: #666; font-style: italic; }
+        .ev.reconn { border-left-color: #e67e22; background: #fff8f0; color: #bf6c00; }
+        .ev.dup { border-left-color: #bbb; background: #f9f9f9; color: #aaa; text-decoration: line-through; font-size: 12px; }
+        .ev.completed { border-left-color: #1b8a1b; background: #e6f7e6; color: #1b8a1b; font-weight: 500; }
+        .ev.failed { border-left-color: #c62828; background: #fff0f0; color: #c62828; }
+        .ev .t { color: #999; font-size: 11px; margin-left: 8px; }
+        .ev .body { word-break: break-all; margin-top: 2px; font-family: monospace; font-size: 12px; color: #888; }
+
+        /* 空状态 */
+        .empty-state { text-align: center; color: #ccc; padding: 60px 20px; font-size: 14px; line-height: 2; }
+        .empty-state em { color: #ddd; }
+
+        /* 底部提示 */
+        #bottom-bar { flex-shrink: 0; padding: 12px 24px 16px; background: #fff; border-top: 1px solid #e0e0e0; text-align: center; font-size: 12px; color: #bbb; }
+    </style>
+</head>
+<body>
+
+<div id="top-bar">
+    <div><h1>AI 写作助手</h1><div class="sub">第 2 章 · 重连回放演示</div></div>
+    <div id="info">重连次数：<b id="reconn-count">0</b></div>
+</div>
+
+<div id="content">
+    <!-- 连接状态卡片 -->
+    <div id="conn-card">
+        <div id="conn-header">
+            <span id="conn-dot"></span>
+            <span id="conn-status">未连接</span>
+            <span id="conn-action"></span>
+        </div>
+        <div id="conn-body">
+            <div>🔹 点「开始」后，EventSource 连接至 <code>/api/obs/article?prompt=重连演示&sessionId=rc-demo</code></div>
+            <div>🔹 中途 <b>停掉后端 3 秒再重启</b>，观察自动重连 + Last-Event-ID 补发</div>
+            <div>🔹 最多重试 5 次，指数退避（2s → 4s → 8s…）</div>
+        </div>
+    </div>
+
+    <!-- 控制栏 -->
+    <div id="controls">
+        <button id="start-btn" onclick="start()">▶ 开始演示</button>
+        <span id="last-event-id" style="font-size:12px;color:#bbb;"></span>
+    </div>
+
+    <!-- 事件日志 -->
+    <div id="log">
+        <div id="log-header">📋 事件日志（幂等去重）</div>
+        <div id="log-body"></div>
+    </div>
+
+    <div id="empty" class="empty-state">
+        <div>点击「开始演示」，体验 EventSource 自动重连</div>
+        <div style="margin-top:8px;color:#ddd;">断线后 Last-Event-ID 自动回放已收到的事件</div>
+    </div>
+</div>
+
+<div id="bottom-bar">EventSource 断线自动重连 · Last-Event-ID 回放 · 前端幂等去重</div>
+
+<script>
+    const seenIds = new Set();
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT = 5;
+    let es = null;
+
+    function connect() {
+        es = new EventSource('/api/obs/article?prompt=重连演示&sessionId=rc-demo');
+
+        es.onopen = () => {
+            reconnectAttempts = 0;
+            updateReconnCount();
+            setConnStatus('connected', '🟢');
+            log('[连接已建立] ' + new Date().toLocaleTimeString(), 'system');
+            showLog();
+        };
+
+        es.onmessage = e => {
+            if (!e.lastEventId) return;  // READY 帧无 id
+            if (seenIds.has(e.lastEventId)) {
+                log('[幂等丢弃] ' + e.lastEventId.slice(-12) + '（已收过）', 'dup');
+                return;
+            }
+            seenIds.add(e.lastEventId);
+            let type = '';
+            try { type = JSON.parse(e.data).type || e.type || ''; } catch { type = e.type || 'EVENT'; }
+            const shortId = e.lastEventId.slice(-12);
+            setLastEventId(shortId);
+            try {
+                const parsed = JSON.parse(e.data);
+                const d = parsed.data || {};
+                if (e.type === 'SESSION_STARTED') {
+                    log('📌 会话开始', 'system');
+                } else if (e.type === 'CONTENT_DELTA' && d.text) {
+                    // 只显示第一帧摘要，避免刷屏
+                    const preview = d.text.slice(0, 40);
+                    log('📝 正文内容 [' + preview + '…]', '');
+                } else if (e.type === 'SESSION_COMPLETED') {
+                    log('✅ 会话完成', 'completed');
+                    es.close();
+                } else if (e.type === 'SESSION_FAILED') {
+                    const err = d.error || '未知错误';
+                    log('❌ 失败：' + err, 'failed');
+                    es.close();
+                } else {
+                    log(e.type + ' ' + (d.step !== undefined ? '(step ' + d.step + ')' : ''), '');
+                }
+            } catch {
+                log(e.type + ' ' + e.data.slice(0, 60), '');
+            }
+        };
+
+        es.addEventListener('READY', e => {
+            setConnStatus('connected', '🟢 READY');
+            log('🚀 就绪（READY 帧已收到）', 'system');
+        });
+
+        es.addEventListener('SESSION_COMPLETED', e => {
+            log('✅ 会话完成', 'completed');
+            updateReconnCount();
+            es.close();
+        });
+
+        es.addEventListener('SESSION_FAILED', e => {
+            log('❌ 失败', 'failed');
+            updateReconnCount();
+            es.close();
+        });
+
+        es.onerror = () => {
+            es.close();
+            if (reconnectAttempts >= MAX_RECONNECT) {
+                setConnStatus('disconnected', '🔴 重连失败');
+                log('⚠️ 重连失败（已达上限）', 'reconn');
+                return;
+            }
+            const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), 30000);
+            reconnectAttempts++;
+            updateReconnCount();
+            setConnStatus('reconnecting', `🔄 第 ${reconnectAttempts} 次重连 (${delay/1000}s)`);
+            log('🔄 断线，' + delay/1000 + 's 后第 ' + reconnectAttempts + ' 次重连', 'reconn');
+            setTimeout(connect, delay);
+        };
+    }
+
+    function start() {
+        document.getElementById('log-body').innerHTML = '';
+        document.getElementById('empty').style.display = 'none';
+        document.getElementById('log').classList.remove('show');
+        seenIds.clear();
+        reconnectAttempts = 0;
+        updateReconnCount();
+        setLastEventId('');
+        setConnStatus('connecting', '⏳ 连接中…');
+        document.getElementById('start-btn').disabled = true;
+        document.getElementById('conn-body').classList.add('show');
+        log('🔄 正在建立 EventSource 连接…', 'system');
+        connect();
+    }
+
+    function setConnStatus(mode, text) {
+        const dot = document.getElementById('conn-dot');
+        const status = document.getElementById('conn-status');
+        const action = document.getElementById('conn-action');
+        dot.className = mode;
+        // 根据 mode 更新连接文字
+        const labels = { connected: '已连接', disconnected: '已断开', reconnecting: '重连中…', connecting: '连接中…' };
+        status.textContent = text || (labels[mode] || mode);
+        if (mode === 'connected') { action.textContent = ''; } else if (mode === 'disconnected') { action.textContent = '❌'; }
+    }
+
+    function updateReconnCount() {
+        document.getElementById('reconn-count').textContent = reconnectAttempts;
+    }
+
+    function setLastEventId(id) {
+        document.getElementById('last-event-id').textContent = id ? 'Last-ID: ' + id : '';
+    }
+
+    function showLog() {
+        document.getElementById('log').classList.add('show');
+        document.getElementById('empty').style.display = 'none';
+    }
+
+    function log(text, cls) {
+        const box = document.getElementById('log-body');
+        const d = document.createElement('div');
+        d.className = 'ev ' + (cls || '');
+        d.innerHTML = '<span class="t">' + new Date().toLocaleTimeString() + '</span> ' + text;
+        box.appendChild(d);
+        box.scrollTop = box.scrollHeight;
+        showLog();
+    }
+</script>
+</body>
+</html>
 ```
 
 **操作**：打开 `reconnect.html` 点开始 → 事件流开始到达 → **停掉后端**（Ctrl+C）→ 页面连接断开，EventSource 自动尝试重连 → **重启后端** → EventSource 重连成功，后端读 `Last-Event-ID` 从 Redis 补发断连期间错过的关键事件。页面会看到 `[连接已建立]` 再次出现 + 补发的事件。
@@ -2300,7 +2484,7 @@ public class CostCalculator {
 
 ### 3.3 验证（页面演示 + 一个真实坑）
 
-第 3 章把页面升级为"工具 + token 可见"版——替换 `src/main/resources/static/index.html`：
+第 3 章把页面升级为"工具 + token 可见"版——替换 `src/main/resources/static/index.html`（继承第 1 章的折叠卡片/状态条/最终结果区骨架，加上 TOOL_CALL/LLM_TOKENS 可视化）：
 
 ```html
 <!DOCTYPE html>
@@ -2308,84 +2492,344 @@ public class CostCalculator {
 <head>
     <meta charset="UTF-8">
     <title>AI 写作助手 · 可观测调试台（第 3 章）</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
     <style>
-        body { font-family: -apple-system, "PingFang SC", sans-serif; background: #f7f7f8; margin: 0; padding: 24px; }
-        h1 { font-size: 18px; }
-        #bar { display: flex; gap: 8px; margin: 16px 0; align-items: center; }
-        #prompt { flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-        #send { padding: 8px 16px; background: #4d6bfe; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
-        #send:disabled { background: #c5cdfa; }
-        #cost { font-size: 13px; color: #666; margin-left: 12px; }
-        #cost b { color: #e67e22; }
-        #events { background: #fff; border-radius: 8px; padding: 12px; max-height: 70vh; overflow-y: auto; }
-        .ev { padding: 6px 8px; margin: 4px 0; border-left: 3px solid #4d6bfe; font-size: 13px; background: #fafafa; }
-        .ev.tool { border-left-color: #00b96b; } .ev.tool b { color: #00b96b; }
-        .ev.tokens { border-left-color: #e67e22; } .ev.tokens b { color: #e67e22; }
-        .ev .t { color: #999; font-size: 11px; margin-left: 8px; }
+        *, *::before, *::after { box-sizing: border-box; }
+        body { font-family: -apple-system, "PingFang SC", sans-serif; background: #f7f7f8; margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column; color: #333; }
+
+        #top-bar { padding: 16px 24px 8px; flex-shrink: 0; }
+        #top-bar h1 { font-size: 18px; margin: 0 0 2px 0; }
+        #top-bar .subtitle { font-size: 13px; color: #888; }
+        #top-bar .cost-info { float: right; font-size: 13px; color: #888; padding-top: 4px; }
+        #top-bar .cost-info b { color: #e67e22; }
+
+        #content { flex: 1; overflow-y: auto; padding: 0 24px 16px; }
+
+        #status-bar { margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; font-size: 13px; background: #f0f4ff; color: #4d6bfe; display: none; align-items: center; gap: 8px; }
+        #status-bar.show { display: flex; }
+        #status-bar .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #c5cdfa; border-top-color: #4d6bfe; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #status-bar.error { background: #fff0f0; color: #c62828; }
+        #status-bar.done { background: #e6f7e6; color: #1b8a1b; }
+
+        .step-collapse { border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 10px; overflow: hidden; background: #fff; }
+        .step-collapse-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; user-select: none; background: #fafafa; transition: background 0.15s; }
+        .step-collapse-header:hover { background: #f0f0f0; }
+        .step-collapse-header .arrow { font-size: 12px; color: #999; transition: transform 0.2s; flex-shrink: 0; }
+        .step-collapse-header .arrow.open { transform: rotate(90deg); }
+        .step-collapse-header .label { font-size: 13px; font-weight: 600; color: #555; }
+        .step-collapse-header .badge { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: #eee; color: #888; margin-left: auto; }
+        .step-collapse-header .badge.done { background: #e6f7e6; color: #1b8a1b; }
+        .step-collapse-header .badge.active { background: #e0f0ff; color: #1a73e8; }
+        .step-collapse-body { display: none; padding: 14px; border-top: 1px solid #e0e0e0; }
+        .step-collapse-body.open { display: block; }
+        .step-collapse-body .preview { font-size: 13px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .step-collapse-body .content { font-size: 14px; line-height: 1.7; }
+        .step-collapse-body .content p { margin: 0.3em 0; }
+        /* 工具调用 */
+        .tool-call { margin: 6px 0; padding: 8px 12px; background: #f0fbf4; border-left: 3px solid #00b96b; border-radius: 4px; font-size: 13px; }
+        .tool-call .name { font-weight: 600; color: #00b96b; }
+        .tool-call .detail { color: #555; font-family: monospace; margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
+        /* token 事件 */
+        .tokens { font-size: 12px; color: #aaa; text-align: right; padding: 2px 0; }
+        .tokens b { color: #e67e22; }
+
+        #final-result { border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background: #fff; display: none; margin-bottom: 12px; }
+        #final-result.show { display: block; }
+        #final-result .fr-header { padding: 12px 16px; font-size: 15px; font-weight: 600; background: #fafafa; border-bottom: 1px solid #e0e0e0; color: #333; display: flex; align-items: center; gap: 8px; }
+        #final-result .fr-header .icon { font-size: 18px; }
+        #final-result .fr-body { padding: 20px 24px; line-height: 1.8; font-size: 15px; }
+        #final-result .fr-body .cursor { display: inline-block; width: 2px; height: 18px; background: #4d6bfe; animation: blink 0.8s step-end infinite; vertical-align: text-bottom; margin-left: 1px; }
+        @keyframes blink { 50% { opacity: 0; } }
+        #final-result .fr-body h1, #final-result .fr-body h2, #final-result .fr-body h3 { margin: 1em 0 0.5em; }
+        #final-result .fr-body h1 { font-size: 22px; }
+        #final-result .fr-body h2 { font-size: 18px; border-bottom: 1px solid #eee; padding-bottom: 6px; }
+        #final-result .fr-body h3 { font-size: 16px; }
+        #final-result .fr-body p { margin: 0.5em 0; }
+        #final-result .fr-body code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
+        #final-result .fr-body pre { background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
+
+        .empty-state { text-align: center; color: #ccc; padding: 60px 20px; font-size: 14px; line-height: 2; }
+
+        #bottom-bar { flex-shrink: 0; padding: 12px 24px 16px; background: #fff; border-top: 1px solid #e0e0e0; display: flex; gap: 8px; align-items: center; }
+        #prompt { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; }
+        #prompt:focus { outline: none; border-color: #4d6bfe; }
+        #send { padding: 10px 24px; background: #4d6bfe; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; white-space: nowrap; }
+        #send:disabled { background: #c5cdfa; cursor: not-allowed; }
+        #cost-bar { font-size: 13px; color: #888; white-space: nowrap; }
+        #cost-bar b { color: #e67e22; }
     </style>
 </head>
 <body>
-<h1>AI 写作助手 · 可观测调试台（第 3 章：工具 + token 可见）</h1>
-<div id="bar">
+<div id="top-bar">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div><h1>AI 写作助手 · 可观测调试台</h1></div>
+        <div class="cost-info">💰 本次成本：<b id="costVal">$0.0000</b></div>
+    </div>
+    <div class="subtitle">第 3 章：工具调用 + token 消耗可见</div>
+</div>
+
+<div id="content">
+    <div id="status-bar"><span class="spinner"></span><span id="status-text">正在生成…</span></div>
+    <div id="steps-container"></div>
+    <div id="final-result">
+        <div class="fr-header"><span class="icon">📄</span> 润色结果</div>
+        <div class="fr-body" id="final-body"></div>
+    </div>
+    <div id="empty" class="empty-state">
+        <div>输入主题，点击下方「生成」</div>
+        <div style="margin-top:8px;color:#ddd;">第 3 章新增：工具调用（🔧）& token 消耗（💰） 实时可见</div>
+    </div>
+</div>
+
+<div id="bottom-bar">
     <input id="prompt" placeholder="输入主题，提到字数会触发工具" value="写一篇关于 AI 的 300 字短文">
     <button id="send" onclick="start()">生成</button>
-    <span id="cost">本次成本：<b id="costVal">$0.0000</b></span>
 </div>
-<div id="events"></div>
+
 <script>
     let sending = false, totalCost = 0;
+    const STEPS = ['大纲', '草稿', '润色'];
+    const stepState = {};
+    const stepTools = {};
+
     async function start() {
         if (sending) return;
         const prompt = document.getElementById('prompt').value.trim();
         if (!prompt) return;
         const sessionId = 's-' + Date.now();
-        document.getElementById('events').innerHTML = '';
-        totalCost = 0; document.getElementById('costVal').textContent = '$0.0000';
-        sending = true; document.getElementById('send').disabled = true;
 
-        const resp = await fetch('/api/obs/article?prompt=' + encodeURIComponent(prompt), {
-            headers: { 'sessionId': sessionId, 'Accept': 'text/event-stream' }
-        });
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-            let idx;
-            while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                handleFrame(buffer.slice(0, idx));
-                buffer = buffer.slice(idx + 2);
-            }
+        document.getElementById('steps-container').innerHTML = '';
+        document.getElementById('final-result').classList.remove('show');
+        document.getElementById('final-body').innerHTML = '';
+        document.getElementById('empty').style.display = 'none';
+        for (const k of Object.keys(stepState)) delete stepState[k];
+        for (const k of Object.keys(stepTools)) delete stepTools[k];
+        totalCost = 0; document.getElementById('costVal').textContent = '$0.0000';
+
+        const stepCards = {};
+        for (let i = 0; i < 2; i++) {
+            stepCards[i] = createStepCollapse(i, STEPS[i]);
+            stepTools[i] = [];
         }
-        sending = false; document.getElementById('send').disabled = false;
+        const finalBody = document.getElementById('final-body');
+
+        setStatus('progress', `🚀 开始生成「${prompt}」…`);
+
+        sending = true;
+        document.getElementById('send').disabled = true;
+
+        try {
+            const resp = await fetch('/api/obs/article?prompt=' + encodeURIComponent(prompt), {
+                headers: { 'sessionId': sessionId, 'Accept': 'text/event-stream' }
+            });
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                    handleFrame(buffer.slice(0, idx), stepCards, finalBody);
+                    buffer = buffer.slice(idx + 2);
+                }
+            }
+        } finally {
+            sending = false;
+            document.getElementById('send').disabled = false;
+        }
     }
 
-    function handleFrame(frame) {
-        let type = '', data = '';
+    function createStepCollapse(idx, label) {
+        const container = document.getElementById('steps-container');
+        const card = document.createElement('div');
+        card.className = 'step-collapse';
+
+        const header = document.createElement('div');
+        header.className = 'step-collapse-header';
+        header.innerHTML = `
+            <span class="arrow">▶</span>
+            <span class="label">步骤 ${idx + 1}：${label}</span>
+            <span class="badge" id="badge-${idx}">等待中</span>
+        `;
+
+        const body = document.createElement('div');
+        body.className = 'step-collapse-body';
+        body.innerHTML = '<div class="preview" id="preview-' + idx + '">等待内容…</div>';
+
+        header.addEventListener('click', () => {
+            body.classList.toggle('open');
+            header.querySelector('.arrow').classList.toggle('open');
+        });
+
+        card.appendChild(header);
+        card.appendChild(body);
+        container.appendChild(card);
+
+        // 工具容器
+        const toolBox = document.createElement('div'); toolBox.id = 'tools-' + idx; toolBox.style.display = 'none';
+        body.prepend(toolBox);
+
+        return { header, body, card, preview: body.querySelector('.preview'), toolBox };
+    }
+
+    function handleFrame(frame, stepCards, finalBody) {
+        let type = '', dataStr = '';
         for (const line of frame.split('\n')) {
             if (line.startsWith('event:')) type = line.slice(6).trim();
-            if (line.startsWith('data:')) data += line.slice(5).trim();
+            if (line.startsWith('data:')) dataStr += line.slice(5).trim();
         }
-        if (!type) return;
-        let cls = '';
-        let detail = data;
-        try {
-            const obj = JSON.parse(data).data || {};
-            if (type === 'TOOL_CALL') { cls = 'tool'; detail = '🔧 ' + (obj.tool||'') + ' | 参数: ' + (obj.args||'') + ' | 返回: ' + (obj.result||''); }
-            else if (type === 'LLM_TOKENS') {
-                cls = 'tokens';
-                detail = '💰 ' + (obj.totalTokens||0) + ' tokens (' + (obj.model||'') + ')';
-                totalCost += Number(obj.costUsd||0);
-                document.getElementById('costVal').textContent = '$' + totalCost.toFixed(4);
+        if (!type || !dataStr) return;
+        let parsed;
+        try { parsed = JSON.parse(dataStr); } catch { return; }
+        const d = parsed.data || {};
+
+        switch (type) {
+            case 'READY':
+                setStatus('progress', '连接已建立，AI 开始思考…');
+                break;
+
+            case 'SESSION_STARTED':
+                setStatus('progress', '会话开始，准备生成…');
+                break;
+
+            case 'STEP_START': {
+                const step = d.step;
+                if (step !== undefined && stepState[step] === undefined) {
+                    stepState[step] = 1;
+                    if (step < 2) {
+                        const badge = document.getElementById('badge-' + step);
+                        if (badge) { badge.textContent = '⏳ 生成中'; badge.className = 'badge active'; }
+                        const sc = stepCards[step];
+                        if (sc) { sc.body.classList.add('open'); sc.header.querySelector('.arrow').classList.add('open'); }
+                    }
+                    setStatus('progress', `📝 步骤 ${step + 1}：正在${STEPS[step] || ''}…`);
+                    autoScroll();
+                }
+                break;
             }
-        } catch (e) {}
-        const div = document.createElement('div');
-        div.className = 'ev ' + cls;
-        div.innerHTML = '<b>' + type + '</b><span class="t">' + new Date().toLocaleTimeString() + '</span><br>' + detail;
-        document.getElementById('events').appendChild(div);
-        document.getElementById('events').scrollTop = 99999;
+
+            case 'CONTENT_DELTA': {
+                const step = d.step;
+                const text = d.text || '';
+                if (step === undefined || !text) break;
+                if (step < 2) {
+                    const preview = document.getElementById('preview-' + step);
+                    if (preview) {
+                        if (preview.dataset.acc === undefined) preview.dataset.acc = '';
+                        preview.dataset.acc += text;
+                        const plain = preview.dataset.acc.replace(/\*\*/g, '').replace(/#/g, '').replace(/\n/g, ' ');
+                        preview.textContent = plain.length > 120 ? plain.slice(0, 120) + '…' : plain;
+                    }
+                } else if (step === 2) {
+                    if (!finalBody.dataset.acc) finalBody.dataset.acc = '';
+                    finalBody.dataset.acc += text;
+                    try { finalBody.innerHTML = marked.parse(finalBody.dataset.acc) + '<span class="cursor">▌</span>'; }
+                    catch { finalBody.textContent = finalBody.dataset.acc + '▌'; }
+                    document.getElementById('final-result').classList.add('show');
+                    autoScroll();
+                }
+                break;
+            }
+
+            case 'TOOL_CALL': {
+                const step = d.step !== undefined ? d.step : (Object.keys(stepTools).length || 0);
+                const toolName = d.tool || 'unknown';
+                const args = d.args || '';
+                const result = d.result || '';
+                if (stepTools[step]) stepTools[step].push({ toolName, args, result });
+                // 展示到对应步骤的折叠卡片里
+                const toolBox = stepCards[step] ? stepCards[step].toolBox : stepCards[Object.keys(stepCards)[step]]?.toolBox;
+                if (toolBox) {
+                    toolBox.style.display = 'block';
+                    const div = document.createElement('div');
+                    div.className = 'tool-call';
+                    div.innerHTML = `<div class="name">🔧 ${toolName}</div><div class="detail">参数: ${args}\n返回: ${result}</div>`;
+                    toolBox.appendChild(div);
+                } else {
+                    // 无对应卡片时在状态条提示
+                    setStatus('progress', `🔧 调用了工具 ${toolName}`);
+                }
+                autoScroll();
+                break;
+            }
+
+            case 'LLM_TOKENS': {
+                const cost = Number(d.costUsd || 0);
+                totalCost += cost;
+                document.getElementById('costVal').textContent = '$' + totalCost.toFixed(4);
+                // 在对应步骤的折叠卡片后追加 token 提示
+                const step = d.step !== undefined ? d.step : 0;
+                const tDiv = document.createElement('div');
+                tDiv.className = 'tokens';
+                tDiv.textContent = '💰 ' + (d.totalTokens || 0) + ' tokens · $' + cost.toFixed(4);
+                const card = document.getElementById('badge-' + step);
+                if (card && card.parentElement) {
+                    card.parentElement.parentElement.querySelector('.step-collapse-body')?.appendChild(tDiv);
+                }
+                break;
+            }
+
+            case 'STEP_END': {
+                const step = d.step;
+                const output = d.output || '';
+                if (step === undefined) break;
+                stepState[step] = 2;
+                if (step < 2) {
+                    const badge = document.getElementById('badge-' + step);
+                    if (badge) { badge.textContent = '✅ 完成'; badge.className = 'badge done'; }
+                    const sc = stepCards[step];
+                    if (sc) {
+                        sc.body.innerHTML = '';
+                        const contentDiv = document.createElement('div');
+                        contentDiv.className = 'content';
+                        try { contentDiv.innerHTML = marked.parse(output); } catch { contentDiv.textContent = output; }
+                        sc.body.appendChild(contentDiv);
+                        sc.body.classList.remove('open');
+                        sc.header.querySelector('.arrow').classList.remove('open');
+                    }
+                    setStatus('progress', `✅ 步骤 ${step + 1}（${STEPS[step]}）完成，进入下一步…`);
+                    autoScroll();
+                }
+                if (step === 2) {
+                    try { finalBody.innerHTML = marked.parse(output); } catch { finalBody.textContent = output; }
+                    document.getElementById('final-result').classList.add('show');
+                    setStatus('done', `✅ 生成完成 · 总成本 $${totalCost.toFixed(4)}`);
+                    autoScroll();
+                }
+                break;
+            }
+
+            case 'SESSION_COMPLETED':
+                if (stepState[2] !== 2) setStatus('done', '✅ 会话完成');
+                break;
+
+            case 'SESSION_FAILED': {
+                const err = d.error || '未知错误';
+                setStatus('error', '❌ 生成失败：' + err);
+                break;
+            }
+        }
+    }
+
+    function autoScroll() {
+        const el = document.getElementById('content');
+        el.scrollTop = el.scrollHeight;
+    }
+
+    function setStatus(mode, msg) {
+        const bar = document.getElementById('status-bar');
+        bar.className = 'show ' + mode;
+        bar.innerHTML = '';
+        if (mode === 'progress') bar.innerHTML = '<span class="spinner"></span>';
+        else if (mode === 'done') bar.innerHTML = '<span>✅</span>';
+        else if (mode === 'error') bar.innerHTML = '<span>❌</span>';
+        const span = document.createElement('span');
+        span.id = 'status-text';
+        span.textContent = msg;
+        bar.appendChild(span);
     }
 </script>
 </body>

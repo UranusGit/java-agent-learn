@@ -1785,18 +1785,19 @@ flowchart TD
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>研究 Agent</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
     <style>
         :root {
             --bg: #f7f7f8; --surface: #fff; --border: #ececec;
             --text: #1a1a1a; --text-2: #8e8e8e; --muted: #b0b0b0;
             --accent: #1a1a1a; --green: #00b96b; --orange: #e67e22; --red: #e53935;
         }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        *, *::before, *::after { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
                background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
-               font-size: 15px; line-height: 1.8; }
+               font-size: 15px; line-height: 1.8; margin: 0; }
         header { background: var(--surface); border-bottom: 1px solid var(--border);
-                 padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; }
+                 padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
         header .title { font-size: 16px; font-weight: 600; }
         header .sub { color: var(--muted); font-size: 13px; margin-left: 8px; }
         header .actions { display: flex; gap: 8px; }
@@ -1804,14 +1805,27 @@ flowchart TD
                         border-radius: 8px; padding: 5px 12px; cursor: pointer; color: var(--text-2); }
         header button:hover { border-color: var(--text-2); }
         header button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-        #chat { flex: 1; overflow-y: auto; padding: 32px 0; }
+
+        #content { flex: 1; overflow-y: auto; padding: 32px 0; }
+
+        /* 状态条 */
+        #status-bar { max-width: 720px; margin: 0 auto 12px; padding: 10px 14px; border-radius: 8px;
+                      font-size: 13px; background: #f0f4ff; color: #4d6bfe; display: none; align-items: center; gap: 8px; }
+        #status-bar.show { display: flex; }
+        #status-bar .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #c5cdfa;
+                                border-top-color: #4d6bfe; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #status-bar.error { background: #fff0f0; color: #c62828; }
+        #status-bar.done { background: #e6f7e6; color: #1b8a1b; }
+
         .msg { max-width: 720px; margin: 0 auto; padding: 0 24px; }
         .user { display: flex; justify-content: flex-end; margin-bottom: 16px; }
         .user .bubble { background: var(--accent); color: #fff; padding: 10px 16px;
                         border-radius: 12px 12px 4px 12px; max-width: 75%; word-break: break-word; }
         .assistant { margin-bottom: 20px; }
-        .assistant .bubble { background: var(--surface); padding: 14px 18px; border-radius: 12px;
-                             word-break: break-word; white-space: pre-wrap; min-height: 20px; }
+        .assistant .bubble { background: var(--surface); padding: 14px 18px; border: 1px solid var(--border);
+                             border-radius: 12px; word-break: break-word; min-height: 20px; line-height: 1.8; }
+
         /* 入库面板（第2章） */
         #ingest-panel { display: none; max-width: 720px; margin: 0 auto; padding: 16px 24px;
                         background: var(--surface); border-radius: 12px; margin: 16px auto; }
@@ -1819,17 +1833,22 @@ flowchart TD
         #ingest-panel h3 { font-size: 14px; margin-bottom: 8px; }
         #ingest-panel textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px;
                                   padding: 8px; font-size: 14px; resize: vertical; min-height: 80px; }
+        #ingest-panel input { width:100%; border:1px solid var(--border); border-radius:8px;
+                              padding:8px; font-size:14px; margin-top:8px; }
         #ingest-panel button { margin-top: 8px; background: var(--accent); color: #fff; border: none;
                                 padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; }
         #ingest-result { font-size: 13px; color: var(--green); margin-top: 8px; }
-        #bar { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 24px; }
+
+        #empty { text-align: center; color: #ccc; padding: 60px 20px; font-size: 14px; line-height: 2; }
+
+        #bar { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 24px; flex-shrink: 0; }
         #input-wrap { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: center;
-                      background: var(--bg); border-radius: 22px; padding: 4px 4px 4px 18px; }
-        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 8px 0; }
-        #send { background: var(--accent); color: #fff; border: none; width: 32px; height: 32px;
+                      background: var(--bg); border-radius: 22px; padding: 4px 4px 4px 18px; border: 1px solid var(--border); }
+        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 10px 0; }
+        #send { background: var(--accent); color: #fff; border: none; width: 34px; height: 34px;
                 border-radius: 50%; cursor: pointer; font-size: 16px; flex-shrink: 0; }
         #send:disabled { background: #d0d0d0; }
-        #status { text-align: center; color: var(--muted); font-size: 12px; padding: 4px 0; }
+        #status-text { text-align: center; color: var(--muted); font-size: 12px; padding: 4px 0; }
     </style>
 </head>
 <body>
@@ -1841,19 +1860,27 @@ flowchart TD
     </div>
 </header>
 
-<!-- 研究区 -->
-<div id="chat"></div>
+<div id="content">
+    <div id="status-bar"><span class="spinner"></span><span id="s-text">研究中…</span></div>
 
-<!-- 入库面板（第2章） -->
-<div id="ingest-panel">
-    <h3>知识库入库（文本 → 向量化 → 存 pgvector）</h3>
-    <textarea id="ingest-text" placeholder="粘贴要入库的文本..."></textarea>
-    <input id="ingest-source" placeholder="来源（如：产品白皮书）" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:8px;font-size:14px;margin-top:8px;">
-    <button onclick="ingest()">入库</button>
-    <div id="ingest-result"></div>
+    <!-- 研究区 -->
+    <div id="chat"></div>
+
+    <!-- 入库面板（第2章） -->
+    <div id="ingest-panel">
+        <h3>知识库入库（文本 → 向量化 → 存 pgvector）</h3>
+        <textarea id="ingest-text" placeholder="粘贴要入库的文本..."></textarea>
+        <input id="ingest-source" placeholder="来源（如：产品白皮书）">
+        <button onclick="ingest()">入库</button>
+        <div id="ingest-result"></div>
+    </div>
+
+    <div id="empty" class="empty-state" style="text-align:center;color:#ccc;padding:60px 20px;font-size:14px;">
+        <div>输入研究主题，点击下方发送</div>
+        <div style="margin-top:8px;color:#ddd;">Agent 自主搜索 + 知识库检索，流式输出结果</div>
+    </div>
 </div>
 
-<div id="status">输入研究主题，回车发送</div>
 <div id="bar"><div id="input-wrap">
     <input id="prompt" placeholder="研究主题，如：2026向量数据库对比" value="2026向量数据库对比">
     <button id="send" onclick="send()">➤</button>
@@ -1866,7 +1893,7 @@ flowchart TD
         document.getElementById('btn-ingest').classList.remove('active');
         document.getElementById('chat').style.display = 'block';
         document.getElementById('ingest-panel').classList.remove('active');
-        document.getElementById('bar').style.display = 'block';
+        document.getElementById('bar').style.display = 'flex';
     }
     function showIngest() {
         document.getElementById('btn-research').classList.remove('active');
@@ -1878,6 +1905,18 @@ flowchart TD
 
     document.getElementById('prompt').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 
+    function setStatus(mode, msg) {
+        const bar = document.getElementById('status-bar');
+        bar.className = 'show ' + mode;
+        bar.innerHTML = '';
+        if (mode === 'progress') bar.innerHTML = '<span class="spinner"></span>';
+        else if (mode === 'done') bar.innerHTML = '<span>✅</span>';
+        else if (mode === 'error') bar.innerHTML = '<span>❌</span>';
+        const span = document.createElement('span');
+        span.textContent = msg;
+        bar.appendChild(span);
+    }
+
     async function send() {
         if (sending) return;
         const input = document.getElementById('prompt');
@@ -1886,6 +1925,7 @@ flowchart TD
         input.value = '';
         sending = true;
         document.getElementById('send').disabled = true;
+        document.getElementById('empty').style.display = 'none';
 
         const chat = document.getElementById('chat');
         const u = document.createElement('div'); u.className = 'msg user';
@@ -1896,10 +1936,8 @@ flowchart TD
         const a = document.createElement('div'); a.className = 'msg assistant';
         a.innerHTML = '<div class="bubble"></div>';
         chat.appendChild(a);
-        chat.scrollTop = chat.scrollHeight;
 
-        // 调流式接口（返回 Flux<String>，逐字推）
-        document.getElementById('status').textContent = '研究中...';
+        setStatus('progress', '🔍 正在研究「' + topic + '」…');
         controller = new AbortController();
         try {
             const resp = await fetch('/api/research?topic=' + encodeURIComponent(topic), {
@@ -1907,23 +1945,27 @@ flowchart TD
             });
             const reader = resp.body.getReader();
             const decoder = new TextDecoder('utf-8');
+            let buffer = '';
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                const text = decoder.decode(value, { stream: true });
-                // SSE data: 行逐段追加
-                for (const line of text.split('\n')) {
-                    if (line.startsWith('data:')) {
-                        a.querySelector('.bubble').textContent += line.slice(5);
-                    } else if (line.trim() && !line.startsWith('event:')) {
-                        a.querySelector('.bubble').textContent += line;
+                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                    const frame = buffer.slice(0, idx);
+                    // 取 data: 部分内容
+                    for (const line of frame.split('\n')) {
+                        if (line.startsWith('data:')) {
+                            a.querySelector('.bubble').textContent += line.slice(5);
+                        }
                     }
+                    buffer = buffer.slice(idx + 2);
                 }
                 chat.scrollTop = chat.scrollHeight;
             }
-            document.getElementById('status').textContent = '完成';
+            setStatus('done', '✅ 研究完成');
         } catch (e) {
-            if (e.name !== 'AbortError') document.getElementById('status').textContent = '失败：' + e.message;
+            if (e.name !== 'AbortError') setStatus('error', '❌ 失败：' + e.message);
         }
         sending = false;
         document.getElementById('send').disabled = false;
@@ -1935,7 +1977,7 @@ flowchart TD
         const source = document.getElementById('ingest-source').value || 'unknown';
         if (!text) return;
         const result = document.getElementById('ingest-result');
-        result.textContent = '入库中...';
+        result.textContent = '⏳ 入库中...';
         try {
             const resp = await fetch('/api/kb/ingest', {
                 method: 'POST',
@@ -1943,17 +1985,19 @@ flowchart TD
                 body: JSON.stringify({ text, source })
             });
             const data = await resp.json();
-            result.textContent = '✓ 入库成功：' + (data.ingested || 0) + ' 块（来源：' + source + '）';
+            result.textContent = '✅ 入库成功：' + (data.ingested || 0) + ' 块（来源：' + source + '）';
         } catch (e) {
-            result.textContent = '✗ 入库失败：' + e.message;
+            result.textContent = '❌ 入库失败：' + e.message;
         }
     }
+
+    showResearch();
 </script>
 </body>
 </html>
 ```
 
-> **风格**：和 33b 一致的 DeepSeek 极简风（白底/深色主色/窄列/大留白）。
+> **风格**：和 33b 一致的 DeepSeek 极简风（白底/深色主色/窄列/大留白）。第 1 章风格的折叠状态条。
 >
 > **两个模式**：顶部切换「研究」（输入主题→流式结果）和「知识库入库」（粘贴文本→入库 pgvector，第2章）。研究模式下 Agent 调工具的过程在后端控制台日志看（本文用日志可观测，不发事件给前端）。
 
