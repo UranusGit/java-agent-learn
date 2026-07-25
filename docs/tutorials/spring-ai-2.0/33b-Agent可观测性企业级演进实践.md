@@ -1078,7 +1078,8 @@ public class SseController {
                 buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
                 let idx;
                 while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                    handleFrame(buffer.slice(0, idx), stepCards, finalBody);
+                    try { handleFrame(buffer.slice(0, idx), stepCards, finalBody); }
+                    catch (e) { console.error('handleFrame error:', e); }
                     buffer = buffer.slice(idx + 2);
                 }
             }
@@ -1189,7 +1190,9 @@ public class SseController {
                     if (badge) { badge.textContent = '✅ 完成'; badge.className = 'badge done'; }
                     const sc = stepCards[step];
                     if (sc) {
-                        sc.body.innerHTML = '';
+                        // 只清 preview 区域，保留 toolBox（工具调用记录不被覆盖）
+                        const preview = sc.body.querySelector('.preview');
+                        if (preview) preview.remove();
                         const contentDiv = document.createElement('div');
                         contentDiv.className = 'content';
                         try { contentDiv.innerHTML = marked.parse(output); } catch { contentDiv.textContent = output; }
@@ -2612,7 +2615,8 @@ private AgentEvent emitTokens(String sessionId, org.springframework.ai.chat.mode
                 buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
                 let idx;
                 while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                    handleFrame(buffer.slice(0, idx), stepCards, finalBody);
+                    try { handleFrame(buffer.slice(0, idx), stepCards, finalBody); }
+                    catch (e) { console.error('handleFrame error:', e); }
                     buffer = buffer.slice(idx + 2);
                 }
             }
@@ -2759,7 +2763,8 @@ private AgentEvent emitTokens(String sessionId, org.springframework.ai.chat.mode
                     if (badge) { badge.textContent = '✅ 完成'; badge.className = 'badge done'; }
                     const sc = stepCards[step];
                     if (sc) {
-                        sc.body.innerHTML = '';
+                        const preview = sc.body.querySelector('.preview');
+                        if (preview) preview.remove();
                         const contentDiv = document.createElement('div');
                         contentDiv.className = 'content';
                         try { contentDiv.innerHTML = marked.parse(output); } catch { contentDiv.textContent = output; }
@@ -5884,7 +5889,8 @@ public class TokenAwareChatMemory implements ChatMemory {
             buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
             let idx;
             while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                handleFrame(buffer.slice(0, idx), null, null, true);
+                try { handleFrame(buffer.slice(0, idx), null, null, true); }
+                catch (e) { console.error('handleFrame error:', e); }
                 buffer = buffer.slice(idx + 2);
             }
         }
@@ -5961,7 +5967,8 @@ public class TokenAwareChatMemory implements ChatMemory {
             buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
             let idx;
             while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                handleFrame(buffer.slice(0, idx), proc, assistantEl, false);
+                try { handleFrame(buffer.slice(0, idx), proc, assistantEl, false); }
+                catch (e) { console.error('handleFrame error:', e); }
                 buffer = buffer.slice(idx + 2);
             }
         }
