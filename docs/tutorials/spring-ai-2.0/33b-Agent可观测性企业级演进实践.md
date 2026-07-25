@@ -68,7 +68,7 @@
 
 | 阶段 | 一句话 | 适用体量 |
 |------|-------|---------|
-| 第 0 章 | 流式黑盒 Agent（只推正文，过程不可见） | 起点 |
+| 第 0 章 | 同步黑盒 Agent（一次性返回，过程不可见、用户干等） | 起点 |
 | 第 1 章 | 最小可见性：采集→总线→SSE | 单实例、内部工具 |
 | 第 2 章 | 可靠性：不丢、不乱序、能重连 | 单实例、有真实用户 |
 | 第 3 章 | 工具调用与 token 可见 | 单实例、Agent 调工具 |
@@ -97,21 +97,20 @@
 
 你所在的团队要做一个「AI 写作助手」：用户输入主题，AI 生成文章。技术上用 Spring AI 调 DeepSeek，分三步（生成大纲 → 写草稿 → 润色）。
 
-这一章结束时，你有一个**能跑但完全黑盒**的流式 Agent——用户提交主题，文章**逐字流式冒出来**（打字机效果），但中间一无所知：不知道现在第几步、看不到大纲、没有耗时记录。
+这一章结束时，你有一个**能跑但完全黑盒**的同步 Agent——用户提交主题，等十几秒，一次性返回文章，中间一无所知：不知道现在第几步、看不到大纲、没有耗时记录。
 
-> **为什么一上来就是流式？** 因为现在的 AI 产品没有非流式的用武之地——前端就是流式对话页面（打字机效果是基础体验），后端同步阻塞返回会让用户干等十几秒。流式也不比同步难多少（Spring AI 的 `.stream()` 和 `.call()` 一字之差）。所以**从第 0 章起就是流式**，全文一致，后面不用迁移。
+> **为什么从同步开始（不一开始就流式）**：第 0 章的痛点只有"跑通业务"，没有"流式"。同步 `String run()` 最简单——普通 for 循环 + `.call()`，把三步串起来返回。流式（`.stream()` 逐字推送）是**第 1 章的痛点**（"想看过程"）才引入的——那时既要事件流、也要正文逐字，一起演进成 `Flux<AgentEvent>`。**痛点驱动**：第 0 章不需要流式，就不该引入流式。
 >
-> **但这一章是「黑盒」**：流式只推送正文文本（`Flux<String>`），**没有任何可观测事件**（没有"现在第几步"、没有 AgentEventBus、没有事件总线）。等它「出事」（第 1 章），才知道该观测什么——那时把 `Flux<String>` 升级成 `Flux<AgentEvent>`，正文变成其中一种事件（CONTENT_DELTA），同时加上 STEP/SESSION 等过程事件。**先让它能干活（流式黑盒），再让它能被观察（第 1 章可观测）。**
+> **这一章是「黑盒」**：同步返回一坨文本，**没有任何过程可见**（不知道第几步、没大纲、没耗时）。等它「出事」（第 1 章），才知道该观测什么——那时升级成流式可观测。**先让它能干活（同步黑盒），再让它能被观察（第 1 章流式 + 可观测）。**
 
-### 0.1 思路：先建项目跑通流式业务，不碰可观测性
+### 0.1 思路：先建项目跑通业务，不碰可观测性
 
-这一步零可观测性，只把流式业务链路跑通。关键决策三个：
+这一步零可观测性、零流式，只把业务链路跑通。关键决策两个：
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
-| Web 框架 | WebFlux（不是 Web） | 流式/SSE 都是响应式，WebFlux 天然契合；后面不用迁移 |
+| Web 框架 | WebFlux（不是 Web） | 第 1 章起 SSE/流式要用，WebFlux 天然契合；一开始就用，后面不用迁移 |
 | 业务结构 | 抽象基类 + 具体子类 | 第 1 章要给基类加可观测性，抽象出来好统一改 |
-| 推送方式 | `Flux<String>` 流式文本 | 用户看到逐字生成；第 1 章升级成 `Flux<AgentEvent>` 加事件 |
 
 ### 0.2 动手
 
@@ -243,7 +242,7 @@ public class Application {
 
 `@SpringBootApplication` 是组合注解（开启自动装配 + 组件扫描）。扫描范围是 `com.example.aobs` 及子包，所以后面所有类放这个包下。
 
-#### 0.2.4 业务核心：三步链式流式 Workflow
+#### 0.2.4 业务核心：三步链式 Workflow（黑盒同步版）
 
 用「抽象基类 + 具体子类」结构（模板方法模式），因为第 1 章要给基类加可观测性。
 
@@ -254,16 +253,16 @@ package com.example.aobs.workflow;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
-import reactor.core.publisher.Flux;
 
 import java.util.List;
 
 /**
- * 三步链式流式 Workflow 的抽象基类（黑盒版）。
- * 子类声明「这三步分别做什么」（实现 steps()），run() 负责按顺序串起来、流式推送正文。
+ * 三步链式 Workflow 的抽象基类（黑盒同步版）。
+ * 子类声明「这三步分别做什么」（实现 steps()），run() 负责按顺序串起来、返回最终文本。
  *
- * 这是黑盒：只推正文文本（Flux<String>），没有任何过程事件。
- * 第 1 章会把它升级成 Flux<AgentEvent>，加上 STEP/SESSION 等可观测事件。
+ * 这是黑盒：同步返回一坨文本，中间过程（第几步、大纲、耗时）一无所知。
+ * 第 1 章会把它升级成流式 Flux<AgentEvent>，加上 STEP/SESSION 等可观测事件——
+ * 那时的痛点是"想看过程"，既需要事件流、也需要正文逐字推送。
  */
 public abstract class ChainingService {
 
@@ -283,7 +282,7 @@ public abstract class ChainingService {
      * 业务简单**；以后业务复杂了不用改 Step 签名（开闭原则）。
      *
      * prepareInput 是 Function（上一步输出 → 本步输入），不带 sessionId——sessionId
-     * 是会话级上下文，归基类 run 管（传给 streamStep），不进预处理函数。职责聚焦。
+     * 是会话级上下文，归基类 run 管（传给 call），不进预处理函数。职责聚焦。
      */
     public record Step(String system, java.util.function.Function<String, String> prepareInput) {}
 
@@ -291,60 +290,36 @@ public abstract class ChainingService {
     protected abstract List<Step> steps();
 
     /**
-     * 执行整条链，流式推送最终步的正文文本。
-     *
-     * 流式 + 链式的标准写法：控制流用普通 for 循环（人人读懂），整体放进
-     * Flux.create + subscribeOn(boundedElastic)。每步用 .stream() 拿文本 chunk，
-     * 上一步完整输出（攒齐）喂下一步。阻塞循环跑在弹性线程池，不占 Reactor 线程。
+     * 执行整条链，返回最终步的完整文本。
+     * 同步 for 循环：上一步完整输出（call 拿到）喂下一步。简单直接，第 0 章只求跑通。
      */
-    public Flux<String> run(String input, String sessionId) {
-        List<Step> stepList = steps();
-        return Flux.<String>create(sink -> {
-                    String payload = input;   // 上一步完整输出，首步是用户输入
-                    for (int step = 0; step < stepList.size(); step++) {
-                        Step s = stepList.get(step);
-                        // 预处理上一步输出 → 本步输入（写作链恒等，其他链可能转换）
-                        String userPrompt = s.prepareInput().apply(payload);
-                        // 本步流式跑：每来一个 chunk 推给下游（用户看打字机），最后攒齐喂下一步
-                        payload = streamStep(s.system(), userPrompt, sessionId, sink);
-                    }
-                    sink.complete();
-                })
-                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+    public String run(String input, String sessionId) {
+        String payload = input;   // 上一步完整输出，首步是用户输入
+        for (Step s : steps()) {
+            // 预处理上一步输出 → 本步输入（写作链恒等，其他链可能转换）
+            String userPrompt = s.prepareInput().apply(payload);
+            // 同步调 LLM，拿完整文本喂下一步
+            payload = call(s.system(), userPrompt, sessionId);
+        }
+        return payload;
     }
 
-    /**
-     * 单步流式调 LLM：每个 chunk 推给下游（sink.next），同时攒进 StringBuilder。
-     * 用 reduce 拼完整文本（只订阅上游一次），最后 block 取回——喂下一步。
-     *
-     * block 安全：run 整体 subscribeOn(boundedElastic)，这里阻塞的是弹性线程，
-     * 不是 Reactor 调度线程（符合 boundedElastic "专为阻塞任务设计"的用途）。
-     */
-    private String streamStep(String system, String userPrompt, String sessionId,
-                              reactor.core.publisher.FluxSink<String> sink) {
+    /** 同步调一次 LLM，返回完整文本。 */
+    protected String call(String system, String prompt, String sessionId) {
         return chatClient.prompt()
                 .system(system)
+                .user(prompt)
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
-                .user(userPrompt)
-                .stream()
-                .content()
-                .filter(chunk -> chunk != null && !chunk.isEmpty())
-                .reduce(new StringBuilder(), (sb, chunk) -> {
-                    sb.append(chunk);
-                    sink.next(chunk);   // 流式推给下游（黑盒：只推文本，没事件）
-                    return sb;
-                })
-                .map(StringBuilder::toString)
-                .block();
+                .call()
+                .content();
     }
 }
 ```
 
 > **读这段代码的关键认知**：
-> 1. **`run` 返回 `Flux<String>`**：每个 String 是一个正文 chunk。Controller 把它当 SSE 流返回，浏览器订阅后正文逐字到达——打字机效果。
-> 2. **三步之间靠 `payload = streamStep(...)` 串**：每步流式跑完（reduce 把 chunk 拼成完整文本），完整文本喂下一步。链式 + 流式两全。
-> 3. **`subscribeOn(boundedElastic)`**：for 循环里有 `.block()`（阻塞等本步完整文本）。阻塞必须跑在 `boundedElastic`（专为阻塞任务的线程池），**绝不能跑在 Reactor 调度线程**。
-> 4. **这是黑盒**：只推正文 chunk，没有"现在第几步""大纲是什么""耗时多少"——这些第 1 章加。
+> 1. **`run` 同步返回 `String`**：阻塞调三次 LLM，等十几秒一次性返回最终文本。第 0 章只求"跑通黑盒"，不追求流式——流式是第 1 章"想看过程"才引入的痛点驱动。
+> 2. **三步之间靠 `payload = call(...)` 串**：每步同步拿到完整文本，喂下一步。普通 for 循环，人人读懂，没有响应式复杂度。
+> 3. **这是黑盒**：返回一坨文本，没有"现在第几步""大纲是什么""耗时多少"——这些第 1 章加。
 
 `src/main/java/com/example/aobs/writing/ArticleService.java`：
 
@@ -357,7 +332,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 
-/** 写作助手：大纲 → 草稿 → 润色。只声明三步，执行（流式、链式）全在基类。 */
+/** 写作助手：大纲 → 草稿 → 润色。只声明三步，执行（同步链式）全在基类。 */
 @Service
 public class ArticleService extends ChainingService {
 
@@ -379,21 +354,19 @@ public class ArticleService extends ChainingService {
 }
 ```
 
-> **注意：前两步的 chunk 用户看不到**。第 0、1 步（大纲、草稿）的 chunk 虽然也 `sink.next` 推了，但它们是"中间产物"——用户只想看最终润色后的文章。第 1 章加可观测后，前两步会变成 STEP 事件（折叠面板里看），只有第 2 步的 chunk 作为正文流给用户。**第 0 章黑盒先不区分，三步的 chunk 都推**（验证时你会看到大纲→草稿→润色三段文本连着流出来，这正好说明"黑盒不分步可见"）。
+> **第 0 章黑盒：大纲、草稿、润色三步的中间产物用户一个都看不到**——`run` 只返回最终润色版（前两步的输出在内部 `payload` 变量里传递，外部无感）。第 1 章升级流式 + 可观测后，才会区分三步可见性（每步有 STEP 事件，正文逐字推）。
 
 > **小白疑问：`@Service` 和构造器注入**
 > `@Service` 告诉 Spring「这是个 Bean，帮我管理」。`ChatClient` 通过构造器传进来，Spring 看到该类型 Bean 自动注入。这是 Spring 推荐写法（比 `@Autowired` 字段注入更利于测试）。
 
-#### 0.2.5 HTTP 接口（流式 SSE）
+#### 0.2.5 HTTP 接口（同步）
 
 `src/main/java/com/example/aobs/writing/ArticleController.java`：
 
 ```java
 package com.example.aobs.writing;
 
-import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
 
 @RestController
 @RequestMapping("/api/article")
@@ -405,20 +378,16 @@ public class ArticleController {
         this.articleService = articleService;
     }
 
-    /**
-     * 流式生成文章。返回 Flux<String> + text/event-stream = SSE 流。
-     * 用法：curl -N "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1"
-     * （-N 关闭缓冲，才能看到逐字实时到达）
-     */
-    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> generate(@RequestParam String prompt,
-                                 @RequestHeader String sessionId) {
+    /** 生成文章。curl "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1" */
+    @GetMapping
+    public String generate(@RequestParam String prompt,
+                           @RequestHeader String sessionId) {
         return articleService.run(prompt, sessionId);
     }
 }
 ```
 
-> **`Flux<String>` + `text/event-stream` = SSE**：WebFlux 看到 Controller 返回 `Flux` 且 produces 是 `text/event-stream`，自动把每个 String 包成一个 SSE 帧推给客户端。客户端（浏览器/curl）逐帧收到，看到打字机效果。**不用手写 SSE 帧格式**——WebFlux 替你做。
+> **同步接口**：Controller 返回 `String`，WebFlux 把它当普通 HTTP 响应——客户端请求后等十几秒，一次性拿到完整文本。第 0 章只求跑通，第 1 章加可观测时再升级成 SSE 流（那时痛点是"想看过程"）。
 
 ### 0.3 验证
 
@@ -429,12 +398,10 @@ mvn spring-boot:run
 看到 `Started Application in x.xxx seconds` 就是起来了。另开终端：
 
 ```bash
-curl -N "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1"
+curl "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1"
 ```
 
-（`-N` 关闭 curl 缓冲，否则它攒够一批才显示，看不到逐字效果。）
-
-你会看到正文**逐字实时冒出来**（先是大纲的 chunk，接着草稿，最后润色版——三段连着流）。整个过程约 10-15 秒（三次 LLM 调用），但**用户全程看到在动**，不是干等。
+等约 10-15 秒（三次 LLM 调用），返回一篇润色过的文章。中间干等——这就是黑盒的体感（第 1 章加可观测时会演进成流式，让用户看到过程）。
 
 ### 0.4 checkpoint
 
@@ -442,26 +409,27 @@ curl -N "http://localhost:8080/api/article?prompt=AI的未来" -H "sessionId: s1
 src/main/java/com/example/aobs/
 ├── Application.java
 ├── workflow/
-│   └── ChainingService.java     # 流式黑盒：Flux<String> run
+│   └── ChainingService.java     # 同步黑盒：String run
 └── writing/
     ├── ArticleService.java      # 三步声明
-    └── ArticleController.java   # SSE 流式接口
+    └── ArticleController.java   # 同步接口
 ```
 
 ```bash
 git init && git add -A
-git commit -m "第0章：流式黑盒写作助手跑通"
+git commit -m "第0章：同步黑盒写作助手跑通"
 ```
 
 ### 0.5 复盘
 
-产品能跑了，而且是流式的——用户不用干等。但它是**黑盒**，试着回答这些：
-- 用户说「这次特别慢」——你知道是三步里哪步慢吗？**不知道。**（你只看到一串文本，不知道现在跑到第几步）
-- 想看中间的大纲——能看到吗？**能，但它和草稿、润色混在一起流出来**，分不清哪段是哪步。
+产品能跑了。但它是**黑盒**，而且**同步阻塞**——用户干等十几秒、中间一无所知。试着回答这些：
+- 用户说「这次特别慢」——你知道是三步里哪步慢吗？**不知道。**（只看到最终文本，不知道跑到第几步）
+- 用户说「等太久，能不能边生成边看」——能做到吗？**不能。**（同步返回，必须等完）
+- 想看中间的大纲——能看到吗？**不能。**
 - 想加日志记录每步耗时——要不要改业务代码？**要。**
 - 想知道这次烧了多少 token——**不知道。**
 
-**黑盒的代价：内部不可见，每次想知道多一点都要改业务代码。** 第 1 章解决这个问题。
+**黑盒 + 同步的代价：内部不可见、用户干等，每次想知道多一点或改善体验都要改业务代码。** 第 1 章解决——既加可观测（过程可见）、也升级流式（边生成边看）。
 
 ---
 
@@ -469,26 +437,28 @@ git commit -m "第0章：流式黑盒写作助手跑通"
 
 ### 1.0 场景
 
-产品上线给团队内部试用。一周后同事反馈「有时候特别慢，偶尔还超时」。你打开页面看——正文在逐字流（第 0 章的流式黑盒跑得挺顺），但**慢的时候你完全不知道卡在哪**：流到一半停了，是第 1 步草稿慢、还是第 2 步润色慢、还是网络抖？日志里只有一串 chunk，看不出"现在第几步"。本地复现三次都正常（问题是偶发的）。
+产品上线给团队内部试用。一周后两条反馈：
+- **「有时候特别慢，偶尔还超时」**——你打开日志，只有 `run` 的开始结束，中间一片空白，**不知道是三步里哪步慢**。本地复现三次都正常（偶发）。
+- **「等太久，能不能边生成边看」**——第 0 章同步返回，用户干等十几秒才看到一坨文本，体验差。
 
-**你意识到：流式只解决了"用户不干等"，没解决"过程不可见"。** 决定给它装「监控屏」——让三步执行的每一步、每个阶段都能被实时看到（不只是正文 chunk）。
+**你意识到两个痛点一起来了**：过程不可见（不知道哪步慢）+ 用户干等（同步阻塞）。决定一次性解决——把 `String run()` 升级成**流式可观测**：`run` 改返回 `Flux<AgentEvent>`，正文边生成边逐字推（用户看到打字机），同时发 STEP/SESSION 等过程事件（过程可见）。
 
 ### 1.1 思路：三层最小架构
 
-要做什么：把第 0 章那个流式黑盒（`Flux<String>`，只推正文 chunk）**升级成可观测的流式 Agent**——`run` 改返回 `Flux<AgentEvent>`，正文 chunk 变成其中一种事件（CONTENT_DELTA），同时加上 STEP/SESSION 等过程事件，让"现在第几步、大纲是什么、何时完成"全可见。拆成三层：
+要做什么：把第 0 章那个同步黑盒（`String run()`，一次性返回文本）**升级成流式可观测 Agent**——`run` 改返回 `Flux<AgentEvent>`，正文 chunk 包成 `CONTENT_DELTA`（流式逐字推），同时加 STEP/SESSION 等过程事件（过程可见）。拆成三层：
 
 ```
 [写作 Workflow 流式每一步]  ——emit 事件——>  [事件总线]  ——订阅——>  [SSE 推给 curl/浏览器]
    （采集：run 自身是 Flux<AgentEvent>）        （总线）              （推送）
 ```
 
-这一步同时做两件事：
-1. **事件化**：`ChainingService.run` 从 `Flux<String>`（第 0 章）升级成 `Flux<AgentEvent>`——正文 chunk 包成 `CONTENT_DELTA` 事件，每步前后发 `STEP_START/STEP_END`、整条链发 `SESSION_STARTED/SESSION_COMPLETED`。流式体感不变（还是逐字），但过程全可见。
+这一步同时做两件事（两个痛点一起解）：
+1. **流式 + 事件化**：`ChainingService.run` 从 `String`（第 0 章同步）升级成 `Flux<AgentEvent>`——正文 chunk 包成 `CONTENT_DELTA` 逐字推（解决"用户干等"），每步前后发 `STEP_START/STEP_END`、整条链发 `SESSION_STARTED/SESSION_COMPLETED`（解决"过程不可见"）。
 2. **总线**：加 AgentEventBus，把事件广播给多个消费者（不止前端 SSE）。
 
-**关键决策一：为什么把 `Flux<String>` 升级成 `Flux<AgentEvent>`？**
+**关键决策一：为什么把 `String` 升级成 `Flux<AgentEvent>`（而不是 `Flux<String>`）？**
 
-第 0 章 `Flux<String>` 只能推正文 chunk——**过程信息（第几步、开始/结束、错误）塞不进去**（String 没有类型）。改成 `Flux<AgentEvent>` 后，每个元素是"一个有类型的事件"：CONTENT_DELTA 是正文、STEP_START 是步骤开始、SESSION_COMPLETED 是完成……`run` 一边执行一边把各种事件推给下游，Controller 直接把这个 Flux 当 SSE 流返回。**这就是"过程即数据流"——把执行过程建模成一条事件流。**
+第 0 章 `String` 一次性返回——既不能流式（用户干等）、也塞不进过程信息。如果只升级成 `Flux<String>`（流式推正文），用户能看到逐字了，但**过程信息（第几步、开始/结束、错误）还是塞不进 String**。所以一步到位升级成 `Flux<AgentEvent>`：每个元素是"一个有类型的事件"——CONTENT_DELTA 是正文（流式）、STEP_START 是步骤开始、SESSION_COMPLETED 是完成……`run` 一边执行一边把各种事件推给下游，Controller 直接把这个 Flux 当 SSE 流返回。**流式 + 可观测一次解决，过程即数据流。**
 
 **关键决策二：有了 `Flux<AgentEvent>`，为什么还要 AgentEventBus（总线）？**
 
@@ -633,7 +603,7 @@ public class AgentEventBus {
 
 #### 1.2.3 给 Workflow 埋点 + 事件化（采集）
 
-改 `ChainingService`（在第 0 章流式黑盒基础上）：① 加 AgentEventBus 依赖；② `run` 从 `Flux<String>` 升级成 `Flux<AgentEvent>`——正文 chunk 包成 CONTENT_DELTA，加 STEP_START/STEP_END/SESSION_* 事件；③ 每个事件同时 `bus.emit` 广播。**业务步骤（steps()/Step）完全不动、流式体感不变（还是逐字），只是多了过程事件**。
+改 `ChainingService`（在第 0 章同步黑盒基础上）：① 加 AgentEventBus 依赖；② `run` 从 `String`（同步）升级成 `Flux<AgentEvent>`（流式）——正文 chunk 包成 CONTENT_DELTA 逐字推，加 STEP_START/STEP_END/SESSION_* 事件；③ 每个事件同时 `bus.emit` 广播。**业务步骤（steps()/Step）完全不动，只是执行方式从同步变流式 + 多了过程事件**。这是控制流重构（for 循环包进 Flux.create），下面给完整版。
 
 > **关于 sessionId 的传递**：第 1 章的 `run` 用同步 for 循环，sessionId 直接当方法参数/局部变量传，简单够用。等到第 3 章讲工具调用的会话隔离时，才会遇到"工具执行线程读不到局部变量"的问题，那时再引入 Reactor Context 传播（`PropagatedContextValue`/`AppContextKeys`）。**第 1 章不需要它**——提前引入只会让人困惑"这玩意儿有什么用"。
 
@@ -648,9 +618,7 @@ import com.example.aobs.obs.AgentEvent;
 import com.example.aobs.obs.AgentEventBus;
 import com.example.aobs.obs.EventContent;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.memory.ChatMemory;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.FluxSink;
 
 import java.util.List;
 import java.util.Map;
@@ -669,11 +637,13 @@ import java.util.Map;
 public abstract class ChainingService {
 
     protected final ChatClient chatClient;
-    protected final AgentEventBus eventBus;    // ← 新增：广播事件给多消费者
+    protected final AgentEventBus eventBus;          // 广播事件给多消费者
+    protected final LlmStepExecutor stepExecutor;    // 单步 LLM 执行（独立 Bean，第 1 章引入）
 
-    protected ChainingService(ChatClient chatClient, AgentEventBus eventBus) {
+    protected ChainingService(ChatClient chatClient, AgentEventBus eventBus, LlmStepExecutor stepExecutor) {
         this.chatClient = chatClient;
         this.eventBus = eventBus;
+        this.stepExecutor = stepExecutor;
     }
 
     /** 一步：system + 输入预处理（同第 0 章，结构不变）。 */
@@ -683,94 +653,62 @@ public abstract class ChainingService {
     protected abstract List<Step> steps();
 
     /**
-     * 执行整条链，返回事件流。
+     * 执行整条链，返回事件流。全程响应式（不 block、不占阻塞线程）。
      *
-     * 设计取舍（关键认知）：流式 + 链式，纯 Reactor 写法（concatMap/expand）能做但可读性差、
-     * 调试难。企业项目里流式链式的标准写法是——**控制流用普通 for 循环（人人读懂），
-     * 把它整体放进 Flux.create + subscribeOn(boundedElastic)**。阻塞循环跑在弹性线程池，
-     * 不占 Reactor 线程；"上一步完整输出喂下一步"就是 `payload = full` 一句话，所有跨步骤传值难题消失。
-     *
-     * sessionId 写进 Reactor Context（第 3 章工具线程要读它），同时循环里直接用局部变量也行。
+     * 企业级写法（关键认知）：
+     *   - 用 Flux.range + concatMap 串步骤。concatMap 保证顺序（上一步完整结束才下一步），
+     *     所以"上一步输出"用一个单元素累积器传，同一时刻只有一个 step 在跑，可变状态安全。
+     *   - 不用 Flux.create + 同步 for + block（那是"用线程池掩盖同步"，并发高了占满弹性线程）。
+     *   - 单步执行抽到 LlmStepExecutor 独立 Bean（第 7 章的 @Retry 才能跨代理生效，非自调用）。
+     *   - STEP_END 事件携带完整 output——事件流本身承载中间产物，下一步从 STEP_END 取输入，
+     *     不存在"事件流和聚合结果两条流"的矛盾。
      */
     public Flux<AgentEvent> run(String input, String sessionId) {
-        return Flux.<AgentEvent>create(sink -> {
-                    FluxSinkAdapter out = new FluxSinkAdapter(sink, eventBus, sessionId);
-                    List<Step> stepList = steps();
-                    int total = stepList.size();
+        List<Step> stepList = steps();
+        int total = stepList.size();
 
-                    out.emit(EventContent.SESSION_STARTED, Map.of("input", input));
+        Flux<AgentEvent> opening = Flux.defer(() -> Flux.just(
+                eventOf(EventContent.SESSION_STARTED, sessionId, Map.of("input", input))));
 
-                    String payload = input;   // 上一步完整输出，首步是用户 input
-                    for (int step = 0; step < total; step++) {
-                        Step s = stepList.get(step);
-                        out.emit(EventContent.STEP_START,
-                                Map.of("step", step, "total", total));
-                        String userPrompt = s.prepareInput().apply(payload);
-                        String full = streamStep(s.system(), userPrompt, sessionId, step, out);  // 流式 + 累积
-                        out.emit(EventContent.STEP_END,
-                                Map.of("step", step, "output", truncate(full, 80)));
-                        payload = full;   // ← 本步完整输出喂下一步，一句话解决
-                    }
+        // concatMap 顺序执行；prevOutput 持有"上一步完整输出"，首步是 input。
+        // 同一时刻只有一个 step 在跑（concatMap 保证），可变累积器安全。
+        String[] prevOutput = {input};
+        Flux<AgentEvent> chain = Flux.range(0, total)
+                .concatMap(stepIdx -> {
+                    Step s = stepList.get(stepIdx);
+                    int step = stepIdx;
+                    String userPrompt = s.prepareInput().apply(prevOutput[0]);
+                    return stepExecutor.executeStep(s.system(), userPrompt, sessionId, step, total)
+                            // STEP_END 事件由 executor 发出（带完整 output）——这里检测到它就更新累积器
+                            .doOnNext(e -> {
+                                if (EventContent.STEP_END.name().equals(e.type())) {
+                                    prevOutput[0] = String.valueOf(e.data().get("output"));
+                                }
+                            });
+                });
 
-                    out.emit(EventContent.SESSION_COMPLETED, Map.of());
-                    sink.complete();
-                })
+        Flux<AgentEvent> closing = Flux.defer(() -> Flux.just(
+                eventOf(EventContent.SESSION_COMPLETED, sessionId, Map.of(), prevOutput[0])));
+
+        return Flux.concat(opening, chain, closing)
+                .doOnNext(eventBus::emit)   // 每个事件广播到总线（热流，供其他消费者）
                 .onErrorResume(err -> {
-                    // 出错：发 SESSION_FAILED（前端收到后停止转圈），不把异常抛给下游
-                    AgentEvent failed = AgentEvent.builder()
-                            .type(EventContent.SESSION_FAILED)
-                            .sessionId(sessionId)
-                            .data(Map.of("error",
-                                    err.getClass().getSimpleName() + ": " + err.getMessage()))
-                            .build();
+                    AgentEvent failed = AgentEvent.of(EventContent.SESSION_FAILED, sessionId,
+                            Map.of("error", err.getClass().getSimpleName() + ": " + err.getMessage()));
                     eventBus.emit(failed);
                     return Flux.just(failed);
-                })
-                // 阻塞循环跑在弹性线程池（不占 Reactor 线程，可复用、有上限）
-                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+                });
+        // 注意：没有 subscribeOn(boundedElastic)——全程响应式，不占阻塞线程。
     }
 
-    /**
-     * 单步流式调 LLM：每个 chunk 既 emit CONTENT_DELTA（用户看打字机）、又累积进 sb。
-     * 用 reduce 拼完整文本（只订阅上游一次），最后 block 取回完整字符串。
-     *
-     * 为什么 block 安全：run 整体已经 subscribeOn(boundedElastic)，这里 block 阻塞的是
-     * 弹性线程，不是 Reactor 调度线程——符合 boundedElastic "专为阻塞任务设计"的用途。
-     */
-    private String streamStep(String system, String userPrompt, String sessionId, int step, FluxSinkAdapter out) {
-        return chatClient.prompt()
-                .system(system)
-                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
-                .user(userPrompt)
-                .stream()
-                .content()
-                .filter(chunk -> chunk != null && !chunk.isEmpty())
-                .reduce(new StringBuilder(), (sb, chunk) -> {
-                    sb.append(chunk);
-                    out.emit(EventContent.CONTENT_DELTA,
-                            Map.of("text", chunk, "step", step));   // 逐字推给前端 + 广播总线
-                    return sb;
-                })
-                .map(StringBuilder::toString)
-                .block();   // 阻塞等本步完整文本（跑在 boundedElastic，安全）
+    /** 两参数便捷重载（第 1-7 章的 Controller 调 run(prompt, sessionId) 不用改）。 */
+    public Flux<AgentEvent> run(String input, String sessionId, String tenantId) {
+        return run(input, sessionId);   // tenantId 第 8 章续传才用，这里忽略
     }
 
-    /**
-     * 把 FluxSink + AgentEventBus 的"发事件"收口在一个 helper，避免每个 emit 点重复样板。
-     * 发事件 = 同时推给 SSE 下游（sink.next）和总线（eventBus.emit，供其他消费者）。
-     */
-    private static final class FluxSinkAdapter {
-        private final FluxSink<AgentEvent> sink;
-        private final AgentEventBus bus;
-        private final String sessionId;
-        FluxSinkAdapter(FluxSink<AgentEvent> sink, AgentEventBus bus, String sid) {
-            this.sink = sink; this.bus = bus; this.sessionId = sid;
-        }
-        void emit(EventContent type, Map<String, Object> data) {
-            AgentEvent e = AgentEvent.builder().type(type).sessionId(sessionId).data(data).build();
-            bus.emit(e);        // 广播给其他消费者（热流）
-            sink.next(e);       // 推给 SSE 主消费者（冷流下游）
-        }
+    /** 构造事件的快捷方法（opening/closing 用；完整 output 由 executor 的 STEP_END 携带）。 */
+    private static AgentEvent eventOf(EventContent type, String sessionId, Map<String, Object> data) {
+        return AgentEvent.of(type, sessionId, data);
     }
 
     private static String truncate(String s, int max) {
@@ -780,13 +718,94 @@ public abstract class ChainingService {
 }
 ```
 
-> **读这段代码的关键认知**：
-> 1. **`run` 返回的是"冷流"**：不订阅不执行。Controller 把它当 SSE 流返回、浏览器一订阅，整条链才开始跑（这就是 1.1 讲的"冷流驱动执行"）。
-> 2. **控制流是普通 for 循环**：流式链式不一定要堆 Reactor 高阶算子。`Flux.create` 把一个 for 循环包成流，循环里 `payload = full` 一句话把上一步完整输出喂下一步——比 `concatMap`/`expand` 链清晰得多。**企业项目里流式链式的标准写法**就是这种"控制流留同步、推送用响应式"。
-> 3. **`subscribeOn(boundedElastic)`**：for 循环里有 `streamStep` 的 `.block()`（阻塞等本步完整文本）。阻塞必须跑在专为阻塞任务设计的 `boundedElastic` 线程池，**绝不能跑在 Reactor 调度线程**（会拖垮整个事件循环）。这是"在响应式代码里安全使用阻塞"的关键纪律。
-> 4. **每个事件都同时 `bus.emit` + `sink.next`**：`FluxSinkAdapter` 把这俩收口在一处——`sink.next` 推给 SSE 主消费者（冷流下游），`bus.emit` 广播给 AgentEventBus（热流）供日志/成本/归因等其他消费者订阅。
-> 5. **sessionId 用局部变量**：循环里直接读局部变量 `sessionId`（同步 for 循环，直接可用）。**第 1 章不写 Reactor Context**——那是第 3 章工具线程要读 sessionId 时才引入（见 3.2.3 ContextPropagationConfig）。第 1 章没有跨线程读 sessionId 的需求，提前引入只会让人困惑。
-> 6. **`reduce` 只订阅上游一次**：chunk 既逐字 emit 又拼成完整文本，靠 `reduce` 的累积器在一次订阅里完成（不用 `collectInto` 再订阅一次，避免重跑 LLM）。
+**新增 `LlmStepExecutor`——单步 LLM 执行的独立 Bean**（把"单步流式调 LLM + 发事件"从 ChainingService 抽出来，独立成 Bean）：
+
+`src/main/java/com/example/aobs/workflow/LlmStepExecutor.java`：
+
+```java
+package com.example.aobs.workflow;
+
+import com.example.aobs.obs.AgentEvent;
+import com.example.aobs.obs.EventContent;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * 单步 LLM 执行器（独立 Bean）。
+ *
+ * 为什么独立成 Bean（企业级关键）：
+ *  1. 第 7 章的 @Retry/@RateLimiter 等 AOP 注解加在它的方法上能真正生效——独立 Bean
+ *     被注入调用，走代理；不像自调用（ChainingService 内部调自己的 streamStep）绕过代理。
+ *  2. 多个 Service 可复用（写作助手、翻译助手都注入它）。
+ *  3. 可独立单测（mock ChatClient）。
+ *
+ * executeStep 返回本步的事件流：STEP_START → CONTENT_DELTA× → STEP_END。
+ * STEP_END 的 data 带完整 output——这是下一步的输入来源（事件流本身承载中间产物，
+ * 不存在"事件流和聚合结果两条流"的矛盾）。
+ */
+@Component
+public class LlmStepExecutor {
+
+    private final ChatClient chatClient;
+
+    public LlmStepExecutor(ChatClient chatClient) {
+        this.chatClient = chatClient;
+    }
+
+    /**
+     * 执行单步：发 STEP_START，流式推 CONTENT_DELTA，末尾发 STEP_END（带完整 output）。
+     * 全程响应式，不 block——调用方在响应式链里 concatMap 它即可。
+     */
+    public Flux<AgentEvent> executeStep(String system, String userPrompt, String sessionId,
+                                        int step, int total) {
+        Flux<AgentEvent> start = Flux.just(AgentEvent.of(EventContent.STEP_START, sessionId,
+                Map.of("step", step, "total", total)));
+
+        // 流式调 LLM：每个 chunk 既推 CONTENT_DELTA、又累积进 acc（响应式链内顺序写，安全）
+        StringBuilder acc = new StringBuilder();
+        Flux<AgentEvent> deltas = chatClient.prompt()
+                .system(system)
+                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
+                .user(userPrompt)
+                .stream()
+                .content()
+                .filter(chunk -> chunk != null && !chunk.isEmpty())
+                .map(chunk -> {
+                    acc.append(chunk);
+                    Map<String, Object> data = new HashMap<>();
+                    data.put("text", chunk);
+                    data.put("step", step);
+                    return AgentEvent.of(EventContent.CONTENT_DELTA, sessionId, data);
+                });
+        // 步结束：deltas 完成时 acc 已攒齐完整文本，发 STEP_END 带上它（下一步的输入来源）
+        Flux<AgentEvent> end = deltas.thenMany(Flux.defer(() -> {
+            Map<String, Object> data = new HashMap<>();
+            data.put("step", step);
+            data.put("output", acc.toString());   // 完整 output
+            return Flux.just(AgentEvent.of(EventContent.STEP_END, sessionId, data));
+        }));
+
+        return Flux.concat(start, end);
+    }
+}
+```
+
+> **`executeStep` 的响应式结构**（关键认知）：`deltas` 流订阅后逐个推 CONTENT_DELTA 并把 chunk 累积进 `acc`；`deltas.thenMany(...)` 在 deltas 流**完成时**执行，这时 `acc` 已攒齐完整文本，发 STEP_END 带上它。**全程订阅一次、不 block**——`acc` 在同一订阅链里被顺序写，响应式安全。
+>
+> **`@Component` 让它独立**：第 7 章给 `executeStep` 加 `@Retry` 时，因为是独立 Bean、ChainingService 注入调用它（非自调用），AOP 代理生效，重试真正生效——顺带解决了"自调用绕过代理"的老问题。
+
+> **读这段代码的关键认知**（ChainingService.run + LlmStepExecutor）：
+> 1. **`run` 返回冷流**：不订阅不执行。Controller 当 SSE 流返回、浏览器订阅才跑。
+> 2. **全程响应式，不 block、不 subscribeOn(boundedElastic)**：用 `Flux.concat` + `concatMap` 串步骤。对比"Flux.create + 同步 for + block"的旧写法（用线程池掩盖同步，并发高了占满弹性线程），这是真正的响应式——不占任何阻塞线程。
+> 3. **上一步输出传下一步**：`prevOutput[0]` 单元素累积器，`concatMap` 保证同一时刻只有一个 step 在跑，可变状态安全。STEP_END 事件携带完整 output，`doOnNext` 检测到它就更新累积器——事件流本身承载中间产物。
+> 4. **单步抽成 `LlmStepExecutor` 独立 Bean**：第 7 章的 @Retry 能真正生效（非自调用）；多 Service 复用；可单测。
+> 5. **每个事件 `doOnNext(eventBus::emit)`**：广播到总线，供日志/成本/归因等其他消费者。
+> 6. **sessionId 用局部变量**：第 1 章不写 Reactor Context——第 3 章工具线程要读 sessionId 时才引入（见 3.2.3）。
 >
 > **⚠️ 这版的简化点（后续章节改进）**：
 > - token 统计（第 3 章）、错误重试（第 7 章）都还没接。
@@ -801,17 +820,17 @@ public abstract class ChainingService {
 
 ```java
 // 替换第 0 章的构造器（steps() 完全不变，原样保留）：
-public ArticleService(ChatClient chatClient, AgentEventBus eventBus) {
-    super(chatClient, eventBus);   // ← 多传一个 eventBus
+public ArticleService(ChatClient chatClient, AgentEventBus eventBus, LlmStepExecutor stepExecutor) {
+    super(chatClient, eventBus, stepExecutor);   // ← 多传 eventBus + stepExecutor
 }
-// import 补：com.example.aobs.obs.AgentEventBus
+// import 补：com.example.aobs.obs.AgentEventBus、com.example.aobs.workflow.LlmStepExecutor
 ```
 
 > **配套改动纪律**：改了父类构造器，所有子类构造器都要跟着改——否则编译错。IDE 会报红，按报错逐个修。这是企业项目里"改一个签名"的真实成本。
 
 #### 1.2.4 SSE Controller——把事件推给客户端
 
-> **处理第 0 章的 `ArticleController`**：第 0 章的 `/api/article` 接口返回 `Flux<String>`、调 `articleService.run(...)`。现在 `run` 返回类型变成了 `Flux<AgentEvent>`，`ArticleController` 会编译错。**删掉 `ArticleController`**（第 0 章的纯文本流接口，到此退役）——第 1 章起统一用下面的 `SseController`（`/api/obs/article`，事件流）。后面章节的 curl 验证也都改用 `/api/obs/article`。
+> **处理第 0 章的 `ArticleController`**：第 0 章的 `/api/article` 接口返回 `String`、调 `articleService.run(...)`。现在 `run` 返回类型变成了 `Flux<AgentEvent>`，`ArticleController` 会编译错。**删掉 `ArticleController`**（第 0 章的同步接口，到此退役）——第 1 章起统一用下面的 `SseController`（`/api/obs/article`，流式事件 SSE）。后面章节的 curl 验证也都改用 `/api/obs/article`。
 
 `src/main/java/com/example/aobs/obs/SseController.java`：
 
@@ -880,7 +899,7 @@ public class SseController {
 }
 ```
 
-> **关于 `new Thread(...)`**：这是第一版的偷懒做法，第 2 章会换成响应式线程池。真实项目不该用裸 `new Thread`（无上限、开销大），但第 1 章先聚焦「让事件流通起来」，每章只引入一个新难点。
+> **关于"为什么不用 `new Thread(() -> run())` 启动任务"**：有些老教程会用"裸 `new Thread` 启动 run + 热流广播"的写法——本项目**不这么做**。本项目的 `run` 返回冷流（订阅即执行），Controller 直接 `return run(...).map(toSse)`，**订阅本身就是触发**，不需要额外起线程。裸 `new Thread` 无上限、开销大，生产代码绝不用（要用线程池，第 1 章 run 内部的 `subscribeOn(boundedElastic)` 就是）。
 >
 > **关于 JSON 序列化**：直接用 Jackson 的 `ObjectMapper`（Spring Boot 自带），不手写拼 JSON——手写要处理转义、嵌套、null，容易错；ObjectMapper 一次搞定。`AgentEvent` 是 record，Jackson 自动序列化所有字段（type/sessionId/timestamp/data）。
 >
@@ -983,19 +1002,7 @@ public class SseController {
 >
 > **这个页面随章节演进**：第 1 章只显示事件流；第 2 章加重连演示；第 3 章加工具调用面板；第 5 章加租户切换。每章给完整的页面新版本。
 
-#### 1.3.1 给 AgentEventBus 加定向订阅（页面要用的）
-
-SSE 接口要"只推某个会话的事件"，所以 `AgentEventBus` 补一个带过滤的 `flux` 重载（1.2.4 的 `SseController` 已经用到了 `flux(e -> sessionId.equals(...))`，这里把实现补上）：
-
-```java
-/** 消费者调这个：拿过滤后的事件流（SSE 按会话订阅用）。 */
-public Flux<AgentEvent> flux(java.util.function.Predicate<AgentEvent> filter) {
-    return sink.asFlux().filter(filter);
-}
-```
-
-
-#### 1.3.2 启动 + 打开页面
+#### 1.3.1 启动 + 打开页面
 
 ```bash
 mvn spring-boot:run
@@ -1071,7 +1078,8 @@ SESSION_COMPLETED 14:30:15   {"type":"SESSION_COMPLETED","data":{}}
 src/main/java/com/example/aobs/
 ├── Application.java
 ├── workflow/
-│   └── ChainingService.java     （改：加 AgentEventBus + 埋点）
+│   ├── ChainingService.java     （改：响应式 run + 加 AgentEventBus/LlmStepExecutor）
+│   └── LlmStepExecutor.java     （新增：单步 LLM 执行，独立 Bean）
 ├── writing/
 │   └── ArticleService.java      （改：构造器）
 │   （ArticleController 第 0 章接口，本章退役删除）
@@ -1092,7 +1100,7 @@ git add -A && git commit -m "第1章：流式Agent+事件总线+SSE+调试页面
 
 ### 1.7 复盘
 
-**做了**：把第 0 章的流式黑盒（`Flux<String>`）升级成可观测流式 Agent（`Flux<AgentEvent>`）——正文 chunk 包成 CONTENT_DELTA，加 STEP/SESSION 过程事件；搭起三层骨架（采集→总线→SSE）；给了第一个调试页面；并加了 READY 帧给前端就绪信号。流式体感不变，过程透明了。
+**做了**：把第 0 章的同步黑盒（`String run`）升级成流式可观测 Agent（`Flux<AgentEvent>`）——正文 chunk 包成 CONTENT_DELTA 逐字推（解决用户干等），加 STEP/SESSION 过程事件（解决过程不可见）；搭起三层骨架（采集→总线→SSE）；给了第一个调试页面；并加了 READY 帧给前端就绪信号。
 
 **这一章最该记住的工程教训**：
 1. **冷流驱动执行，天然消除竞态**——`run` 返回冷流，订阅即执行，"触发"和"订阅"合一，没有"先发后订"的时序缝隙。对比老式"热流 + 异步触发"会丢 SESSION_STARTED。**这是冷流的核心价值**。
@@ -1446,8 +1454,8 @@ public class CriticalEventStore {
                     : Flux.empty();
             Flux<AgentEvent> live = eventBus.subscribe(sessionId);   // AgentEventBus 内部按会话过滤
             return Flux.concat(replay, live)
-                    .takeUntil(e -> e.type() == EventContent.SESSION_COMPLETED
-                            || e.type() == EventContent.SESSION_FAILED)
+                    .takeUntil(e -> EventContent.SESSION_COMPLETED.name().equals(e.type())
+                            || EventContent.SESSION_FAILED.name().equals(e.type()))
                     .map(this::toSse);
         }
 
@@ -1718,7 +1726,7 @@ public class ChatClientConfig {
 }
 ```
 
-> **注意**：`ChainingService` 注入的是 `ChatClient`。Spring AI starter 默认会提供一个 `ChatClient` Bean。这里我们**自定义**一个带工具的 `ChatClient` Bean 覆盖默认的。如果启动报「多个 ChatClient Bean」冲突，删掉这个自定义 Bean、改成在 `ChainingService.streamStep` 的 `chatClient.prompt().tools(tools)` 调用时传也行——两种方式任选。
+> **注意**：`LlmStepExecutor` 注入的是 `ChatClient`。Spring AI starter 默认会提供一个 `ChatClient` Bean。这里我们**自定义**一个带工具的 `ChatClient` Bean 覆盖默认的。如果启动报「多个 ChatClient Bean」冲突，删掉这个自定义 Bean、改成在 `LlmStepExecutor.executeStep` 的 `chatClient.prompt().tools(tools)` 调用时传也行——两种方式任选。
 
 #### 3.2.3 工具调用可见：订阅原生 Observation（采集点）
 
@@ -1905,43 +1913,76 @@ public class ToolObservationHandler implements ObservationHandler<ToolCallingObs
 > **本文为什么不自己实现 traceId**：① 文档定位是"业务可观测（事件流）"，tracing 是另一条线（附录 A.8 列为上线前补）；② 单服务项目里 sessionId + step 已能定位，traceId 在跨服务链路才不可替代；③ 框架已自动生成 traceId，你不用造。你该知道的是"这两套要靠 traceId↔sessionId 关联打通"——归档时存 trace_id 列（第 7 章/附录 A.8），任意一个维度能跳查另一个。**别把 traceId 和 sessionId 混为一谈，也别重复造框架已有的东西**。
 
 
-#### 3.2.4 token 统计：在 streamStep 里旁路发事件
+#### 3.2.4 token 统计：在 LlmStepExecutor 里旁路发事件
 
-流式下 token 信息在**最后一个流式响应**的 metadata 里。第 1 章的 `streamStep` 用 `.stream().content()` 只拿文本——这里改成 `.stream().chatResponse()` 拿完整响应（每个 chunk 是一个 `ChatResponse`，最后一个含 `Usage`）。reduce 累积文本的同时，把最后一个 chunk 的 Usage 取出发 `LLM_TOKENS`。
+流式下 token 信息在**最后一个流式响应**的 metadata 里。第 1 章的 `LlmStepExecutor.executeStep` 用 `.stream().content()` 只拿文本——这里改成 `.stream().chatResponse()` 拿完整响应（每个 chunk 是一个 `ChatResponse`，最后一个含 `Usage`）。在 deltas 流结束时把最后一个 response 的 Usage 取出发 `LLM_TOKENS`。
 
-`src/main/java/com/example/aobs/workflow/ChainingService.java`（增量改：替换第 1 章的 `streamStep` 方法体 + 加 `emitTokens` 方法）：
+`src/main/java/com/example/aobs/workflow/LlmStepExecutor.java`（增量改：替换第 1 章 `executeStep` 里的 `deltas` 流 + 加 `emitTokens` 方法）：
 
 ```java
-// 替换第 1 章的 streamStep 方法体（用 chatResponse() 流，reduce 时同时累积文本和记录最后一个 response）
-private String streamStep(String system, String userPrompt, String sessionId, int step, FluxSinkAdapter out) {
-    org.springframework.ai.chat.model.ChatResponse[] last = {null};   // 装最后一个 chunk（含 Usage）
+// 替换第 1 章 executeStep 里的 deltas 流（用 chatResponse() 流，记录最后一个 response 以取 Usage）
+org.springframework.ai.chat.model.ChatResponse[] last = {null};   // 装最后一个 chunk（含 Usage）
+StringBuilder acc = new StringBuilder();
+Flux<AgentEvent> deltas = chatClient.prompt()
+        .system(system)
+        .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
+        .user(userPrompt)
+        .stream()
+        .chatResponse()                                   // ← 改：拿完整响应（不只是 content）
+        .filter(resp -> resp.getResult() != null
+                && resp.getResult().getOutput().getText() != null
+                && !resp.getResult().getOutput().getText().isEmpty())
+        .map(resp -> {
+            String chunk = resp.getResult().getOutput().getText();
+            acc.append(chunk);
+            last[0] = resp;                               // 每次更新，结束时就是最后一个
+            Map<String, Object> data = new HashMap<>();
+            data.put("text", chunk);
+            data.put("step", step);
+            return AgentEvent.of(EventContent.CONTENT_DELTA, sessionId, data);
+        });
 
-    String full = chatClient.prompt()
-            .system(system)
-            .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
-            .user(userPrompt)
-            .stream()
-            .chatResponse()                                   // ← 改：拿完整响应（不只是 content）
-            .filter(resp -> resp.getResult() != null
-                    && resp.getResult().getOutput().getText() != null
-                    && !resp.getResult().getOutput().getText().isEmpty())
-            .map(resp -> {
-                String chunk = resp.getResult().getOutput().getText();
-                last[0] = resp;                               // 每次更新，结束时就是最后一个
-                return chunk;
-            })
-            .reduce(new StringBuilder(), (sb, chunk) -> {
-                sb.append(chunk);
-                out.emit(EventContent.CONTENT_DELTA,
-                        Map.of("text", chunk, "step", step));
-                return sb;
-            })
-            .map(StringBuilder::toString)
-            .block();
+// 步结束：发 LLM_TOKENS（旁路）+ STEP_END。deltas 完成时 acc/last[0] 已就绪
+Flux<AgentEvent> end = deltas.thenMany(Flux.defer(() -> {
+    AgentEvent tokens = emitTokens(sessionId, last[0]);   // 旁路发 token 事件（可能 null，见下）
+    Map<String, Object> endData = new HashMap<>();
+    endData.put("step", step);
+    endData.put("output", acc.toString());
+    AgentEvent stepEnd = AgentEvent.of(EventContent.STEP_END, sessionId, endData);
+    return tokens != null ? Flux.just(tokens, stepEnd) : Flux.just(stepEnd);
+}));
 
-    emitTokens(sessionId, last[0]);   // 旁路发 token 事件（不影响主流程，full 照常返回）
-    return full;
+return Flux.concat(start, end);   // start 同第 1 章
+```
+
+> **增量改说明**：只替换了第 1 章 `executeStep` 内部的 `deltas`/`end` 两段——`start`（STEP_START）不变、方法签名不变、`@Retry`（第 7 章加的）照常生效。token 事件在 STEP_END 前发出，不影响主流程。
+
+`emitTokens` 方法（加到 LlmStepExecutor）：
+
+```java
+private final CostCalculator costCalculator;   // 构造器注入（第 3 章新增）
+
+/** 取 Usage 发 LLM_TOKENS 事件。流式下 Usage 在最后一个 response 的 metadata 里。返回 null=不发自定义事件。 */
+private AgentEvent emitTokens(String sessionId, org.springframework.ai.chat.model.ChatResponse response) {
+    try {
+        if (response == null) return null;
+        var usage = response.getMetadata().getUsage();
+        if (usage == null) return null;
+        int prompt = usage.getPromptTokens() == null ? 0 : usage.getPromptTokens();
+        int completion = usage.getCompletionTokens() == null ? 0 : usage.getCompletionTokens();
+        String model = response.getMetadata().getModel();
+        double cost = costCalculator.calculate(prompt, completion, model);
+        return AgentEvent.of(EventContent.LLM_TOKENS, sessionId,
+                Map.of("promptTokens", prompt, "completionTokens", completion,
+                        "totalTokens", prompt + completion, "model", String.valueOf(model),
+                        "costUsd", cost));
+    } catch (Exception ignore) {
+        return null;   // 统计失败不影响主流程
+    }
 }
+```
+
+> LlmStepExecutor 构造器加 `CostCalculator`：`public LlmStepExecutor(ChatClient chatClient, CostCalculator costCalculator)`。
 
 /** 取 Usage 发 LLM_TOKENS 事件。流式下 Usage 在最后一个 response 的 metadata 里。 */
 private void emitTokens(String sessionId, org.springframework.ai.chat.model.ChatResponse response) {
@@ -1971,14 +2012,14 @@ private void emitTokens(String sessionId, org.springframework.ai.chat.model.Chat
 > **为什么不用 `AppContextKeys.SESSION_ID.set()` 手动 set**：如果项目是纯同步 `.call()` 模型（工具在调用线程执行），用最简单的 ThreadLocal `set/get` 即可（Spring AI 官方说明）。**但本项目是流式 `.stream()` 模型**，工具执行切线程——所以靠 `ContextPropagationConfig` 的自动传播（3.2.3）：run 里 `.contextWrite` 写进 Reactor Context，自动灌进工具线程，不用手动 set/clear。
 >
 > **小白疑问：为什么叫「旁路」？**
-> token 统计是「额外关心的事」，不是写作主流程。我们发个事件让消费者去统计，`streamStep` 该返回什么还返回什么（本步完整文本）。统计逻辑和业务逻辑解耦——后面想加 Langfuse 上报、想换计费方式，都改消费者不改 `streamStep`。
+> token 统计是「额外关心的事」，不是写作主流程。我们发个事件让消费者去统计，`executeStep` 该产出的 STEP_END（带完整文本）照样产出。统计逻辑和业务逻辑解耦——后面想加 Langfuse 上报、想换计费方式，都改消费者不改 `executeStep`。
 
 > **配套改动：run 要补 `.contextWrite(sessionId)`**。第 1 章精简版没有它（那时没有自动传播）。第 3 章加了 `ContextPropagationConfig`，run 必须把 sessionId 写进 Reactor Context，自动传播才有东西可传。在 `run()` 返回的 Flux 链尾（`.subscribeOn(boundedElastic)` **之后**）加一行：
 > ```java
 >                 .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
 >                 .contextWrite(AppContextKeys.SESSION_ID.write(reactor.util.context.Context.empty(), sessionId));   // ← 加这行
 > ```
-> `contextWrite` 是声明性的（定义流的上下文，不触发执行），放在链尾最直观。import `com.example.aobs.obs.AppContextKeys` 和 `reactor.util.context.Context`。这是第 3 章相对第 1 章的唯一"非 streamStep"改动——为了工具会话隔离。
+> `contextWrite` 是声明性的（定义流的上下文，不触发执行），放在 `Flux.concat(...)` 链尾最直观。import `com.example.aobs.obs.AppContextKeys` 和 `reactor.util.context.Context`。这是第 3 章相对第 1 章的补充改动——为了让工具执行线程能读到 sessionId（工具会话隔离）。
 
 #### 3.2.5 成本计算器
 
@@ -2154,7 +2195,7 @@ src/main/java/com/example/aobs/
 │   ├── ToolObservationHandler.java    （新增：订阅工具 Observation）
 │   └── CostCalculator.java            （新增）
 ├── workflow/
-│   └── ChainingService.java           （改：streamStep 取 Usage 发 LLM_TOKENS）
+│   └── LlmStepExecutor.java           （改：executeStep 取 Usage 发 LLM_TOKENS）
 └── writing/
     ├── WritingTools.java              （新增）
     └── ArticleService.java            （改：构造器加 CostCalculator）
@@ -2513,12 +2554,17 @@ import java.util.*;
 /**
  * 按会话内 sequence 重排。用「乱序容忍窗口」：
  * 攒一小批，按 seq 排序输出；超窗口强制输出当前最小（防无限等待）。
+ *
+ * ⚠️ 使用约束：每个 SSE 流必须 new 一个独立实例（SseController 里
+ * `.transform(new EventSequencer(...)::reorder)`）——buffers/lastEmitted 是
+ * per-stream 的重排状态，不能跨流共享。用 ConcurrentHashMap 是防御性
+ * （万一被误做成共享单例，至少不崩），但正确用法仍是每流一个。
  */
 public class EventSequencer {
 
     private final Duration window;
-    private final Map<String, PriorityQueue<AgentEvent>> buffers = new HashMap<>();
-    private final Map<String, Long> lastEmitted = new HashMap<>();
+    private final Map<String, PriorityQueue<AgentEvent>> buffers = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Long> lastEmitted = new java.util.concurrent.ConcurrentHashMap<>();
 
     public EventSequencer(Duration window) {
         this.window = window;
@@ -2553,8 +2599,8 @@ public class EventSequencer {
 ```java
 Flux<ServerSentEvent<String>> events = Flux.concat(replay, live)
         .transform(new EventSequencer(Duration.ofMillis(100))::reorder)   // ← 重排
-        .takeUntil(e -> e.type() == EventContent.SESSION_COMPLETED
-                || e.type() == EventContent.SESSION_FAILED)
+        .takeUntil(e -> EventContent.SESSION_COMPLETED.name().equals(e.type())
+                || EventContent.SESSION_FAILED.name().equals(e.type()))
         .map(this::toSse);
 ```
 
@@ -2616,7 +2662,7 @@ git add -A && git commit -m "第4章：规模化——状态外置、分片总�
 | 需求 | 方案 |
 |------|------|
 | 租户隔离 | 事件加 `tenantId` 字段，SSE 双向校验（请求 tenantId 必须匹配事件 tenantId） |
-| 成本归因 | 事件加 `userId`/`agentVersion`/`promptVersion`，消费者按维度聚合 |
+| 成本归因 | 事件加 `userId`/`agentVersion`，消费者按维度聚合 |
 | 多级配额 | 三层（session/tenant/user），都基于 Redis（复用第 4 章状态外置） |
 
 > **演进逻辑**：第 1-4 章 `AgentEvent` 字段是逐步加的——第 1 章 4 字段、第 2 章加 criticality/sequence、第 5 章加归因维度。字段随业务复杂度长，不是一开始全设计好。
@@ -2816,20 +2862,24 @@ git add -A && git commit -m "第5章：多租户隔离 + 成本归因 + 多级�
 
 **架构变化**：单租户 → 多租户；单级预算 → 三级配额。
 
-**关于事件 schema 版本化**：`agentVersion` 字段除了成本归因，还服务"事件结构升级时的向后兼容"。事件 schema 会随业务演进（加字段、改结构），企业级要保证：
+**关于事件 schema 的向后兼容**（和 `agentVersion` 无关——agentVersion 是代码版本，schema 兼容是另一件事）：事件结构会随业务演进（加字段、改结构），企业级要保证：
 - **老前端收到新事件**：新字段加在 `data` Map 里（前端忽略不认识的字段）或 record 末尾（反序列化兼容）——**只加字段不删字段、不改字段类型**。
 - **新前端收到老事件**：新代码对可能缺失的字段给默认值（`event.tenantId() == null ? "default" : ...`）。
 - **不兼容变更另起 type**：如果要改某事件的语义（如 STEP_END 的 output 含义变了），不要改原事件，而是**新增事件类型**（如 `STEP_END_V2`），让新老消费者各取所需。
 
-> **schema 演进纪律**（向后兼容三原则）：① 只加字段不删字段；② 字段类型不改；③ 不兼容变更另起 type。这是所有消息系统（Kafka/事件总线）的通用纪律，第 1 章用 `Map<String,Object> data` 装附加信息就是为了这条——Map 天然容忍加字段。
+> **schema 演进纪律**（向后兼容三原则）：① 只加字段不删字段；② 字段类型不改；③ 不兼容变更另起 type。这是所有消息系统（Kafka/事件总线）的通用纪律，第 1 章用 `Map<String,Object> data` 装附加信息就是为了这条——Map 天然容忍加字段。注意：这套纪律**不需要专门版本字段**（不是 agentVersion 干的活），靠"加字段只增不减"的约束就够了。
 
-**Prompt 版本管理与 AB 测试（AI 产品核心迭代手段）**：
+**关于 `agentVersion` 和 `promptVersion`——两个不同的版本字段**：
 
-`promptVersion` 字段除了成本归因，更重要的用途是 **prompt 灰度对比**。AI 产品最主要的迭代是**改 prompt（不是改代码）**——一周可能改几次。每次改要能回答"新版比旧版好吗？"，靠的就是 promptVersion：
+- **`agentVersion`（本章加的）= 代码/部署版本**：标识"这次事件是哪个版本的代码生成的"。用途：成本按版本归因、线上问题按版本回滚定位（"v1.2 的会话有问题，回滚到 v1.1"）。它是**工程版本**。
+- **`promptVersion`（另一个字段，不在本章加）= prompt 配置版本**：标识"这次用的是哪个版本的 prompt"。AI 产品最频繁的迭代是**改 prompt（不是改代码）**——一周改几次 prompt 很正常，每次改要能回答"新版比旧版好吗"，靠的就是 promptVersion 灰度对比。
+
+两者不能混用一个字段——代码没改只改了 prompt 时，agentVersion 不变、promptVersion 变；反过来也是。**本章只加 agentVersion**（工程归因够用）；promptVersion 的灰度对比是 AI 产品迭代的另一套能力（prompt 当数据版本化 + A/B 分流），留到附录 A.12 讲。
 
 ```
-版本 v1: "你是写作助手。根据大纲写一篇草稿。"
-版本 v2: "你是写作助手。根据大纲写一篇 800 字草稿，分段清晰。"
+（A.12 会讲的 promptVersion 灰度示意）
+prompt v1: "你是写作助手。根据大纲写一篇草稿。"
+prompt v2: "你是写作助手。根据大纲写一篇 800 字草稿，分段清晰。"
                                                     ↓ 灰度各跑 50%
               按 promptVersion 聚合质量指标对比：
               - 用户采纳率（v1: 62% → v2: 71% ✓）
@@ -2837,8 +2887,6 @@ git add -A && git commit -m "第5章：多租户隔离 + 成本归因 + 多级�
               - 平均成本（v1: $0.012 → v2: $0.011）
               → v2 全面更好，全量切 v2
 ```
-
-实现：prompt 从代码里抽到配置（或 prompt 仓库），按版本号取；`AgentEvent` 带 `promptVersion`；消费者按版本聚合质量指标。**这是 AI 产品和普通后端最大的区别——prompt 是"数据"，要版本化管理 + 灰度，不是写死在代码里**。
 
 > **为什么必须版本化**：不版本化，你永远不知道"用户采纳率下降"是因为改了 prompt、换了模型、还是流量变了。版本化让 prompt 变更**可归因、可回滚**——出问题切回上一版，几分钟恢复。
 
@@ -3004,13 +3052,13 @@ public class HttpClientConfig {
 
 > **为什么 180 秒**：DeepSeek 长文本生成 + 多步 workflow，单次 LLM 调用可能到 60-90 秒（含停顿）。180 秒留足余量。太短=误杀（事故 A）；太长=真卡死时用户等太久。企业级按 P99 生成耗时 × 2-3 倍设。
 >
-> **本项目走的就是 WebClient**：`ChainingService.streamStep` 用流式 `.stream()`，底层是 WebClient——上面这个 `WebClient.Builder` Bean 正好生效，无需额外配置。
+> **本项目走的就是 WebClient**：`LlmStepExecutor.executeStep` 用流式 `.stream()`，底层 HTTP 栈——上面这个 `WebClient.Builder` Bean 对手写的 WebClient 调用生效。⚠️ **注意**：Spring AI 的 OpenAI chat client 实际走 **RestClient**（同步栈），不是 WebClient——`WebClient.Builder` Bean 对 Agent 内部的 LLM 流式调用**可能不生效**。最稳是像第 7 章那样配 `RestClient.Builder` 的超时。本节先按 WebClient 讲（覆盖手写 WebClient 场景），生产建议 RestClient.Builder 也配一份。
 
 #### 6.2.5 修复事故 B：错误要有归宿（转成 SESSION_FAILED）
 
 事故 B 的根因——LLM 调用抛异常时，错误沿 Reactor 流往上传，如果没人接，变成 `ErrorCallbackNotImplemented` 刷日志，且前端没收到 `SESSION_FAILED`、页面一直转圈。
 
-**本项目的冷流方案已经天然处理了它**：第 1 章的 `ChainingService.run` 在 Flux 链上挂了 `.onErrorResume(err -> 发 SESSION_FAILED)`——任何步骤（含 streamStep 的 LLM 调用）抛异常，都被这里接住、转成 `SESSION_FAILED` 事件推给前端，前端停止转圈。冷流驱动执行的好处之一：错误归宿和执行路径是同一条 Flux 链，不会"漏接"。
+**本项目的冷流方案已经天然处理了它**：第 1 章的 `ChainingService.run` 在 Flux 链上挂了 `.onErrorResume(err -> 发 SESSION_FAILED)`——任何步骤（含 `LlmStepExecutor.executeStep` 的 LLM 调用）抛异常，都被这里接住、转成 `SESSION_FAILED` 事件推给前端，前端停止转圈。冷流驱动执行的好处之一：错误归宿和执行路径是同一条 Flux 链，不会"漏接"。
 
 > **为什么冷流方案不容易漏接错误**：老式"热流 + `Mono.fromRunnable(run).subscribe()` 触发"方案里，执行和 SSE 推送是**两条独立的链**——subscribe 触发的执行如果抛错，要专门给 subscribe 加 `onError` 回调才不漏（漏了就是事故 B）。冷流方案里执行和推送是**同一条 Flux**（Controller 直接 return run 的 Flux），`.onErrorResume` 一处兜住所有步骤的错误，没有"两条链要对齐"的心智负担。
 >
@@ -3072,7 +3120,7 @@ src/main/java/com/example/aobs/
     ├── ResilientExternal.java   （新增：降级门面）
     └── ObsHealthIndicator.java  （新增：健康检查）
 ```
-SseController 改：subscribe 加错误回调（修事故B）。pom 加了 actuator。
+SseController **无需改**（冷流方案 + run 的 onErrorResume 已兜住事故B，见 6.2.5）。pom 加了 actuator。
 
 ```bash
 git add -A && git commit -m "第6章：灾备降级 + 健康检查 + 超时/错误修复 + 监控"
@@ -3153,23 +3201,27 @@ return events.mergeWith(heartbeat)
         </dependency>
 ```
 
-把 `ChainingService.streamStep` 改成 public 并加重试（429/超时退避重试，耗尽降级）：
+把 `@Retry` 加在 `LlmStepExecutor.executeStep` 上（429/超时退避重试，耗尽降级）——**这是第 1 章把单步执行抽成独立 Bean 的回报兑现**：
 ```java
-    @io.github.resilience4j.retry.annotation.Retry(name = "llmCall", fallbackMethod = "streamStepFallback")
-    public String streamStep(String system, String userPrompt, String sessionId, int step, FluxSinkAdapter out) {
-        // ... 原 streamStep 逻辑不变（流式调 LLM + 累积 + emit CONTENT_DELTA）
+    @io.github.resilience4j.retry.annotation.Retry(name = "llmCall", fallbackMethod = "executeStepFallback")
+    public Flux<AgentEvent> executeStep(String system, String userPrompt, String sessionId,
+                                        int step, int total) {
+        // ... 第 1 章的 executeStep 逻辑不变（STEP_START → CONTENT_DELTA× → STEP_END）
     }
 
-    /** 重试耗尽降级：返回降级文案，并发 SESSION_FAILED。 */
-    public String streamStepFallback(String system, String userPrompt, String sessionId, int step,
-                                     FluxSinkAdapter out, Throwable t) {
-        eventBus.emit(AgentEvent.of(EventContent.SESSION_FAILED, sessionId,
-                Map.of("error", "LLM 不可用（重试耗尽）: " + t.getClass().getSimpleName())));
-        return "（AI 服务暂时繁忙，请稍后重试）";
+    /** 重试耗尽降级：发一条降级 CONTENT_DELTA + STEP_END，并发 SESSION_FAILED 信号。 */
+    public Flux<AgentEvent> executeStepFallback(String system, String userPrompt, String sessionId,
+                                                int step, int total, Throwable t) {
+        return Flux.just(
+                AgentEvent.of(EventContent.CONTENT_DELTA, sessionId,
+                        Map.of("text", "（AI 服务暂时繁忙，请稍后重试）", "step", step)),
+                AgentEvent.of(EventContent.STEP_END, sessionId,
+                        Map.of("step", step, "output", "（AI 服务暂时繁忙）")));
+        // SESSION_FAILED 由 ChainingService.run/runFrom 的 onErrorResume 接住（重试耗尽会抛出）
     }
 ```
 
-> **为什么 streamStep 要改 public**：Resilience4j 的 `@Retry` 靠 Spring AOP 代理生效，AOP 只拦截 **public** 方法（且不能自调用——`run` 循环里调 `streamStep` 要确保走的是代理对象，生产里可把 streamStep 拆到独立 Bean 注入回来调，避免自调用失效）。
+> **为什么 `@Retry` 这次真能生效**：`executeStep` 在 `LlmStepExecutor`（独立 Bean）上，`ChainingService` 注入它、在响应式链里 `concatMap` 调它——**非自调用，Spring AOP 代理拦截生效**。对比第 1 章前（streamStep 在 ChainingService 内部、run 自调用），那时 @Retry 够不着。**这就是把它抽成独立 Bean 的企业级价值**——可观测（第 1 章的复用/单测）+ 可靠性（第 7 章的 @Retry 生效）一次到位。
 >
 > **流式重试的注意点**：流式 `.stream()` 的失败分两种——① 建连就失败（429/超时），重试整步合理；② 流到一半断（事故 A），重试会从头再流一次（已 emit 的 CONTENT_DELTA 会重复，前端需按 step+offset 去重）。生产里对第 ② 种更精细的处理是"断点续传"，本文先用"整步重试 + 前端容忍重复"的简单方案。
 
@@ -3584,11 +3636,12 @@ public class SessionReplayController {
 
     @GetMapping(value = "/replay/{sessionId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> replay(@PathVariable String sessionId) {
-        // 按序号查出该会话全部事件的 payload（已是完整 JSON）
-        List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT payload FROM event_archive WHERE session_id=? ORDER BY seq", sessionId);
-
-        return Flux.fromIterable(rows)
+        // JDBC 是阻塞调用，必须跑在 boundedElastic（不能占 WebFlux 的 Netty event loop）。
+        // 用 Mono.fromCallable 包一下再切线程——阻塞调用不能占响应式调度线程的通用纪律。
+        return Mono.fromCallable(() -> jdbc.queryForList(
+                        "SELECT payload FROM event_archive WHERE session_id=? ORDER BY seq", sessionId))
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                .flatMapMany(Flux::fromIterable)
                 .map(row -> {
                     String payload = String.valueOf(row.get("payload"));
                     return ServerSentEvent.<String>builder()
@@ -3611,6 +3664,8 @@ public class SessionReplayController {
 ```
 
 > **API 核实**：`JdbcTemplate.queryForList(sql, args)` 返回 `List<Map<String,Object>>`；`Flux.fromIterable(...).map(...)` 是标准 Reactor；`ServerSentEvent.builder()` 是 WebFlux 的 SSE 帧。归档表的 `payload` 列在第 7 章存的是 `ObjectMapper.writeValueAsString(event)` 完整 JSON，这里原样包成 SSE data。
+>
+> ⚠️ **本章所有 JDBC 调用都是阻塞的**（SessionService.get/list、getStepOutput、TenantService 等）。在返回 `Flux`/`Mono` 的接口里（如本 replay），必须用 `Mono.fromCallable(...).subscribeOn(boundedElastic)` 包一下切线程（同上）；返回普通对象/Map 的同步接口（如 list），WebFlux 会在 event loop 上同步执行——**教学场景量小可接受，生产换 R2DBC 或统一走 boundedElastic**。通用纪律：阻塞不能占 Netty event loop。
 >
 > **为什么前端不用改**：实时流（`/api/obs/article`）和历史回放（`/api/session/replay/{id}`）都是 SSE，前端帧解析逻辑完全一样。A.10 的页面 `replay()` 函数直接订阅这个接口即可。
 
@@ -3956,50 +4011,65 @@ public String getStepOutput(String sessionId, int step) {
 }
 ```
 
-> **STEP_END 存的是摘要不是全文**：第 1 章 STEP_END 的 output 是 `truncate(full, 80)`——续传拿它喂下一步，只有前 80 字。生产里要么 STEP_END 存完整 output（归档变大）、要么中间产物单独存 Redis（第 4 章 SessionStateStore，key=`aobs:session:{sid}:stepOut:{step}`）。本教学接受这个简化，重点讲"续传要持久化中间产物"这个**认知**。
+> **STEP_END 带完整 output（第 1 章已改）**：第 1 章的 STEP_END 携带完整 output（不是 truncate 摘要），所以续传从归档取 STEP_END 的 output 喂下一步，是完整文本。但归档存的事件是从总线落库的——若归档链路对 output 做了截断（某些实现会），续传拿到的就是不完整的。**最稳的续传**：中间产物单独存 Redis（第 4 章 SessionStateStore，key=`aobs:session:{sid}:stepOut:{step}`），不依赖事件归档。本教学从 STEP_END 取（够用），生产建议单独存。
 
-`ChainingService` 加 `runFrom`（从 fromStep 接着跑），run 调 runFrom(..., 0)：
+`ChainingService` 加 `runFrom`（从 fromStep 接着跑，用 LlmStepExecutor + concatMap，和 run 同一套响应式风格），run 调 runFrom(..., 0)：
 
 ```java
 /**
  * 从 fromStep 开始跑。fromStep=0 等价全新执行。续传时 fromStep = last_step + 1。
- * 续传的第一步，其输入（上一步输出）从归档取（resolveUserPrompt）。
+ * 续传的第一步，其输入（上一步输出）从归档取（getStepOutput）。
+ * 全程响应式，用 LlmStepExecutor（独立 Bean）执行单步——第 7 章的 @Retry 在续传路径也生效。
  */
 public Flux<AgentEvent> runFrom(String input, String sessionId, String tenantId, int fromStep) {
-    return Flux.<AgentEvent>create(sink -> {
-                FluxSinkAdapter out = new FluxSinkAdapter(sink, eventBus, sessionId);
-                java.util.List<Step> stepList = steps();
-                int total = stepList.size();
+    java.util.List<Step> stepList = steps();
+    int total = stepList.size();
 
-                if (fromStep == 0) {
-                    sessionService.start(sessionId, tenantId, input, total);
-                    out.emit(EventContent.SESSION_STARTED, Map.of("input", input));
-                } else {
-                    // 续传：发 STEP_RESUMED，让前端知道"从第 N 步接着跑"
-                    out.emit(EventContent.STEP_RESUMED, Map.of("fromStep", fromStep, "total", total));
-                }
+    Flux<AgentEvent> opening;
+    if (fromStep == 0) {
+        opening = Flux.defer(() -> {
+            sessionService.start(sessionId, tenantId, input, total);
+            return Flux.just(AgentEvent.of(EventContent.SESSION_STARTED, sessionId, Map.of("input", input)));
+        });
+    } else {
+        opening = Flux.just(AgentEvent.of(EventContent.STEP_RESUMED, sessionId,
+                Map.of("fromStep", fromStep, "total", total)));   // 续传：让前端知道"从第 N 步接着跑"
+    }
 
-                String payload = input;
-                for (int step = fromStep; step < total; step++) {
-                    Step s = stepList.get(step);
-                    out.emit(EventContent.STEP_START, Map.of("step", step, "total", total));
-                    // 续传的第一步：输入从归档取（上一步输出）；否则用循环累积的 payload。再过 prepareInput。
-                    String prevOutput = (step == fromStep && fromStep > 0)
-                            ? sessionService.getStepOutput(sessionId, step - 1)
-                            : payload;
-                    String userPrompt = s.prepareInput().apply(prevOutput);
-                    String full = streamStep(s.system(), userPrompt, sessionId, step, out);
-                    out.emit(EventContent.STEP_END, Map.of("step", step, "output", truncate(full, 80)));
-                    sessionService.advanceStep(sessionId, step);   // 记录进度
-                    payload = full;
-                }
+    // 续传的第一步输入从归档取（上一步输出），后续步骤用累积器
+    String[] prevOutput = { input };
+    Flux<AgentEvent> chain = Flux.range(fromStep, total - fromStep)
+            .concatMap(stepIdx -> {
+                Step s = stepList.get(stepIdx);
+                int step = stepIdx;
+                // 续传第一步：从归档取上一步输出；否则用累积器
+                String prev = (step == fromStep && fromStep > 0)
+                        ? sessionService.getStepOutput(sessionId, step - 1) : prevOutput[0];
+                if (prev == null) prev = prevOutput[0];   // 归档取不到兜底
+                String userPrompt = s.prepareInput().apply(prev);
+                return stepExecutor.executeStep(s.system(), userPrompt, sessionId, step, total)
+                        .doOnNext(e -> {
+                            if (EventContent.STEP_END.name().equals(e.type())) {
+                                prevOutput[0] = String.valueOf(e.data().get("output"));   // 累积
+                            }
+                        })
+                        .doOnComplete(() -> sessionService.advanceStep(sessionId, step));   // 记录续传进度
+            });
 
-                sessionService.complete(sessionId, truncate(payload, 2000));
-                out.emit(EventContent.SESSION_COMPLETED, Map.of());
-                sink.complete();
-            })
-            .onErrorResume(err -> { sessionService.fail(sessionId); /* ... 发 SESSION_FAILED ... */ return Flux.empty(); })
-            .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+    Flux<AgentEvent> closing = Flux.defer(() -> {
+        sessionService.complete(sessionId, prevOutput[0]);   // 回填最终输出
+        return Flux.just(AgentEvent.of(EventContent.SESSION_COMPLETED, sessionId, Map.of()));
+    });
+
+    return Flux.concat(opening, chain, closing)
+            .doOnNext(eventBus::emit)
+            .onErrorResume(err -> {
+                sessionService.fail(sessionId);
+                AgentEvent failed = AgentEvent.of(EventContent.SESSION_FAILED, sessionId,
+                        Map.of("error", err.getClass().getSimpleName() + ": " + err.getMessage()));
+                eventBus.emit(failed);
+                return Flux.just(failed);
+            });
 }
 
 /** 全新执行（带租户，第 8 章入口）。 */
@@ -4013,7 +4083,7 @@ public Flux<AgentEvent> run(String input, String sessionId) {
 }
 ```
 
-> **续传路径的 `@Retry` 自调用问题**（第 7 章已述，续传里同样存在）：`runFrom` 在 `ChainingService` 内部调 `streamStep`，是自调用——Spring AOP 代理不拦截自调用，第 7 章给 `streamStep` 加的 `@Retry` 在续传路径不生效。生产解法：把 `streamStep` 拆到独立 Bean（如 `LlmStepExecutor`）注入回来调，续传和新跑共用，`@Retry` 两条路径都生效。本教学接受"续传不重试"的简化。
+> **续传和新跑共用 LlmStepExecutor**：`runFrom` 和 `run`（第 1 章）都调 `stepExecutor.executeStep`——同一套单步执行逻辑，续传只是 `fromStep > 0`。因为 `stepExecutor` 是独立 Bean、`runFrom`/`run` 注入调用它（非自调用），**第 7 章给 `executeStep` 加的 `@Retry` 在新跑和续传两条路径都生效**——这正是把它抽成独立 Bean 的回报（第 1 章的架构决策在此兑现）。
 
 续传接口（SessionReplayController 加）：
 
@@ -4595,7 +4665,8 @@ ai-writing-assistant/
 │   ├── config/
 │   │   └── ChatClientConfig.java
 │   ├── workflow/
-│   │   └── ChainingService.java          # 业务基类（流式 run + 续传 runFrom + 埋点）
+│   │   ├── ChainingService.java          # 业务基类（响应式 run + 续传 runFrom）
+│   │   └── LlmStepExecutor.java          # 单步 LLM 执行（独立 Bean，@Retry 生效）
 │   ├── writing/
 │   │   ├── ArticleService.java           # 写作助手
 │   │   └── WritingTools.java             # @Tool 工具
@@ -4661,7 +4732,7 @@ ai-writing-assistant/
 第3章：Observation订阅工具调用 + 会话隔离 + token成本
 第2章：事件可靠性——分级落库、序号、重连回放（页面演示）
 第1章：事件总线+SSE+调试页面+READY握手消除竞态
-第0章：流式黑盒写作助手跑通
+第0章：同步黑盒写作助手跑通
 ```
 
 ### A.3 踩坑手册（每章容易卡的地方）
@@ -4672,7 +4743,7 @@ ai-writing-assistant/
 
 **第 1 章**：
 - `curl` 没加 `-N` → 看不到实时，以为坏了。
-- **竞态**（先启动任务再订阅）→ 漏 `SESSION_STARTED`。页面偶发能复现（curl 基本不行）。解法：`startWith(READY)` + `doOnSubscribe` 触发，协议层消除竞态。
+- **（老式热流方案才有的竞态）** 先 `new Thread` 启动任务再订阅热流 → 漏 `SESSION_STARTED`。**本项目冷流方案天然无此竞态**（订阅即触发，SESSION_STARTED 在订阅后才 emit）。如果你参考老教程用了热流 + new Thread，才会踩这个坑——解法是换成本项目的冷流方案。
 - 改了 `ChainingService` 构造器，忘了改 `ArticleService` → 编译报错，这是好事，按报错改。
 
 **第 2 章**：
@@ -4702,7 +4773,7 @@ ai-writing-assistant/
 
 **第 7 章**：
 - 心跳 `Flux.interval` 忘了 `takeUntilOther` 停 → 写作完成后 SSE 连接不关。必须事件流结束就停心跳。
-- Resilience4j `@Retry` 加在 private 方法上 → AOP 不生效，没重试。必须 public，且避免自调用（自调用绕过代理）。
+- Resilience4j `@Retry` 加在 private 方法上或自调用 → AOP 不生效，没重试。必须 public + **独立 Bean 注入调用**（第 1 章把单步执行抽成 `LlmStepExecutor` 独立 Bean，`@Retry` 加在它的 `executeStep` 上、ChainingService 注入调用——非自调用，代理生效）。
 - 归档 `archive` 没 try/catch → JDBC 慢/挂会拖垮事件流主路径。归档必须容错（吞异常 + 打点）。
 
 **第 8 章**：
@@ -4717,7 +4788,7 @@ ai-writing-assistant/
 
 ```mermaid
 flowchart TD
-    S0[第0章 流式黑盒 Agent<br/>只推正文,过程不可见] -->|事故: 看不到过程| S1
+    S0[第0章 同步黑盒 Agent<br/>一次性返回,过程不可见+用户干等] -->|事故: 看不到过程+干等| S1
     S1[第1章 三层骨架<br/>采集-总线-SSE] -->|投诉: 事件丢/乱/漏| S2
     S2[第2章 可靠性<br/>分级落库+序号+回放] -->|需求: 调工具算钱| S3
     S3[第3章 工具与token<br/>Observation订阅+旁路统计] -->|体量: 上多实例| S4

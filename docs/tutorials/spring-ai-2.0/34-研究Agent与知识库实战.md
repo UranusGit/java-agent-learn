@@ -11,6 +11,8 @@
 > - **辅助项目 `web-search-mcp`**：一个独立的网页搜索 MCP server（第 3 章建，主项目作为 MCP client 接入它）。
 >
 > **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · DeepSeek · **pgvector**（知识库向量库）· **MCP**（工具协议）· DuckDuckGo（网页搜索，零 key）。
+>
+> ⚠️ **版本前提（重要）**：本文基于 Spring Boot 4.1.x / Spring AI 2.0.0（写作时尚在里程碑/预览阶段，部分 API 如 `@McpTool`、`ToolCallingChatOptions.maxToolCallIterations`、MCP starter 命名随小版本变动）。若你用 GA 稳定版，**少量 API 名以你版本的官方文档为准**——本文遇到易变的点会标注 issue/文档链接。
 
 ---
 
@@ -163,6 +165,24 @@ research-agent/
 </project>
 ```
 
+启动类 `src/main/java/com/example/research/Application.java`：
+
+```java
+package com.example.research;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application {
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+}
+```
+
+> `@SpringBootApplication` 是组合注解（自动装配 + 组件扫描）。扫描范围是 `com.example.research` 及子包，后面所有类放这个包下（config/tool/kb/safety 等子包）。
+
 #### 0.2.2 配置
 
 `src/main/resources/application.yaml`：
@@ -229,7 +249,10 @@ public class WebSearchTool {
                 .retrieve()
                 .bodyToMono(String.class)
                 .onErrorResume(e -> Mono.just(""))   // 搜索失败返回空，不让 Agent 崩
-                .block();                            // @Tool 同步方法，block 合法
+                .block();   // 第 0 章固定 workflow（.call() 同步栈）下 block 没问题。
+                            // 第 1 章升级 .stream() 后，工具在响应式链上执行——
+                            // 生产应改成 RestClient（同步栈，跨线程无虞）或包 Mono.fromCallable + boundedElastic，
+                            // 避免 block 占用 Reactor 调度线程（见第 2 章 KnowledgeBaseTool 的写法）。
 
         StringBuilder sb = new StringBuilder();
         Matcher m = SNIPPET.matcher(html);
@@ -349,7 +372,7 @@ public class ResearchController {
 
 #### 0.2.6 让研究过程不那么黑盒（最小手段）
 
-研究过程要几十秒，纯黑盒等待体验差。**第 0 章用最小手段透光**——在 `research()` 关键步骤加日志：
+研究过程要几十秒，纯黑盒等待体验差。**第 0 章用最小手段透光**——在 `research()` 关键步骤加日志（**下面是 0.2.4 的 research() 加三行 println，整体替换 0.2.4 的版本**）：
 
 ```java
 public String research(String topic) {
@@ -448,7 +471,7 @@ package com.example.research;
 
 import com.example.research.tool.WebSearchTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.ToolCallingChatOptions;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;   // GA 版包路径；早期 milestone 版可能是 org.springframework.ai.chat.client.ToolCallingChatOptions，按你的版本核对
 import org.springframework.stereotype.Service;
 
 /**
@@ -561,6 +584,21 @@ public String search(String query) {
                 .content();
     }
 ```
+
+**Controller 也要跟着改**（第 0 章的 Controller 调 `research(topic)` 返 `String`，现在要改成调 `researchStream(topic)` 返 `Flux<String>` + SSE）。增量改两处：
+
+```java
+    // ① 方法签名：返 Flux<String> + produces 声明 SSE（类级已有 @RequestMapping("/api/research")，
+    //    这里不写 value，URL 仍是 /api/research——和第 0 章一致）
+    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<String> research(@RequestParam String topic) {
+        // ② 调流式版（@RateLimiter 保留不变，外部用户防线不撤）
+        return researchService.researchStream(topic);
+    }
+    // import 补：org.springframework.http.MediaType、reactor.core.publisher.Flux
+```
+
+> `Flux<String>` + `text/event-stream` 就是 SSE 流（第 0 章的限流 `@RateLimiter` 原样保留，外部用户产品不该撤防线）。
 
 ### 1.3 验证
 
@@ -692,6 +730,8 @@ spring:
 
 知识库要先有内容。做一个简单的入库接口：传文本，切块、向量化、存 pgvector。
 
+> ⚠️ **WebFlux + JDBC 的阻塞纪律（本章起必须守）**：主项目是 `spring-boot-starter-webflux`（Netty event loop），但 pgvector 走 `JdbcTemplate`（阻塞 JDBC）。**阻塞调用不能占 Netty event loop**——和第 1 章流式 run 的 `block()` 必须跑在 `boundedElastic` 是同一条纪律。所以本章凡是在响应式链/请求线程上触达 JDBC 的地方（IngestController、KnowledgeBaseTool），都要用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` 包一下切线程。下面代码会体现这条纪律。
+
 `src/main/java/com/example/research/kb/IngestController.java`：
 
 ```java
@@ -700,6 +740,7 @@ package com.example.research.kb;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
@@ -720,7 +761,7 @@ public class IngestController {
     }
 
     @PostMapping("/ingest")
-    public Map<String, Integer> ingest(@RequestBody Map<String, String> body) {
+    public Mono<Map<String, Integer>> ingest(@RequestBody Map<String, String> body) {
         String text = body.getOrDefault("text", "");
         String source = body.getOrDefault("source", "unknown");
 
@@ -731,8 +772,12 @@ public class IngestController {
             Document doc = new Document(chunk, Map.of("source", source));   // 元数据：来源
             docs.add(doc);
         }
-        vectorStore.add(docs);    // 自动向量化 + 存库（embedding 由 VectorStore 配置的模型做）
-        return Map.of("ingested", docs.size());
+        // vectorStore.add 走 JdbcTemplate（阻塞）——用 Mono.fromCallable 包，跑在 boundedElastic
+        return Mono.fromCallable(() -> {
+                    vectorStore.add(docs);   // 自动向量化 + 存库
+                    return Map.of("ingested", docs.size());
+                })
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
     }
 }
 ```
@@ -759,6 +804,7 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -780,11 +826,15 @@ public class KnowledgeBaseTool {
             "用于查询公司产品、内部规章、专业领域资料等网页搜不到的信息。")
     public String searchKnowledgeBase(
             @ToolParam(description = "检索查询语句") String query) {
-        List<Document> hits = vectorStore.similaritySearch(SearchRequest.builder()
-                .query(query)
-                .topK(3)
-                .similarityThreshold(0.6)    // ← 相似度阈值：低于 0.6 的不要，避免塞无关片段干扰 LLM
-                .build());
+        // similaritySearch 走 JdbcTemplate（阻塞）。@Tool 是同步方法、被 Agent 的 .stream() 链调用——
+        // 用 Mono.fromCallable + subscribeOn(boundedElastic) 确保阻塞跑在弹性线程，不占 Netty event loop。
+        List<Document> hits = Mono.fromCallable(() -> vectorStore.similaritySearch(SearchRequest.builder()
+                        .query(query)
+                        .topK(3)
+                        .similarityThreshold(0.6)    // ← 阈值（配 cosine_distance 时按版本核对语义，见下方说明）
+                        .build()))
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                .block();
         if (hits == null || hits.isEmpty()) return "（知识库无相关内容）";
 
         // 返回时带编号 + 来源——给 Agent 引用出处用（见 2.2.5 结果引用）
@@ -800,7 +850,9 @@ public class KnowledgeBaseTool {
 }
 ```
 
-> **`similarityThreshold(0.6)` 是 RAG 质量的关键**：不设阈值，`topK(3)` 会无脑返回"最像的 3 个"——哪怕相似度只有 0.2（基本无关）。无关片段塞进 prompt 会**严重干扰 LLM**（它可能基于无关片段胡编）。设 0.6（按你的 embedding 模型调，cosine 相似度 0.6+ 一般算相关）过滤掉低质量的。**这是 RAG 质量的第一道关**，比"返回几条"更重要。
+> **`similarityThreshold(0.6)` 是 RAG 质量的关键**：不设阈值，`topK(3)` 会无脑返回"最像的 3 个"——哪怕相似度只有 0.2（基本无关）。无关片段塞进 prompt 会**严重干扰 LLM**（它可能基于无关片段胡编）。设阈值过滤掉低质量的，**这是 RAG 质量的第一道关**，比"返回几条"更重要。
+>
+> ⚠️ **阈值语义按版本核对**：本文 pgvector 配 `distance-type: cosine_distance`（距离 = 1 − cosine 相似度）。Spring AI 的 `similarityThreshold` 在不同版本里可能是"相似度 ≥ 阈值"或"距离 ≤ 阈值"——和 `cosine_distance` 配合时，0.6 可能被解释成"距离 ≤ 0.6（即 cosine ≥ 0.4）"而非"cosine ≥ 0.6"。**以你版本的官方文档为准**调阈值——调错了要么漏召回（阈值太高）、要么塞无关片段（阈值太低）。先用几条已知相关的样本试，确认召回符合预期再固化。
 >
 > **返回带来源编号**：每条片段标 `[1] 来源:xxx`。这让 Agent 生成结果时能引用出处（"据[1]产品白皮书..."），而不是凭空给结论——是防幻觉的关键，见 2.2.5。
 
@@ -849,6 +901,7 @@ query 向量 ●           ● 文档向量  夹角大 → cosine≈0.2（基本
                         "知识库片段用[编号]（如「据[1]产品白皮书」），网页资料标注「据网页搜索」。")
                 .user("研究主题：" + topic)
                 .tools(searchTool, knowledgeBaseTool)      // ← 两个工具都注册
+                // maxToolCallIterations 从第 1 章的 5 涨到 6：多了知识库工具，给多一步预算
                 .options(ToolCallingChatOptions.builder().maxToolCallIterations(6).build())
                 .stream()
                 .content();
@@ -901,15 +954,46 @@ public class InputGuard {
 }
 ```
 
-Controller 里用：
+Controller 接入 InputGuard（**完整版**——这版改了三处：注入 InputGuard、加审核分支、保留第 0 章的限流 + 第 1 章的 SSE，用片段容易漏）：
+
 ```java
-    @GetMapping
-    public Object research(@RequestParam String topic) {
-        String reject = inputGuard.check(topic);
-        if (reject != null) return reject;        // 输入审核未过，直接拒
-        return researchService.researchStream(topic);   // 过了才放行
+package com.example.research;
+
+import com.example.research.safety.InputGuard;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+
+@RestController
+@RequestMapping("/api/research")
+public class ResearchController {
+
+    private final ResearchService researchService;
+    private final InputGuard inputGuard;          // ← 第 2 章新增注入
+
+    public ResearchController(ResearchService researchService, InputGuard inputGuard) {
+        this.researchService = researchService;
+        this.inputGuard = inputGuard;
     }
+
+    /** 限流（第 0 章）保留不撤——外部用户防线。produces SSE（第 1 章）。 */
+    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
+    public Flux<String> research(@RequestParam String topic) {
+        String reject = inputGuard.check(topic);             // ← 第 2 章新增：输入审核
+        if (reject != null) return Flux.just(reject);        // 审核未过，推一条拒绝消息
+        return researchService.researchStream(topic);        // 过了才放行
+    }
+
+    /** 限流降级（同第 0 章）。 */
+    public Flux<String> rateLimited(String topic, Exception t) {
+        return Flux.just("[请求过于频繁，请稍后再试]");
+    }
+}
 ```
+
+> **第 0 章的限流不撤**：外部用户产品，限流是第一道防线，加 InputGuard 不能把它覆盖掉。这种"多处改动叠加"的 Controller 用完整版最稳——片段容易漏 `@RateLimiter` 或 produces。
 
 ### 2.3 验证
 
@@ -996,7 +1080,7 @@ web-search-mcp（新项目，独立服务）       research-agent（主项目）
 ```
 
 **调研结论**（[官方 MCP 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-overview.html)）：
-- MCP server：`spring-ai-starter-mcp-server` + `@McpTool` 注解，Streamable HTTP transport，自动注册。
+- MCP server：`spring-ai-starter-mcp-server-webmvc` + `@McpTool` 注解，Streamable HTTP transport，自动注册。
 - MCP client：`spring-ai-starter-mcp-client`，按 yaml 配置自动连外部 MCP server，**自动把 MCP 工具暴露为 `ToolCallback`**（对 ChatClient 来说，和本地 `@Tool` 没区别）。
 
 > **为什么 MCP 比"复制工具类"好**：① 工具独立部署、独立升级，所有消费方自动受益；② 标准协议，跨框架/跨语言（Claude Desktop 也能调你的搜索 server）；③ 工具的 API key/限流/缓存集中在 server，消费方无感。代价：多一个服务、多一层协议——值得。
@@ -1057,6 +1141,22 @@ web-search-mcp/
 </project>
 ```
 
+`web-search-mcp/src/main/java/com/example/mcp/Application.java`：
+
+```java
+package com.example.mcp;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application {
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+}
+```
+
 `web-search-mcp/src/main/resources/application.yaml`：
 ```yaml
 spring:
@@ -1067,6 +1167,8 @@ spring:
       server:
         name: web-search-mcp
         version: 0.1.0
+        annotation-scanner:
+          enabled: true                    # 扫描 @McpTool 注解注册工具（默认 true，显式写出防早期版本 false 踩坑，见 issue #4392）
 server:
   port: 8081                               # MCP server 独立端口
 ```
@@ -1080,8 +1182,6 @@ server:
 ```java
 package com.example.mcp;
 
-import io.modelcontextprotocol.server.McpServerFeatures;
-import io.modelcontextprotocol.server.McpSyncServer;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
@@ -1169,15 +1269,23 @@ client 连上任意 MCP server：
         </dependency>
 ```
 
-`web-search-mcp/src/main/java/com/example/mcp/SecurityConfig.java`：
+`web-search-mcp/src/main/java/com/example/mcp/SecurityConfig.java`（**最小可跑版**——用自定义过滤器验 Bearer token，不混 httpBasic）：
 ```java
 package com.example.mcp;
 
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
 
 @Configuration
 public class SecurityConfig {
@@ -1188,13 +1296,25 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http.csrf(c -> c.disable())
-            .authorizeHttpRequests(a -> a
-                .requestMatchers(req -> {   // MCP 端点要求 Bearer token
+            .authorizeHttpRequests(a -> a.anyRequest().authenticated())
+            // 自定义 Bearer 过滤器：校验 Authorization: Bearer <sharedToken>，通过则放行，否则 401
+            .addFilterBefore(new OncePerRequestFilter() {
+                @Override
+                protected void doFilterInternal(HttpServletRequest req, HttpServletResponse resp,
+                                                FilterChain chain) throws ServletException, IOException {
                     String auth = req.getHeader("Authorization");
-                    return !("Bearer " + sharedToken).equals(auth);
-                }).denyAll()
-                .anyRequest().authenticated())
-            .httpBasic(b -> {});   // 简化：实际用 Bearer 解析，这里给最小示意
+                    if (("Bearer " + sharedToken).equals(auth)) {
+                        // 通过：设一个已认证标记（这里用无角色 principal，够过 anyRequest().authenticated()）
+                        var token = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                                "mcp-client", null, java.util.List.of());
+                        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(token);
+                        chain.doFilter(req, resp);
+                    } else {
+                        resp.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                        resp.getWriter().write("unauthorized");
+                    }
+                }
+            }, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }
 }
@@ -1212,7 +1332,7 @@ spring:
   ai:
     mcp:
       client:
-        sse:
+        streamable-http:           # ← webmvc server 用 Streamable HTTP transport，client 配置键对应
           connections:
             web-search:
               url: http://localhost:8081
@@ -1220,8 +1340,9 @@ spring:
 ```
 
 > ⚠️ **诚实说明（重要）**：
-> - 上面的 `SecurityConfig` 是**示意**（`httpBasic` + 简化判断），真实生产用 OAuth2/JWT（[Spring 官方 MCP OAuth2 博客](https://spring.io/blog/2025/09/30/spring-ai-mcp-server-security)）。本文给"最小鉴权思路"，完整 OAuth2 超出本文范围。
-> - **已知坑 [issue #2506](https://github.com/spring-projects/spring-ai/issues/2506)**：SSE transport 下，连接时鉴权生效，但**工具执行时认证上下文可能丢失**。生产要测"鉴权是否在工具执行阶段也成立"。
+> - **client 配置键按版本核对**：webmvc server（Streamable HTTP）对应 `spring.ai.mcp.client.streamable-http.connections`；webflux server（SSE transport）才用 `spring.ai.mcp.client.sse.connections`。本文 server 是 webmvc，所以用 `streamable-http`。配置键在不同 2.0.x 小版本可能有微调，以你的 starter 版本官方文档为准。
+> - 上面的 `SecurityConfig` 是**最小可跑版**（自定义 Bearer 过滤器 + 共享 token）——能用，但 token 是静态共享密钥（适合开发/小规模）。**生产用 OAuth2/JWT**（[Spring 官方 MCP OAuth2 博客](https://spring.io/blog/2025/09/30/spring-ai-mcp-server-security)），动态签发、可撤销、带过期。本文给"能跑的最小鉴权"，完整 OAuth2 超出本文范围。
+> - **已知坑 [issue #2506](https://github.com/spring-projects/spring-ai/issues/2506)**：transport 层连接时鉴权生效，但**工具执行时认证上下文可能丢失**。生产要测"鉴权是否在工具执行阶段也成立"。
 > - **更稳的架构**：不在每个 MCP server 自己验 JWT，而是**在网关（Spring Cloud Gateway）统一验**，把可信身份透传给下游 MCP server（[生产级模式](https://medium.com/codetodeploy/secure-spring-ai-mcp-servers-gateway-jwt-auth-d7f0141be9d6)）。
 >
 > **核心结论**：MCP server 对外 = 必须鉴权。本文的最小鉴权够你理解"为什么要做、怎么做雏形"，生产按官方 MCP Security 文档上 OAuth2。
@@ -1243,17 +1364,61 @@ spring:
   ai:
     mcp:
       client:
-        sse:
+        streamable-http:                   # webmvc server 用 Streamable HTTP（若你的 starter 版本键名不同，按官方文档核对）
           connections:
             web-search:                    # 连接名
               url: http://localhost:8081   # web-search-mcp 的地址
 ```
 
-**就这么配——`spring-ai-starter-mcp-client` 自动**：连上 `web-search-mcp` → 发现它的 `search` 工具 → 暴露为 `ToolCallback`。**ChatClient 自动能用，和本地 `@Tool` 没区别**。
+**就这么配——`spring-ai-starter-mcp-client` 自动**：连上 `web-search-mcp` → 发现它的 `search` 工具 → 暴露为 `ToolCallbackProvider` Bean。
+
+> ⚠️ **诚实说明（重要，影响能不能跑通）——MCP 工具不会自动进 starter 默认装配的 ChatClient**。Spring AI 2.0 的 MCP client starter 会把工具注册成 `ToolCallbackProvider` Bean，但**默认的 ChatClient 不会自动包含它**——你必须自己定义 `@Bean ChatClient`，把 `ToolCallbackProvider[]` 显式 `defaultTools` 注册进去。否则 Agent 报"工具不存在"。这是 MCP 接入最常踩的坑（小版本间行为还不稳，最稳就是显式 wiring）。
+
+所以要加一个 ChatClient 配置（把 MCP 工具 + 后面的本地工具一起注册）：
+
+`src/main/java/com/example/research/config/ChatClientConfig.java`：
+
+```java
+package com.example.research.config;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ChatClientConfig {
+
+    /**
+     * 自定义 ChatClient：把 MCP client 发现的工具（ToolCallbackProvider[]）显式注册进去。
+     * spring-ai-starter-mcp-client 把每个 MCP server 的工具注册成一个 ToolCallbackProvider Bean，
+     * Spring 把它们全注入到这个数组——defaultTools(all) 一次性注册。
+     * 本地 @Tool（如 KnowledgeBaseTool）后面用 .tools() 在调用时加，或也在这里一起注册。
+     */
+    @Bean
+    public ChatClient chatClient(ChatClient.Builder builder, ToolCallbackProvider[] mcpToolProviders) {
+        return builder.defaultTools(mcpToolProviders).build();
+    }
+}
+```
+
+> **API 核实**：`ToolCallbackProvider[]` 是 Spring AI 的工具提供者数组（`org.springframework.ai.tool.ToolCallbackProvider`），`ChatClient.Builder.defaultTools(ToolCallbackProvider...)` 接受可变参数。MCP client starter 把每个连接的 MCP server 的工具注册成一个 `ToolCallbackProvider` Bean，Spring 按类型注入数组。**显式 wiring 是 MCP 接入最稳的做法**——别依赖"自动进默认 ChatClient"，那在小版本间不稳定。
 
 #### 3.2.5 主项目去掉本地搜索工具、改用 MCP
 
-现在搜索能力来自 MCP server，主项目的 `WebSearchTool` 可以删了（或留作 fallback）。`ResearchService` 不再 `.tools(searchTool, knowledgeBaseTool)`，而是 `.tools(knowledgeBaseTool)`——`search` 由 MCP client 自动注入：
+现在搜索能力来自 MCP server，主项目的 `WebSearchTool` 可以删了（或留作 fallback）。`ResearchService` 的构造函数也要跟着改——去掉 `WebSearchTool searchTool` 字段和参数，只保留 `knowledgeBaseTool`（MCP 工具已在 3.2.4 的 ChatClientConfig 里注册进 ChatClient，不进 ResearchService）：
+
+```java
+    // 第 1/2 章的构造函数是 (ChatClient, WebSearchTool, KnowledgeBaseTool)——第 3 章删掉 WebSearchTool：
+    private final KnowledgeBaseTool knowledgeBaseTool;
+    public ResearchService(ChatClient chatClient, KnowledgeBaseTool knowledgeBaseTool) {
+        this.chatClient = chatClient;
+        this.knowledgeBaseTool = knowledgeBaseTool;
+    }
+    // 删掉 WebSearchTool 字段 + 构造参数（配套改动，IDE 报错逐个修）
+```
+
+`ResearchService.researchStream` 不再 `.tools(searchTool, knowledgeBaseTool)`，而是 `.tools(knowledgeBaseTool)`——`search` 由 MCP client（已注册进 ChatClient）提供：
 
 ```java
     public Flux<String> researchStream(String topic) {
@@ -1262,7 +1427,7 @@ spring:
                         "自主选用。收敛原则见下。")
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)                  // 本地工具显式注册
-                // MCP client 的 search 工具被 Spring AI 自动加入，无需显式 .tools()
+                // MCP 工具（search）已在 ChatClientConfig 里注册进 ChatClient，这里不用再写
                 .options(ToolCallingChatOptions.builder()
                         .maxToolCallIterations(6)
                         .build())
@@ -1271,7 +1436,7 @@ spring:
     }
 ```
 
-> **MCP 工具的自动注入**：`spring-ai-starter-mcp-client` 把连接到的 MCP server 的工具注册成 Bean，ChatClient 调用时自动纳入。你 `.tools(...)` 里只写本地工具，MCP 工具自动可用。这是 MCP client starter 的核心便利。
+> **MCP 工具的注册路径**：`spring-ai-starter-mcp-client` 把连接到的 MCP server 的工具注册成 `ToolCallbackProvider` Bean，3.2.4 的 `ChatClientConfig` 把它 `defaultTools` 进 ChatClient。这里 `.tools(...)` 只写本地工具（KnowledgeBaseTool），MCP 工具已在 ChatClient 里、调用时自动可用。
 
 #### 3.2.6 多工具编排纪律（解根因②）
 
@@ -1359,35 +1524,46 @@ cd ../research-agent && git add -A && git commit -m "第3章：接入MCP搜索 +
 
 Agent 多步搜索 + 长文生成，单次 LLM 调用可能很久。底层 HTTP 客户端默认读超时太短，把正常停顿误杀。
 
-解法：自定义 `WebClient.Builder` 设足够长的读超时。
+**关键认知——Spring AI 的 OpenAI client 走哪个 HTTP 栈**：`spring-ai-starter-model-openai` 底层用 **RestClient**（同步栈，基于 JDK HttpClient / OkHttp），**不是 WebClient**（Reactor Netty）。所以配超时要自定义 **`RestClient.Builder`** Bean——自定义 `WebClient.Builder` 对 Agent 内部的 LLM 调用**不生效**（那是给项目里手写的 WebClient 用的，比如第 0 章 WebSearchTool）。
+
+解法：自定义 `RestClient.Builder` 设足够长的读超时。
 
 `src/main/java/com/example/research/config/HttpClientConfig.java`：
 ```java
 package com.example.research.config;
 
-import io.netty.channel.ChannelOption;
-import io.netty.handler.timeout.ReadTimeoutHandler;
+import org.springframework.boot.web.client.ClientHttpRequestFactoryBuilder;
+import org.springframework.boot.web.client.ClientHttpRequestFactorySettings;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.client.reactive.ReactorClientHttpConnector;
-import org.springframework.web.reactive.function.client.WebClient;
-import reactor.netty.http.client.HttpClient;
+import org.springframework.http.client.ClientHttpRequestFactory;
+import org.springframework.web.client.RestClient;
 
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 @Configuration
 public class HttpClientConfig {
+
+    /**
+     * 自定义 RestClient.Builder：设足够长的读超时（180s）。
+     * Spring AI 的 OpenAiChatModel 自动用这个 RestClient.Builder——
+     * Agent 内部的 LLM 调用（含工具循环）都经过这里，超时配置生效。
+     */
     @Bean
-    public WebClient.Builder webClientBuilder() {
-        HttpClient httpClient = HttpClient.create()
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 30000)
-                .responseTimeout(java.time.Duration.ofSeconds(180))   // 读超时 180s，覆盖长生成停顿
-                .doOnConnected(c -> c.addHandlerLast(new ReadTimeoutHandler(180, TimeUnit.SECONDS)));
-        return WebClient.builder().clientConnector(new ReactorClientHttpConnector(httpClient));
+    public RestClient.Builder restClientBuilder() {
+        // 两步：先用 Settings 配超时，再用 ClientHttpRequestFactoryBuilder 把它变成工厂对象
+        ClientHttpRequestFactorySettings settings = ClientHttpRequestFactorySettings.builder()
+                .connectTimeout(Duration.ofSeconds(30))
+                .readTimeout(Duration.ofSeconds(180))   // 读超时 180s，覆盖长生成停顿
+                .build();
+        ClientHttpRequestFactory factory = ClientHttpRequestFactoryBuilder.detect().build(settings);
+        return RestClient.builder().requestFactory(factory);
     }
 }
 ```
 
+> **API 核实**：Spring Boot 4.x 里 `RestClient.builder().requestFactory(...)` 接受的是 `ClientHttpRequestFactory`（工厂对象），不是 `ClientHttpRequestFactorySettings`（配置）。正确两步写法：`ClientHttpRequestFactorySettings.builder()...build()` 配超时 → `ClientHttpRequestFactoryBuilder.detect().build(settings)` 得到工厂 → 传给 `requestFactory`。`detect()` 自动选底层实现（JDK HttpClient / HttpComponents 等）。Spring AI 2.0 的 `OpenAiApi` 接受 `RestClient.Builder`，自定义 Bean 会被自动拾取，对 Agent 内部 LLM 调用生效。
+>
 > **为什么 180s**：研究 Agent 多步，单次 LLM 调用含停顿可能 60-90s。180s 留余量。太短=误杀；太长=真卡死时用户干等。按你的 P99 生成耗时 × 2-3 倍设。
 
 ### 4.2 事故②：LLM 429 → 怎么重试
@@ -1398,45 +1574,59 @@ public class HttpClientConfig {
 > Resilience4j 的 `@Retry` 注解能套在"你代码显式调的 LLM"上（如 `chatClient...call()`）。但** Agent 循环的 LLM 调用是框架内部发起的，你够不着那个调用点**——`@Retry` 注解管不到它。这是 Spring AI 当前的限制（Agent 循环的重试支持还不完善）。
 >
 > **那 Agent 遇到 429 怎么办？** 三个务实做法（不假装一个注解能解决）：
-> 1. **底层 HTTP 客户端重试**（最有效）：在 4.1 的 `WebClient.Builder` 上加**重试过滤器**，对 429/超时在 HTTP 层重试——不管谁发起的调用（包括 Agent 内部），都经过这个过滤器。
+> 1. **底层 HTTP 客户端重试**（最有效）：在 4.1 的 `RestClient.Builder` 上加**重试拦截器**（`ClientHttpRequestInterceptor`），对 429/5xx/超时在 HTTP 层重试——Agent 内部的 LLM 调用也走这个 RestClient，重试对它生效。
 > 2. **错误归宿 + 用户重试**（最简单）：429 耗尽就当失败处理，靠 4.3 的错误归宿告诉用户"稍后重试"。
 > 3. **关注 Spring AI 演进**：Agent 循环重试是社区在推进的点，框架完善后直接用。
 
-**本文用做法 1**（底层 HTTP 重试）——在 4.1 的 `webClientBuilder()` 上**追加**一个重试过滤器（4.1 的 HttpClient 超时配置不变，只多加 `.filter`）：
+**本文用做法 1**（底层 HTTP 重试）——在 4.1 的 `restClientBuilder()` 上**追加**一个重试拦截器（4.1 的超时配置不变，只多加 `.requestInterceptor`）：
 ```java
-    // HttpClientConfig.webClientBuilder()，在 4.1 基础上追加 .filter：
-    return WebClient.builder()
-            .clientConnector(new ReactorClientHttpConnector(httpClient))   // httpClient 同 4.1
-            // 重试过滤器：429/5xx/网络错误在 HTTP 层退避重试 3 次。
-            // 关键——它对 Agent 内部的 LLM 调用也生效（都走这个 WebClient）。
-            .filter((req, next) -> next.exchange(req).retryWhen(
-                    reactor.util.retry.Retry.backoff(3, java.time.Duration.ofSeconds(2))  // 3 次，2s 起步指数退避
-                            .filter(t -> shouldRetry(t))   // 只重试瞬时错误（见下）
-            ));
-    // ... shouldRetry: 判断是否 429/5xx/IOException（瞬时错误才重试，400/401 不重试）
+    // restClientBuilder()，在 4.1 基础上追加重试拦截器：
+    return RestClient.builder()
+            .requestFactory(/* 同 4.1 的带超时 requestFactory */)
+            .requestInterceptor((req, body, exec) -> {
+                // 重试：429/5xx/网络错误退避重试 3 次。400/401 不重试。
+                for (int attempt = 0; ; attempt++) {
+                    try {
+                        var resp = exec.execute(req, body);
+                        if (shouldRetryStatus(resp.getStatusCode()) && attempt < 3) {
+                            resp.getBody().close();   // 重试前消费/关闭 body，防连接泄漏
+                            sleep(backoff(attempt));   // 2s→4s→8s
+                            continue;
+                        }
+                        return resp;   // 耗尽或无需重试，返回响应（上层 Spring AI 会消费 body）
+                    } catch (java.io.IOException ex) {
+                        if (attempt < 3) { sleep(backoff(attempt)); continue; }
+                        throw ex;
+                    }
+                }
+            });
+    // shouldRetryStatus: true 当 status 是 429 或 5xx；backoff(attempt): 2^(attempt) 秒；sleep 处理 InterruptedException
 ```
 
-> **`shouldRetry` 判断**：只重试瞬时错误——429（限流）、5xx（服务器临时故障）、IOException（网络抖动）。400（请求错）/401（认证错）重试也没用，不重试。这部分逻辑简单（判断异常类型/状态码），省略具体实现，重点理解"重试过滤器 + 退避"这个机制。
+> **重试逻辑要点**：`ClientHttpRequestInterceptor` 包在 RestClient 链里——Agent 内部的 LLM 调用也走这条链，重试对它生效。`shouldRetryStatus` 只认 429/5xx；网络错误（IOException）也重试。400/401 直接返回不重试。`backoff` 指数退避（2s→4s→8s）。
 >
 > ⚠️ **诚实说明（这版的简陋处）**：真实的 429 重试要读响应头 `Retry-After`（服务器告诉你要等几秒），按它等——比固定指数退避更合规。DeepSeek/OpenAI 的 429 都带 `Retry-After`。完整实现要解析这个头，本文从简（固定退避），标注让你知道差距。
 >
 > **429 重试的纪律**：429 是"服务器让你慢点"，重试务必**退避**（不能立即重试，会加剧过载）。指数退避（2s→4s→8s）或按 `Retry-After` 头，二选一。立即重试 = 把服务器往死里打。
 
-### 4.3 事故③：错误没归宿 → subscribe 接住 + 返回失败事件
+### 4.3 事故③：错误没归宿 → onErrorResume 把错误转成失败消息
 
-第 1 章的 `researchStream` 返回 Flux。如果中途出错（超时/429 耗尽），错误沿 Flux 传——前端收到的是"连接断"，不知道是失败还是还在跑。
+第 1 章的 `researchStream` 返回 `Flux<String>`。如果中途出错（超时/429 耗尽），错误沿 Flux 往下传——前端收到的是"连接断"，不知道是失败还是还在跑。
 
-解法：`.doOnError` 捕获，转成一条明确的"失败"消息推给前端，而不是让流异常断掉：
+解法：`.onErrorResume` 把错误**吞成一条可推给前端的文本**，再正常结束流（而不是让流异常断掉）：
 ```java
     public Flux<String> researchStream(String topic) {
         return chatClient.prompt()....stream().content()
-                .doOnError(err -> {
-                    // 错误转成用户可见的提示（而不是让流异常断开、前端懵）
-                    System.err.println("[研究失败] " + err.getMessage());
+                .onErrorResume(err -> {
+                    // 错误转成用户可见的一条消息，推给前端后正常结束流
+                    System.err.println("[研究失败] " + err.getMessage());   // 日志（排查用）
+                    return Flux.just("[研究失败] " + err.getMessage());      // 推给前端的一条
                 });
     }
 ```
 
+> **为什么用 `onErrorResume` 而不是 `doOnError`**：`doOnError` 只是副作用钩子，执行完错误信号照常往下游传——前端仍收到"连接断"。`onErrorResume` 是**把错误信号替换成一条正常数据**，前端收到的是一条可读的失败文本，流再正常完成。这才兑现"错误有归宿、前端能感知失败"。
+>
 > **核心**：错误要有归宿——要么转成用户可读的提示，要么前端能感知"失败了"。不能让错误默默吞掉或让前端一直转。这是生产代码的基本要求。
 
 ### 4.4 验证 + checkpoint
@@ -1445,16 +1635,18 @@ public class HttpClientConfig {
 # 1. 超时复测：长主题不再 Stream failed
 curl -N "http://localhost:8080/api/research?topic=（一个需要长研究的主题）"
 
-# 2. 429 复测：临时改错 DeepSeek key 模拟失败 → 底层 WebClient 重试（见 4.2）；耗尽后由错误归宿兜底（4.3）
+# 2. 重试复测：用脚本快速打到 DeepSeek 真实速率上限触发 429 → 底层 RestClient 重试拦截器退避重试（见 4.2）；
+#    耗尽后由错误归宿兜底（4.3）。注意：改错 key 触发的是 401（不重试），不是 429——别用改 key 测重试。
 # 3. 错误归宿：失败时前端/日志能看到明确提示，不是无限转
 ```
 
 ```
 research-agent/ （第 4 章新增/改）
-├── config/HttpClientConfig.java     （新增：底层超时 + 重试过滤器，修事故①②）
-├── ResearchService.java             （改：doOnError 修事故③）
-└── application.yaml                 （加 resilience4j.retry 配置）
+├── config/HttpClientConfig.java     （新增：RestClient 超时 + 重试拦截器，修事故①②）
+└── ResearchService.java             （改：onErrorResume 修事故③）
 ```
+
+（application.yaml 不动——4.2 用 RestClient 拦截器重试，不用 resilience4j.retry yaml。）
 
 ```bash
 git add -A && git commit -m "第4章：上线运营事故——超时/429重试/错误归宿"
@@ -1480,19 +1672,18 @@ git add -A && git commit -m "第4章：上线运营事故——超时/429重试/
 research-agent/                         （主项目：研究 Agent）
 ├── pom.xml                             （webflux/openai/actuator/resilience4j/pgvector/jdbc/mcp-client）
 ├── src/main/resources/
-│   └── application.yaml                （DeepSeek + PG + 向量库 + MCP client + 限流 + 重试）
+│   └── application.yaml                （DeepSeek + PG + 向量库 + MCP client + 限流）
 └── src/main/java/com/example/research/
     ├── Application.java
     ├── ResearchService.java            （自主 Agent：.tools() + maxIterations）
     ├── ResearchController.java         （接口 + 限流 + 输入审核）
-    ├── config/HttpClientConfig.java    （底层超时 + 重试过滤器）
+    ├── config/HttpClientConfig.java    （RestClient 超时 + 重试拦截器，第4章）
     ├── tool/
     │   └── KnowledgeBaseTool.java      （本地工具：知识库检索；网页搜索来自 MCP）
     ├── kb/
     │   └── IngestController.java       （知识库入库）
-    ├── safety/
-    │   └── InputGuard.java             （输入审核）
-    └── config/HttpClientConfig.java    （底层超时，第4章）
+    └── safety/
+        └── InputGuard.java             （输入审核）
 
 web-search-mcp/                         （独立项目：网页搜索 MCP server）
 ├── pom.xml                             （mcp-server-webmvc）
@@ -1523,7 +1714,7 @@ spring:
         initialize-schema: true
     mcp:
       client:
-        sse:
+        streamable-http:
           connections:
             web-search:
               url: http://localhost:8081    # web-search-mcp 地址
@@ -1560,14 +1751,14 @@ resilience4j:
 - **结果不带出处/用户无法核实** → 工具返回没带来源编号 + system prompt 没要求引用。见 2.2.5 防幻觉。
 
 **第 3 章**：
-- ⚠️ **MCP server 对外被白嫖** → 没鉴权，任何人能调你的搜索 server 烧配额。必须加鉴权（OAuth2/API key），见 3.2.3a。
+- ⚠️ **MCP server 对外被白嫖** → 没鉴权，任何人能调你的搜索 server 烧配额。必须加鉴权（OAuth2/API key），见 3.2.3。
 - MCP server 的 `@McpTool` 没注册 → [issue #4392](https://github.com/spring-projects/spring-ai/issues/4392)，早期版本 bug；或 starter 名/版本不对（用 `spring-ai-starter-mcp-server-webmvc`）。查[官方 MCP Server 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html)。
-- MCP client 连不上 server → server 没起/端口不对/鉴权头没带；`spring.ai.mcp.client.sse.connections` 配置写错。
+- MCP client 连不上 server → server 没起/端口不对/鉴权头没带；**client 配置键按你的 starter 版本核对**——webmvc server（Streamable HTTP transport）和 webflux server（SSE transport）的 client 配置键不同（`spring.ai.mcp.client.streamable-http.connections` vs `spring.ai.mcp.client.sse.connections`），别用错。
 - ⚠️ **SSE 下工具执行时鉴权丢失** → [issue #2506](https://github.com/spring-projects/spring-ai/issues/2506)，连接时鉴权生效但工具执行阶段可能丢。生产必测。
 - Agent 用了 MCP 工具但报"工具不存在" → client starter 没自动注册，确认依赖 `spring-ai-starter-mcp-client` 加了。
 
 **第 4 章**：
-- **以为 `@Retry` 能保护 Agent 循环** → 错。Agent 的 LLM 调用是框架内部发起的，`@Retry` 够不着。Agent 场景的重试靠底层 WebClient 重试过滤器（见 4.2）。`@Retry` 只管你显式调的 LLM。
+- **以为 `@Retry` 能保护 Agent 循环** → 错。Agent 的 LLM 调用是框架内部发起的，`@Retry` 够不着。Agent 场景的重试靠底层 RestClient 重试拦截器（`ClientHttpRequestInterceptor`，见 4.2）——Spring AI 的 OpenAI client 走 RestClient，重试拦截器对它生效。`@Retry` 只管你显式调的 LLM。
 - **429 重试把服务器打更挂** → 没退避立即重试，加剧过载。必须指数退避或按 `Retry-After` 头等。
 
 ### A.4 演进全景图
