@@ -688,7 +688,7 @@ public abstract class ChainingService {
                 });
 
         Flux<AgentEvent> closing = Flux.defer(() -> Flux.just(
-                eventOf(EventContent.SESSION_COMPLETED, sessionId, Map.of(), prevOutput[0])));
+                eventOf(EventContent.SESSION_COMPLETED, sessionId, Map.of())));
 
         return Flux.concat(opening, chain, closing)
                 .doOnNext(eventBus::emit)   // 每个事件广播到总线（热流，供其他消费者）
