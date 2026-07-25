@@ -795,7 +795,7 @@ public abstract class ChainingService {
 > 2. **控制流是普通 for 循环**：流式链式不一定要堆 Reactor 高阶算子。`Flux.create` 把一个 for 循环包成流，循环里 `payload = full` 一句话把上一步完整输出喂下一步——比 `concatMap`/`expand` 链清晰得多。**企业项目里流式链式的标准写法**就是这种"控制流留同步、推送用响应式"。
 > 3. **`subscribeOn(boundedElastic)`**：for 循环里有 `streamStep` 的 `.block()`（阻塞等本步完整文本）。阻塞必须跑在专为阻塞任务设计的 `boundedElastic` 线程池，**绝不能跑在 Reactor 调度线程**（会拖垮整个事件循环）。这是"在响应式代码里安全使用阻塞"的关键纪律。
 > 4. **每个事件都同时 `bus.emit` + `sink.next`**：`FluxSinkAdapter` 把这俩收口在一处——`sink.next` 推给 SSE 主消费者（冷流下游），`bus.emit` 广播给 EventBus（热流）供日志/成本/归因等其他消费者订阅。
-> 5. **sessionId 双通道**：循环里直接用局部变量 `sessionId`（同步代码，直接读）；同时 `.contextWrite` 写进 Reactor Context——这是为第 3 章铺路（工具执行线程经自动传播读 Reactor Context，读不到局部变量）。
+> 5. **sessionId 用局部变量**：循环里直接读局部变量 `sessionId`（同步 for 循环，直接可用）。**第 1 章不写 Reactor Context**——那是第 3 章工具线程要读 sessionId 时才引入（见 3.2.3 ContextPropagationConfig）。第 1 章没有跨线程读 sessionId 的需求，提前引入只会让人困惑。
 > 6. **`reduce` 只订阅上游一次**：chunk 既逐字 emit 又拼成完整文本，靠 `reduce` 的累积器在一次订阅里完成（不用 `collectInto` 再订阅一次，避免重跑 LLM）。
 >
 > **⚠️ 这版的简化点（后续章节改进）**：
@@ -1752,7 +1752,7 @@ git add -A && git commit -m "第2章：事件可靠性——分级落库、序�
 
 工具的 Observation 由 Spring AI 内部发起，`ObservationHandler.onStop` 只能读"当前线程上下文"。问题是：sessionId 在 ChainingService 的 run 循环里，而工具执行在 Spring AI 内部的线程上——**两者不在同一个线程**。要让它拿到 sessionId，得把 sessionId 跨线程传过去。
 
-**关键认知——33b 是流式模型，工具执行会切线程**：本项目第 1 章已把 `ChainingService.call` 改成流式 `.stream()`（跑在 `boundedElastic` 线程池）。Spring AI 在流式下处理工具调用时，工具可能在不同于"发起调用的线程"上执行。所以"在第 1 章的 for 循环里 `set(sessionId)` 到 ThreadLocal、`onStop` 同线程 `get()`"这条路**走不通**——工具执行线程读不到调用线程的 ThreadLocal。
+**关键认知——33b 是流式模型，工具执行会切线程**：本项目从第 0 章起 `ChainingService.run` 内部就是流式 `.stream()`（跑在 `boundedElastic` 线程池）。Spring AI 在流式下处理工具调用时，工具可能在不同于"发起调用的线程"上执行。所以"在 run 的 for 循环里 `set(sessionId)` 到 ThreadLocal、`onStop` 同线程 `get()`"这条路**走不通**——工具执行线程读不到调用线程的 ThreadLocal。
 
 **企业级方案：Reactor Context + 自动传播（ContextPropagation）**。这是 Micrometer Context Propagation 库的核心能力——把 sessionId 放进 Reactor Context，注册一个 `ThreadLocalAccessor`，开启 `Hooks.enableAutomaticContextPropagation()` 后，Reactor 会**自动**把 Reactor Context 里的值同步到任务执行线程的 ThreadLocal 上。于是：
 
@@ -2086,16 +2086,17 @@ private void emitTokens(String sessionId, org.springframework.ai.chat.model.Chat
 
 > **API 核实**：`stream().chatResponse()` 返回 `Flux<ChatResponse>`（流式版，每个 chunk 一个）；`getMetadata().getUsage()` → `Usage.getPromptTokens()/getCompletionTokens()`、`ChatResponseMetadata.getModel()` 全部真实存在。流式下 Usage 只在最后一个 chunk 有值（前面 chunk 的 Usage 是 null），所以用 `last[0]` 记最后一个。
 >
-> **为什么不需要 `AppContextKeys.SESSION_ID.set()` 了**：第 1 章同步版要在 call 里 `set(sessionId)` 给工具线程用——那是同步模型。现在流式版靠 `ContextPropagationConfig` 的自动传播（3.2.3），run 里 `.contextWrite` 写进 Reactor Context，自动灌进工具线程，不用手动 set/clear。
+> **为什么不用 `AppContextKeys.SESSION_ID.set()` 手动 set**：如果项目是纯同步 `.call()` 模型（工具在调用线程执行），用最简单的 ThreadLocal `set/get` 即可（Spring AI 官方说明）。**但本项目是流式 `.stream()` 模型**，工具执行切线程——所以靠 `ContextPropagationConfig` 的自动传播（3.2.3）：run 里 `.contextWrite` 写进 Reactor Context，自动灌进工具线程，不用手动 set/clear。
 >
 > **小白疑问：为什么叫「旁路」？**
 > token 统计是「额外关心的事」，不是写作主流程。我们发个事件让消费者去统计，`streamStep` 该返回什么还返回什么（本步完整文本）。统计逻辑和业务逻辑解耦——后面想加 Langfuse 上报、想换计费方式，都改消费者不改 `streamStep`。
 
-> **配套改动：run 要补 `.contextWrite(sessionId)`**。第 1 章精简版删掉了它（那时没有自动传播）。第 3 章加了 `ContextPropagationConfig`，run 必须把 sessionId 写进 Reactor Context，自动传播才有东西可传。在 `run()` 返回的 Flux 链尾加一行：
+> **配套改动：run 要补 `.contextWrite(sessionId)`**。第 1 章精简版没有它（那时没有自动传播）。第 3 章加了 `ContextPropagationConfig`，run 必须把 sessionId 写进 Reactor Context，自动传播才有东西可传。在 `run()` 返回的 Flux 链尾（`.subscribeOn(boundedElastic)` **之后**）加一行：
 > ```java
-> .contextWrite(AppContextKeys.SESSION_ID.write(reactor.util.context.Context.empty(), sessionId))
+>                 .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+>                 .contextWrite(AppContextKeys.SESSION_ID.write(reactor.util.context.Context.empty(), sessionId));   // ← 加这行
 > ```
-> （import `com.example.aobs.obs.AppContextKeys` 和 `reactor.util.context.Context`）。这是第 3 章相对第 1 章的唯一"非 streamStep"改动——为了工具会话隔离。
+> `contextWrite` 是声明性的（定义流的上下文，不触发执行），放在链尾最直观。import `com.example.aobs.obs.AppContextKeys` 和 `reactor.util.context.Context`。这是第 3 章相对第 1 章的唯一"非 streamStep"改动——为了工具会话隔离。
 
 #### 3.2.5 成本计算器
 
@@ -2909,7 +2910,7 @@ public class QuotaService {
     QUOTA_EXCEEDED     // ← 第 5 章加：配额超限
 ```
 
-`call` 方法里，每次烧 token 后校验租户预算：
+`emitTokens` 里（第 3 章烧 token 后发 LLM_TOKENS 的地方），每次算完成本后校验租户预算：
 
 ```java
 private void emitTokens(String sessionId, String tenantId, String userId,
@@ -3808,7 +3809,7 @@ git add -A && git commit -m "第8.2章：历史回放（归档事件按sequence�
 #### 8.3.2 动手
 
 > **本阶段的配套改动提醒**：
-> 1. `SessionService.start` 签名加 `tenantId`（4 参）——**8.1 在 `ChainingService.run` 里调 `start` 的那行（3 参）要同步加 tenantId**。但 `run` 此时还没 tenantId 参数（第 1-7 章的 `run(input, sessionId)`），过渡期先传 `null`：`sessionService.start(sessionId, null, input, steps().size())`。8.4 重写 `run` 为 `runFrom` 时会带上真 tenantId。
+> 1. `SessionService.start` 签名加 `tenantId`（4 参）——**8.1 在 `ChainingService.run` 里调 `start` 的那行（3 参）要同步改成 4 参**。但 `run` 此时还是 `run(input, sessionId)`（第 1-7 章版本，没有 tenantId 参数），**过渡期这行硬编码传 `null`**：`sessionService.start(sessionId, null, input, steps().size())`。8.4 把 `run` 升级为 `run(input, sessionId, tenantId)` 后，这里改成传真 tenantId。
 > 2. 加 `TenantAuthFilter` 后，**所有 `/api/**` 都要带 `X-Tenant-Id` 才能访问**——包括第 1-7 章已有的 `/api/obs/article`。验证时 curl 要加 `-H "X-Tenant-Id: tenantA"`，A.10 页面的租户下拉框默认选 tenantA（不能选"（无）"，否则 401）。
 
 `session_record` 加 `tenant_id` 列（改 schema）：
@@ -4036,6 +4037,13 @@ public enum SessionStatus {
 }
 ```
 
+**`EventContent` 也加 `STEP_RESUMED`**（续传开始时发这个事件，让前端知道"从第 N 步接着跑"）：
+
+```java
+    SESSION_CANCELLED,  // 用户取消（第 7 章）
+    STEP_RESUMED;       // ← 8.4 加：续传起点
+```
+
 `session_record` 加 `last_step` 列：
 
 ```sql
@@ -4149,12 +4157,6 @@ public Flux<AgentEvent> run(String input, String sessionId) {
 ```
 
 > **续传路径的 `@Retry` 自调用问题**（第 7 章已述，续传里同样存在）：`runFrom` 在 `ChainingService` 内部调 `streamStep`，是自调用——Spring AOP 代理不拦截自调用，第 7 章给 `streamStep` 加的 `@Retry` 在续传路径不生效。生产解法：把 `streamStep` 拆到独立 Bean（如 `LlmStepExecutor`）注入回来调，续传和新跑共用，`@Retry` 两条路径都生效。本教学接受"续传不重试"的简化。
-
-`EventContent` 加 `STEP_RESUMED`：
-
-```java
-    STEP_RESUMED;       // 续传起点（第 8.4 章）
-```
 
 续传接口（SessionReplayController 加）：
 
@@ -4833,7 +4835,7 @@ ai-writing-assistant/
 - 起多实例忘了不同端口 → `SERVER_PORT` 环境变量。
 
 **第 5 章**：
-- 加了 tenantId 字段，所有 `AgentEvent.of(...)` 调用点没同步改 → 编译报错，按 IDE 逐个修。
+- 加了 tenantId 字段后，**需要归因的 emit 点（SESSION_STARTED/LLM_TOKENS 等）忘了传 tenantId/userId** → 编译不报错（builder 兜底默认 null），但审计时查不到租户/用户归因。只在需要归因的 emit 点显式传 tenantId/userId 即可，老的 `of(type, sessionId, data)` 调用点不用改。
 - 租户过滤只查事件 tenantId、不查请求 tenantId → 越权风险。必须双向匹配 + null 拒绝。
 
 **第 6 章**：
