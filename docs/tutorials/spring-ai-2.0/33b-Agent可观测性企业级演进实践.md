@@ -1877,7 +1877,6 @@ redis-cli ZRANGE aobs:events:s1 0 -1
     const seenIds = new Set();
     let reconnectAttempts = 0;
     const MAX_RECONNECT = 5;
-    let es = null;
 
     function connect(lastEventId) {
         // 用 fetch + ReadableStream 手动实现 SSE 重连（不依赖 EventSource，因为 EventSource 不能设自定义 header）。
