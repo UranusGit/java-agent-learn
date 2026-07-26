@@ -362,15 +362,16 @@ package com.example.research;
 import com.example.research.tool.WebSearchTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 
 /**
- * 第 0 章：固定 workflow（提炼关键词 → 搜索 → 研究结果）。
+ * 第 0 章：固定 workflow（提炼关键词 → 搜索 → 研究结果），全程流式。
  *   第一步让 LLM 把主题提炼成搜索关键词；
- *   第二步手动调 searchTool.search(关键词) 拿资料；
- *   第三步把资料塞进 prompt，让 LLM 写研究结果。
+ *   第二步手动调 searchTool.search(关键词) 拿资料（返回 Mono<String>）；
+ *   第三步把资料塞进 prompt，让 LLM 流式写研究结果（Flux<String>）。
  *
  * 第 1 章会让 LLM 自主决定几步（.tools() + ToolCallingAdvisor 循环）——那是"Agent"，现在是"workflow"。
- * 这个文件后续演进：第 1 章改成自主 Agent + 流式；之后各章主要在它上面挂工具、传 sessionId（第 8 章）。
+ * 这个文件后续演进：第 1 章升级自主 Agent；之后各章主要在它上面挂工具、传 sessionId（第 8 章）。
  */
 @Service
 public class ResearchService {
@@ -383,8 +384,8 @@ public class ResearchService {
         this.searchTool = searchTool;
     }
 
-    /** 固定 workflow：① 提炼关键词 ② 搜资料 ③ 基于资料生成研究结果。 */
-    public String research(String topic) {
+    /** 固定 workflow（流式）：① 提炼关键词 ② 搜资料 ③ 基于资料流式生成研究结果。 */
+    public Flux<String> research(String topic) {
         // 第一步：让 LLM 把用户问题提炼成搜索关键词（自然语言 → 关键词，提升搜索命中率）
         System.out.println("[研究] 提炼搜索关键词: " + topic);
         String searchQuery = chatClient.prompt()
@@ -395,42 +396,41 @@ public class ResearchService {
                 .content();
         System.out.println("[研究] 提炼出的关键词: " + searchQuery);
 
-        // 第二步：用关键词搜资料（searchTool.search 返回 Mono<String>，这里 .block() 取回同步结果）
-        String materials = searchTool.search(searchQuery).block();
-        System.out.println("[研究] 搜索完成，开始生成结果...");
-
-        // 第三步：基于资料生成研究结果
-        String result = chatClient.prompt()
-                .system("你是研究助理。基于提供的资料，给出结构清晰的研究结果。" +
-                        "如果资料不足或不可靠，明确指出，不要编造。")
-                .user("研究主题：" + topic + "\n\n参考资料：\n" + materials)
-                .call()
-                .content();
-        System.out.println("[研究] 生成完成");
-        return result;
+        // 第二步 + 第三步：搜索（Mono<String>）→ 基于资料流式生成（Flux<String>），用 flatMapMany 响应式衔接
+        return searchTool.search(searchQuery)
+                .doOnNext(m -> System.out.println("[研究] 搜索完成，开始生成结果..."))
+                .flatMapMany(materials -> chatClient.prompt()
+                        .system("你是研究助理。基于提供的资料，给出结构清晰的研究结果。" +
+                                "如果资料不足或不可靠，明确指出，不要编造。")
+                        .user("研究主题：" + topic + "\n\n参考资料：\n" + materials)
+                        .stream()                    // 流式：最终结果逐字推给前端
+                        .content())
+                .doOnComplete(() -> System.out.println("[研究] 生成完成"));
     }
 }
 ```
 
-> **`searchTool.search(...)` 返回 `Mono<String>`，第 0 章手动调用时 `.block()` 取回**：`WebSearchTool.search` 的签名是 `Mono<String>`——这是响应式签名，价值在第 1 章自主 Agent 时体现（LLM 通过 `@Tool` 调它不阻塞、可注册给 LLM 自主调）。第 0 章是固定 workflow 同步流程，`ResearchService` 手动调它后用 `.block()` 取回 `String`——第 0 章聚焦"固定流程跑通"，响应式衔接留到第 1 章流式升级。
+> **全程响应式，不 `.block()`**：`searchTool.search` 返回 `Mono<String>`，用 `flatMapMany` 衔接到 `chatClient.stream()`（返回 `Flux<String>`）——搜索和生成都是响应式，没有同步阻塞点。`research` 也返回 `Flux<String>`，Controller 用 SSE 推给前端。
 >
 > **`@Tool` 注册给 LLM 自主调时，`Mono<String>` 也能拿到结果**：实测验证（Spring AI 2.0）——官方文档曾把响应式类型列为不支持，但实际 `@Tool` 方法返回 `Mono<String>` 时，注册给 LLM 自主调用能正常拿到结果。本文按这个实测行为写，第 1 章起 `.tools(searchTool)` 直接用。以你版本实际行为为准。
 >
 > **三行 `System.out.println` 是第 0 章的"最小可见性"**：研究过程几十秒，纯黑盒等待体验差。第 0 章痛点只是"等待时不知在干嘛"，打印日志就够透光。**第 1 章 Agent 自主多步后，痛点升级为"要看清每步决策"**——那时把可见性挪到工具调用层（1.2.2）。如果将来你觉得"日志不够、要前端实时看、要可追溯"，再演进到事件总线 + SSE——那是更后面的事，现在不做（演进纪律）。
 
-#### 0.2.6 接口
+#### 0.2.6 接口（流式 SSE）
 
-**【新建文件】** `research-agent/src/main/java/com/example/research/ResearchController.java`。第 0 章就是一个最普通的 REST 接口——`GET /api/research?topic=xxx`，调 `ResearchService.research()` 返回同步结果。
+**【新建文件】** `research-agent/src/main/java/com/example/research/ResearchController.java`。第 0 章就用流式接口——`GET /api/research?topic=xxx`，`produces = text/event-stream`，调 `ResearchService.research()`（返回 `Flux<String>`），最终结果逐字推给前端。
 
 ```java
 package com.example.research;
 
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
 
 /**
  * 研究接口 Controller。
- * 第 0 章只有 GET /api/research（固定 workflow，同步返回）。
- * 第 1 章改成流式（Flux<String> + SSE）；第 5 章加 /deep（Plan-Execute）；第 7/9 章再改 /deep 签名。
+ * 第 0 章就是流式：GET /api/research，Flux<String> + SSE。
+ * 第 5 章加 /deep（Plan-Execute）；第 7/9 章再改 /deep 签名。
  */
 @RestController
 @RequestMapping("/api/research")
@@ -442,11 +442,9 @@ public class ResearchController {
         this.researchService = researchService;
     }
 
-    /**
-     * 研究接口。第 0 章同步返回 String；第 1 章升级为 Flux<String> + SSE。
-     */
-    @GetMapping
-    public String research(@RequestParam String topic) {
+    /** 研究接口（流式）。研究结果逐字推给前端。 */
+    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<String> research(@RequestParam String topic) {
         return researchService.research(topic);
     }
 }
@@ -457,11 +455,11 @@ public class ResearchController {
 ```bash
 mvn spring-boot:run
 
-# 正常请求
-curl "http://localhost:8080/api/research?topic=2026年大模型推理框架"
+# 流式请求（-N 关闭缓冲，能看到结果逐字出现）
+curl -N "http://localhost:8080/api/research?topic=2026年大模型推理框架"
 ```
 
-预期：返回基于搜索资料的研究结果。控制台能看到三行 `[研究]` 日志（搜索开始、搜索完成、生成完成）。
+预期：研究结果**逐字流式输出**（不是等几十秒一次性返回）。控制台能看到 `[研究]` 日志（提炼关键词、搜索完成、生成完成）。
 
 ### 0.4 checkpoint
 
@@ -531,7 +529,7 @@ git add -A && git commit -m "第0章：固定workflow研究Agent + Bing搜索"
 
 #### 1.2.1 ResearchService：从固定 workflow 改成自主 Agent
 
-**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 0 章的改动：① `research()` 不再做"手动提炼关键词 + 手动调 search"的三步固定流程，改成 `.tools(searchTool)` 把工具交给 LLM 自主调（LLM 自己决定搜什么、搜几次——第 0 章的"提炼关键词"那步被 LLM 自主决策吸收了）；② 加 `internalToolExecutionMaxIterations(5)` 防跑飞；③ 新增 `researchStream()` 流式版（1.2.3 用）；④ 保留同步 `research()` 给调试用。
+**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 0 章的改动：① `research()` 内部从"手动提炼关键词 + 手动调 search"的三步固定流程，改成 `.tools(searchTool)` 把工具交给 LLM 自主调（LLM 自己决定搜什么、搜几次——第 0 章的"提炼关键词"那步被 LLM 自主决策吸收了）；② 加 `internalToolExecutionMaxIterations(5)` 防跑飞。方法签名仍是 `Flux<String> research(String)`（第 0 章已流式），Controller 不用改。
 
 ```java
 package com.example.research;
@@ -544,12 +542,12 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 /**
- * 第 1 章：自主 Agent。
+ * 第 1 章：自主 Agent（流式）。
  * LLM 自己决定调几次搜索、搜什么、何时收手。循环由 Spring AI 的 ToolCallingAdvisor 托管（ChatClient 自动注册）。
  *
  * 演进：
- *  第 0 章 —— 固定 workflow（手动提炼关键词 → 手动调 search → 生成）。
- *  第 1 章 —— .tools() 把工具交给 LLM；internalToolExecutionMaxIterations(5) 防跑飞；加流式版。
+ *  第 0 章 —— 固定 workflow（手动提炼关键词 → 手动调 search → 流式生成）。
+ *  第 1 章 —— .tools() 把工具交给 LLM 自主调；internalToolExecutionMaxIterations(5) 防跑飞。仍是流式。
  *  第 2 章 —— 这里再加一个知识库工具（.tools(knowledgeBaseTool)）。
  *  第 8 章 —— 各处加 .advisors(CONVERSATION_ID, sessionId) 接入会话记忆。
  */
@@ -564,8 +562,8 @@ public class ResearchService {
         this.searchTool = searchTool;
     }
 
-    /** 同步版（调试/对照用）。LLM 自主调工具，直到给出最终答案或撞步数上限。 */
-    public String research(String topic) {
+    /** 自主 Agent（流式）。LLM 自主调工具，最终结果逐字推给前端。 */
+    public Flux<String> research(String topic) {
         return chatClient.prompt()
                 .system("你是研究助理。你可以调用搜索工具查资料。" +
                         "自主决定搜索几次、搜什么关键词。" +
@@ -579,22 +577,7 @@ public class ResearchService {
                         // 选择 5 而不是更大值：演示场景够用（3 个工具各试一次）。生产根据平均所需步骤的 P99 × 1.5 调。
                         .internalToolExecutionMaxIterations(5)
                         .build())
-                .call()
-                .content();
-    }
-
-    /** 流式版：把 .call() 换 .stream()，最终结果逐字推给前端（Controller 用 SSE）。 */
-    // ▼ 第1章新增方法
-    public Flux<String> researchStream(String topic) {
-        return chatClient.prompt()
-                .system("你是研究助理。你可以调用搜索工具查资料。" +
-                        "自主决定搜索几次、搜什么关键词。" +
-                        "资料矛盾时多搜一轮核实。资料足够后给出结构清晰的研究结果。" +
-                        "资料不足要明确说，绝不编造。")
-                .user("研究主题：" + topic)
-                .tools(searchTool)
-                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(5).build())
-                .stream()
+                .stream()                                   // 流式：最终结果逐字推给前端（第0章已是流式，本章沿用）
                 .content();
     }
 }
@@ -712,43 +695,12 @@ public class WebSearchTool {
 >
 > 如果你已经做过可观测主题的实战（有 EventBus/SSE/ToolObservationHandler 那套，见 [33b](./33b-Agent可观测性企业级演进实践.md)），这里直接用你的那套，效果更好；如果没有，日志足够让你看清 Agent 在干什么。
 
-#### 1.2.3 流式输出最终结果（Controller 切到 SSE）
+#### 1.2.3 Controller：本章无需改动
 
-1.2.1 已经备好 `researchStream()`。现在改 Controller：把 `research()`（返 `String`）换成 `researchStream()`（返 `Flux<String>` + SSE）。
+第 0 章的 `ResearchController` 已经是流式 + SSE（`Flux<String>` + `text/event-stream`），调 `researchService.research(topic)`。本章把 `research()` 的**内部实现**从"固定 workflow"改成"自主 Agent"——但**方法签名（`Flux<String> research(String)`）没变**，所以 Controller 完全不用改。
 
-**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 0 章的改动：① 方法签名从 `String` 改成 `Flux<String>`；② 加 `produces = MediaType.TEXT_EVENT_STREAM_VALUE` 声明 SSE；③ 调流式版。
-
-```java
-package com.example.research;
-
-// ▼ 第1章新增 import：MediaType + Flux
-import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
-
-/**
- * 研究接口 Controller。
- * 第 1 章：GET /api/research 从同步 String 升级为流式 Flux<String> + SSE（多步执行更要流式）。
- * 第 5 章加 /deep（Plan-Execute）；第 7/9 章再改 /deep 签名。
- */
-@RestController
-@RequestMapping("/api/research")
-public class ResearchController {
-
-    private final ResearchService researchService;
-
-    public ResearchController(ResearchService researchService) {
-        this.researchService = researchService;
-    }
-
-    /** 研究接口（流式）。Agent 自主调工具，最终结果逐字推给前端。 */
-    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)   // ▼ 第1章替换：第0章是 @GetMapping（同步 String）；现在声明 SSE
-    public Flux<String> research(@RequestParam String topic) {  // ▼ 第1章替换：返回类型 String → Flux<String>
-        return researchService.researchStream(topic);           // ▼ 第1章替换：调流式版
-    }
-}
-```
-
+> 这是分层的好处：Service 内部从 workflow 升级到 Agent，对外接口（Controller）契约不变。第 0 章的 Controller 直接复用到第 1 章。
+>
 > `Flux<String>` + `text/event-stream` 就是 SSE 流（Spring WebFlux 自动把 `Flux<String>` 编码成 `data: ...\n\n` 的 SSE 帧，前端 `EventSource` 或 fetch 读流都能收）。
 
 ### 1.3 验证
@@ -1060,7 +1012,7 @@ query 向量 ●           ● 文档向量  夹角大 → cosine≈0.2（基本
 
 #### 2.2.5 ResearchService：让 Agent 同时用两个工具
 
-**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 1 章的改动：① 构造函数注入 `KnowledgeBaseTool`（第 1 章只有 `WebSearchTool`）；② `research` / `researchStream` 的 `.tools()` 从一个变两个；③ system prompt 加"双工具选用 + 引用纪律"；④ `internalToolExecutionMaxIterations` 从 5 涨到 6（多一个工具，给多一步预算）。
+**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 1 章的改动：① 构造函数注入 `KnowledgeBaseTool`（第 1 章只有 `WebSearchTool`）；② `research()` 的 `.tools()` 从一个变两个；③ system prompt 加"双工具选用 + 引用纪律"；④ `internalToolExecutionMaxIterations` 从 5 涨到 6（多一个工具，给多一步预算）。仍是流式。
 
 ```java
 package com.example.research;
@@ -1073,7 +1025,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 /**
- * 研究服务（Agent）。
+ * 研究服务（Agent，流式）。
  * 第 2 章：注册两个工具（网页搜索 + 知识库搜索），LLM 自主选用。
  * 第 3 章会把网页搜索抽成 MCP server、从这里移除 searchTool（那时这里只剩 knowledgeBaseTool）。
  */
@@ -1093,26 +1045,15 @@ public class ResearchService {
         this.knowledgeBaseTool = knowledgeBaseTool;
     }
 
-    /** 同步版（调试/对照用）。 */
-    public String research(String topic) {
+    /** 自主 Agent（流式）。两个工具都注册，LLM 自主选用。 */
+    public Flux<String> research(String topic) {
         return chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic)
                 .tools(searchTool, knowledgeBaseTool)              // ▼ 第2章替换：两个工具都注册
                 .options(ToolCallingChatOptions.builder()
-                        .internalToolExecutionMaxIterations(6)                  // ▼ 第2章替换：5 → 6（多一个工具，给多一步预算）
+                        .internalToolExecutionMaxIterations(6)      // ▼ 第2章替换：5 → 6（多一个工具，给多一步预算）
                         .build())
-                .call()
-                .content();
-    }
-
-    /** 流式版（Controller 用 SSE）。 */
-    public Flux<String> researchStream(String topic) {
-        return chatClient.prompt()
-                .system(SYSTEM_PROMPT)
-                .user("研究主题：" + topic)
-                .tools(searchTool, knowledgeBaseTool)              // ▼ 第2章替换：两个工具都注册
-                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .stream()
                 .content();
     }
@@ -1213,7 +1154,7 @@ public class ResearchController {
         // ▼ 第2章新增：在调 LLM 之前就拦截注入尝试（最小拦截距离）
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
-        return researchService.researchStream(topic);
+        return researchService.research(topic);
     }
 }
 ```
@@ -1710,25 +1651,12 @@ public class ResearchService {
         this.knowledgeBaseTool = knowledgeBaseTool;
     }
 
-    /** 同步版（调试/对照用）。 */
-    public String research(String topic) {
+    /** 自主 Agent（流式）。MCP 搜索 + 本地知识库，LLM 自主选用。 */
+    public Flux<String> research(String topic) {
         return chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)                       // ▼ 第3章替换：只注册本地工具；MCP 的 search 已在 ChatClient 里
-                .options(ToolCallingChatOptions.builder()
-                        .internalToolExecutionMaxIterations(6)
-                        .build())
-                .call()
-                .content();
-    }
-
-    /** 流式版（Controller 用 SSE）。 */
-    public Flux<String> researchStream(String topic) {
-        return chatClient.prompt()
-                .system(SYSTEM_PROMPT)
-                .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
-                .tools(knowledgeBaseTool)                       // ▼ 第3章替换：同上
                 .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .stream()
                 .content();
@@ -1991,11 +1919,11 @@ public class HttpClientConfig {
 
 ### 4.3 事故③：错误没归宿 → onErrorResume 把错误转成失败消息
 
-第 1 章的 `researchStream` 返回 `Flux<String>`。如果中途出错（超时/429 耗尽），错误沿 Flux 往下传——前端收到的是"连接断"，不知道是失败还是还在跑。
+从第 0 章起 `research` 就返回 `Flux<String>`。如果中途出错（超时/429 耗尽），错误沿 Flux 往下传——前端收到的是"连接断"，不知道是失败还是还在跑。
 
 解法：`.onErrorResume` 把错误**吞成一条可推给前端的文本**，再正常结束流（而不是让流异常断掉）。注意用 onErrorResume（不是 doOnError）——doOnError 只是副作用，执行完错误信号仍然往下传，前端照样断连；onErrorResume 把错误信号替换成一条正常数据，前端收到可读文本后才正常完成。
 
-**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 3 章的改动：`researchStream` 链尾追加 `.onErrorResume(...)`（错误归宿）。其余（构造函数、`research()`、system prompt、收敛规则）同第 3 章。
+**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 3 章的改动：`research` 链尾追加 `.onErrorResume(...)`（错误归宿）。其余（构造函数、`research()`、system prompt、收敛规则）同第 3 章。
 
 ```java
 package com.example.research;
@@ -2008,7 +1936,7 @@ import reactor.core.publisher.Flux;
 
 /**
  * 研究服务（Agent）。
- * 第 4 章：researchStream 链尾加 onErrorResume（错误归宿）——失败时给前端一条可读文本，不让流异常断。
+ * 第 4 章：research 链尾加 onErrorResume（错误归宿）——失败时给前端一条可读文本，不让流异常断。
  * 其余（MCP 搜索 + 本地知识库 + 收敛规则）同第 3 章。
  */
 @Service
@@ -2022,19 +1950,8 @@ public class ResearchService {
         this.knowledgeBaseTool = knowledgeBaseTool;
     }
 
-    /** 同步版（调试/对照用）。 */
-    public String research(String topic) {
-        return chatClient.prompt()
-                .system(SYSTEM_PROMPT)
-                .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
-                .tools(knowledgeBaseTool)
-                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
-                .call()
-                .content();
-    }
-
-    /** 流式版（Controller 用 SSE）。 */
-    public Flux<String> researchStream(String topic) {
+    /** 自主 Agent（流式）。错误归宿：失败时给前端一条可读文本，不让流异常断。 */
+    public Flux<String> research(String topic) {
         return chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
@@ -2182,16 +2099,21 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 
 /**
- * 第 5 章：Plan-Execute 编排（串行版）。
+ * 第 5 章：Plan-Execute 编排（串行版，对外流式）。
  *   把"研究复杂主题"拆成 规划 → 串行调研 两阶段，替代第 1-4 章 ReAct 的"边想边调"。
+ *   对外入口 researchDeep 返回 Flux<String>（流式）；内部 plan/executeOne 是同步编排实现，
+ *   包在 Mono.fromCallable + boundedElastic 里跑（阻塞不占 Netty event loop）。
  *
  * 演进：
- *   第 5 章（本章）—— Plan 拆任务 + 串行 Execute + 简单拼接。
- *   第 6 章 —— 把串行 Execute 改成多 Worker 并发（flatMap 限流），并升级成真正的 Aggregate + 流式。
+ *   第 5 章（本章）—— Plan 拆任务 + 串行 Execute + 简单拼接，流式输出。
+ *   第 6 章 —— 把串行 Execute 改成多 Worker 并发（flatMap 限流），并升级成真正的 Aggregate。
  *   第 7 章 —— Plan/worker/Aggregate 三处加审计埋点。
  *   第 8 章 —— 各处加 sessionId（接会话记忆）。
  */
@@ -2206,22 +2128,35 @@ public class PlanExecuteService {
         this.knowledgeBaseTool = knowledgeBaseTool;
     }
 
-    /** Plan-Execute 入口（串行版）。返回最终拼接结果。 */
-    public String research(String topic) {
-        // 1. Plan：让 LLM 把主题拆成子任务列表
-        List<String> subtasks = plan(topic);
-        System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
+    /**
+     * Plan-Execute 入口（串行版，流式）。
+     * Plan + 串行 Execute（阻塞）→ 把拼接结果流式输出。
+     * 内部 plan/串行 execute 是阻塞的，用 Mono.fromCallable + boundedElastic 切线程，不占 Netty event loop。
+     */
+    public Flux<String> researchDeep(String topic) {
+        return Mono.fromCallable(() -> {
+                    // 1. Plan：让 LLM 把主题拆成子任务列表
+                    List<String> subtasks = plan(topic);
+                    System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
 
-        // 2. Execute：串行逐个调研（第 6 章改并行）
-        StringBuilder evidence = new StringBuilder();
-        for (int i = 0; i < subtasks.size(); i++) {
-            String sub = subtasks.get(i);
-            System.out.println("[Execute] (" + (i + 1) + "/" + subtasks.size() + ") 调研: " + sub);
-            String result = executeOne(sub);
-            evidence.append("[子任务").append(i + 1).append("] ").append(sub).append("\n")
-                    .append(result).append("\n\n");
-        }
-        return evidence.toString();
+                    // 2. Execute：串行逐个调研（第 6 章改并行）
+                    StringBuilder evidence = new StringBuilder();
+                    for (int i = 0; i < subtasks.size(); i++) {
+                        String sub = subtasks.get(i);
+                        System.out.println("[Execute] (" + (i + 1) + "/" + subtasks.size() + ") 调研: " + sub);
+                        String result = executeOne(sub);
+                        evidence.append("[子任务").append(i + 1).append("] ").append(sub).append("\n")
+                                .append(result).append("\n\n");
+                    }
+                    return evidence.toString();
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(evidence -> chatClient.prompt()
+                        .system("你是研究综合员。基于各子任务的调研结果，给出结构清晰的研究结果。" +
+                                "资料不足要明说，绝不编造。")
+                        .user(evidence)
+                        .stream()                    // 流式输出最终结果
+                        .content());
     }
 
     /** Plan 阶段：LLM 输出 JSON 子任务数组，.entity() 直接反序列化成 List<String>。 */
@@ -2257,13 +2192,13 @@ public class PlanExecuteService {
 
 > **`.entity(new ParameterizedTypeReference<List<String>>() {})` 是真实 API**：Spring AI 的 `CallResponseSpec.entity(PTREF)` 把 LLM 输出当 JSON 反序列化成你给的类型。这是结构化输出能力，这里用在"拆任务"上——**不用手写 JSON 解析，不用 `BeanOutputConverter`**（虽然那 API 也存在，但 `.entity()` 更直接）。
 >
-> **`executeOne` 复用 ReAct**：每个子任务跑一次带工具的 ChatClient 调用，LLM 自己决定调网页（MCP 注册进 ChatClient）还是知识库（`.tools(knowledgeBaseTool)`）。**和第 1 章的 `ResearchService.researchStream` 同构**——只是跑在更小的子任务上，步数预算更紧（4 而不是 6）。
+> **`executeOne` 复用 ReAct**：每个子任务跑一次带工具的 ChatClient 调用，LLM 自己决定调网页（MCP 注册进 ChatClient）还是知识库（`.tools(knowledgeBaseTool)`）。**和第 1 章的 `ResearchService.research` 同构**——只是跑在更小的子任务上，步数预算更紧（4 而不是 6）。
 
-#### 5.2.2 Controller：加 Plan-Execute 入口
+#### 5.2.2 Controller：加 Plan-Execute 入口（流式）
 
-原 ReAct 入口 `/api/research`（简单问题）保留不动，加一个 Plan-Execute 入口 `/api/research/deep`（复杂问题）。本章先返回**完整拼接的非流式结果**（流式留到聚合完善后，避免本章一次塞太多）。
+原 ReAct 入口 `/api/research`（简单问题）保留不动，加一个 Plan-Execute 入口 `/api/research/deep`（复杂问题），直接流式 SSE。
 
-**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 2 章的改动：① 注入 `PlanExecuteService`；② 新增 `@GetMapping("/deep")` 入口（非流式，返 String）。原 `/api/research`（ReAct 流式）保留不动。注意：`/deep` 本章是同步 `String` 返回——和 `/api/research` 的流式 `Flux<String>` 是两个不同方法、不同路径，不冲突。
+**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 2 章的改动：① 注入 `PlanExecuteService`；② 新增 `@GetMapping("/deep")` 流式入口（`Flux<String>` + SSE），调 `planExecuteService.researchDeep(topic)`。原 `/api/research`（ReAct 流式）保留不动。
 
 ```java
 package com.example.research;
@@ -2276,10 +2211,9 @@ import reactor.core.publisher.Flux;
 
 /**
  * 研究接口 Controller。
- * 第 5 章：加 /deep（Plan-Execute，复杂问题，本章非流式）。
- *   /api/research      —— ReAct 流式（简单问题，第 1-4 章）保留不动。
- *   /api/research/deep —— Plan-Execute（复杂问题，第 5 章起）。
- * 第 6 章会把 /deep 升级成流式（Flux<String>）。
+ * 第 5 章：加 /deep（Plan-Execute，复杂问题，流式）。
+ *   /api/research      —— ReAct 流式（简单问题，第 0-4 章）保留不动。
+ *   /api/research/deep —— Plan-Execute 流式（复杂问题，第 5 章起）。
  */
 @RestController
 @RequestMapping("/api/research")
@@ -2303,27 +2237,26 @@ public class ResearchController {
     public Flux<String> research(@RequestParam String topic) {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
-        return researchService.researchStream(topic);
+        return researchService.research(topic);
     }
 
-    /** Plan-Execute 入口（复杂问题）。本章非流式，返回拼接结果。 */   // ▼ 第5章新增方法
-    @GetMapping("/deep")
-    public String researchDeep(@RequestParam String topic) {
+    /** Plan-Execute 入口（复杂问题，流式）。 */   // ▼ 第5章新增方法
+    @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<String> researchDeep(@RequestParam String topic) {
         String reject = inputGuard.check(topic);            // 输入审核不撤（第 2 章）
-        if (reject != null) return reject;
-        return planExecuteService.research(topic);
+        if (reject != null) return Flux.just(reject);
+        return planExecuteService.researchDeep(topic);
     }
-    // 原 /api/research（ReAct 路径）保留不动
 }
 ```
 
-> **两套并存**：`/api/research`（ReAct，简单/快速）+ `/api/research/deep`（Plan-Execute，复杂/全面）。本章 deep 是串行 + 简单拼接——**够演示"Plan 让复杂主题查得全"这个痛点被解掉**。聚合质量、并发提速是后面章节的事。
+> **两套并存**：`/api/research`（ReAct，简单/快速）+ `/api/research/deep`（Plan-Execute，复杂/全面），都是流式 SSE。本章 deep 是串行 Execute + 简单综合——**够演示"Plan 让复杂主题查得全"这个痛点被解掉**。并发提速是第 6 章的事。
 
 ### 5.3 验证
 
 ```bash
-# 复杂主题走 Plan-Execute
-curl "http://localhost:8080/api/research/deep?topic=对比TensorRT-LLM、vLLM、SGLang的推理性能"
+# 复杂主题走 Plan-Execute（-N 流式，结果逐字出现）
+curl -N "http://localhost:8080/api/research/deep?topic=对比TensorRT-LLM、vLLM、SGLang的推理性能"
 
 # 控制台能看到：
 # [Plan] 拆出 4 个子任务: [查TensorRT-LLM性能, 查vLLM性能, 查SGLang性能, 对比三者]
@@ -2436,7 +2369,7 @@ Flux.fromIterable(subtasks)
 
 #### 6.2.1 PlanExecuteService：并发 Execute + 真正的 Aggregate + 流式
 
-**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 5 章的改动：① 保留 `plan()` 和 `executeOne(subtask)` 不变（逻辑复用）；② 新增 `executeOneReactive(subtask)`（阻塞切线程 + 错误隔离）；③ 新增 `researchParallel`（同步 block 版，理解并发逻辑用）+ `aggregate` + `buildEvidence`；④ 新增 `researchParallelStream`（全响应式流式版，Controller 用）；⑤ 原 `research()`（串行版）保留作对照。文件较长，但都是新增方法、彼此独立。
+**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 5 章的改动：① 保留 `plan()` 和 `executeOne(subtask)` 不变（逻辑复用）；② 新增 `executeOneReactive(subtask)`（阻塞切线程 + 错误隔离）；③ 新增 `aggregate` + `buildEvidence`；④ 把对外入口 `researchDeep` 从"串行 Execute + 流式综合"升级成"并发 Execute（flatMap 限并发）+ 真正的 Aggregate（LLM 收口）"，方法签名不变（仍 `Flux<String>`）。
 
 ```java
 package com.example.research.plan;
@@ -2455,11 +2388,11 @@ import java.util.List;
 /**
  * Plan-Execute 编排。
  * 第 6 章：把第 5 章的串行 Execute 改成多 Worker 并发（flatMap 限流 + 错误隔离），
- *        把简单拼接升级成真正的 Aggregate（LLM 收口），并加流式版。
+ *        把简单拼接升级成真正的 Aggregate（LLM 收口）。对外入口 researchDeep 仍流式。
  *
  * 演进：
- *   第 5 章 —— Plan + 串行 Execute + 简单拼接（research 方法保留作对照）。
- *   第 6 章（本章）—— 并发 Execute（researchParallel/researchParallelStream）+ Aggregate + 流式。
+ *   第 5 章 —— Plan + 串行 Execute + 简单综合，流式。
+ *   第 6 章（本章）—— Execute 改并发 + 真正的 Aggregate，流式不变。
  *   第 7 章 —— Plan/worker/Aggregate 三处加审计埋点。
  *   第 8 章 —— 各处加 sessionId（接会话记忆）。
  */
@@ -2475,25 +2408,6 @@ public class PlanExecuteService {
     public PlanExecuteService(ChatClient chatClient, KnowledgeBaseTool knowledgeBaseTool) {
         this.chatClient = chatClient;
         this.knowledgeBaseTool = knowledgeBaseTool;
-    }
-
-    // ============================================================
-    // 第 5 章遗留：串行版（保留作对照，Controller 不再调用）
-    // ============================================================
-
-    /** Plan-Execute 入口（串行版，第 5 章）。保留对照。 */
-    public String research(String topic) {
-        List<String> subtasks = plan(topic);
-        System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
-        StringBuilder evidence = new StringBuilder();
-        for (int i = 0; i < subtasks.size(); i++) {
-            String sub = subtasks.get(i);
-            System.out.println("[Execute] (" + (i + 1) + "/" + subtasks.size() + ") 调研: " + sub);
-            String result = executeOne(sub);
-            evidence.append("[子任务").append(i + 1).append("] ").append(sub).append("\n")
-                    .append(result).append("\n\n");
-        }
-        return evidence.toString();
     }
 
     // ============================================================
@@ -2544,22 +2458,6 @@ public class PlanExecuteService {
                 });
     }
 
-    /** Plan-Execute 入口（同步版，理解并发逻辑用；Controller 实际用流式版 researchParallelStream）。 */
-    public String researchParallel(String topic) {
-        List<String> subtasks = plan(topic);
-        System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
-
-        // 并发 Execute：flatMap 限并发，错误隔离
-        List<String> results = Flux.fromIterable(subtasks)
-                .flatMap(
-                        sub -> executeOneReactive(sub),
-                        Math.min(subtasks.size(), MAX_CONCURRENCY))   // ← 限并发，关键
-                .collectList()
-                .block();   // Controller 同步入口时 block；流式入口用 researchParallelStream
-
-        return aggregate(topic, subtasks, results);
-    }
-
     /** Aggregate 阶段：把各子结果汇总成最终报告（一次 LLM 调用收口）。 */
     private String aggregate(String topic, List<String> subtasks, List<String> results) {
         String evidence = buildEvidence(topic, subtasks, results);
@@ -2572,8 +2470,11 @@ public class PlanExecuteService {
                 .content();
     }
 
-    /** Plan-Execute 流式版：Plan→并发Execute→Aggregate 流式输出。全程响应式，无 block。Controller 用这个。 */
-    public Flux<String> researchParallelStream(String topic) {
+    /**
+     * Plan-Execute 入口（并发版，流式）：Plan→并发Execute→Aggregate 流式输出。全程响应式，无 block。
+     * 第 5 章的 researchDeep 是串行 Execute；本章把 Execute 改成多 Worker 并发（flatMap 限并发）。
+     */
+    public Flux<String> researchDeep(String topic) {
         // 阶段1 Plan（阻塞）→ 阶段2 并发 Execute（响应式）→ 阶段3 Aggregate 流式
         return Mono.fromCallable(() -> plan(topic))                  // Plan 阻塞，包成 Mono
                 .subscribeOn(Schedulers.boundedElastic())             // 跑弹性线程
@@ -2621,63 +2522,11 @@ public class PlanExecuteService {
 >
 > **Aggregate vs 第 5 章拼接**：第 5 章是 `StringBuilder` 把子结果拼成一段文本返回；本章是一次 LLM 调用，让模型综合、去重、指出矛盾、标注失败部分——**这才是真正的聚合**。代价是多一次 LLM 调用，但报告质量高得多。
 
-#### 6.2.2 Controller：/deep 切到并发流式版
+#### 6.2.2 Controller：本章无需改动
 
-把 `/api/research/deep` 从调第 5 章的 `research`（串行、非流式）改成调 6.2.1 的 `researchParallelStream`（并发、流式）。**直接用流式版**（前端要 SSE）——`researchParallel`（同步 block 版）只作为"理解并发逻辑"的参照保留，Controller 不用它（避免同 path 两个方法撞 Spring 映射）。
+第 5 章的 `/deep` 已经是流式 SSE，调 `planExecuteService.researchDeep(topic)`。本章把 `researchDeep` 的**内部实现**从"串行 Execute"改成"多 Worker 并发 Execute"——但**方法签名（`Flux<String> researchDeep(String)`）没变**，所以 Controller 完全不用改（和第 1 章一样的分层好处）。
 
-**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 5 章的改动：① `/deep` 从返 `String` 改成返 `Flux<String>` + SSE；② 调 `researchParallelStream`。
-
-```java
-package com.example.research;
-
-import com.example.research.plan.PlanExecuteService;
-import com.example.research.safety.InputGuard;
-import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
-
-/**
- * 研究接口 Controller。
- * 第 6 章：/deep 从同步 String 升级为并发流式 Flux<String> + SSE。
- *   /api/research      —— ReAct 流式（简单问题）。
- *   /api/research/deep —— Plan-Execute 并发流式（复杂问题）。
- */
-@RestController
-@RequestMapping("/api/research")
-public class ResearchController {
-
-    private final ResearchService researchService;
-    private final PlanExecuteService planExecuteService;
-    private final InputGuard inputGuard;
-
-    public ResearchController(ResearchService researchService,
-                              PlanExecuteService planExecuteService,
-                              InputGuard inputGuard) {
-        this.researchService = researchService;
-        this.planExecuteService = planExecuteService;
-        this.inputGuard = inputGuard;
-    }
-
-    /** ReAct 入口（简单问题，流式）。 */
-    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> research(@RequestParam String topic) {
-        String reject = inputGuard.check(topic);
-        if (reject != null) return Flux.just(reject);
-        return researchService.researchStream(topic);
-    }
-
-    /** Plan-Execute 入口（复杂问题，并发流式）。 */   // ▼ 第6章替换：从同步 String 改成并发流式 Flux<String> + SSE
-    @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> researchDeep(@RequestParam String topic) {
-        String reject = inputGuard.check(topic);
-        if (reject != null) return Flux.just(reject);
-        return planExecuteService.researchParallelStream(topic)   // ← 并发 + 流式
-                .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));   // 错误归宿（第 4 章）
-    }
-}
-```
-
-> **一个 `/deep` 流式入口**：不搞同步+流式两个方法——同 path 同 method 两个 `@GetMapping` 会让 Spring 启动报 `Ambiguous mapping`。前端要 SSE 就用流式版；真要同步结果，前端把 SSE 读完整拼接即可（A.5b 页面就是边收边拼）。
+> Controller 对外契约稳定，Service 内部从串行升级到并发，前端无感知。后续第 7、8 章 Service 继续演进（加审计、加 sessionId），Controller 也基本不动。
 
 ### 6.3 验证
 
@@ -2699,7 +2548,7 @@ curl -N "http://localhost:8080/api/research/deep?topic=对比TensorRT-LLM、vLLM
 
 ```
 research-agent/src/main/java/com/example/research/
-├── plan/PlanExecuteService.java   （改：加 executeOneReactive / researchParallel / aggregate / researchParallelStream）
+├── plan/PlanExecuteService.java   （改：加 executeOneReactive / aggregate / buildEvidence；researchDeep 改并发）
 └── ResearchController.java        （改：/deep 切到并发流式版）
 ```
 
@@ -2855,9 +2704,9 @@ public class AuditLogger {
 
 #### 7.2.3 PlanExecuteService：Plan/worker/Aggregate 三处埋点
 
-**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 6 章的改动：① 注入 `AuditLogger`（构造函数加参数）；② `researchParallelStream` 加 `sessionId` 参数（生成 turnId，在 PLAN/AGGREGATE 两处埋点）；③ `executeOneReactive` 加 `sessionId, turnId` 参数（worker 内部记 SUBTASK 成败——成功 `doOnNext`、失败 `onErrorResume`，集中在一处）。`plan()`、`executeOne()`、`research()`、`aggregate()`、`buildEvidence()` 逻辑不变；`researchParallel()`（同步对照版）的并发逻辑内联，不再调改了签名的 `executeOneReactive`，避免冲突。
+**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 6 章的改动：① 注入 `AuditLogger`（构造函数加参数）；② `researchDeep` 加 `sessionId` 参数（生成 turnId，在 PLAN/AGGREGATE 两处埋点）；③ `executeOneReactive` 加 `sessionId, turnId` 参数（worker 内部记 SUBTASK 成败——成功 `doOnNext`、失败 `onErrorResume`，集中在一处）。`plan()`、`executeOne()`、`aggregate()`、`buildEvidence()` 逻辑不变。
 
-> **审计埋点的位置选择**（这是第 7 章的设计要点）：worker 粒度的成败记录**集中放在 `executeOneReactive` 内部**（成功 `doOnNext`、失败 `onErrorResume`），而不是散在 `researchParallelStream` 的 `flatMap` 里——因为 `flatMap` 里写 `doOnNext`/`doOnError` 会被 `executeOneReactive` 内部的 `onErrorResume` 抢先吞掉，拿不到原始异常（见 A.3 第 7 章坑）。PLAN 和 AGGREGATE 两处留在编排层。
+> **审计埋点的位置选择**（这是第 7 章的设计要点）：worker 粒度的成败记录**集中放在 `executeOneReactive` 内部**（成功 `doOnNext`、失败 `onErrorResume`），而不是散在 `researchDeep` 的 `flatMap` 里——因为 `flatMap` 里写 `doOnNext`/`doOnError` 会被 `executeOneReactive` 内部的 `onErrorResume` 抢先吞掉，拿不到原始异常（见 A.3 第 7 章坑）。PLAN 和 AGGREGATE 两处留在编排层。
 
 ```java
 package com.example.research.plan;
@@ -2882,7 +2731,7 @@ import java.util.List;
  * 演进：
  *   第 5 章 —— Plan + 串行 Execute + 简单拼接。
  *   第 6 章 —— 并发 Execute + Aggregate + 流式。
- *   第 7 章（本章）—— 加审计埋点（researchParallelStream / executeOneReactive 多了 sessionId/turnId 参数）。
+ *   第 7 章（本章）—— 加审计埋点（researchDeep / executeOneReactive 多了 sessionId/turnId 参数）。
  *   第 8 章 —— sessionId 来源从"请求临时传"改成"会话表真实 ID"（参数不变，调用方变）。
  */
 @Service
@@ -2901,21 +2750,6 @@ public class PlanExecuteService {
         this.chatClient = chatClient;
         this.knowledgeBaseTool = knowledgeBaseTool;
         this.auditLogger = auditLogger;
-    }
-
-    /** 第 5 章串行版（保留对照，无审计埋点）。 */
-    public String research(String topic) {
-        List<String> subtasks = plan(topic);
-        System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
-        StringBuilder evidence = new StringBuilder();
-        for (int i = 0; i < subtasks.size(); i++) {
-            String sub = subtasks.get(i);
-            System.out.println("[Execute] (" + (i + 1) + "/" + subtasks.size() + ") 调研: " + sub);
-            String result = executeOne(sub);
-            evidence.append("[子任务").append(i + 1).append("] ").append(sub).append("\n")
-                    .append(result).append("\n\n");
-        }
-        return evidence.toString();
     }
 
     /** Plan：LLM 输出 JSON 子任务数组，.entity() 反序列化成 List<String>。 */
@@ -2964,19 +2798,6 @@ public class PlanExecuteService {
                 });
     }
 
-    /** 同步 block 版（理解并发用；Controller 用流式版）。并发逻辑内联，不调改了签名的 executeOneReactive。 */
-    public String researchParallel(String topic) {
-        List<String> subtasks = plan(topic);
-        List<String> results = Flux.fromIterable(subtasks)
-                .flatMap(sub -> Mono.fromCallable(() -> executeOne(sub))
-                        .subscribeOn(Schedulers.boundedElastic())
-                        .onErrorResume(err -> Mono.just("[该子任务调研失败]")),
-                        Math.min(subtasks.size(), MAX_CONCURRENCY))
-                .collectList()
-                .block();
-        return aggregate(topic, subtasks, results);
-    }
-
     /** Aggregate：一次 LLM 调用收口。 */
     private String aggregate(String topic, List<String> subtasks, List<String> results) {
         String evidence = buildEvidence(topic, subtasks, results);
@@ -2991,10 +2812,10 @@ public class PlanExecuteService {
 
     /**
      * Plan-Execute 流式版 + 审计埋点。
-     * ▼ 第7章替换：第6章是 researchParallelStream(String topic)；现在多 sessionId 参数，
+     * ▼ 第7章替换：第6章是 researchDeep(String topic)；现在多 sessionId 参数，
      *   在 PLAN、AGGREGATE 两处埋点（worker 的 SUBTASK 埋在 executeOneReactive 内部）。
      */
-    public Flux<String> researchParallelStream(String topic, String sessionId) {
+    public Flux<String> researchDeep(String topic, String sessionId) {
         String turnId = AuditLogger.newTurnId();
         long planStart = System.currentTimeMillis();
 
@@ -3101,7 +2922,7 @@ public class AuditController {
 
 第 8 章正式引入会话前，`/deep` 让请求传一个临时 `sessionId`（或后端生成 UUID）。
 
-**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 6 章的改动：`/deep` 加 `sessionId` 参数（缺省时后端生成临时 ID），传给 `researchParallelStream`。
+**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 6 章的改动：`/deep` 加 `sessionId` 参数（缺省时后端生成临时 ID），传给 `researchDeep`。
 
 ```java
 package com.example.research;
@@ -3139,7 +2960,7 @@ public class ResearchController {
     public Flux<String> research(@RequestParam String topic) {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
-        return researchService.researchStream(topic);
+        return researchService.research(topic);
     }
 
     /** Plan-Execute 入口（复杂问题，并发流式）。 */   // ▼ 第7章替换：加 sessionId 参数
@@ -3149,7 +2970,7 @@ public class ResearchController {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
         if (sessionId.isBlank()) sessionId = "anon-" + UUID.randomUUID();  // ▼ 第7章新增：第8章前用临时 ID
-        return planExecuteService.researchParallelStream(topic, sessionId)
+        return planExecuteService.researchDeep(topic, sessionId)
                 .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
     }
 }
@@ -3366,9 +3187,9 @@ public class ChatClientConfig {
 
 光挂 advisor 不够——还得告诉它"这次属于哪个会话"。改各处 ChatClient 调用，加 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))`。**这是连锁改动**：sessionId 要一路透传。
 
-先改 `PlanExecuteService`——`plan`、`executeOne`、`aggregate` 都要加 sessionId 参数并传 CONVERSATION_ID；调用它们的 `researchParallelStream` 把 sessionId 透传下去（sessionId 已是它的入参，第 7 章加的）。
+先改 `PlanExecuteService`——`plan`、`executeOne`、`aggregate` 都要加 sessionId 参数并传 CONVERSATION_ID；调用它们的 `researchDeep` 把 sessionId 透传下去（sessionId 已是它的入参，第 7 章加的）。
 
-**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 7 章的改动：① `plan(topic)` → `plan(topic, sessionId)`；② `executeOne(subtask)` → `executeOne(subtask, sessionId)`；③ `aggregate(...)` 加 sessionId 参数；④ `researchParallelStream` 内部把 sessionId 透传到 plan/executeOne/aggregate；⑤ 每个 chatClient 调用加 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))`。
+**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 7 章的改动：① `plan(topic)` → `plan(topic, sessionId)`；② `executeOne(subtask)` → `executeOne(subtask, sessionId)`；③ `aggregate(...)` 加 sessionId 参数；④ `researchDeep` 内部把 sessionId 透传到 plan/executeOne/aggregate；⑤ 每个 chatClient 调用加 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))`。
 
 ```java
 package com.example.research.plan;
@@ -3394,7 +3215,7 @@ import java.util.List;
  * 演进：
  *   第 5 章 —— Plan + 串行 Execute + 简单拼接。
  *   第 6 章 —— 并发 Execute + Aggregate + 流式。
- *   第 7 章 —— 加审计埋点（researchParallelStream / executeOneReactive 多 sessionId/turnId）。
+ *   第 7 章 —— 加审计埋点（researchDeep / executeOneReactive 多 sessionId/turnId）。
  *   第 8 章（本章）—— plan/executeOne/aggregate 多 sessionId 参数 + CONVERSATION_ID。
  */
 @Service
@@ -3412,17 +3233,6 @@ public class PlanExecuteService {
         this.chatClient = chatClient;
         this.knowledgeBaseTool = knowledgeBaseTool;
         this.auditLogger = auditLogger;
-    }
-
-    /** 第 5 章串行版（保留对照，无审计/无记忆埋点）。 */
-    public String research(String topic) {
-        List<String> subtasks = plan(topic, null);
-        StringBuilder evidence = new StringBuilder();
-        for (int i = 0; i < subtasks.size(); i++) {
-            evidence.append("[子任务").append(i + 1).append("] ").append(subtasks.get(i)).append("\n")
-                    .append(executeOne(subtasks.get(i), null)).append("\n\n");
-        }
-        return evidence.toString();
     }
 
     /** Plan：LLM 输出 JSON 子任务数组。 */   // ▼ 第8章替换：加 sessionId 参数
@@ -3479,7 +3289,7 @@ public class PlanExecuteService {
     }
 
     /** Plan-Execute 流式版 + 审计埋点 + 会话记忆。 */
-    public Flux<String> researchParallelStream(String topic, String sessionId) {
+    public Flux<String> researchDeep(String topic, String sessionId) {
         String turnId = AuditLogger.newTurnId();
         long planStart = System.currentTimeMillis();
 
@@ -3515,19 +3325,6 @@ public class PlanExecuteService {
                 });
     }
 
-    /** 同步 block 版（理解并发用，无审计/无记忆）。 */
-    public String researchParallel(String topic, String sessionId) {
-        List<String> subtasks = plan(topic, sessionId);
-        List<String> results = Flux.fromIterable(subtasks)
-                .flatMap(sub -> Mono.fromCallable(() -> executeOne(sub, sessionId))
-                        .subscribeOn(Schedulers.boundedElastic())
-                        .onErrorResume(err -> Mono.just("[该子任务调研失败]")),
-                        Math.min(subtasks.size(), MAX_CONCURRENCY))
-                .collectList()
-                .block();
-        return aggregate(topic, subtasks, results, sessionId);
-    }
-
     private String buildEvidence(String topic, List<String> subtasks, List<String> results) {
         StringBuilder sb = new StringBuilder("研究主题：").append(topic).append("\n\n各子调研结果：\n");
         for (int i = 0; i < results.size(); i++) {
@@ -3540,17 +3337,15 @@ public class PlanExecuteService {
 }
 ```
 
-> **配套改动（连锁修改）**：`executeOne` 加了 `sessionId` 参数后，调用它的 `executeOneReactive`（第 6/7 章）内部 `executeOne(subtask)` 已改成 `executeOne(subtask, sessionId)`；`researchParallelStream` 拿到 `sessionId` 后一路透传到 plan/executeOne/aggregate。`researchParallel`（同步对照版）签名也跟着加了 `sessionId`。**这是"改接口要同步改调用方"的标配**——第 8 章给所有 LLM 调用加 sessionId，整条调用链都要跟着传。
+> **配套改动（连锁修改）**：`executeOne` 加了 `sessionId` 参数后，调用它的 `executeOneReactive` 内部 `executeOne(subtask)` 已改成 `executeOne(subtask, sessionId)`；`researchDeep` 拿到 `sessionId` 后一路透传到 plan/executeOne/aggregate。**这是"改接口要同步改调用方"的标配**——第 8 章给所有 LLM 调用加 sessionId，整条调用链都要跟着传。
 >
 > ⚠️ **多轮记忆与 Plan-Execute 的张力**：Plan-Execute 每次都重新 Plan（拆子任务），但带了历史后，LLM 拆任务时能参考上一轮的结论——比如用户追问"展开 vLLM 的 PagedAttention"，Plan 会拆成"查 PagedAttention 原理"等更聚焦的子任务（而不是泛泛重查）。**记忆让追问更精准**。但要注意：子任务里带的历史会让单次调用 context 变大，token 成本上升——`maxMessages=20` 的窗口就是来控制这个的。
->
-> **`research(topic)` 串行对照版传 `null`**：对照版没接会话，传 null，`.advisors` 里 `if (sessionId != null)` 跳过——不挂 CONVERSATION_ID 就是无记忆调用，和前 7 章行为一致。
 
 #### 8.2.5 ResearchService（ReAct 路径）也加会话记忆
 
-ReAct 路径（`/api/research`）目前没传 sessionId——它是"单次研究"语义，前 8 章不带记忆也合理。但为了和 Plan-Execute 一致（都能多轮），本章给 `researchStream` 也加可选 sessionId。**Controller 层 `/api/research` 也加 `sessionId` 参数**（和 `/deep` 对齐）。
+ReAct 路径（`/api/research`）目前没传 sessionId——它是"单次研究"语义，前 8 章不带记忆也合理。但为了和 Plan-Execute 一致（都能多轮），本章给 `research` 也加可选 sessionId。**Controller 层 `/api/research` 也加 `sessionId` 参数**（和 `/deep` 对齐）。
 
-**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 4 章的改动：`researchStream` 加可选 `sessionId` 参数，挂 CONVERSATION_ID。
+**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 4 章的改动：`research` 加可选 `sessionId` 参数，挂 CONVERSATION_ID。
 
 ```java
 package com.example.research;
@@ -3564,7 +3359,7 @@ import reactor.core.publisher.Flux;
 
 /**
  * 研究服务（ReAct Agent，简单问题路径）。
- * 第 8 章：researchStream 加可选 sessionId（挂会话记忆），让简单问题路径也能多轮。
+ * 第 8 章：research 加可选 sessionId（挂会话记忆），让简单问题路径也能多轮。
  */
 @Service
 public class ResearchService {
@@ -3578,7 +3373,7 @@ public class ResearchService {
     }
 
     /** 流式版（Controller 用 SSE）。sessionId 可选——传了带历史，不传是无记忆单次。 */   // ▼ 第8章替换：加 sessionId 参数
-    public Flux<String> researchStream(String topic, String sessionId) {
+    public Flux<String> research(String topic, String sessionId) {
         return chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
@@ -3592,9 +3387,6 @@ public class ResearchService {
                     return Flux.just("[研究失败] " + err.getMessage());
                 });
     }
-
-    /** 旧签名保留兼容（无 sessionId = 无记忆单次）。 */
-    public Flux<String> researchStream(String topic) { return researchStream(topic, null); }
 
     private static final String SYSTEM_PROMPT = """
             你是研究助理。你有工具：网页搜索（来自 MCP）、知识库搜索（本地）。
@@ -3613,7 +3405,7 @@ public class ResearchService {
 }
 ```
 
-**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 7 章的改动：`/api/research` 也加 `sessionId` 参数，传给 `researchStream`（两条路径都支持多轮）。
+**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 7 章的改动：`/api/research` 也加 `sessionId` 参数，传给 `research`（两条路径都支持多轮）。
 
 ```java
 package com.example.research;
@@ -3653,7 +3445,7 @@ public class ResearchController {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
         if (sessionId.isBlank()) sessionId = "anon-" + UUID.randomUUID();
-        return researchService.researchStream(topic, sessionId);
+        return researchService.research(topic, sessionId);
     }
 
     /** Plan-Execute 入口（复杂问题，并发流式）。 */
@@ -3663,7 +3455,7 @@ public class ResearchController {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
         if (sessionId.isBlank()) sessionId = "anon-" + UUID.randomUUID();
-        return planExecuteService.researchParallelStream(topic, sessionId)
+        return planExecuteService.researchDeep(topic, sessionId)
                 .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
     }
 }
@@ -3702,7 +3494,7 @@ research-agent/
     │   ├── ChatMemoryConfig.java  （新增：JdbcChatMemoryRepository + PG dialect）
     │   └── ChatClientConfig.java   （改：加 MessageChatMemoryAdvisor）
     ├── plan/PlanExecuteService.java （改：plan/executeOne/aggregate 加 sessionId + CONVERSATION_ID）
-    ├── ResearchService.java        （改：researchStream 加 sessionId）
+    ├── ResearchService.java        （改：research 加 sessionId）
     └── ResearchController.java     （改：/api/research 也加 sessionId）
 ```
 
@@ -3963,7 +3755,7 @@ public class ResearchController {
                                   @RequestParam(defaultValue = "") String sessionId) {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
-        return researchService.researchStream(topic, sessionId);
+        return researchService.research(topic, sessionId);
     }
 
     /** Plan-Execute 入口（复杂问题，并发流式）。问答开始前自动补标题。 */   // ▼ 第9章替换：加自动标题
@@ -3975,7 +3767,7 @@ public class ResearchController {
         // 第一轮问答：用问题前 20 字当标题（若该会话还没标题）
         String title = topic.length() > 20 ? topic.substring(0, 20) + "…" : topic;
         return sessionService.rename(sessionId, title)             // 先补标题（幂等：有则覆盖）
-                .thenMany(planExecuteService.researchParallelStream(topic, sessionId))
+                .thenMany(planExecuteService.researchDeep(topic, sessionId))
                 .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
     }
 }
