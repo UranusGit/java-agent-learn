@@ -35,6 +35,8 @@
 - [第 7 章：结构化审计日志——整体流程可追溯](#第-7-章结构化审计日志整体流程可追溯)
 - [第 8 章：会话持久化——ChatMemory 落库，刷新不丢历史](#第-8-章会话持久化chatmemory-落库刷新不丢历史)
 - [第 9 章：会话管理 CRUD + 前端对话页——从单次研究到产品](#第-9-章会话管理-crud--前端对话页从单次研究到产品)
+- [第 10 章：多设备同步流式——跨实例热流广播](#第-10-章多设备同步流式跨实例热流广播)
+- [第 11 章：全文演进总览 + 后续方向](#第-11-章全文演进总览--后续方向)
 - [附录：双项目结构与踩坑手册](#附录双项目结构与踩坑手册)
 
 ---
@@ -4444,11 +4446,458 @@ flowchart TD
 
 ---
 
-## 相关文档（学完本文，想深入相关主题时参考）
+---
 
-- [33-Agent子过程实时可见性方案](./33-Agent子过程实时可见性方案.md) —— Agent 可观测性的理论全本（想让你的 Agent 更彻底地可见、可靠时看）
-- [33a-Agent可观测性最小实战](./33a-Agent可观测性最小实战.md) / [33b-Agent可观测性企业级演进实践](./33b-Agent可观测性企业级演进实践.md) —— 可观测主题的实战（日志可见只是最小手段，想做完整事件总线/SSE/灾备时看这套）
+## 第 10 章：多设备同步流式——分布式三层广播架构
+
+### 10.0 场景：单机 Sinks 在分布式面前失效
+
+第 9 章产品上线后用户量增长，你部署了两台机器做水平扩展。然后来了一个真实场景：
+
+> 用户手机发了一条长研究问题，浏览器开始流式输出。等待途中他打开 iPad 看进度——iPad 上**没有任何内容**。检查发现：手机请求落在 Instance A，iPad 落在 Instance B，A 创建的本地 `Sinks.Many` 热流对 B 完全不可见。
+
+更糟的是，如果两台设备**同时**到达，每台实例各自触发一次 LLM 调用——两份 token，两份大概率不同的结果。
+
+**这暴露了 3 个根因**：
+
+| 问题 | 根因 | 对应层级 |
+|------|------|---------|
+| 跨实例不可见 | SSE 热流在单机内存里 | 消息路由层 |
+| 多设备重复触发 LLM | 无全局唯一性保障 | 锁协调层 |
+| 晚加入的设备看不到前文 | 没有进程中的历史存储 | 消息持久层 |
+
+**本章解法**：用 **Redis Streams（消息持久化）+ Pub/Sub（低延迟推送）+ SETNX 锁（全局唯一）** 构建三层广播架构。这和 ChatGPT/DeepSeek App 的多设备同步底层同构——一个集中式的流分发总线，所有实例订阅同一信道。
+
+> **为什么是 Redis Streams 而不是纯 Pub/Sub**：Redis Pub/Sub 不持久——订阅者掉线 1 毫秒就丢消息。如果用 Pub/Sub 做唯一通道，一个用户网络抖动导致断连，这期间的所有 chunk 永久丢失。Redis Streams 是持久化的追加日志，支持 `XREAD` 从任意 offset 重新读取——即使断连、重启、网络抖动，只要 offset 没丢就能追回。和 Kafka 原理一致，但 Redis 已经是你的生产依赖（ChatMemory 缓存、会话状态），不需要引第二个中间件。
+
+### 10.1 架构设计
+
+#### 三层广播架构
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Layer 3: 消息持久层（Redis Streams）                          │
+│    - XADD stream:{sid} * chunk "xxx"                         │
+│    - 持久化每条 chunk，支持 XREAD 从任意 offset 重放            │
+│    - MAXLEN 限制流长度                                        │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+┌──────────────────────▼───────────────────────────────────────┐
+│  Layer 2: 实时推送层（Redis Pub/Sub + 本地 Sinks）             │
+│    - PUBLISH stream:{sid} "xxx" → 所有实例的低延迟广播         │
+│    - 本地 Sinks.Many 扇出给本实例所有 SSE 客户端                │
+│    - Pub/Sub 失败时降级到 Stream XREAD 轮询                    │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+┌──────────────────────▼───────────────────────────────────────┐
+│  Layer 1: 协调层（SETNX 锁 + 实例注册）                        │
+│    - SETNX stream:{sid}:lock → 全集群只触发一次 LLM 调用       │
+│    - 锁带 TTL（5min），防崩溃死锁                               │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 新设备加入时（iPad 晚 10 秒打开同一会话）
+
+```
+iPad → 负载均衡 → Instance B
+
+Instance B:
+1. SETNX stream:sid:lock → 已存在（Instance A 持有），不触发 LLM
+2. XREAD STREAMS stream:sid 0 → 拿到全量历史：
+    1681012345-0: "AI技术"
+    1681012345-1: "在2026年"  
+    1681012345-2: "取得了..."   ← 快速回放
+3. SUBSCRIBE stream:sid → 无缝接入后续实时 chunk
+4. 推给 iPad 的 SSE：历史回放完毕 → 实时推流中
+```
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 消息持久化 | **Redis Streams**（`XADD`/`XREAD`） | 持久追加日志，支持任意 offset 重放。断连/重启/网络抖动都能追回 |
+| 实时推送 | **Redis Pub/Sub**（`PUBLISH`/`SUBSCRIBE`） | 低延迟（毫秒级），用作"新消息通知"而非"唯一可靠通道" |
+| 本地扇出 | **Sinks.Many.multicast()** | 每个实例一份，负责把 Redis 推送扇出给所有本地 SSE 客户端 |
+| 降级 | 当 Pub/Sub 故障时，**切换为 Stream XREAD 轮询** | 优雅降级而非崩溃——依赖 Layer 1 的持久化 |
+| 全局唯一 | **Redis SETNX** + TTL | 全集群只触发一次 LLM 调用 |
+
+> **为什么不用 Redis Stream Consumer Group**：Consumer Group 的价值是"负载均衡处理消息"（一条消息只被一个消费者处理）。而我们这里的需求是"一条消息被所有实例所有的 SSE 客户端消费"——这是多播不是负载均衡。用基础的 `XADD` + `XREAD` 就够了，不需要 Consumer Group 的复杂度。
+
+### 10.2 动手
+
+本章加 1 依赖（Redis reactive）、配 1 段 yaml、新建 1 文件（`RedisStreamBus`）、改 1 文件（`ResearchService`）。引入外部依赖 Redis（`docker run -d --name research-redis -p 6379:6379 redis:7-alpine`）。
+
+#### 10.2.1 pom 加依赖
+
+**【改已有文件】** `pom.xml`，追加：
+
+```xml
+        <!-- 第 10 章：响应式 Redis（Streams 持久化 + Pub/Sub 广播） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+```
+
+#### 10.2.2 application.yaml：Redis 连接配置
+
+**【改已有文件】** `application.yaml`，`spring` 节下追加：
+
+```yaml
+  # ▶ 第 10 章新增：Redis 连接（分布式流总线）
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 5s
+```
+
+#### 10.2.3 RedisStreamBus：分布式三层广播的核心
+
+这是本章的**核心文件**——用一个类封装 Streams（持久化）+ Pub/Sub（实时）+ SETNX（协调），对外只暴露一个方法 `subscribe(sessionId, upstream)`。
+
+> **设计要点（读代码前先理解）**：
+> - **所有调用者（无论是不是锁持有者）返回的 Flux 都从 Redis 读取**：锁持有者先把 LLM 输出写入 Redis（XADD + PUBLISH），然后同样走 `replayThenListen()` 读回——保证所有 SSE 客户端看到的内容完全一致（都从 Redis 同一数据源消费）。
+> - **不引入本地 Sinks 做中间层**：Streams 本身就是持久化的中间存储。每个 SSE 客户端独立订阅 Pub/Sub 频道，比共用本地 Sinks 更简单、更少状态管理。
+> - **`upstream.subscribe()` 是 fire-and-forget**：LLM 调用在后台运行、写入 Redis；HTTP 响应直接从 Redis 取数据——两者异步解耦。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/stream/RedisStreamBus.java`：
+
+```java
+package com.example.research.stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.time.Duration;
+import java.util.Map;
+
+/**
+ * 分布式流总线：基于 Redis Streams + Pub/Sub 的三层广播架构。
+ *
+ * 三层各司其职：
+ *   Layer 1 (协调): SETNX 锁 → 全集群只触发一次 LLM 调用
+ *   Layer 2 (实时): Pub/Sub → 低延迟推送新 chunk 到所有实例的所有 SSE 客户端
+ *   Layer 3 (持久): Streams XADD → 每条 chunk 持久化，新设备 XREAD 从 offset 0 拿全量历史
+ *
+ * 工作流程：
+ *   1. 第一个请求到达 → SETNX 抢锁
+ *      - 拿到锁：在后台 subscribe upstream（LLM 调用），每个 chunk →
+ *        XADD Streams + PUBLISH 频道 + 本地 SSE 输出
+ *      - 没拿到锁：不做任何上游订阅
+ *   2. 所有请求（包括拿到锁那个）：通过 replayThenListen() 从 Redis 读取
+ *      - XREAD range Streams → 拿到已输出的全量历史（回放）
+ *      - SUBSCRIBE 频道 → 接收新的实时 chunk
+ *      - concatWith 保证先回放完毕再接实时流
+ *
+ *   ChatGPT / DeepSeek App 的多设备同步底层同构——集中的流生成 + 多路分发。
+ */
+@Component
+public class RedisStreamBus {
+
+    private static final Logger log = LoggerFactory.getLogger(RedisStreamBus.class);
+
+    private static final String KEY_STREAM = "stream:%s:chunks";  // Streams 键
+    private static final String CHANNEL    = "stream:%s";          // Pub/Sub 频道
+    private static final String KEY_LOCK   = "stream:%s:lock";    // SETNX 锁
+    private static final Duration LOCK_TTL  = Duration.ofMinutes(5);
+    private static final Duration STREAM_TTL = Duration.ofHours(24);
+
+    private final ReactiveRedisTemplate<String, String> redis;
+    private final ReactiveRedisMessageListenerContainer listener;
+
+    public RedisStreamBus(ReactiveRedisTemplate<String, String> redis,
+                          ReactiveRedisMessageListenerContainer listener) {
+        this.redis = redis;
+        this.listener = listener;
+    }
+
+    /**
+     * 订阅指定会话的流。全局同一 sessionId 只触发一次 upstream。
+     *
+     * @param sessionId 会话 ID
+     * @param upstream  LLM 调用的 Flux（仅在 SETNX 锁成功时才被 subscribe）
+     * @return 可被多个 SSE 客户端同时订阅的 Flux<String>
+     */
+    public Mono<Flux<String>> subscribe(String sessionId, Flux<String> upstream) {
+        String streamKey = KEY_STREAM.formatted(sessionId);
+        String channel    = CHANNEL.formatted(sessionId);
+        String lockKey    = KEY_LOCK.formatted(sessionId);
+
+        return redis.opsForValue().setIfAbsent(lockKey, "1", LOCK_TTL)
+                .flatMap(acquired -> {
+                    if (Boolean.TRUE.equals(acquired)) {
+                        log.info("[StreamBus] 获得锁，启动 LLM (session={})", sessionId);
+                        // 后台 fire-and-forget：LLM 的每个 chunk 写入 Redis，所有调用者从 Redis 读
+                        upstream
+                                .doOnNext(chunk -> {
+                                    // XADD：持久化到 Streams（Layer 3）
+                                    redis.opsForStream()
+                                            .add(streamKey, Map.of("chunk", chunk))
+                                            .subscribe(null, err -> log.error(
+                                                "[StreamBus] XADD 失败 (session={}): {}", sessionId, err.getMessage()));
+                                    // PUBLISH：实时广播到频道（Layer 2）
+                                    redis.convertAndSend(channel, chunk).subscribe();
+                                })
+                                .doOnComplete(() -> {
+                                    redis.expire(streamKey, STREAM_TTL).subscribe();
+                                    redis.delete(lockKey).subscribe();
+                                    // 发送结束标记，让所有 SSE 订阅者知道流结束了
+                                    redis.convertAndSend(channel, "__END__").subscribe();
+                                    log.info("[StreamBus] 流完成 (session={})", sessionId);
+                                })
+                                .doOnError(err -> {
+                                    redis.delete(lockKey).subscribe();
+                                    log.error("[StreamBus] 流错误 (session={}): {}", sessionId, err.getMessage());
+                                })
+                                .subscribe();  // fire-and-forget：异步写入 Redis，不阻塞 HTTP 响应
+                    } else {
+                        log.info("[StreamBus] 锁已被占用，从 Redis 读取 (session={})", sessionId);
+                    }
+                    // 所有调用者（包括锁持有者自己）都从 Redis 取数据——保证内容一致性
+                    return Mono.just(replayThenListen(streamKey, channel));
+                });
+    }
+
+    /**
+     * 从 Redis 读取流：先 XREAD Streams 回放全量历史，再 SUBSCRIBE Pub/Sub 接实时。
+     * Streams range 返回已持久化的所有 chunk（offset 从 0 开始全量）；
+     * Pub/Sub 推送之后新产生的 chunk；收到 __END__ 标记后完成 Flux。
+     */
+    private Flux<String> replayThenListen(String streamKey, String channel) {
+        // ① Redis Streams：全量历史（XREAD 从最早开始）
+        Flux<String> history = redis.opsForStream()
+                .range(streamKey, org.springframework.data.domain.Range.unbounded())
+                .map(record -> (String) record.getValue().get("chunk"));
+
+        // ② Redis Pub/Sub：实时新 chunk（过滤结束标记）
+        Flux<String> live = listener.receive(ChannelTopic.of(channel))
+                .map(msg -> msg.getMessage())
+                .takeUntil("__END__"::equals)        // 收到 __END__ 后停止
+                .filter(chunk -> !"__END__".equals(chunk));  // 不把 __END__ 推给前端
+
+        // concatWith：先发完全量历史，再无缝接到实时流
+        return history.concatWith(live);
+    }
+}
+```
+
+> **设计理念（三个关键决策）**：
+>
+> **① 为什么"所有调用者都从 Redis 读"而不是"锁持有者直接返回 upstream"**：一致性。如果锁持有者的 SSE 客户端直接消费 `upstream`，其他实例的客户端从 Redis 读——两者的 timing 不同（直接消费的比 Redis 读的快几毫秒到几十毫秒）。差距很小，但对于"多设备完全同步"的体验来说，统一从 Redis 消费保证了所有设备收到一模一样的内容和时序。这是 CAP 里选 Consistency 的代价——极小的延迟增加换确定性。
+>
+> **② 为什么 `upstream.subscribe()` 是 fire-and-forget 而不是链式调用**：`subscribe()` 让 LLM 在后台执行（Netty 的 elastic 线程池），HTTP 响应线程不等待 LLM 启动。如果链式调用（`.then()`），HTTP 响应要等 LLM 第一个 token 出来才开始推第一个 chunk——用户体验是"干等几秒然后突然一堆内容"。fire-and-forget 让 HTTP 立刻开始从 Redis 读取——即使最初几条是空的（Stream 还没写入），Pub/Sub 会推送后续所有内容。用户感知的延迟更低。
+>
+> **③ 为什么不用 Consumer Group**：Consumer Group 是"一条消息只被一个消费者处理"（负载均衡模式）。我们需要的是"一条消息被所有实例的所有 SSE 客户端消费"（多播模式）。基础 `XADD` + `XREAD` 刚好——不需要 Consumer Group 的 ACK 和 pending 管理。
+>
+> **关于 `__END__` 标记**：Redis Pub/Sub 的 `SUBSCRIBE` 本身不会"完成"——它是个持续打开的 Flux。我们通过发送特殊标记 `__END__` 来通知所有订阅者"流完成了，可以关闭 SSE 连接"。`takeUntil("__END__"::equals)` 在收到这个标记后让 `live` Flux 自然完成，从而 `history.concatWith(live)` 整体 Flux 完成——Spring WebFlux 的 SSE 编码器会正常关闭连接。这是"优雅完成"和"连接自然断开"之间的最小实现。
+>
+> **`ReactiveRedisMessageListenerContainer` bean 定义**（如果 Spring Boot 没自动创建会在启动时报错，手动加）：
+> ```java
+> @Configuration
+> public class RedisConfig {
+>     @Bean
+>     public ReactiveRedisMessageListenerContainer listenerContainer(
+>             ReactiveRedisConnectionFactory factory) {
+>         return new ReactiveRedisMessageListenerContainer(factory);
+>     }
+> }
+> ```
+
+#### 10.2.4 ResearchService：注入 RedisStreamBus
+
+**【改已有文件，完整版覆盖】** `ResearchService.java`：
+
+```java
+package com.example.research;
+
+import com.example.research.stream.RedisStreamBus;
+import com.example.research.tool.KnowledgeBaseTool;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+
+/**
+ * 研究服务（ReAct Agent）。
+ * 第 10 章：通过 RedisStreamBus 实现全集群共享的流输出——
+ *   同一 sessionId 在任何实例、任何设备上访问，内容完全一致。
+ */
+@Service
+public class ResearchService {
+
+    private final ChatClient chatClient;
+    private final KnowledgeBaseTool knowledgeBaseTool;
+    private final RedisStreamBus bus;   // ▼ 第10章新增注入
+
+    public ResearchService(ChatClient chatClient,
+                           KnowledgeBaseTool knowledgeBaseTool,
+                           RedisStreamBus bus) {
+        this.chatClient = chatClient;
+        this.knowledgeBaseTool = knowledgeBaseTool;
+        this.bus = bus;
+    }
+
+    /** 研究接口（分布式热流版）。 */
+    public Flux<String> research(String topic, String sessionId) {
+        // ▼ 第10章替换：整个 LLM 调用包进 bus.subscribe()
+        return bus.subscribe(sessionId, chatClient.prompt()
+                .system("你是研究助理。你可以调用搜索工具查资料。" +
+                        "自主决定搜索几次、搜什么关键词。" +
+                        "资料矛盾时多搜一轮核实。资料足够后给出结构清晰的研究结果。" +
+                        "资料不足要明确说，绝不编造。")
+                .user("研究主题：" + topic)
+                .tools(knowledgeBaseTool)
+                .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
+                .options(ToolCallingChatOptions.builder()
+                        .internalToolExecutionMaxIterations(6)
+                        .build())
+                .stream()
+                .content()
+        ).flatMapMany(flux -> flux);  // bus.subscribe() 返回 Mono<Flux<String>>（异步锁检查），flatMapMany 摊平成 Flux<String>
+    }
+}
+```
+
+> **调用链走一遍**：
+> 1. HTTP 请求到达 → `Controller.research(topic, sessionId)` → `ResearchService.research(topic, sessionId)`
+> 2. `bus.subscribe(sessionId, upstream)` → 返回 `Mono<Flux<String>>`（异步检查 SETNX 锁）
+>    - 拿到锁：后台 subscribe upstream（LLM 调用），每个 chunk → `XADD` Streams + `PUBLISH` 频道
+>    - 没拿到锁：跳过 upstream
+>    - **两者都返回 `replayThenListen()` 的 Flux**（XREAD Streams 回放 + SUBSCRIBE 频道实时）
+> 3. `.flatMapMany(flux -> flux)` 把 `Mono<Flux<String>>` 摊平成 `Flux<String>`
+> 4. Controller 收到 `Flux<String>` → Spring WebFlux 编码成 SSE → 推给前端
+
+#### 10.2.5 PlanExecuteService 同理
+
+```java
+import reactor.core.publisher.Function;
+
+// PlanExecuteService 里注入 RedisStreamBus，researchDeep 包一层
+public Flux<String> researchDeep(String topic, String sessionId) {
+    return bus.subscribe(sessionId,
+        Mono.fromCallable(() -> plan(topic, sessionId))
+            .subscribeOn(Schedulers.boundedElastic())
+            .flatMapMany(subtasks -> ...)  // Plan → 并发 Execute → Aggregate 全链
+    ).flatMapMany(Function.identity());
+}
+```
+
+### 10.3 验证
+
+```bash
+# 1. 启动 Redis
+docker run -d --name research-redis -p 6379:6379 redis:7-alpine
+
+# 2. 启动应用
+mvn spring-boot:run
+```
+
+**验证①：单实例多终端同步**
+
+```bash
+# 终端1
+curl -N "http://localhost:8080/api/research?topic=2026年AI大模型发展&sessionId=multi-001"
+# 终端2（晚 5 秒开始）
+curl -N "http://localhost:8080/api/research?topic=2026年AI大模型发展&sessionId=multi-001"
+```
+
+预期：两终端内容一致。终端2 先快速回放已输出的内容（Streams XREAD），然后实时跟进。
+
+**验证②：跨实例**
+
+```bash
+# Instance A（8080）
+mvn spring-boot:run -Dspring-boot.run.arguments="--server.port=8080"
+# Instance B（8081）
+mvn spring-boot:run -Dspring-boot.run.arguments="--server.port=8081"
+
+# 终端3 → A
+curl -N "http://localhost:8080/api/research?topic=AI框架对比&sessionId=cross-001"
+# 终端4 → B（全程一致）
+curl -N "http://localhost:8081/api/research?topic=AI框架对比&sessionId=cross-001"
+```
+
+### 10.4 checkpoint
+
+```
+research-agent/
+├── pom.xml                              （加 data-redis-reactive）
+├── application.yaml                     （加 spring.data.redis）
+└── src/main/java/com/example/research/
+    ├── stream/
+    │   └── RedisStreamBus.java          （新增：三层广播总线）
+    └── ResearchService.java             （改：注入 RedisStreamBus）
+```
+
+```bash
+git add -A && git commit -m "第10章：Redis Streams+Pub/Sub分布式三层广播"
+```
+
+### 10.5 复盘
+
+**做了**：Redis Streams（持久化每条 chunk，XREAD 任意 offset 重放）+ Pub/Sub（低延迟跨实例推送）+ SETNX 锁（全局唯一 LLM 调用）。三层架构：持久层/实时推送层/协调层各司其职。所有调用者统一从 Redis 消费——锁持有者自己也不直连 upstream。
+
+**核心跃迁**：从"单实例内存热流"到"全集群 Redis Streams + Pub/Sub 集中分发"。消息不再依赖内存——重启、断连、多实例都能追回。这是"能跑的产品"和"能上生产的分布式系统"之间的分水岭。
+
+**工程教训**：
+- **Pub/Sub 不能做唯一通道**：它不持久——掉线就丢。Pub/Sub 是"新消息通知"（低延迟），Streams 才是真正的消息存储（持久化）。Streams 保证不丢，Pub/Sub 保证快。
+- **XADD 和 PUBLISH 都是 fire-and-forget**：这是刻意设计的——不因为 Redis 写延迟拖慢 SSE 流。代价是如果 XADD 失败，那条 chunk 不会出现在历史里（但 PUBLISH 可能已推出去）。生产环境应加 `.retry(3)` 或写本地日志兜底。
+- **Streams 的 MAXLEN 要设**：长输出会话可能产生几百条 chunk，不设 MAXLEN 会无限增长。`XADD key MAXLEN ~ 10000 * ...` 限制约 10000 条。
+- **`__END__` 标记是优雅完成的钥匙**：Redis Pub/Sub Flux 本身不会自动完成（持续打开的订阅）。发送结束标记让 `takeUntil` 自然停止 SSE 流——比超时/强制断开更干净。
+- **`flatMapMany(flux -> flux)` 不是多余的**：`bus.subscribe()` 返回 `Mono<Flux<String>>` 而非直接 `Flux<String>`——因为 SETNX 锁检查是异步的（需要一次 Redis 往返）。`flatMapMany` 把这层异步摊平，对外依然是 `Flux<String>`。
+
+**和 ChatGPT/DeepSeek App 的本质一致**：这些产品的多设备同步都是"一个中心产生流，广播到所有设备"——只是它们的"中心"可能是自研的 Pub/Sub 服务，我们用了 Redis。集中生成 + 多路分发的架构同构。
+
+---
+
+> **第 10 章结束。** 企业级的多设备同步不只是"热流"，而是"持久 + 实时 + 协调"三层各司其职。
+
+---
+
+## 第 11 章：全文演进总览 + 后续方向
+
+### 11.1 你走过了什么
+
+| 章 | 核心跃迁 | 架构关键词 |
+|----|---------|----------|
+| 第0章 | 从零到原型 | 固定 workflow，提炼关键词→搜索→流式结果 |
+| 第1章 | 固定→自主 | Agent 循环（ToolCallingAdvisor），internalToolExecutionMaxIterations 防火线 |
+| 第2章 | 公开→内部 | pgvector RAG，双工具，输入审核 |
+| 第3章 | 嵌入→独立 | MCP server，ChatClientConfig 显式 wiring |
+| 第4章 | 脆弱→稳定 | RestClient 超时/429 重试/onErrorResume 错误归宿 |
+| 第5章 | 隐式→显式 | Plan-Execute（.entity PTREF 结构化输出），先规划再调研 |
+| 第6章 | 串行→并行 | flatMap(fn, concurrency) 多 Worker 并发 + Aggregate 收口 |
+| 第7章 | 不可见→可见 | 审计日志（session+turn 串联，fire-and-forget 落 PG） |
+| 第8章 | 无状态→有记忆 | JdbcChatMemoryRepository 落 PG，多轮+重启不丢 |
+| 第9章 | 工具→产品 | 会话 CRUD + 自动标题 + 前端对话页 |
+| 第10章 | 单机→分布式 | Redis Streams + Pub/Sub 三层广播，全集群共享 |
+
+### 11.2 后续方向
+
+1. **多租户 + 用户体系**：sessionId 始终匿名。需要 JWT/OAuth2 + 按用户/租户隔离会话、知识库、审计。
+2. **Redis 生产化**：开发用单节点，生产要 Sentinel/Cluster 高可用 + SSL + `maxmemory-policy`。
+3. **分布式 ChatMemory 缓存**：用户量大后，每次 `chatMemory.get()` 查 PG 太重——用 Redis 做 ChatMemory 热数据缓存层。
+4. **完整可观测性**：第7章审计是基础。需要 token 级计量、成本分摊、P95/P99 延迟告警、A/B 评测（33a/33b 文档主题）。
+5. **多模态 Agent + MCP 工具生态**：文本→视觉/代码/文件解析。MCP 协议本身就是为工具生态准备的。
+6. **DAG 工作流**：Plan-Execute 是线性编排。多 Agent 协作、条件分支需要工作流引擎。
+7. **幻觉检测与反馈闭环**：交叉验证 + 用户反馈循环 → 改善 RAG 数据 → 提升答案质量。
+
+---
+
+## 相关文档
+
+- [33-Agent子过程实时可见性方案](./33-Agent子过程实时可见性方案.md) —— Agent 可观测性的理论全本
+- [33a-Agent可观测性最小实战](./33a-Agent可观测性最小实战.md) / [33b-Agent可观测性企业级演进实践](./33b-Agent可观测性企业级演进实践.md) —— 可观测主题实战
 - [03-Tool调用](./03-Tool调用.md) —— 工具调用基础（第 1 章前置）
+- [22-跨标签页与实时协作](../web-claude/22-跨标签页与实时协作.md) —— Web 前端的三层同步架构
+- [16-Agent可靠性工程Java视角](../reference/生产化与运营/16-Agent可靠性工程Java视角.md) —— Agent 可靠性设计
 
 ---
 
@@ -4456,5 +4905,5 @@ flowchart TD
 
 ---
 
-*全书完。从固定 workflow（第0章）→ 自主 Agent（第1章）→ 知识库（第2章）→ MCP 工具生态（第3章）→ 上线运营事故（第4章）→ Plan-Execute 先规划（第5章）→ 多 Worker 并发调研（第6章）→ 审计日志可追溯（第7章）→ 会话记忆持久化（第8章）→ 产品化会话管理（第9章），每步痛点驱动、一步步演进。照着敲，得到一个**会规划、多 Worker 并发调研、流程可追溯、有记忆、可管理的产品级研究问答系统**。*
+*全书完。从固定 workflow（第0章）→ 自主 Agent（第1章）→ 知识库（第2章）→ MCP 工具生态（第3章）→ 上线运营事故（第4章）→ Plan-Execute（第5章）→ 多 Worker 并发（第6章）→ 审计可追溯（第7章）→ 会话持久化（第8章）→ 产品化（第9章）→ 分布式流广播（第10章），每步痛点驱动、一点点演进。照着敲，得到一个**会规划、多 Worker 并发、可追溯、有记忆、可管理、多设备同步流式的产品级研究问答系统**。*
 
