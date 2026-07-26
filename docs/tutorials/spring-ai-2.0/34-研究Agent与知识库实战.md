@@ -12,9 +12,11 @@
 > - **主项目 `research-agent`**：会话化研究问答系统（本文主体，含知识库、Agent 循环、Plan-Execute 并发编排、审计日志、MCP client、会话持久化）。
 > - **辅助项目 `web-search-mcp`**：一个独立的网页搜索 MCP server（第 3 章建，主项目作为 MCP client 接入它）。
 >
-> **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · DeepSeek · **pgvector**（知识库向量库 + 会话存储同库）· **MCP**（工具协议）· DuckDuckGo（网页搜索，零 key）。
+> **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · DeepSeek · **pgvector**（知识库向量库 + 会话存储同库）· **MCP**（工具协议）· Bing（网页搜索，零 key，国内直连）。
 >
-> ⚠️ **版本前提（重要）**：本文基于 Spring Boot 4.1.x / Spring AI 2.0.0（写作时尚在里程碑/预览阶段，部分 API 如 `@McpTool`、`ToolCallingChatOptions.maxToolCallIterations`、MCP starter 命名随小版本变动）。若你用 GA 稳定版，**少量 API 名以你版本的官方文档为准**——本文遇到易变的点会标注 issue/文档链接。
+> ⚠️ **版本前提（重要）**：本文基于 Spring Boot 4.1.x / Spring AI 2.0.0。写作时部分 API（如 `@McpTool`、MCP starter 命名）尚在里程碑/预览阶段、随小版本变动。若你用其他版本，**少量 API 名以你版本的官方文档为准**——本文遇到易变的点会标注 issue/文档链接。
+>
+> 🔧 **一个已纠正的 API 名**：设置 Agent 最大工具调用次数的方法，2.0.0 GA 正确名是 **`ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(int)`**（[javadoc](https://docs.spring.io/spring-ai/docs/current/api/org/springframework/ai/model/tool/ToolCallingChatOptions.html)、[issue #3333](https://github.com/spring-projects/spring-ai/issues/3333)）。早期教程/里程碑版曾用过 `maxToolCallIterations`，2.0.0 GA 已改名为 `internalToolExecutionMaxIterations`——如果你看到别处写 `maxToolCallIterations` 编译报错，换成这个名即可。
 >
 > 📌 **本文不涉及多租户与多实例**：为聚焦"单租户、单实例下的会话化问答"主线，**不做**租户隔离、分布式会话同步、水平扩展。这些是企业级演进的下一站（见末尾"后续演进方向"），不在本文范围。
 
@@ -105,7 +107,7 @@
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
-| 网页搜索 | DuckDuckGo（WebClient 调 HTML 接口） | 零 API key、零第三方库、零成本——开发阶段够用；第 3 章换 MCP 时只换工具实现 |
+| 网页搜索 | Bing 国内版（WebClient 抓搜索页 HTML） | 零 API key、零第三方库、国内直连可达——开发阶段够用；第 3 章换 MCP 时只换工具实现 |
 | 可见性 | **先用日志，按需演进** | 第 0 章痛点小（等待时不知在干嘛），日志够透光；后面痛点升级再加更多（一点点演进） |
 
 > **接口限流本文不做**：限流、熔断、监控这类"保证可用"的非功能性特性，**定位是产品功能基本定型之后才做的可用性保障**——本文第 0-9 章是功能特性的演进（从固定 workflow 一路到产品化会话管理），功能定型在第 9 章。所以限流这类特性不在本文范围，属于"功能全部做完之后"的下一阶段（见末尾"后续演进方向"）。本文聚焦把功能特性一步步做出来。
@@ -151,7 +153,7 @@ research-agent/
     <dependencies>
         <!--
           第 0 章只引两个依赖，每个都对应本章真用到的能力：
-            webflux        —— Web 栈基础（Controller、WebClient 调 DuckDuckGo 都靠它；第 1 章起流式也用它）
+            webflux        —— Web 栈基础（Controller、WebClient 调 Bing 都靠它；第 1 章起流式也用它）
             openai starter —— Spring AI + DeepSeek（OpenAI 兼容协议）
           演进纪律：后续章节用到了再加——
             第 2 章加 pgvector + jdbc；第 3 章加 mcp-client；第 8 章加 chat-memory-jdbc。
@@ -237,9 +239,11 @@ logging:
 
 > **`DEEPSEEK_API_KEY` 从环境变量读**：不要把 key 写进 yaml。`.env` 或 IDE 运行配置里设。本文不涉及 embedding（第 2 章加 RAG 时才需要 embedding key，那时再配）。
 
-#### 0.2.4 网页搜索工具（DuckDuckGo，零 key）
+#### 0.2.4 网页搜索工具（Bing，零 key）
 
-用一个普通 `@Tool`（第 3 章再升级成 MCP）。DuckDuckGo 有个轻量 HTML 接口 `https://html.duckduckgo.com/html/?q=xxx`，WebClient 抓回来粗解析出摘要——**零 API key、零第三方库**，开发阶段够用。
+用一个普通 `@Tool`（第 3 章再升级成 MCP）。搜索源选 **Bing**（`cn.bing.com`）——**国内直连可达、零 API key、零第三方库**。原理和所有"抓搜索页 HTML"的方案一样：WebClient 请求 Bing 搜索页，从返回的 HTML 里用正则把每条结果的摘要抠出来。
+
+> **为什么选 Bing 而不是 DuckDuckGo / Google**：DuckDuckGo 的 HTML 接口在国内基本连不通（连接超时 / SSL 握手失败），Google 同理。Bing 有国内版（`cn.bing.com`），直连稳定，是零成本搜索里国内最实际的选择。代价和所有 HTML 抓取方案一样——**非官方接口、HTML 结构可能变**（见下方诚实说明），但对学 Agent 逻辑完全够用。
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/tool/WebSearchTool.java`：
 
@@ -247,6 +251,7 @@ logging:
 package com.example.research.tool;
 
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
@@ -257,45 +262,68 @@ import java.util.regex.Pattern;
 /**
  * 网页搜索工具。
  * 第 0/1/2 章用普通 @Tool（注册到主项目里）；第 3 章会把它升级成独立 MCP server，主项目改用 MCP client 接入。
- * 用 DuckDuckGo 的 HTML 接口——零 API key、零第三方库。
+ * 用 Bing 国内版（cn.bing.com）的搜索结果页——零 API key、零第三方库、国内直连可达。
  *
  * ⚠️ 简陋版（第 0 章刻意如此）：
- *  1. HTML 正则解析，结果粗糙——开发阶段够用，生产换 Tavily API 或 MCP server（第 3 章）。
- *  2. 内部用 .block()（同步阻塞）。第 0 章是固定 workflow（.call() 同步栈）下 block 没问题；
- *     第 1 章升级 .stream() 后，工具在响应式链上执行——生产应改成 RestClient（同步栈）或
- *     包 Mono.fromCallable + boundedElastic，避免 block 占用 Reactor 调度线程（见第 2 章 KnowledgeBaseTool）。
+ *  1. HTML 正则解析（抓 <p class="b_lineclamp*"> 摘要）——结果粗糙，开发阶段够用，
+ *     生产换 Tavily API 或 MCP server（第 3 章）。
+ *  2. 返回 String + 内部 .block()。注意：Spring AI 的 @Tool 方法【不支持】返回响应式类型
+ *     （Mono/Flux/CompletableFuture 都不行——见官方文档"Tool Calling"的 unsupported types，
+ *      issue #1778 在跟踪这个能力）。所以工具方法必须同步签名，WebClient 的响应式调用
+ *      在工具内部 .block() 转成同步返回，是官方推荐写法。
+ *     第 1 章升级 .stream() 后，工具会在响应式链上被调用——这时 .block() 会占用 Reactor 调度线程，
+ *     生产应改成 RestClient（同步栈，跨线程无虞）或包 Mono.fromCallable + boundedElastic 切线程
+ *     （见第 2 章 KnowledgeBaseTool）。
  *  这些"简陋"是演进素材，后续章节会逐个修掉。
  */
 @Component
 public class WebSearchTool {
 
-    private final WebClient client = WebClient.create();
-    // 提取 DuckDuckGo HTML 里的结果摘要片段（粗略，够演示）
-    private static final Pattern SNIPPET = Pattern.compile("<a class=\"result__snippet\"[^>]*>(.*?)</a>");
+    // 带 User-Agent：不加 UA Bing 会返回简化页/拒服务，抓不到结果
+    private final WebClient client = WebClient.builder()
+            .defaultHeader(HttpHeaders.USER_AGENT,
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+            .build();
+
+    // Bing 每条结果的摘要文本在 <p class="b_lineclamp2">（或 b_lineclamp4）里——稳定且专属的锚点
+    private static final Pattern SNIPPET = Pattern.compile("<p class=\"b_lineclamp\\d+\"[^>]*>(.*?)</p>");
 
     @Tool(description = "在互联网上搜索给定关键词，返回相关的网页摘要片段。" +
                         "用于查询你不知道的、最新的、或需要核实的信息。")
     public String search(String query) {
         String html = client.get()
-                .uri("https://html.duckduckgo.com/html/?q=" + query.replace(" ", "+"))
+                .uri("https://cn.bing.com/search?q=" + query.replace(" ", "+") + "&count=10")
                 .retrieve()
                 .bodyToMono(String.class)
                 .onErrorResume(e -> Mono.just(""))   // 搜索失败返回空，不让 Agent 崩
                 .block();                            // ⚠️ 第 0 章同步栈 block；第 1 章后会改进
 
         StringBuilder sb = new StringBuilder();
-        Matcher m = SNIPPET.matcher(html);
+        Matcher m = SNIPPET.matcher(html == null ? "" : html);
         int count = 0;
         while (m.find() && count < 5) {              // 取前 5 条摘要
-            sb.append("- ").append(m.group(1).replaceAll("<[^>]+>", "").trim()).append("\n");
+            String snippet = m.group(1).replaceAll("<[^>]+>", "").trim();
+            sb.append("- ").append(decodeEntities(snippet)).append("\n");   // 解码 &ensp; &#0183; 等 HTML 实体
             count++;
         }
         return sb.length() == 0 ? "（搜索无结果或失败）" : sb.toString();
     }
+
+    /** 极简 HTML 实体解码：把 Bing 摘要里常见的 &ensp; &#0183; &amp; 等转回可读字符。 */
+    private static String decodeEntities(String s) {
+        return s.replace("&ensp;", " ")
+                .replace("&nbsp;", " ")
+                .replace("&#0183;", "·")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">");
+    }
 }
 ```
 
-> ⚠️ **诚实说明**：DuckDuckGo 的 HTML 接口**非官方**，结构可能变、可能被限频。本文用它是因为**零 key 零成本，能把 Agent 逻辑先跑通**。生产请换 Tavily（AI 友好的搜索 API）或第 3 章的 MCP server——**接口（`@Tool search`）不变，只换实现**。如果 DuckDuckGo 接口在你那儿不通，先用一个返回假数据的 mock 顶替，不影响学 Agent 逻辑。
+> ⚠️ **诚实说明**：Bing 搜索页 HTML 是**非官方接口**——结构可能随 Bing 改版变化（比如哪天 `b_lineclamp2` 改名了，正则就抓不到）。本文用它是因为**国内直连、零 key 零成本，能把 Agent 逻辑先跑通**。生产请换 Tavily（AI 友好的搜索 API）或第 3 章的 MCP server——**接口（`@Tool search`）不变，只换实现**。
+>
+> **抓不到结果时怎么排查**：① 确认 `User-Agent` 加了（不加 UA，Bing 返回的页面结构不同，正则匹配不上）；② 浏览器打开 `https://cn.bing.com/search?q=test` 看摘要的 class 是不是还是 `b_lineclamp2`——变了就把正则里的 class 名同步改；③ 频繁请求会被 Bing 限频，开发阶段够用，别压测。
 
 ##### 原理：`@Tool` 的 description 是怎么起作用的
 
@@ -430,18 +458,18 @@ research-agent/
     │   ├── ResearchService.java        # 固定 workflow：搜索 → 结果
     │   ├── ResearchController.java     # REST 接口
     │   └── tool/
-    │       └── WebSearchTool.java      # DuckDuckGo 网页搜索
+    │       └── WebSearchTool.java      # Bing 网页搜索
     └── resources/
         └── application.yaml
 ```
 
 ```bash
-git add -A && git commit -m "第0章：固定workflow研究Agent + DuckDuckGo搜索"
+git add -A && git commit -m "第0章：固定workflow研究Agent + Bing搜索"
 ```
 
 ### 0.5 复盘
 
-**做了**：固定 workflow（搜索 → 研究结果）跑通；DuckDuckGo 零成本搜索；最小日志可见性。
+**做了**：固定 workflow（搜索 → 研究结果）跑通；Bing 零成本搜索（国内直连）；最小日志可见性。
 
 **还差（后面章节解决）**：
 - **固定步骤应对不了开放任务**：用户问"对比 A 和 B 的发展"，可能要搜两次（A 一次、B 一次）再综合——固定"搜一次"不够。→ **第 1 章自主 Agent**
@@ -483,7 +511,7 @@ git add -A && git commit -m "第0章：固定workflow研究Agent + DuckDuckGo搜
 
 #### 1.2.1 ResearchService：从固定 workflow 改成自主 Agent
 
-**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 0 章的改动：① `research()` 不再手动调 search，改成 `.tools(searchTool)` 把工具交给 LLM 自主调；② 加 `maxToolCallIterations(5)` 防跑飞；③ 新增 `researchStream()` 流式版（1.2.3 用）；④ 保留同步 `research()` 给调试用。
+**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 0 章的改动：① `research()` 不再手动调 search，改成 `.tools(searchTool)` 把工具交给 LLM 自主调；② 加 `internalToolExecutionMaxIterations(5)` 防跑飞；③ 新增 `researchStream()` 流式版（1.2.3 用）；④ 保留同步 `research()` 给调试用。
 
 ```java
 package com.example.research;
@@ -501,7 +529,7 @@ import reactor.core.publisher.Flux;
  *
  * 演进：
  *  第 0 章 —— 固定 workflow（手动调 search → 生成）。
- *  第 1 章 —— .tools() 把工具交给 LLM；maxToolCallIterations(5) 防跑飞；加流式版。
+ *  第 1 章 —— .tools() 把工具交给 LLM；internalToolExecutionMaxIterations(5) 防跑飞；加流式版。
  *  第 2 章 —— 这里再加一个知识库工具（.tools(knowledgeBaseTool)）。
  *  第 8 章 —— 各处加 .advisors(CONVERSATION_ID, sessionId) 接入会话记忆。
  */
@@ -526,10 +554,10 @@ public class ResearchService {
                 .user("研究主题：" + topic)
                 .tools(searchTool)                          // ▼ 第1章替换：第0章是 searchTool.search() 手动调；现在是 .tools() 把工具交给 LLM 自主调
                 .options(ToolCallingChatOptions.builder()   // ▼ 第1章新增：自主 Agent 必须设最大步数
-                        // maxToolCallIterations(5)：自主 Agent 没有它，一个模糊 prompt 就能让 LLM 无限循环调工具——每步一次 LLM 调用都计费。
+                        // internalToolExecutionMaxIterations(5)：自主 Agent 没有它，一个模糊 prompt 就能让 LLM 无限循环调工具——每步一次 LLM 调用都计费。
                         // 设上限 = 成本防火线：超过上限时报"基于有限资料的结果"（收敛规则），不继续调 LLM。
                         // 选择 5 而不是更大值：演示场景够用（3 个工具各试一次）。生产根据平均所需步骤的 P99 × 1.5 调。
-                        .maxToolCallIterations(5)
+                        .internalToolExecutionMaxIterations(5)
                         .build())
                 .call()
                 .content();
@@ -545,7 +573,7 @@ public class ResearchService {
                         "资料不足要明确说，绝不编造。")
                 .user("研究主题：" + topic)
                 .tools(searchTool)
-                .options(ToolCallingChatOptions.builder().maxToolCallIterations(5).build())
+                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(5).build())
                 .stream()
                 .content();
     }
@@ -554,7 +582,7 @@ public class ResearchService {
 
 > **`.tools(searchTool)` 的本质**：把工具注册给这次调用。LLM 看到工具的 `@Tool(description=...)`，自己决定要不要调、调几次。框架（`ToolCallingAdvisor`）托管"模型要调→执行→喂回→再决策"的循环，直到模型不再要工具（给出最终答案）。
 >
-> **`maxToolCallIterations(5)` 是关键**：Agent 可能陷入"搜了又搜"的死循环（尤其 prompt 模糊时）。**最大步数是外部用户自主 Agent 的成本防线**——超过 5 步强制停，防止一个请求烧爆。固定步骤的 workflow 不需要（人写死几步就是几步），自主 Agent 必须。
+> **`internalToolExecutionMaxIterations(5)` 是关键**：Agent 可能陷入"搜了又搜"的死循环（尤其 prompt 模糊时）。**最大步数是外部用户自主 Agent 的成本防线**——超过 5 步强制停，防止一个请求烧爆。固定步骤的 workflow 不需要（人写死几步就是几步），自主 Agent 必须。
 
 ##### 原理：Agent 循环到底在转什么（ReAct 模式）
 
@@ -594,6 +622,7 @@ public class ResearchService {
 package com.example.research.tool;
 
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
@@ -603,35 +632,46 @@ import java.util.regex.Pattern;
 
 /**
  * 网页搜索工具。
- * 第 1 章加调用日志（让自主 Agent 每步决策可见）。其余同第 0 章。
+ * 第 1 章加调用日志（让自主 Agent 每步决策可见）。其余同第 0 章（Bing + UA + b_lineclamp 正则 + 实体解码）。
  * 第 3 章会把搜索升级成独立 MCP server，主项目改用 MCP client 接入。
  */
 @Component
 public class WebSearchTool {
 
-    private final WebClient client = WebClient.create();
-    private static final Pattern SNIPPET = Pattern.compile("<a class=\"result__snippet\"[^>]*>(.*?)</a>");
+    private final WebClient client = WebClient.builder()
+            .defaultHeader(HttpHeaders.USER_AGENT,
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+            .build();
+    private static final Pattern SNIPPET = Pattern.compile("<p class=\"b_lineclamp\\d+\"[^>]*>(.*?)</p>");
 
     @Tool(description = "在互联网上搜索给定关键词，返回相关的网页摘要片段。" +
                         "用于查询你不知道的、最新的、或需要核实的信息。")
     public String search(String query) {
         System.out.println("[TOOL] search 被调，query=" + query);   // ▼ 第1章新增：调用即可见
         String html = client.get()
-                .uri("https://html.duckduckgo.com/html/?q=" + query.replace(" ", "+"))
+                .uri("https://cn.bing.com/search?q=" + query.replace(" ", "+") + "&count=10")
                 .retrieve()
                 .bodyToMono(String.class)
                 .onErrorResume(e -> Mono.just(""))
                 .block();   // ⚠️ 仍用 block（第 0 章简陋版延续；第 2 章起在响应式链上的工具会改写法，见 KnowledgeBaseTool）
 
         StringBuilder sb = new StringBuilder();
-        Matcher m = SNIPPET.matcher(html);
+        Matcher m = SNIPPET.matcher(html == null ? "" : html);
         int count = 0;
         while (m.find() && count < 5) {
-            sb.append("- ").append(m.group(1).replaceAll("<[^>]+>", "").trim()).append("\n");
+            String snippet = m.group(1).replaceAll("<[^>]+>", "").trim();
+            sb.append("- ").append(decodeEntities(snippet)).append("\n");
             count++;
         }
         System.out.println("[TOOL] search 返回 " + count + " 条");   // ▼ 第1章新增：结果可见
         return sb.length() == 0 ? "（搜索无结果或失败）" : sb.toString();
+    }
+
+    /** 极简 HTML 实体解码（同第 0 章）。 */
+    private static String decodeEntities(String s) {
+        return s.replace("&ensp;", " ").replace("&nbsp;", " ")
+                .replace("&#0183;", "·").replace("&amp;", "&")
+                .replace("&lt;", "<").replace("&gt;", ">");
     }
 }
 ```
@@ -699,7 +739,7 @@ curl -N "http://localhost:8080/api/research?topic=对比TensorRT-LLM和vLLM在20
 
 观察：Agent **自主搜了多次**（不同关键词），最后给出对比结果。控制台日志能看到每次搜索的参数和返回（1.2.2 加的日志）——黑箱打开。流式下你能看到结果逐字出现，而不是干等几十秒。
 
-**验证最大步数**：故意给个特别模糊的主题（"研究一下"），Agent 可能在 5 步后被强制停，返回"基于有限资料的结果"。这就是 `maxToolCallIterations` 兜底。
+**验证最大步数**：故意给个特别模糊的主题（"研究一下"），Agent 可能在 5 步后被强制停，返回"基于有限资料的结果"。这就是 `internalToolExecutionMaxIterations` 兜底。
 
 ### 1.4 checkpoint
 
@@ -724,7 +764,7 @@ git add -A && git commit -m "第1章：自主Agent循环 + 最大步数 + 决策
 **核心跃迁**：从"人写死步骤"到"LLM 自己决定步骤"。这是从 workflow 到 Agent 的本质跨越——步骤不再固定，由模型在运行时按需决定。
 
 **工程教训**：
-- **自主 = 必须设上限**：自主 Agent 的"自主"是双刃剑——能搜多次，也能无限搜。`maxToolCallIterations` 是成本防火线，外部用户产品必设。
+- **自主 = 必须设上限**：自主 Agent 的"自主"是双刃剑——能搜多次，也能无限搜。`internalToolExecutionMaxIterations` 是成本防火线，外部用户产品必设。
 - **可见性跟着痛点走**：第 0 章 workflow 只需"结果日志"，第 1 章自主 Agent 需要"每步决策日志"。等痛点升级到"前端实时看/事后查"，再加事件总线/SSE/审计（第 7 章）。
 - **流式是体验底线**：Agent 多步执行耗时叠加，同步等待几十秒体验崩。流式让用户看到"在动"，是外部用户产品的体验底线。
 
@@ -836,6 +876,8 @@ spring:
 知识库要先有内容。做一个简单的入库接口：传文本，切块、向量化、存 pgvector。
 
 > ⚠️ **WebFlux + JDBC 的阻塞纪律（本章起必须守）**：主项目是 `spring-boot-starter-webflux`（Netty event loop），但 pgvector 走 `JdbcTemplate`（阻塞 JDBC）。**阻塞调用不能占 Netty event loop**——和第 1 章流式 run 的 `block()` 必须跑在 `boundedElastic` 是同一条纪律。所以本章凡是在响应式链/请求线程上触达 JDBC 的地方（IngestController、KnowledgeBaseTool），都要用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` 包一下切线程。下面代码会体现这条纪律。
+>
+> **注意：切线程不是让工具"变响应式"**。Spring AI 的 `@Tool` 方法**必须同步签名**（不支持返回 Mono/Flux，见第 0 章 0.2.4 说明、issue #1778）。`KnowledgeBaseTool.searchKnowledgeBase` 的签名仍是 `String`——它内部用 `Mono.fromCallable + subscribeOn(boundedElastic)` 是为了让**阻塞的 JDBC 调用跑在弹性线程、不占 Netty event loop**，最后还是 `.block()` 拿回同步结果。区别于第 0 章 `WebSearchTool` 直接 `.block()`（跑在调用线程）：这里多了一层"切到弹性线程再 block"，保护了 event loop。
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/kb/IngestController.java`：
 
@@ -998,7 +1040,7 @@ query 向量 ●           ● 文档向量  夹角大 → cosine≈0.2（基本
 
 #### 2.2.5 ResearchService：让 Agent 同时用两个工具
 
-**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 1 章的改动：① 构造函数注入 `KnowledgeBaseTool`（第 1 章只有 `WebSearchTool`）；② `research` / `researchStream` 的 `.tools()` 从一个变两个；③ system prompt 加"双工具选用 + 引用纪律"；④ `maxToolCallIterations` 从 5 涨到 6（多一个工具，给多一步预算）。
+**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 1 章的改动：① 构造函数注入 `KnowledgeBaseTool`（第 1 章只有 `WebSearchTool`）；② `research` / `researchStream` 的 `.tools()` 从一个变两个；③ system prompt 加"双工具选用 + 引用纪律"；④ `internalToolExecutionMaxIterations` 从 5 涨到 6（多一个工具，给多一步预算）。
 
 ```java
 package com.example.research;
@@ -1038,7 +1080,7 @@ public class ResearchService {
                 .user("研究主题：" + topic)
                 .tools(searchTool, knowledgeBaseTool)              // ▼ 第2章替换：两个工具都注册
                 .options(ToolCallingChatOptions.builder()
-                        .maxToolCallIterations(6)                  // ▼ 第2章替换：5 → 6（多一个工具，给多一步预算）
+                        .internalToolExecutionMaxIterations(6)                  // ▼ 第2章替换：5 → 6（多一个工具，给多一步预算）
                         .build())
                 .call()
                 .content();
@@ -1050,7 +1092,7 @@ public class ResearchService {
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic)
                 .tools(searchTool, knowledgeBaseTool)              // ▼ 第2章替换：两个工具都注册
-                .options(ToolCallingChatOptions.builder().maxToolCallIterations(6).build())
+                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .stream()
                 .content();
     }
@@ -1208,7 +1250,7 @@ git add -A && git commit -m "第2章：pgvector知识库RAG + Agent双工具 + �
 - **embedding 维度要对齐**：库的 `dimensions` 必须等于 embedding 模型输出维度，否则入库失败。
 
 **还差**：
-- **工具该解耦复用**：网页搜索在主项目里，别的 Agent/外部系统想用拿不到；而且 DuckDuckGo 简陋。→ **第 3 章 MCP server**（把搜索做成独立服务，标准协议暴露）。
+- **工具该解耦复用**：网页搜索在主项目里，别的 Agent/外部系统想用拿不到；而且 Bing HTML 抓取简陋。→ **第 3 章 MCP server**（把搜索做成独立服务，标准协议暴露）。
 
 ---
 
@@ -1239,7 +1281,7 @@ git add -A && git commit -m "第2章：pgvector知识库RAG + Agent双工具 + �
 ```
 web-search-mcp（新项目，独立服务）       research-agent（主项目）
 ├── @McpTool search(query)               ├── Agent（MCP client）
-│   └── 内部调 DuckDuckGo/Tavily         ├── 知识库工具（本地 @Tool）
+│   └── 内部调 Bing/Tavily               ├── 知识库工具（本地 @Tool）
 │                                        │
 └──── MCP 协议（Streamable HTTP） ──────►  调用搜索工具（自动发现）
 ```
@@ -1372,6 +1414,7 @@ package com.example.mcp;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
+import org.springframework.http.HttpHeaders;
 import org.springframework.web.client.RestClient;
 
 import java.util.regex.Matcher;
@@ -1380,29 +1423,40 @@ import java.util.regex.Pattern;
 /**
  * 网页搜索 MCP 工具。@McpTool 暴露成标准 MCP 工具，
  * 任何 MCP client（research-agent、Claude Desktop 等）都能调。
- * 内部调 DuckDuckGo——消费方无感（哪天换 Tavily 只改这里）。
+ * 内部调 Bing 国内版——消费方无感（哪天换 Tavily 只改这里）。
  */
 @Component
 public class WebSearchMcpTools {
 
-    private final RestClient client = RestClient.create();
+    // RestClient（同步栈，MCP server 是 WebMVC servlet 栈）。带 UA，否则 Bing 返回简化页抓不到结果。
+    private final RestClient client = RestClient.builder()
+            .defaultHeader(HttpHeaders.USER_AGENT,
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+            .build();
     private static final Pattern SNIPPET =
-            Pattern.compile("<a class=\"result__snippet\"[^>]*>(.*?)</a>");
+            Pattern.compile("<p class=\"b_lineclamp\\d+\"[^>]*>(.*?)</p>");
 
     @McpTool(description = "在互联网上搜索关键词，返回相关网页摘要片段。")
     public String search(@McpToolParam(description = "搜索关键词") String query) {
         String html = client.get()
-                .uri("https://html.duckduckgo.com/html/?q=" + query.replace(" ", "+"))
+                .uri("https://cn.bing.com/search?q=" + query.replace(" ", "+") + "&count=10")
                 .retrieve()
                 .body(String.class);
         StringBuilder sb = new StringBuilder();
         Matcher m = SNIPPET.matcher(html == null ? "" : html);
         int count = 0;
         while (m.find() && count < 5) {
-            sb.append("- ").append(m.group(1).replaceAll("<[^>]+>", "").trim()).append("\n");
+            String snippet = m.group(1).replaceAll("<[^>]+>", "").trim();
+            sb.append("- ").append(decodeEntities(snippet)).append("\n");
             count++;
         }
         return sb.length() == 0 ? "（搜索无结果）" : sb.toString();
+    }
+
+    private static String decodeEntities(String s) {
+        return s.replace("&ensp;", " ").replace("&nbsp;", " ")
+                .replace("&#0183;", "·").replace("&amp;", "&")
+                .replace("&lt;", "<").replace("&gt;", ">");
     }
 }
 ```
@@ -1444,7 +1498,7 @@ client 连上任意 MCP server：
 
 #### 3.2.3 MCP server 必须鉴权（外部用户产品的安全底线）
 
-**痛点**：`web-search-mcp` 监听 8081，按上面配置**任何人能访问 8081 就能调你的搜索工具**——烧你的 DuckDuckGo 配额、将来换 Tavily 还烧你的钱。内网开发没事，**一旦对外，MCP server 必须鉴权**。工具嵌在应用里时随应用一起被保护；做成独立的 MCP server 暴露出来，就得自己加保护。
+**痛点**：`web-search-mcp` 监听 8081，按上面配置**任何人能访问 8081 就能调你的搜索工具**——白嫖你的搜索能力、将来换 Tavily 还烧你的钱。内网开发没事，**一旦对外，MCP server 必须鉴权**。工具嵌在应用里时随应用一起被保护；做成独立的 MCP server 暴露出来，就得自己加保护。
 
 **调研结论**（[官方 MCP Security 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-security.html)）：Spring AI 有 **MCP Security 模块**，支持 OAuth 2.0 和 API key。生产标准做法：**每次调用 MCP server 必须带 `Authorization: Bearer <token>` 头**。
 
@@ -1643,7 +1697,7 @@ public class ResearchService {
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)                       // ▼ 第3章替换：只注册本地工具；MCP 的 search 已在 ChatClient 里
                 .options(ToolCallingChatOptions.builder()
-                        .maxToolCallIterations(6)
+                        .internalToolExecutionMaxIterations(6)
                         .build())
                 .call()
                 .content();
@@ -1655,7 +1709,7 @@ public class ResearchService {
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)                       // ▼ 第3章替换：同上
-                .options(ToolCallingChatOptions.builder().maxToolCallIterations(6).build())
+                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .stream()
                 .content();
     }
@@ -1685,7 +1739,7 @@ public class ResearchService {
 
 Agent 在多工具间乱选/不收敛，靠 **prompt 里的收敛规则** + **maxIterations** 兜底。收敛规则已在 3.2.5 抽成 `CONVERGENCE_RULES` 常量拼进 prompt（见上面 ResearchService）。
 
-> **编排纪律主要靠 prompt + 兜底**：Spring AI 的 Agent 循环是"模型决定下一步"，要让模型守纪律，主要靠 system prompt 把规则讲清楚（上面那 5 条）。`maxToolCallIterations` 是硬兜底（防 prompt 没拉住）。**没有"代码层面强制每个工具只调一次"的简单做法**——因为是否该重复搜是语义判断（矛盾时该重搜核实）。这是 LLM Agent 的特性。
+> **编排纪律主要靠 prompt + 兜底**：Spring AI 的 Agent 循环是"模型决定下一步"，要让模型守纪律，主要靠 system prompt 把规则讲清楚（上面那 5 条）。`internalToolExecutionMaxIterations` 是硬兜底（防 prompt 没拉住）。**没有"代码层面强制每个工具只调一次"的简单做法**——因为是否该重复搜是语义判断（矛盾时该重搜核实）。这是 LLM Agent 的特性。
 
 ### 3.3 验证
 
@@ -1697,7 +1751,7 @@ curl -N "http://localhost:8080/api/research?topic=2026年主流向量数据库�
 
 调试台看到 Agent 调用了 `search`（来自 MCP server）和/或 `searchKnowledgeBase`（本地）——**两个工具对 Agent 透明**，它不知道搜索是跨进程 MCP 来的。
 
-**验证 MCP 解耦**：改 `web-search-mcp` 内部（DuckDuckGo→Tavily），`research-agent` 零改动，搜索能力自动升级——这就是 MCP 的价值。
+**验证 MCP 解耦**：改 `web-search-mcp` 内部（Bing→Tavily），`research-agent` 零改动，搜索能力自动升级——这就是 MCP 的价值。
 
 ### 3.4 checkpoint
 
@@ -1710,7 +1764,7 @@ web-search-mcp/                  （新增独立项目）
 └── src/main/
     ├── java/com/example/mcp/
     │   ├── Application.java
-    │   ├── WebSearchMcpTools.java   （@McpTool search，内部 DuckDuckGo）
+    │   ├── WebSearchMcpTools.java   （@McpTool search，内部 Bing）
     │   └── SecurityConfig.java      （Bearer token 鉴权）
     └── resources/application.yaml
 
@@ -1954,7 +2008,7 @@ public class ResearchService {
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)
-                .options(ToolCallingChatOptions.builder().maxToolCallIterations(6).build())
+                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .call()
                 .content();
     }
@@ -1965,7 +2019,7 @@ public class ResearchService {
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)
-                .options(ToolCallingChatOptions.builder().maxToolCallIterations(6).build())
+                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .stream()
                 .content()
                 // ▼ 第4章(4.3)新增：错误归宿。用 onErrorResume 而不是 doOnError：
@@ -2173,7 +2227,7 @@ public class PlanExecuteService {
                 .user("子任务：" + subtask)
                 .tools(knowledgeBaseTool)       // 知识库（本地）；网页搜索由 MCP 注册进 ChatClient，自动可用
                 .options(ToolCallingChatOptions.builder()
-                        .maxToolCallIterations(4)   // 每个子任务的步数预算（比顶层 Agent 小，单子任务用不了太多）
+                        .internalToolExecutionMaxIterations(4)   // 每个子任务的步数预算（比顶层 Agent 小，单子任务用不了太多）
                         .build())
                 .call()
                 .content();
@@ -2448,7 +2502,7 @@ public class PlanExecuteService {
                         "然后给出该子任务的调研结果。资料不足要明说，绝不编造。")
                 .user("子任务：" + subtask)
                 .tools(knowledgeBaseTool)
-                .options(ToolCallingChatOptions.builder().maxToolCallIterations(4).build())
+                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(4).build())
                 .call()
                 .content();
     }
@@ -2866,7 +2920,7 @@ public class PlanExecuteService {
                         "然后给出该子任务的调研结果。资料不足要明说，绝不编造。")
                 .user("子任务：" + subtask)
                 .tools(knowledgeBaseTool)
-                .options(ToolCallingChatOptions.builder().maxToolCallIterations(4).build())
+                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(4).build())
                 .call()
                 .content();
     }
@@ -3373,7 +3427,7 @@ public class PlanExecuteService {
                 .user("子任务：" + subtask)
                 .tools(knowledgeBaseTool)
                 .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })   // ▼ 第8章新增
-                .options(ToolCallingChatOptions.builder().maxToolCallIterations(4).build())
+                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(4).build())
                 .call()
                 .content();
     }
@@ -3510,7 +3564,7 @@ public class ResearchService {
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)
                 .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })   // ▼ 第8章新增
-                .options(ToolCallingChatOptions.builder().maxToolCallIterations(6).build())
+                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .stream()
                 .content()
                 .onErrorResume(err -> {
@@ -4058,7 +4112,7 @@ web-search-mcp/                         （独立项目：网页搜索 MCP serve
 ├── pom.xml                             （mcp-server-webmvc + security）
 └── src/main/java/com/example/mcp/
     ├── Application.java
-    ├── WebSearchMcpTools.java          （@McpTool search，内部 DuckDuckGo）
+    ├── WebSearchMcpTools.java          （@McpTool search，内部 Bing）
     └── SecurityConfig.java             （Bearer token 鉴权）
 
 PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· research_session（会话）· pgvector 向量表
@@ -4141,10 +4195,10 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 ### A.3 踩坑手册
 
 **第 0 章**：
-- DuckDuckGo HTML 接口不通/被限频 → 它是非官方接口。退路：先用 mock 返回假数据跑通 Agent 逻辑，或换 Tavily。
+- Bing 搜索抓不到结果 → ① 确认 `WebClient`/`RestClient` 带了 `User-Agent`（不加 UA，Bing 返回的页面结构不同，正则匹配不上）；② 浏览器打开 `https://cn.bing.com/search?q=test` 看摘要的 class 是不是还是 `b_lineclamp2`——Bing 改版会换 class 名，变了就把正则里的 class 名同步改；③ 频繁请求会被 Bing 限频，开发阶段够用，别压测。
 
 **第 1 章**：
-- Agent 跑飞搜个不停 → `maxToolCallIterations` 没设或太大。外部用户产品必设。
+- Agent 跑飞搜个不停 → `internalToolExecutionMaxIterations` 没设或太大。外部用户产品必设。
 - Agent 不调工具 → system prompt 没讲清楚"有工具可用"；或工具 `description` 写得太差（LLM 不知道何时调）。
 
 **第 2 章**：
