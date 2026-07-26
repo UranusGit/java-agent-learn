@@ -267,14 +267,10 @@ import java.util.regex.Pattern;
  * ⚠️ 简陋版（第 0 章刻意如此）：
  *  1. HTML 正则解析（抓 <p class="b_lineclamp*"> 摘要）——结果粗糙，开发阶段够用，
  *     生产换 Tavily API 或 MCP server（第 3 章）。
- *  2. 返回 String + 内部 .block()。注意：Spring AI 的 @Tool 方法【不支持】返回响应式类型
- *     （Mono/Flux/CompletableFuture 都不行——见官方文档"Tool Calling"的 unsupported types，
- *      issue #1778 在跟踪这个能力）。所以工具方法必须同步签名，WebClient 的响应式调用
- *      在工具内部 .block() 转成同步返回，是官方推荐写法。
- *     第 1 章升级 .stream() 后，工具会在响应式链上被调用——这时 .block() 会占用 Reactor 调度线程，
- *     生产应改成 RestClient（同步栈，跨线程无虞）或包 Mono.fromCallable + boundedElastic 切线程
- *     （见第 2 章 KnowledgeBaseTool）。
- *  这些"简陋"是演进素材，后续章节会逐个修掉。
+ *  2. search 返回 Mono<String>，全程响应式、不 .block()——WebFlux 项目最优雅的写法。
+ *     实测验证：Spring AI 2.0 的 @Tool 支持返回 Mono<String>，注册给 LLM 自主调也能拿到结果
+ *     （官方文档曾把响应式类型列为不支持，但实测可用——以你版本实际行为为准）。
+ *  这些是演进素材，后续章节按需调整。
  */
 @Component
 public class WebSearchTool {
@@ -290,14 +286,17 @@ public class WebSearchTool {
 
     @Tool(description = "在互联网上搜索给定关键词，返回相关的网页摘要片段。" +
                         "用于查询你不知道的、最新的、或需要核实的信息。")
-    public String search(String query) {
-        String html = client.get()
+    public Mono<String> search(String query) {
+        return client.get()
                 .uri("https://cn.bing.com/search?q=" + query.replace(" ", "+") + "&count=10")
                 .retrieve()
                 .bodyToMono(String.class)
                 .onErrorResume(e -> Mono.just(""))   // 搜索失败返回空，不让 Agent 崩
-                .block();                            // ⚠️ 第 0 章同步栈 block；第 1 章后会改进
+                .map(this::extractSnippets);          // 响应式衔接：HTML → 摘要文本
+    }
 
+    /** 从 Bing HTML 抽取前 5 条摘要（去标签 + 解码 HTML 实体）。 */
+    private String extractSnippets(String html) {
         StringBuilder sb = new StringBuilder();
         Matcher m = SNIPPET.matcher(html == null ? "" : html);
         int count = 0;
@@ -396,8 +395,8 @@ public class ResearchService {
                 .content();
         System.out.println("[研究] 提炼出的关键词: " + searchQuery);
 
-        // 第二步：用关键词搜资料
-        String materials = searchTool.search(searchQuery);
+        // 第二步：用关键词搜资料（searchTool.search 返回 Mono<String>，这里 .block() 取回同步结果）
+        String materials = searchTool.search(searchQuery).block();
         System.out.println("[研究] 搜索完成，开始生成结果...");
 
         // 第三步：基于资料生成研究结果
@@ -413,7 +412,9 @@ public class ResearchService {
 }
 ```
 
-> **`searchTool.search(...)` 是手动调用，不是 `@Tool` 注册给 LLM**：第 0 章是固定 workflow，工具由我们代码按顺序调，不让 LLM 自主决策。所以 `WebSearchTool` 虽然有 `@Tool` 注解，但这一章它只是个普通方法。**第 1 章才会用 `.tools(searchTool)` 把它注册给 LLM**，那时 LLM 自己决定调不调。这个区别很重要——决定了工具的"调用方"是代码还是模型。
+> **`searchTool.search(...)` 返回 `Mono<String>`，第 0 章手动调用时 `.block()` 取回**：`WebSearchTool.search` 的签名是 `Mono<String>`——这是响应式签名，价值在第 1 章自主 Agent 时体现（LLM 通过 `@Tool` 调它不阻塞、可注册给 LLM 自主调）。第 0 章是固定 workflow 同步流程，`ResearchService` 手动调它后用 `.block()` 取回 `String`——第 0 章聚焦"固定流程跑通"，响应式衔接留到第 1 章流式升级。
+>
+> **`@Tool` 注册给 LLM 自主调时，`Mono<String>` 也能拿到结果**：实测验证（Spring AI 2.0）——官方文档曾把响应式类型列为不支持，但实际 `@Tool` 方法返回 `Mono<String>` 时，注册给 LLM 自主调用能正常拿到结果。本文按这个实测行为写，第 1 章起 `.tools(searchTool)` 直接用。以你版本实际行为为准。
 >
 > **三行 `System.out.println` 是第 0 章的"最小可见性"**：研究过程几十秒，纯黑盒等待体验差。第 0 章痛点只是"等待时不知在干嘛"，打印日志就够透光。**第 1 章 Agent 自主多步后，痛点升级为"要看清每步决策"**——那时把可见性挪到工具调用层（1.2.2）。如果将来你觉得"日志不够、要前端实时看、要可追溯"，再演进到事件总线 + SSE——那是更后面的事，现在不做（演进纪律）。
 
@@ -665,25 +666,25 @@ public class WebSearchTool {
 
     @Tool(description = "在互联网上搜索给定关键词，返回相关的网页摘要片段。" +
                         "用于查询你不知道的、最新的、或需要核实的信息。")
-    public String search(String query) {
+    public Mono<String> search(String query) {
         System.out.println("[TOOL] search 被调，query=" + query);   // ▼ 第1章新增：调用即可见
-        String html = client.get()
+        return client.get()
                 .uri("https://cn.bing.com/search?q=" + query.replace(" ", "+") + "&count=10")
                 .retrieve()
                 .bodyToMono(String.class)
                 .onErrorResume(e -> Mono.just(""))
-                .block();   // ⚠️ 仍用 block（第 0 章简陋版延续；第 2 章起在响应式链上的工具会改写法，见 KnowledgeBaseTool）
-
-        StringBuilder sb = new StringBuilder();
-        Matcher m = SNIPPET.matcher(html == null ? "" : html);
-        int count = 0;
-        while (m.find() && count < 5) {
-            String snippet = m.group(1).replaceAll("<[^>]+>", "").trim();
-            sb.append("- ").append(decodeEntities(snippet)).append("\n");
-            count++;
-        }
-        System.out.println("[TOOL] search 返回 " + count + " 条");   // ▼ 第1章新增：结果可见
-        return sb.length() == 0 ? "（搜索无结果或失败）" : sb.toString();
+                .map(html -> {
+                    StringBuilder sb = new StringBuilder();
+                    Matcher m = SNIPPET.matcher(html == null ? "" : html);
+                    int count = 0;
+                    while (m.find() && count < 5) {
+                        String snippet = m.group(1).replaceAll("<[^>]+>", "").trim();
+                        sb.append("- ").append(decodeEntities(snippet)).append("\n");
+                        count++;
+                    }
+                    System.out.println("[TOOL] search 返回 " + count + " 条");   // ▼ 第1章新增：结果可见
+                    return sb.length() == 0 ? "（搜索无结果或失败）" : sb.toString();
+                });
     }
 
     /** 极简 HTML 实体解码（同第 0 章）。 */
@@ -896,7 +897,7 @@ spring:
 
 > ⚠️ **WebFlux + JDBC 的阻塞纪律（本章起必须守）**：主项目是 `spring-boot-starter-webflux`（Netty event loop），但 pgvector 走 `JdbcTemplate`（阻塞 JDBC）。**阻塞调用不能占 Netty event loop**——和第 1 章流式 run 的 `block()` 必须跑在 `boundedElastic` 是同一条纪律。所以本章凡是在响应式链/请求线程上触达 JDBC 的地方（IngestController、KnowledgeBaseTool），都要用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` 包一下切线程。下面代码会体现这条纪律。
 >
-> **注意：切线程不是让工具"变响应式"**。Spring AI 的 `@Tool` 方法**必须同步签名**（不支持返回 Mono/Flux，见第 0 章 0.2.4 说明、issue #1778）。`KnowledgeBaseTool.searchKnowledgeBase` 的签名仍是 `String`——它内部用 `Mono.fromCallable + subscribeOn(boundedElastic)` 是为了让**阻塞的 JDBC 调用跑在弹性线程、不占 Netty event loop**，最后还是 `.block()` 拿回同步结果。区别于第 0 章 `WebSearchTool` 直接 `.block()`（跑在调用线程）：这里多了一层"切到弹性线程再 block"，保护了 event loop。
+> **注意：切线程不是让工具"变响应式"**。`KnowledgeBaseTool.searchKnowledgeBase` 内部用 `Mono.fromCallable + subscribeOn(boundedElastic)` 是为了让**阻塞的 JDBC 调用跑在弹性线程、不占 Netty event loop**，最后 `.block()` 拿回同步结果。和第 0 章 `WebSearchTool.search`（天然响应式的 WebClient 调用，直接返回 `Mono<String>` 不 block）不同——`similaritySearch` 本身是同步阻塞的 JDBC，没有"天然响应式"形态，只能用 `fromCallable` 包一层切线程再 block。两种工具的写法差异源于底层调用是不是响应式的，不是工具签名的问题。
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/kb/IngestController.java`：
 
