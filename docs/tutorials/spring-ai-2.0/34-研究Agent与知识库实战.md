@@ -526,20 +526,22 @@ git add -A && git commit -m "第0章：固定workflow研究Agent + Bing搜索"
 
 ### 1.2 动手
 
-本章改 1 个已有文件（`ResearchService`），新建 1 个文件（`ToolCallGuard`），不引新依赖。`WebSearchTool` 沿用第 0 章不改。
-
-`ResearchService` 的改动：注入 `ToolCallingManager`（Spring Boot 自动装配），通过 `ToolCallGuard.research()` 手写 while 循环控制工具调用,最多 5 轮。签名不变（`Flux<String> research(String)`）。
+本章只改 1 个已有文件（`ResearchService`），不新建文件，不引新依赖。`WebSearchTool` 沿用第 0 章不改。
+`ResearchService` 的改动：`.tools(searchTool)` 取代手动调 search（自主 Agent）；`.timeout(60s)` 安全兜底。签名不变。
 
 #### 1.2.1 ResearchService：从固定 workflow 改成自主 Agent
+
+**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 0 章的改动：`research()` 内部从"手动提炼关键词 + 手动调 search"改成 `.tools(searchTool)` 把工具交给 LLM 自主调；加 `.timeout(60s)` 做安全兜底。签名不变（`Flux<String> research(String)`，第 0 章已流式）。
+
 ```java
 package com.example.research;
 
-import com.example.research.config.ToolCallGuard;
 import com.example.research.tool.WebSearchTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+
+import java.time.Duration;
 
 /**
  * 第 1 章：自主 Agent（流式）。
@@ -547,6 +549,7 @@ import reactor.core.publisher.Flux;
  *
  * 演进：
  *  第 0 章 —— 固定 workflow（手动提炼关键词 → 手动调 search → 流式生成）。
+ *  第 1 章 —— .tools() 交给 LLM 自主调；.timeout(60s) 安全兜底。仍是流式。
  *  第 2 章 —— 这里再加一个知识库工具（.tools(knowledgeBaseTool)）。
  *  第 8 章 —— 各处加 .advisors(CONVERSATION_ID, sessionId) 接入会话记忆。
  */
@@ -554,141 +557,71 @@ import reactor.core.publisher.Flux;
 public class ResearchService {
 
     private final ChatClient chatClient;
-    private final ToolCallingManager toolCallingManager;    // ▼ 第1章新增注入
     private final WebSearchTool searchTool;
 
-    public ResearchService(ChatClient chatClient,
-                           ToolCallingManager toolCallingManager,
-                           WebSearchTool searchTool) {
+    public ResearchService(ChatClient chatClient, WebSearchTool searchTool) {
         this.chatClient = chatClient;
-        this.toolCallingManager = toolCallingManager;
         this.searchTool = searchTool;
     }
 
-    /** 自主 Agent（流式）。LLM 自主调工具，最多 5 轮。 */
+    /** 自主 Agent（流式）。LLM 自主调工具，最终结果逐字推给前端。 */
     public Flux<String> research(String topic) {
-        return ToolCallGuard.research(chatClient, toolCallingManager,
-                "你是研究助理。你可以调用搜索工具查资料。" +
-                "自主决定搜索几次、搜什么关键词。" +
-                "资料矛盾时多搜一轮核实。资料足够后给出结构清晰的研究结果。" +
-                "资料不足要明确说，绝不编造。",
-                topic,
-                new Object[]{searchTool}, 5)   // ▼ 第1章替换：第0章是手动提炼+手动调 search；现在是手写 while 循环控制工具调用,最多 5 轮
-                .timeout(java.time.Duration.ofSeconds(60),
-                        Flux.just("[研究超时，基于已有资料给出结果。]"));
-    }
-}
-```
-
-> **`.tools(searchTool)` 的本质**：把工具注册给这次调用。LLM 看到工具的 `@Tool(description=...)`，自己决定要不要调、调几次。框架（`ToolCallingAdvisor`）托管"模型要调→执行→喂回→再决策"的循环，直到模型不再要工具（给出最终答案）——**但框架没有内置的迭代上限，需要自己加**。下一节用 Spring AI 的标准 Advisor 扩展机制做一个 MaxIteration 保护的 Advisor。
-
-#### 1.2.2 防死循环：禁用自动循环,手写 while 控制
-
-`ToolCallingAdvisor` 会一直循环直到模型不请求工具——但模型可能兜圈子。**Spring AI 2.0.0 没有 `spring.ai.tool-calling.max-iterations=5` 这种 YAML 配置**(GitHub issues [#3333](https://github.com/spring-projects/spring-ai/issues/3333)/[#1004](https://github.com/spring-projects/spring-ai/discussions/1004) 确认),但提供了更根本的解:**禁用自动循环,自己写 while。**
-
-用 `AdvisorParams.toolCallingAdvisorAutoRegister(false)` 按调用禁用 `ToolCallingAdvisor`——`javap` 确认你的 2.0.0 版本有这个 API。禁用后,工具定义仍发给模型,但模型的 tool call **不会自动执行**——你通过 `Flux.expand()` 自己驱动循环:判断→执行→喂回→计数→超限停止。
-
-自己写循环的好处:计多少次完全精确、逻辑透明、不依赖框架内部行为。
-
-**【新建文件】** `research-agent/src/main/java/com/example/research/config/ToolCallGuard.java`：
-
-```java
-package com.example.research.config;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.AdvisorParams;
-import org.springframework.ai.chat.client.ChatClientResponse;
-import org.springframework.ai.model.tool.ToolExecutionResult;
-import org.springframework.ai.model.tool.ToolCallingManager;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.prompt.Prompt;
-import reactor.core.publisher.Flux;
-
-import java.util.List;
-
-/**
- * 工具调用守卫：禁用 ToolCallingAdvisor 自动循环，手写 while（Flux.expand）控制迭代。
- *
- * 使用方法：
- *   在 ResearchService 中注入 ToolCallingManager（Spring Boot 自动装配），
- *   把 chatClient.prompt()...stream() 替换为 ToolCallGuard.research(...)。
- *
- * 原理：
- *   AdvisorParams.toolCallingAdvisorAutoRegister(false) 阻止 ChatClient 自动执行工具调用。
- *   模型的 tool call 原样返回——我们通过 Flux.expand 自己判断 hasToolCalls、
- *   执行工具、把结果喂回、计数、超限停止。
- */
-public class ToolCallGuard {
-
-    private static final Logger log = LoggerFactory.getLogger(ToolCallGuard.class);
-
-    /**
-     * 流式研究（带工具调用迭代上限）。
-     *
-     * @param maxIterations 最大工具调用轮次（不含最终的文本回答）
-     */
-    public static Flux<String> research(ChatClient chatClient,
-                                         ToolCallingManager toolCallingManager,
-                                         String systemPrompt, String topic,
-                                         Object[] tools, int maxIterations) {
         return chatClient.prompt()
-                .system(systemPrompt)
-                .user(topic)
-                .tools(tools)                                                    // ← 把工具定义发给模型
-                .advisors(AdvisorParams.toolCallingAdvisorAutoRegister(false))   // ← 但禁用自动循环
-                .stream()
-                .chatClientResponse()
-                .expand(response -> {
-                    // 第 N 轮响应：判断是否还要继续调工具
-                    if (response.chatResponse() == null
-                            || !response.chatResponse().hasToolCalls()) {
-                        return Flux.empty();  // 模型不再请求工具 → 循环结束
-                    }
-
-                    int current = getIterationCount(response) + 1;
-                    if (current > maxIterations) {
-                        log.info("[ToolCallGuard] 达到上限 {} 次，停止", maxIterations);
-                        return Flux.empty();  // 超限 → 停止,前面流出的文本就是最终结果
-                    }
-
-                    log.info("[ToolCallGuard] 第 {}/{} 轮", current, maxIterations);
-
-                    // 执行工具调用
-                    ToolExecutionResult toolResult = toolCallingManager.executeToolCalls(
-                            new Prompt(new UserMessage(topic)), response.chatResponse());
-
-                    // 把工具结果喂回模型,继续下一轮（每轮都要禁用自动注册）
-                    return chatClient.prompt()
-                            .messages(toolResult.conversationHistory())
-                            .advisors(AdvisorParams.toolCallingAdvisorAutoRegister(false))
-                            .stream()
-                            .chatClientResponse()
-                            .contextWrite(ctx -> ctx.put("tool_iter", current));
-                })
-                .flatMap(response -> {
-                    var text = response.chatResponse() != null
-                            && response.chatResponse().getResult() != null
-                            && response.chatResponse().getResult().getOutput() != null
-                            ? response.chatResponse().getResult().getOutput().getText()
-                            : null;
-                    return text != null && !text.isEmpty() ? Flux.just(text) : Flux.empty();
-                });
-    }
-
-    private static int getIterationCount(ChatClientResponse response) {
-        var val = response.context().get("tool_iter");
-        return val instanceof Integer i ? i : 0;
+                .system("你是研究助理。你可以调用搜索工具查资料。" +
+                        "自主决定搜索几次、搜什么关键词。" +
+                        "资料矛盾时多搜一轮核实。资料足够后给出结构清晰的研究结果。" +
+                        "资料不足要明确说，绝不编造。")
+                .user("研究主题：" + topic)
+                .tools(searchTool)                          // ▼ 第1章替换：第0章是手动提炼关键词+手动调 searchTool.search()；现在是 .tools() 把工具交给 LLM 自主调（提炼/搜/搜几次都由 LLM 决定）
+                .stream()                                   // 流式：最终结果逐字推给前端（第0章已是流式，本章沿用）
+                .content()
+                .timeout(Duration.ofSeconds(60),            // ▼ 第1章新增：安全兜底——模型兜圈子超 60s 就截断
+                        Flux.just("[研究超时，请缩小问题范围后重试。]"));
     }
 }
 ```
 
-> **官方文档**：[ToolCallingAdvisor - User Controlled Streaming](https://docs.spring.io/spring-ai/reference/2.0-SNAPSHOT/api/tools/tool-calling-advisor.html#user-controlled-streaming) 详细说明了 `AdvisorParams.toolCallingAdvisorAutoRegister(false)` 的用法。这是 Spring AI 2.0 官方推荐的"用户控制工具执行"模式。
+> **`.tools(searchTool)` 的本质**：把工具注册给这次调用。LLM 看到工具的 `@Tool(description=...)`，自己决定要不要调、调几次。框架（`ToolCallingAdvisor`）托管"模型要调→执行→喂回→再决策"的循环，直到模型不再要工具（给出最终答案）。
 >
-> **和手写 Advisor 的对比**：手写 Advisor 需要假设框架内部循环的行为（哪些状态能跨迭代共享、order 怎么排等），换一个 Spring AI 小版本可能失效。`AdvisorParams` 是公开 API,版本兼容有保证——升级 Spring AI 版本不会破坏这段代码。
->
-> **`ToolCallingManager` 从哪来**：Spring Boot 自动装配会在容器中创建一个 `ToolCallingManager` Bean——不用手动 new,直接在 `ResearchService` 的构造函数里注入即可。
+> **`timeout(60s)` 为什么在这儿**：`ToolCallingAdvisor` 没有内置最大迭代次数（Spring AI 2.0.0 的已知缺口，GitHub [#3333](https://github.com/spring-projects/spring-ai/issues/3333)）。生产环境不分"计次"和"计时"两道防线——**只用 timeout。** 因为 LLM 推理时间不固定，计次不映射 SLA，timeout 映射。DeepSeek/ChatGPT 后台都是超时兜底。详见 [1.2.2 节](#1.2.2-生产环境的防死循环策略)。
+
+#### 1.2.2 生产环境的防死循环策略
+
+`ToolCallingAdvisor` 没有内置最大迭代次数——Spring AI 2.0.0 的已知缺口（GitHub [#3333](https://github.com/spring-projects/spring-ai/issues/3333)/[#1004](https://github.com/spring-projects/spring-ai/discussions/1004)）。结论如下。
+
+##### 企业级方案：三层防御
+
+**生产环境只用 `timeout`,不用计次。** LLM 推理时间不固定,计次不映射 SLA,timeout 映射。DeepSeek/ChatGPT/Claude 后台都是超时兜底。
+
+| 层 | 机制 | 防什么 |
+|----|------|--------|
+| 1 | System prompt 收敛规则 | 模型正常推理下自己停 |
+| 2 | `Flux.timeout(60s)` | 模型兜圈子超时 |
+| 3 | 第2/3章的 `CONVERGENCE_RULES` | 多工具场景 + 引用纪律 |
+
+主力的第一层——收敛规则让模型自己知道"够了就停"。timeout 是安全网,大部分请求根本不会触发它。
+
+##### 关于计次的调研结论
+
+尝试了 6 种方案（`ToolCallingChatOptions.Builder` 不存在的方法、`request.context()` 跨迭代计数器、`AdvisorParams` + 手写 `Flux.expand()`、继承 `ToolCallingAdvisor`）,每种都有不能跨越的问题:
+
+| 方案 | 失败原因 |
+|------|---------|
+| `ToolCallingChatOptions.builder().maxIterations(5)` | 方法不存在（`javap` 反编译确认） |
+| `request.context().put(COUNTER, count)` | Record 防御性拷贝,写入被丢弃 |
+| `AdvisorParams` + `Flux.expand()` | `executeToolCalls` 后消息序列不完整,DeepSeek 400 |
+| 继承 `ToolCallingAdvisor` | 替换默认 Bean 侵入性强,不适用学习场景 |
+
+**Spring AI 2.0.0 不给开发者留"限制工具迭代次数"的干净口子。** 这不是设计能力问题——是框架版本限制。
+
+##### 正确做法
+
+1. 收敛规则写进 prompt——让模型自己知道什么时候停
+2. `.timeout(60s)` 硬兜底——简单问题够用
+3. 复杂研究（第5-6章 Plan-Execute）设 `.timeout(180s)`
+4. 不要手动循环——消息格式兼容性、状态管理引入的问题多于解决问题
+5. timeout 触发后,ChatMemory（第8章）保留了上下文,用户追问即可续传
+
 
 ##### 原理：Agent 循环到底在转什么（ReAct 模式）
 
@@ -817,13 +750,11 @@ curl -N "http://localhost:8080/api/research?topic=对比TensorRT-LLM和vLLM在20
 
 ### 1.4 checkpoint
 
-第 1 章结束时，主项目结构（新建 1 个，改 2 个，Controller 不用改）：
+第 1 章结束时，主项目结构（改 2 个文件，Controller 不用改，不新建文件）：
 
 ```
 research-agent/src/main/java/com/example/research/
-├── config/
-│   └── ToolCallGuard.java      （新增：手写 while 循环控制工具调用迭代上限）
-├── ResearchService.java         （改：固定workflow → 自主Agent，.tools() + .advisors()）
+├── ResearchService.java         （改：固定workflow → 自主Agent，.tools() + .timeout()）
 ├── ResearchController.java      （不改：第0章已是流式+SSE，签名不变）
 └── tool/
     └── WebSearchTool.java       （改：加调用日志，让 Agent 决策可见）
