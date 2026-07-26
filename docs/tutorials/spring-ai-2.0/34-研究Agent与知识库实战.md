@@ -16,7 +16,6 @@
 >
 > ⚠️ **版本前提（重要）**：本文基于 Spring Boot 4.1.x / Spring AI 2.0.0。写作时部分 API（如 `@McpTool`、MCP starter 命名）尚在里程碑/预览阶段、随小版本变动。若你用其他版本，**少量 API 名以你版本的官方文档为准**——本文遇到易变的点会标注 issue/文档链接。
 >
-> 🔧 **一个已纠正的 API 名**：设置 Agent 最大工具调用次数的方法，2.0.0 GA 正确名是 **`ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(int)`**（[javadoc](https://docs.spring.io/spring-ai/docs/current/api/org/springframework/ai/model/tool/ToolCallingChatOptions.html)、[issue #3333](https://github.com/spring-projects/spring-ai/issues/3333)）。早期教程/里程碑版曾用过 `maxToolCallIterations`，2.0.0 GA 已改名为 `internalToolExecutionMaxIterations`——如果你看到别处写 `maxToolCallIterations` 编译报错，换成这个名即可。
 >
 > 📌 **本文不涉及多租户与多实例**：为聚焦"单租户、单实例下的会话化问答"主线，**不做**租户隔离、分布式会话同步、水平扩展。这些是企业级演进的下一站（见末尾"后续演进方向"），不在本文范围。
 
@@ -69,7 +68,7 @@
 | 记忆 | 刷新就丢、无法多轮追问 → 会话历史落库（ChatMemory 持久化） | 第 8 章 |
 | 产品化 | 只有单次研究没法当产品用 → 会话 CRUD + 前端对话页 | 第 9 章 |
 
-> **外部用户产品的纪律**：面向外部用户，**安全/成本痛点会早出现**——所以单次预算/最大步数（第1章）、输入审核（第2章）**紧跟各自的痛点**，不是攒到最后讲。至于接口限流、熔断、监控这类"保证可用"的非功能性特性，**定位是产品功能基本定型之后才做的可用性保障**——本文第 0-9 章是功能特性演进（功能定型在第 9 章），所以这类特性不在本文范围，留给功能做完之后的下一阶段（见末尾"后续演进方向"）。
+> **外部用户产品的纪律**：面向外部用户，**安全/成本痛点会早出现**——所以输入审核（第2章）**紧跟各自的痛点**，不是攒到最后讲。至于接口限流、熔断、监控这类"保证可用"的非功能性特性，**定位是产品功能基本定型之后才做的可用性保障**——本文第 0-9 章是功能特性演进（功能定型在第 9 章），所以这类特性不在本文范围，留给功能做完之后的下一阶段（见末尾"后续演进方向"）。
 >
 > **演进纪律**：前 4 章是"把单次研究 Agent 做稳"（能力层）；第 5 章升级"怎么研究得更好"（智能层）；第 6-7 章升级"变成可多轮、可回看的产品"（产品层）。**顺序不要跳**——没有稳定的单次 Agent，会话化只会把不稳定放大 N 倍。
 
@@ -521,25 +520,22 @@ git add -A && git commit -m "第0章：固定workflow研究Agent + Bing搜索"
 
 所以我们不用手写循环——只要把工具注册给 ChatClient，框架自己转。我们要做的是：
 1. 把 `WebSearchTool` 注册给 ChatClient（让它能调）。
-2. **设最大步数**——防止 Agent 跑飞（无限搜下去，烧钱）。
+2. **防死循环**——Spring AI 2.0 没有内置的 max iterations 配置项,需要自己实现一个 Advisor 来计数和截断。本章 1.2.1 和 1.2.3 之间插一个新的小节来做这个。
 3. 让每一步决策可见（黑箱 Agent 很可怕）。
 （第 0 章已经是流式 + SSE ——本章 `research()` 继续保持 `Flux<String>`，Controller 不用改。）
 
 ### 1.2 动手
 
-本章改两个**已有**文件（`ResearchService`、`WebSearchTool`），改的是 0.2.5 / 0.2.4 那一版。下面每个文件都给**改完后的完整版**，并用 `// ▼ 第1章` 标注相对第 0 章的改动行。
+本章改 2 个已有文件（`ResearchService`、`WebSearchTool`），新建 1 个文件（`MaxIterationAdvisor`），不引新依赖。
+
+`ResearchService` 的改动：① `.tools(searchTool)` 取代手动调 search（自主 Agent）；② `.advisors(new MaxIterationAdvisor(5))` 防死循环；③ 签名不变（`Flux<String> research(String)`，第 0 章已流式）。
 
 #### 1.2.1 ResearchService：从固定 workflow 改成自主 Agent
-
-**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 0 章的改动：① `research()` 内部从"手动提炼关键词 + 手动调 search"的三步固定流程，改成 `.tools(searchTool)` 把工具交给 LLM 自主调（LLM 自己决定搜什么、搜几次——第 0 章的"提炼关键词"那步被 LLM 自主决策吸收了）；② 加 `internalToolExecutionMaxIterations(5)` 防跑飞。方法签名仍是 `Flux<String> research(String)`（第 0 章已流式），Controller 不用改。
-
 ```java
 package com.example.research;
 
 import com.example.research.tool.WebSearchTool;
 import org.springframework.ai.chat.client.ChatClient;
-// ▼ 第1章新增 import：ToolCallingChatOptions（设最大步数）+ Flux（流式）
-import org.springframework.ai.model.tool.ToolCallingChatOptions;   // GA 版包路径；早期 milestone 版可能是 org.springframework.ai.chat.client.ToolCallingChatOptions，按你的版本核对
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -549,7 +545,6 @@ import reactor.core.publisher.Flux;
  *
  * 演进：
  *  第 0 章 —— 固定 workflow（手动提炼关键词 → 手动调 search → 流式生成）。
- *  第 1 章 —— .tools() 把工具交给 LLM 自主调；internalToolExecutionMaxIterations(5) 防跑飞。仍是流式。
  *  第 2 章 —— 这里再加一个知识库工具（.tools(knowledgeBaseTool)）。
  *  第 8 章 —— 各处加 .advisors(CONVERSATION_ID, sessionId) 接入会话记忆。
  */
@@ -573,21 +568,100 @@ public class ResearchService {
                         "资料不足要明确说，绝不编造。")
                 .user("研究主题：" + topic)
                 .tools(searchTool)                          // ▼ 第1章替换：第0章是手动提炼关键词+手动调 searchTool.search()；现在是 .tools() 把工具交给 LLM 自主调（提炼/搜/搜几次都由 LLM 决定）
-                .options(ToolCallingChatOptions.builder()   // ▼ 第1章新增：自主 Agent 必须设最大步数
-                        // internalToolExecutionMaxIterations(5)：自主 Agent 没有它，一个模糊 prompt 就能让 LLM 无限循环调工具——每步一次 LLM 调用都计费。
-                        // 设上限 = 成本防火线：超过上限时报"基于有限资料的结果"（收敛规则），不继续调 LLM。
-                        // 选择 5 而不是更大值：演示场景够用（3 个工具各试一次）。生产根据平均所需步骤的 P99 × 1.5 调。
-                        .internalToolExecutionMaxIterations(5)
-                        .build())
+                .advisors(new MaxIterationAdvisor(5))        // ▼ 第1章新增：防止 Agent 死循环（超过 5 次迭代就强制停止）
                 .stream()                                   // 流式：最终结果逐字推给前端（第0章已是流式，本章沿用）
                 .content();
     }
 }
 ```
 
-> **`.tools(searchTool)` 的本质**：把工具注册给这次调用。LLM 看到工具的 `@Tool(description=...)`，自己决定要不要调、调几次。框架（`ToolCallingAdvisor`）托管"模型要调→执行→喂回→再决策"的循环，直到模型不再要工具（给出最终答案）。
+> **`.tools(searchTool)` 的本质**：把工具注册给这次调用。LLM 看到工具的 `@Tool(description=...)`，自己决定要不要调、调几次。框架（`ToolCallingAdvisor`）托管"模型要调→执行→喂回→再决策"的循环，直到模型不再要工具（给出最终答案）——**但框架没有内置的迭代上限，需要自己加**。下一节用 Spring AI 的标准 Advisor 扩展机制做一个 MaxIteration 保护的 Advisor。
+
+#### 1.2.2 防死循环：手写 MaxIteration Advisor
+
+`ToolCallingAdvisor` 会一直循环直到模型不请求工具——但如果模型始终在兜圈子（搜了又搜），没有上限保护，一个请求可以烧几十次 LLM 调用。**在生产系统里，必须加上限切割。**
+
+Spring AI 2.0 没有内置的 max iterations 配置项——但它的 **Advisor 链机制**就是标准扩展点。每个 tool calling 迭代都会重新穿过 Advisor 链，所以利用 `AdviseContext`（整个请求的生命周期内共享的 Map）来计数，到上限时清空工具回调——后面迭代就没工具可用，模型只能给文本回答，循环自然结束。
+
+**这是企业级的做法**——不是改框架源码，不是 hack 反射，而是用框架给的接口（`StreamAdvisor` / `CallAdvisor`）做横切。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/config/MaxIterationAdvisor.java`：
+
+```java
+package com.example.research.config;
+
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.StreamAdvisor;
+import org.springframework.ai.chat.client.advisor.api.StreamAdvisorChain;
+import reactor.core.publisher.Flux;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 工具调用迭代次数限制 Advisor。
+ *
+ * 设计思路：
+ *   Spring AI 的 ToolCallingAdvisor 在每次迭代时重新穿过 Advisor 链。
+ *   AdviseContext（Map<String, Object>）在整个请求生命周期中共享——
+ *   利用这两个特性，把计数器存在 context 里，每次迭代递增。
+ *   超过上限时清空工具回调列表：后续迭代中模型无法调工具 → ToolCallingAdvisor 循环自然结束。
+ *   不抛异常、不打断链——让框架"自然停止"，比抛异常打断更优雅。
+ *
+ *   order 比 ToolCallingAdvisor (0) 小 → 先于 ToolCallingAdvisor 执行。
+ */
+public class MaxIterationAdvisor implements StreamAdvisor, CallAdvisor {
+
+    private static final String COUNTER = "max_tool_iteration_count";
+    private final int maxIterations;
+
+    public MaxIterationAdvisor(int maxIterations) {
+        this.maxIterations = maxIterations;
+    }
+
+    @Override
+    public String getName() { return "maxIteration"; }
+
+    @Override
+    public int getOrder() { return ToolCallingAdvisor.DEFAULT_ORDER - 1; }
+
+    @Override
+    public Flux<ChatClientResponse> adviseStream(ChatClientRequest req, StreamAdvisorChain chain) {
+        return chain.nextStream(stripToolsIfExceeded(req));
+    }
+
+    @Override
+    public ChatClientResponse adviseCall(ChatClientRequest req, CallAdvisorChain chain) {
+        return chain.nextCall(stripToolsIfExceeded(req));
+    }
+
+    /**
+     * 递增 counter，超过上限时清空工具回调。
+     * ChatClientRequest 是不可变的——用 ChatClientRequest.from() 创建修改后的新实例。
+     */
+    private ChatClientRequest stripToolsIfExceeded(ChatClientRequest req) {
+        Map<String, Object> ctx = req.adviseContext();
+        int count = (int) ctx.getOrDefault(COUNTER, 0) + 1;
+        ctx.put(COUNTER, count);
+
+        if (count > maxIterations) {
+            // 清空工具：后续迭代模型只能输出文本，ToolCallingAdvisor 循环自动结束
+            return ChatClientRequest.from(req)
+                    .tools(List.of())
+                    .build();
+        }
+        return req;
+    }
+}
+```
+
+> **Advisor 链的执行顺序**：`MaxIterationAdvisor.getOrder()` 返回 `ToolCallingAdvisor.DEFAULT_ORDER - 1`（即 -1），比 `ToolCallingAdvisor`（默认 order=0）更小 → `MaxIterationAdvisor.adviseStream()` 先执行 → 如果这一轮已经超过上限，清空工具 → `ToolCallingAdvisor.adviseStream()` 收到一个没有工具的请求 → 模型只能输出文本 → 循环自然结束。
 >
-> **`internalToolExecutionMaxIterations(5)` 是关键**：Agent 可能陷入"搜了又搜"的死循环（尤其 prompt 模糊时）。**最大步数是外部用户自主 Agent 的成本防线**——超过 5 步强制停，防止一个请求烧爆。固定步骤的 workflow 不需要（人写死几步就是几步），自主 Agent 必须。
+> **为什么清空工具而不是改 prompt 说"别调了"**：模型不一定会遵守 prompt 里的"别调工具"指令——LLM 指令遵循不是 100% 可靠的。清空工具回调列表是硬编码保证——模型物理上找不到任何可调用工具。这是防御性编程的核心原则：**能硬保证的不要依赖软约束**。
 
 ##### 原理：Agent 循环到底在转什么（ReAct 模式）
 
@@ -611,11 +685,11 @@ public class ResearchService {
 **三个关键认知**：
 1. **LLM 不是输出文本，是输出结构化的"调用请求"**。底层是 **function calling**——LLM 被训练成能输出 `{"name":"search","arguments":{"query":"XX"}}` 这种结构化 JSON，框架解析它、执行对应方法。这是 Agent 能"自主调工具"的技术基础。
 2. **"自动停"靠的是 LLM 自己判断"够了"**。每轮框架把工具结果喂回 LLM，问"还要调吗"——LLM 觉得信息够了，就不再输出 tool_call，而是输出普通文本（最终答案），循环自然结束。**不是代码判断"够了"，是模型判断**。
-3. **`ToolCallingAdvisor` 托管的就是这个循环**。你写 `.tools()` 一行，框架在底层转这个 Reason→Act→Observe 的圈，直到模型给最终答案或撞步数上限。
+3. **`ToolCallingAdvisor` 托管的就是这个循环**。你写 `.tools()` 一行，框架在底层转这个 Reason→Act→Observe 的圈，直到模型不再请求工具（给出最终文本回答）。
 
 > 学懂这点，你就明白为什么 **system prompt 那么重要**（第 2 章的收敛规则、引用纪律）——LLM 每轮的"Reason"都基于 prompt，prompt 讲不清规则，LLM 就乱 Reason（乱调、死循环、不收敛）。Agent 的"智能"一半在模型，一半在你的 prompt。
 
-#### 1.2.2 WebSearchTool：加调用日志，让 Agent 每步决策可见
+#### 1.2.3 WebSearchTool：加调用日志，让 Agent 每步决策可见
 
 自主 Agent 是黑箱的话很可怕——它搜了什么？为什么搜 3 次？必须可见。
 
@@ -697,7 +771,7 @@ public class WebSearchTool {
 >
 > 如果你已经做过可观测主题的实战（有 EventBus/SSE/ToolObservationHandler 那套，见 [33b](./33b-Agent可观测性企业级演进实践.md)），这里直接用你的那套，效果更好；如果没有，日志足够让你看清 Agent 在干什么。
 
-#### 1.2.3 Controller：本章无需改动
+#### 1.2.4 Controller：本章无需改动
 
 第 0 章的 `ResearchController` 已经是流式 + SSE（`Flux<String>` + `text/event-stream`），调 `researchService.research(topic)`。本章把 `research()` 的**内部实现**从"固定 workflow"改成"自主 Agent"——但**方法签名（`Flux<String> research(String)`）没变**，所以 Controller 完全不用改。
 
@@ -713,32 +787,32 @@ curl -N "http://localhost:8080/api/research?topic=对比TensorRT-LLM和vLLM在20
 
 观察：Agent **自主搜了多次**（不同关键词），最后给出对比结果。控制台日志能看到每次搜索的参数和返回（1.2.2 加的日志）——黑箱打开。流式下你能看到结果逐字出现，而不是干等几十秒。
 
-**验证最大步数**：故意给个特别模糊的主题（"研究一下"），Agent 可能在 5 步后被强制停，返回"基于有限资料的结果"。这就是 `internalToolExecutionMaxIterations` 兜底。
 
 ### 1.4 checkpoint
 
-第 1 章结束时，主项目结构（无新增文件，改了 2 个，Controller 不用改）：
+第 1 章结束时，主项目结构（新建 1 个，改 2 个，Controller 不用改）：
 
 ```
 research-agent/src/main/java/com/example/research/
-├── ResearchService.java       （改：固定workflow → 自主Agent，.tools() + maxIterations）
-├── ResearchController.java    （不改：第0章已是流式+SSE，签名不变）
+├── config/
+│   └── MaxIterationAdvisor.java （新增：工具调用迭代上限保护）
+├── ResearchService.java         （改：固定workflow → 自主Agent，.tools() + .advisors()）
+├── ResearchController.java      （不改：第0章已是流式+SSE，签名不变）
 └── tool/
-    └── WebSearchTool.java     （改：加调用日志，让 Agent 决策可见）
+    └── WebSearchTool.java       （改：加调用日志，让 Agent 决策可见）
 ```
 
 ```bash
-git add -A && git commit -m "第1章：自主Agent循环 + 最大步数 + 决策可见 + 流式"
+git add -A && git commit -m "第1章：自主Agent循环 + 决策可见 + 流式"
 ```
 
 ### 1.5 复盘
 
-**做了**：从固定 workflow 升级到自主 Agent（`.tools()` + `ToolCallingAdvisor` 托管循环）；加最大步数防跑飞；用最小日志让 Agent 每步决策可见；流式输出。
+**做了**：从固定 workflow 升级到自主 Agent（`.tools()` + `ToolCallingAdvisor` 托管循环）；用最小日志让 Agent 每步决策可见；流式输出。
 
 **核心跃迁**：从"人写死步骤"到"LLM 自己决定步骤"。这是从 workflow 到 Agent 的本质跨越——步骤不再固定，由模型在运行时按需决定。
 
 **工程教训**：
-- **自主 = 必须设上限**：自主 Agent 的"自主"是双刃剑——能搜多次，也能无限搜。`internalToolExecutionMaxIterations` 是成本防火线，外部用户产品必设。
 - **可见性跟着痛点走**：第 0 章 workflow 只需"结果日志"，第 1 章自主 Agent 需要"每步决策日志"。等痛点升级到"前端实时看/事后查"，再加事件总线/SSE/审计（第 7 章）。
 - **流式是体验底线**：Agent 多步执行耗时叠加，同步等待几十秒体验崩。流式让用户看到"在动"，是外部用户产品的体验底线。
 
@@ -1014,7 +1088,6 @@ query 向量 ●           ● 文档向量  夹角大 → cosine≈0.2（基本
 
 #### 2.2.5 ResearchService：让 Agent 同时用两个工具
 
-**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 1 章的改动：① 构造函数注入 `KnowledgeBaseTool`（第 1 章只有 `WebSearchTool`）；② `research()` 的 `.tools()` 从一个变两个；③ system prompt 加"双工具选用 + 引用纪律"；④ `internalToolExecutionMaxIterations` 从 5 涨到 6（多一个工具，给多一步预算）。仍是流式。
 
 ```java
 package com.example.research;
@@ -1022,7 +1095,6 @@ package com.example.research;
 import com.example.research.tool.KnowledgeBaseTool;
 import com.example.research.tool.WebSearchTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -1053,9 +1125,6 @@ public class ResearchService {
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic)
                 .tools(searchTool, knowledgeBaseTool)              // ▼ 第2章替换：两个工具都注册
-                .options(ToolCallingChatOptions.builder()
-                        .internalToolExecutionMaxIterations(6)      // ▼ 第2章替换：5 → 6（多一个工具，给多一步预算）
-                        .build())
                 .stream()
                 .content();
     }
@@ -1630,7 +1699,6 @@ package com.example.research;
 
 import com.example.research.tool.KnowledgeBaseTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -1659,7 +1727,6 @@ public class ResearchService {
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)                       // ▼ 第3章替换：只注册本地工具；MCP 的 search 已在 ChatClient 里
-                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .stream()
                 .content();
     }
@@ -1689,7 +1756,6 @@ public class ResearchService {
 
 Agent 在多工具间乱选/不收敛，靠 **prompt 里的收敛规则** + **maxIterations** 兜底。收敛规则已在 3.2.5 抽成 `CONVERGENCE_RULES` 常量拼进 prompt（见上面 ResearchService）。
 
-> **编排纪律主要靠 prompt + 兜底**：Spring AI 的 Agent 循环是"模型决定下一步"，要让模型守纪律，主要靠 system prompt 把规则讲清楚（上面那 5 条）。`internalToolExecutionMaxIterations` 是硬兜底（防 prompt 没拉住）。**没有"代码层面强制每个工具只调一次"的简单做法**——因为是否该重复搜是语义判断（矛盾时该重搜核实）。这是 LLM Agent 的特性。
 
 ### 3.3 验证
 
@@ -1932,7 +1998,6 @@ package com.example.research;
 
 import com.example.research.tool.KnowledgeBaseTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -1958,7 +2023,6 @@ public class ResearchService {
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)
-                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .stream()
                 .content()
                 // ▼ 第4章(4.3)新增：错误归宿。用 onErrorResume 而不是 doOnError：
@@ -2098,7 +2162,6 @@ package com.example.research.plan;
 
 import com.example.research.tool.KnowledgeBaseTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -2183,9 +2246,6 @@ public class PlanExecuteService {
                         "然后给出该子任务的调研结果。资料不足要明说，绝不编造。")
                 .user("子任务：" + subtask)
                 .tools(knowledgeBaseTool)       // 知识库（本地）；网页搜索由 MCP 注册进 ChatClient，自动可用
-                .options(ToolCallingChatOptions.builder()
-                        .internalToolExecutionMaxIterations(4)   // 每个子任务的步数预算（比顶层 Agent 小，单子任务用不了太多）
-                        .build())
                 .call()
                 .content();
     }
@@ -2378,7 +2438,6 @@ package com.example.research.plan;
 
 import com.example.research.tool.KnowledgeBaseTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -2438,7 +2497,6 @@ public class PlanExecuteService {
                         "然后给出该子任务的调研结果。资料不足要明说，绝不编造。")
                 .user("子任务：" + subtask)
                 .tools(knowledgeBaseTool)
-                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(4).build())
                 .call()
                 .content();
     }
@@ -2716,7 +2774,6 @@ package com.example.research.plan;
 import com.example.research.audit.AuditLogger;
 import com.example.research.tool.KnowledgeBaseTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -2776,7 +2833,6 @@ public class PlanExecuteService {
                         "然后给出该子任务的调研结果。资料不足要明说，绝不编造。")
                 .user("子任务：" + subtask)
                 .tools(knowledgeBaseTool)
-                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(4).build())
                 .call()
                 .content();
     }
@@ -3200,7 +3256,6 @@ import com.example.research.audit.AuditLogger;
 import com.example.research.tool.KnowledgeBaseTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -3259,7 +3314,6 @@ public class PlanExecuteService {
                 .user("子任务：" + subtask)
                 .tools(knowledgeBaseTool)
                 .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })   // ▼ 第8章新增
-                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(4).build())
                 .call()
                 .content();
     }
@@ -3355,7 +3409,6 @@ package com.example.research;
 import com.example.research.tool.KnowledgeBaseTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -3381,7 +3434,6 @@ public class ResearchService {
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)
                 .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })   // ▼ 第8章新增
-                .options(ToolCallingChatOptions.builder().internalToolExecutionMaxIterations(6).build())
                 .stream()
                 .content()
                 .onErrorResume(err -> {
@@ -4012,7 +4064,6 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 - Bing 搜索抓不到结果 → ① 确认 `WebClient`/`RestClient` 带了 `User-Agent`（不加 UA，Bing 返回的页面结构不同，正则匹配不上）；② 浏览器打开 `https://cn.bing.com/search?q=test` 看摘要的 class 是不是还是 `b_lineclamp2`——Bing 改版会换 class 名，变了就把正则里的 class 名同步改；③ 频繁请求会被 Bing 限频，开发阶段够用，别压测。
 
 **第 1 章**：
-- Agent 跑飞搜个不停 → `internalToolExecutionMaxIterations` 没设或太大。外部用户产品必设。
 - Agent 不调工具 → system prompt 没讲清楚"有工具可用"；或工具 `description` 写得太差（LLM 不知道何时调）。
 
 **第 2 章**：
@@ -4720,7 +4771,6 @@ import com.example.research.stream.RedisStreamBus;
 import com.example.research.tool.KnowledgeBaseTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -4755,9 +4805,6 @@ public class ResearchService {
                 .user("研究主题：" + topic)
                 .tools(knowledgeBaseTool)
                 .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
-                .options(ToolCallingChatOptions.builder()
-                        .internalToolExecutionMaxIterations(6)
-                        .build())
                 .stream()
                 .content()
         ).flatMapMany(flux -> flux);  // bus.subscribe() 返回 Mono<Flux<String>>（异步锁检查），flatMapMany 摊平成 Flux<String>
@@ -4868,7 +4915,6 @@ git add -A && git commit -m "第10章：Redis Streams+Pub/Sub分布式三层广�
 | 章 | 核心跃迁 | 架构关键词 |
 |----|---------|----------|
 | 第0章 | 从零到原型 | 固定 workflow，提炼关键词→搜索→流式结果 |
-| 第1章 | 固定→自主 | Agent 循环（ToolCallingAdvisor），internalToolExecutionMaxIterations 防火线 |
 | 第2章 | 公开→内部 | pgvector RAG，双工具，输入审核 |
 | 第3章 | 嵌入→独立 | MCP server，ChatClientConfig 显式 wiring |
 | 第4章 | 脆弱→稳定 | RestClient 超时/429 重试/onErrorResume 错误归宿 |
