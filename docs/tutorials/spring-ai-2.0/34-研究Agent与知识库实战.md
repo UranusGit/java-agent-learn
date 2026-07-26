@@ -65,7 +65,7 @@
 | 记忆 | 刷新就丢、无法多轮追问 → 会话历史落库（ChatMemory 持久化） | 第 8 章 |
 | 产品化 | 只有单次研究没法当产品用 → 会话 CRUD + 前端对话页 | 第 9 章 |
 
-> **外部用户产品的纪律**：面向外部用户，**安全/成本痛点会早出现**——所以限流（第0章）、单次预算/最大步数（第1章）、输入审核（第2章）**紧跟各自的痛点**，不是攒到最后讲。
+> **外部用户产品的纪律**：面向外部用户，**安全/成本痛点会早出现**——所以单次预算/最大步数（第1章）、输入审核（第2章）**紧跟各自的痛点**，不是攒到最后讲。至于接口限流、熔断、监控这类"保证可用"的非功能性特性，**定位是产品功能基本定型之后才做的可用性保障**——本文第 0-9 章是功能特性演进（功能定型在第 9 章），所以这类特性不在本文范围，留给功能做完之后的下一阶段（见末尾"后续演进方向"）。
 >
 > **演进纪律**：前 4 章是"把单次研究 Agent 做稳"（能力层）；第 5 章升级"怎么研究得更好"（智能层）；第 6-7 章升级"变成可多轮、可回看的产品"（产品层）。**顺序不要跳**——没有稳定的单次 Agent，会话化只会把不稳定放大 N 倍。
 
@@ -74,8 +74,8 @@
 这是本文和"贴片段式文档"最大的区别。**每行代码都给全、能编译**。具体几条铁律：
 
 - **演进铁律（最重要）**：**每一章只引入本章真正用到的依赖、配置、代码——后面章节才用到的，一律不提前搬。**
-  - **pom 依赖**：第 0 章只引 webflux + openai + resilience4j + aop；pgvector/jdbc 第 2 章才加，mcp-client 第 3 章才加，chat-memory 第 8 章才加。**不为"反正以后要用"提前引一个依赖**。
-  - **application.yaml 配置**：同理，第 0 章只配 chat + 限流；datasource/embedding/vectorstore 第 2 章才配，mcp client 第 3 章才配，sql.init 建表第 8 章才配。**不为"反正结构里有"提前写一段配置**。
+  - **pom 依赖**：第 0 章只引 webflux + openai；pgvector/jdbc 第 2 章才加，mcp-client 第 3 章才加，chat-memory 第 8 章才加。**不为"反正以后要用"提前引一个依赖**。
+  - **application.yaml 配置**：同理，第 0 章只配 chat + server + logging；datasource/embedding/vectorstore 第 2 章才配，mcp client 第 3 章才配，sql.init 建表第 8 章才配。**不为"反正结构里有"提前写一段配置**。
   - 这是演进式学习的核心——你能清楚看到"每一步新增了什么能力、它解决了什么痛点"，而不是一上来面对一堆"为什么配这个、现在用得上吗"的疑问。
 - **包名**：本文用 `com.example.research` 演示。你自己敲时换成想要的包名，IDE 全局替换即可，**所有 import 前缀要跟着换**。
 - **代码文件：完整版覆盖**。每个 Java 文件的代码块都是**完整的、带 import 的、照抄能编译的**。改一个已有文件时，给的是**改完后的完整版**（整文件覆盖），不是"只贴改的那几行"——你照着整文件覆盖即可，不用猜"这几行插哪"。
@@ -108,7 +108,7 @@
 | 网页搜索 | DuckDuckGo（WebClient 调 HTML 接口） | 零 API key、零第三方库、零成本——开发阶段够用；第 3 章换 MCP 时只换工具实现 |
 | 可见性 | **先用日志，按需演进** | 第 0 章痛点小（等待时不知在干嘛），日志够透光；后面痛点升级再加更多（一点点演进） |
 
-**外部用户第一天的防线——限流**：面向外部用户的产品，**第一天上线就会被刷接口**（每个请求触发一次 LLM + 一次搜索，成本敏感）。所以第 0 章就加最基本的**接口限流**（Resilience4j RateLimiter，按 IP/用户限速），不等最后。这是外部用户产品最该早做的防线。
+> **接口限流本文不做**：限流、熔断、监控这类"保证可用"的非功能性特性，**定位是产品功能基本定型之后才做的可用性保障**——本文第 0-9 章是功能特性的演进（从固定 workflow 一路到产品化会话管理），功能定型在第 9 章。所以限流这类特性不在本文范围，属于"功能全部做完之后"的下一阶段（见末尾"后续演进方向"）。本文聚焦把功能特性一步步做出来。
 
 ### 0.2 动手
 
@@ -150,14 +150,13 @@ research-agent/
 
     <dependencies>
         <!--
-          第 0 章只引四个依赖，每个都对应本章真用到的能力：
+          第 0 章只引两个依赖，每个都对应本章真用到的能力：
             webflux        —— Web 栈基础（Controller、WebClient 调 DuckDuckGo 都靠它；第 1 章起流式也用它）
             openai starter —— Spring AI + DeepSeek（OpenAI 兼容协议）
-            resilience4j   —— 第 0 章的限流（外部用户第一天防线，0.2.6 用到）
-            aop            —— Resilience4j 的 @RateLimiter 注解靠 AOP 代理，缺它限流静默不生效
           演进纪律：后续章节用到了再加——
             第 2 章加 pgvector + jdbc；第 3 章加 mcp-client；第 8 章加 chat-memory-jdbc。
-            actuator（生产健康检查）等真需要可观测时再加，第 0 章不需要，不预先引。
+            actuator（生产健康检查）、resilience4j（限流/熔断）等真需要可用性治理时再加，
+            第 0 章聚焦功能特性，不预先引非功能性依赖。
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -168,18 +167,6 @@ research-agent/
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-openai</artifactId>
-        </dependency>
-
-        <!-- Resilience4j：接口限流（外部用户产品第一天就要，0.2.6 用到） -->
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-spring-boot3</artifactId>
-            <version>2.2.0</version>
-        </dependency>
-        <!-- ⚠️ 必须配 aop：@RateLimiter 注解靠 Spring AOP 代理生效，缺它限流静默不工作（最常踩的坑，见 A.3） -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
     </dependencies>
 
@@ -205,8 +192,6 @@ research-agent/
     </build>
 </project>
 ```
-
-> **`spring-boot-starter-aop` 别漏**：Resilience4j 的 `@RateLimiter` 注解靠 Spring AOP 代理生效，缺 aop starter 限流静默不工作（最常踩的坑，见 A.3）。
 
 #### 0.2.2 启动类
 
@@ -251,8 +236,6 @@ logging:
 ```
 
 > **`DEEPSEEK_API_KEY` 从环境变量读**：不要把 key 写进 yaml。`.env` 或 IDE 运行配置里设。本文不涉及 embedding（第 2 章加 RAG 时才需要 embedding key，那时再配）。
->
-> **限流配置现在不在这里**：Resilience4j 的限流配置（`resilience4j.ratelimiter`）放到 0.2.6 和 `@RateLimiter` 代码一起出现——配置紧跟用到它的代码，不让你在没看到限流代码时先困惑"这配置配了干啥"。
 
 #### 0.2.4 网页搜索工具（DuckDuckGo，零 key）
 
@@ -389,14 +372,13 @@ public class ResearchService {
 
 > **三行 `System.out.println` 是第 0 章的"最小可见性"**：研究过程几十秒，纯黑盒等待体验差。第 0 章痛点只是"等待时不知在干嘛"，打印日志就够透光。**第 1 章 Agent 自主多步后，痛点升级为"要看清每步决策"**——那时把可见性挪到工具调用层（1.2.2）。如果将来你觉得"日志不够、要前端实时看、要可追溯"，再演进到事件总线 + SSE——那是更后面的事，现在不做（演进纪律）。
 
-#### 0.2.6 接口 + 限流（外部用户第一天的防线）
+#### 0.2.6 接口
 
-**【新建文件】** `research-agent/src/main/java/com/example/research/ResearchController.java`。接口上加 `@RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")`——这个注解要生效，需要两样东西配套（前面都备好了）：① pom 里的 `resilience4j-spring-boot3` + `aop`（让注解靠 AOP 代理生效）；② application.yaml 里名为 `researchApi` 的限流实例配置（下面紧接着配）。
+**【新建文件】** `research-agent/src/main/java/com/example/research/ResearchController.java`。第 0 章就是一个最普通的 REST 接口——`GET /api/research?topic=xxx`，调 `ResearchService.research()` 返回同步结果。
 
 ```java
 package com.example.research;
 
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -415,38 +397,14 @@ public class ResearchController {
     }
 
     /**
-     * 研究接口。外部用户产品——第一天就限流（防刷 LLM 成本）。
-     * @RateLimiter(name="researchApi") 靠下面的 yaml 配置（researchApi 实例）生效。
-     * 第 0 章同步返回 String；第 1 章升级为 Flux<String> + SSE。
+     * 研究接口。第 0 章同步返回 String；第 1 章升级为 Flux<String> + SSE。
      */
     @GetMapping
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public String research(@RequestParam String topic) {
         return researchService.research(topic);
     }
-
-    /** 限流兜底：返回提示文案，不抛异常让前端懵。fallbackMethod 的方法签名要和原方法一致（返回 String）。 */
-    public String rateLimited(String topic, Throwable t) {
-        return "请求过于频繁，请稍后再试。";
-    }
 }
 ```
-
-**【改已有文件】** `research-agent/src/main/resources/application.yaml`。现在 Controller 用了 `@RateLimiter(name="researchApi")`，需要在 yaml 里配一个同名实例，否则启动报"找不到 researchApi 实例"。在 0.2.3 的 yaml 末尾追加：
-
-```yaml
-# 限流（外部用户第一天就要）：每 IP 每秒 1 次请求
-# researchApi 实例名要和 Controller 里 @RateLimiter(name="researchApi") 一致
-resilience4j:
-  ratelimiter:
-    instances:
-      researchApi:
-        limit-for-period: 1                       # 每周期 1 次
-        limit-refresh-period: 1s
-        timeout-duration: 0                       # 超限直接拒（不等待）
-```
-
-> 超限时 Resilience4j 调 `fallbackMethod`，返回提示。前端据此提示用户。**这是外部用户产品第一天就该有的**——内部小工具可以晚点加，对外产品不行。
 
 ### 0.3 验证
 
@@ -455,13 +413,9 @@ mvn spring-boot:run
 
 # 正常请求
 curl "http://localhost:8080/api/research?topic=2026年大模型推理框架"
-
-# 快速连发，验证限流（第二次会被限）
-curl "http://localhost:8080/api/research?topic=test1"
-curl "http://localhost:8080/api/research?topic=test2"   # → "请求过于频繁"
 ```
 
-预期：第一次返回基于搜索资料的研究结果；第二次（1 秒内）返回限流提示。控制台能看到三行 `[研究]` 日志。
+预期：返回基于搜索资料的研究结果。控制台能看到三行 `[研究]` 日志（搜索开始、搜索完成、生成完成）。
 
 ### 0.4 checkpoint
 
@@ -474,7 +428,7 @@ research-agent/
     ├── java/com/example/research/
     │   ├── Application.java            # 启动类
     │   ├── ResearchService.java        # 固定 workflow：搜索 → 结果
-    │   ├── ResearchController.java     # 接口 + 限流
+    │   ├── ResearchController.java     # REST 接口
     │   └── tool/
     │       └── WebSearchTool.java      # DuckDuckGo 网页搜索
     └── resources/
@@ -482,12 +436,12 @@ research-agent/
 ```
 
 ```bash
-git add -A && git commit -m "第0章：固定workflow研究Agent + DuckDuckGo搜索 + 限流"
+git add -A && git commit -m "第0章：固定workflow研究Agent + DuckDuckGo搜索"
 ```
 
 ### 0.5 复盘
 
-**做了**：固定 workflow（搜索 → 研究结果）跑通；DuckDuckGo 零成本搜索；外部用户第一天的限流防线；最小日志可见性。
+**做了**：固定 workflow（搜索 → 研究结果）跑通；DuckDuckGo 零成本搜索；最小日志可见性。
 
 **还差（后面章节解决）**：
 - **固定步骤应对不了开放任务**：用户问"对比 A 和 B 的发展"，可能要搜两次（A 一次、B 一次）再综合——固定"搜一次"不够。→ **第 1 章自主 Agent**
@@ -702,12 +656,11 @@ public class WebSearchTool {
 
 1.2.1 已经备好 `researchStream()`。现在改 Controller：把 `research()`（返 `String`）换成 `researchStream()`（返 `Flux<String>` + SSE）。
 
-**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 0 章的改动：① 方法签名从 `String` 改成 `Flux<String>`；② 加 `produces = MediaType.TEXT_EVENT_STREAM_VALUE` 声明 SSE；③ 调流式版。`@RateLimiter` 和 `rateLimited` 兜底保留不变（外部用户防线不撤）。
+**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 0 章的改动：① 方法签名从 `String` 改成 `Flux<String>`；② 加 `produces = MediaType.TEXT_EVENT_STREAM_VALUE` 声明 SSE；③ 调流式版。
 
 ```java
 package com.example.research;
 
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 // ▼ 第1章新增 import：MediaType + Flux
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -728,19 +681,10 @@ public class ResearchController {
         this.researchService = researchService;
     }
 
-    /**
-     * 研究接口（流式）。Agent 自主调工具，最终结果逐字推给前端。
-     * @RateLimiter 保留（外部用户防线不撤）。fallbackMethod 改成返回 Flux（匹配流式签名）。
-     */
+    /** 研究接口（流式）。Agent 自主调工具，最终结果逐字推给前端。 */
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)   // ▼ 第1章替换：第0章是 @GetMapping（同步 String）；现在声明 SSE
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> research(@RequestParam String topic) {  // ▼ 第1章替换：返回类型 String → Flux<String>
         return researchService.researchStream(topic);           // ▼ 第1章替换：调流式版
-    }
-
-    /** 限流兜底：返回 Flux（匹配 research 的流式签名）。 */
-    public Flux<String> rateLimited(String topic, Throwable t) {   // ▼ 第1章替换：返回类型同步改 Flux
-        return Flux.just("请求过于频繁，请稍后再试。");
     }
 }
 ```
@@ -848,7 +792,7 @@ docker run -d --name research-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=re
         </dependency>
 ```
 
-**【改已有文件】** `research-agent/src/main/resources/application.yaml`。本章相对第 0 章的改动：在已有的 `spring` 节下**追加三块**——`datasource`（PG 连接）、`spring.ai.openai.embedding`（embedding 模型，挂在已有的 openai 节下）、`spring.ai.vectorstore.pgvector`（向量库）。其余（chat、server、限流、logging）不变。
+**【改已有文件】** `research-agent/src/main/resources/application.yaml`。本章相对第 0 章的改动：在已有的 `spring` 节下**追加三块**——`datasource`（PG 连接）、`spring.ai.openai.embedding`（embedding 模型，挂在已有的 openai 节下）、`spring.ai.vectorstore.pgvector`（向量库）。其余（chat、server、logging）不变。
 
 追加的片段（缩进对齐第 0 章已有的 `spring:` 节）：
 
@@ -1174,21 +1118,19 @@ public class InputGuard {
 }
 ```
 
-**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 1 章的改动：① 注入 `InputGuard`（构造函数加参数）；② `research()` 入口加审核分支（不通过直接返回提示）；③ `rateLimited` 的参数类型从 `Throwable` 改成 `Exception`（保持一致）。限流和 SSE 不变。
+**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 1 章的改动：① 注入 `InputGuard`（构造函数加参数）；② `research()` 入口加审核分支（不通过直接返回提示）。SSE 不变。
 
 ```java
 package com.example.research;
 
 import com.example.research.safety.InputGuard;
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
 /**
  * 研究接口 Controller。
- * 第 2 章：加输入审核（InputGuard），在调 LLM 之前拦注入。
- * 限流（第 0 章）+ SSE（第 1 章）保留不撤。
+ * 第 2 章：加输入审核（InputGuard），在调 LLM 之前拦注入。SSE（第 1 章）保留。
  */
 @RestController
 @RequestMapping("/api/research")
@@ -1203,24 +1145,16 @@ public class ResearchController {
         this.inputGuard = inputGuard;
     }
 
-    /** 研究接口（流式）。限流（第0章）+ SSE（第1章）保留；第2章加输入审核。 */
+    /** 研究接口（流式）。SSE（第1章）保留；第2章加输入审核。 */
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> research(@RequestParam String topic) {
         // ▼ 第2章新增：在调 LLM 之前就拦截注入尝试（最小拦截距离）
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
         return researchService.researchStream(topic);
     }
-
-    /** 限流降级（同第 1 章）。 */
-    public Flux<String> rateLimited(String topic, Exception t) {
-        return Flux.just("请求过于频繁，请稍后再试。");
-    }
 }
 ```
-
-> **第 0 章的限流不撤**：外部用户产品，限流是第一道防线，加 InputGuard 不能把它覆盖掉。这种"多处改动叠加"的 Controller 用完整版最稳——片段容易漏 `@RateLimiter` 或 produces。
 
 ### 2.3 验证
 
@@ -2083,7 +2017,7 @@ research-agent/src/main/java/com/example/research/
 └── ResearchService.java             （改：onErrorResume 修事故③）
 ```
 
-（pom / application.yaml 不动——4.2 用 RestClient 拦截器重试，不用 resilience4j.retry yaml。）
+（pom / application.yaml 不动——4.2 的重试用 RestClient 拦截器实现，不引新依赖、不加新配置。）
 
 ```bash
 git add -A && git commit -m "第4章：上线运营事故——超时/429重试/错误归宿"
@@ -2262,7 +2196,7 @@ package com.example.research;
 
 import com.example.research.plan.PlanExecuteService;
 import com.example.research.safety.InputGuard;
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
@@ -2291,8 +2225,7 @@ public class ResearchController {
     }
 
     /** ReAct 入口（简单问题，流式）。第 0-4 章保留不动。 */
-    @GetMapping(produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
+    @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> research(@RequestParam String topic) {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
@@ -2301,24 +2234,16 @@ public class ResearchController {
 
     /** Plan-Execute 入口（复杂问题）。本章非流式，返回拼接结果。 */   // ▼ 第5章新增方法
     @GetMapping("/deep")
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public String researchDeep(@RequestParam String topic) {
         String reject = inputGuard.check(topic);            // 输入审核不撤（第 2 章）
         if (reject != null) return reject;
         return planExecuteService.research(topic);
     }
     // 原 /api/research（ReAct 路径）保留不动
-
-    /** 限流降级（同第 2 章）。 */
-    public Flux<String> rateLimited(String topic, Exception t) {
-        return Flux.just("请求过于频繁，请稍后再试。");
-    }
 }
 ```
 
 > **两套并存**：`/api/research`（ReAct，简单/快速）+ `/api/research/deep`（Plan-Execute，复杂/全面）。本章 deep 是串行 + 简单拼接——**够演示"Plan 让复杂主题查得全"这个痛点被解掉**。聚合质量、并发提速是后面章节的事。
->
-> **`rateLimited` 的签名**：它返回 `Flux<String>`，但 `/deep` 返回 `String`——`fallbackMethod` 要求降级方法签名匹配原方法。这里 `/deep` 触发限流时会因返回类型不匹配报错。**务实处理**：第 6 章 `/deep` 改成流式后两者签名就一致了；本章演示阶段，若 `/deep` 频繁触发限流，可单独给 `/deep` 写一个返 `String` 的降级方法。本文聚焦主线，暂不为这个边界分裂降级方法。
 
 ### 5.3 验证
 
@@ -2626,14 +2551,13 @@ public class PlanExecuteService {
 
 把 `/api/research/deep` 从调第 5 章的 `research`（串行、非流式）改成调 6.2.1 的 `researchParallelStream`（并发、流式）。**直接用流式版**（前端要 SSE）——`researchParallel`（同步 block 版）只作为"理解并发逻辑"的参照保留，Controller 不用它（避免同 path 两个方法撞 Spring 映射）。
 
-**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 5 章的改动：① `/deep` 从返 `String` 改成返 `Flux<String>` + SSE；② 调 `researchParallelStream`；③ `rateLimited` 现在被流式 `/deep` 共用，签名匹配（返 `Flux<String>`）——第 5 章遗留的"降级签名不匹配"问题在 本章自然解决。
+**【改已有文件，完整版覆盖】** `ResearchController.java`。本章相对第 5 章的改动：① `/deep` 从返 `String` 改成返 `Flux<String>` + SSE；② 调 `researchParallelStream`。
 
 ```java
 package com.example.research;
 
 import com.example.research.plan.PlanExecuteService;
 import com.example.research.safety.InputGuard;
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
@@ -2662,7 +2586,6 @@ public class ResearchController {
 
     /** ReAct 入口（简单问题，流式）。 */
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> research(@RequestParam String topic) {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
@@ -2671,17 +2594,11 @@ public class ResearchController {
 
     /** Plan-Execute 入口（复杂问题，并发流式）。 */   // ▼ 第6章替换：从同步 String 改成并发流式 Flux<String> + SSE
     @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> researchDeep(@RequestParam String topic) {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
         return planExecuteService.researchParallelStream(topic)   // ← 并发 + 流式
                 .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));   // 错误归宿（第 4 章）
-    }
-
-    /** 限流降级（返 Flux，匹配两个流式入口的签名）。 */
-    public Flux<String> rateLimited(String topic, Exception t) {
-        return Flux.just("请求过于频繁，请稍后再试。");
     }
 }
 ```
@@ -3117,7 +3034,6 @@ package com.example.research;
 
 import com.example.research.plan.PlanExecuteService;
 import com.example.research.safety.InputGuard;
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
@@ -3146,7 +3062,6 @@ public class ResearchController {
 
     /** ReAct 入口（简单问题，流式）。 */
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> research(@RequestParam String topic) {
         String reject = inputGuard.check(topic);
         if (reject != null) return Flux.just(reject);
@@ -3155,7 +3070,6 @@ public class ResearchController {
 
     /** Plan-Execute 入口（复杂问题，并发流式）。 */   // ▼ 第7章替换：加 sessionId 参数
     @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> researchDeep(@RequestParam String topic,
                                       @RequestParam(defaultValue = "") String sessionId) {
         String reject = inputGuard.check(topic);
@@ -3163,11 +3077,6 @@ public class ResearchController {
         if (sessionId.isBlank()) sessionId = "anon-" + UUID.randomUUID();  // ▼ 第7章新增：第8章前用临时 ID
         return planExecuteService.researchParallelStream(topic, sessionId)
                 .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
-    }
-
-    /** 限流降级。 */
-    public Flux<String> rateLimited(String topic, Exception t) {
-        return Flux.just("请求过于频繁，请稍后再试。");
     }
 }
 ```
@@ -3637,7 +3546,6 @@ package com.example.research;
 
 import com.example.research.plan.PlanExecuteService;
 import com.example.research.safety.InputGuard;
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
@@ -3666,7 +3574,6 @@ public class ResearchController {
 
     /** ReAct 入口（简单问题，流式）。 */   // ▼ 第8章替换：加 sessionId 参数
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> research(@RequestParam String topic,
                                   @RequestParam(defaultValue = "") String sessionId) {
         String reject = inputGuard.check(topic);
@@ -3677,7 +3584,6 @@ public class ResearchController {
 
     /** Plan-Execute 入口（复杂问题，并发流式）。 */
     @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> researchDeep(@RequestParam String topic,
                                       @RequestParam(defaultValue = "") String sessionId) {
         String reject = inputGuard.check(topic);
@@ -3685,11 +3591,6 @@ public class ResearchController {
         if (sessionId.isBlank()) sessionId = "anon-" + UUID.randomUUID();
         return planExecuteService.researchParallelStream(topic, sessionId)
                 .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
-    }
-
-    /** 限流降级。 */
-    public Flux<String> rateLimited(String topic, Exception t) {
-        return Flux.just("请求过于频繁，请稍后再试。");
     }
 }
 ```
@@ -3954,7 +3855,6 @@ package com.example.research;
 import com.example.research.plan.PlanExecuteService;
 import com.example.research.safety.InputGuard;
 import com.example.research.session.SessionService;
-import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
@@ -3985,7 +3885,6 @@ public class ResearchController {
 
     /** ReAct 入口（简单问题，流式）。 */
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> research(@RequestParam String topic,
                                   @RequestParam(defaultValue = "") String sessionId) {
         String reject = inputGuard.check(topic);
@@ -3995,7 +3894,6 @@ public class ResearchController {
 
     /** Plan-Execute 入口（复杂问题，并发流式）。问答开始前自动补标题。 */   // ▼ 第9章替换：加自动标题
     @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RateLimiter(name = "researchApi", fallbackMethod = "rateLimited")
     public Flux<String> researchDeep(@RequestParam String topic,
                                       @RequestParam String sessionId) {
         String reject = inputGuard.check(topic);
@@ -4005,11 +3903,6 @@ public class ResearchController {
         return sessionService.rename(sessionId, title)             // 先补标题（幂等：有则覆盖）
                 .thenMany(planExecuteService.researchParallelStream(topic, sessionId))
                 .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
-    }
-
-    /** 限流降级。 */
-    public Flux<String> rateLimited(String topic, Exception t) {
-        return Flux.just("请求过于频繁，请稍后再试。");
     }
 }
 ```
@@ -4134,14 +4027,14 @@ git add -A && git commit -m "第9章：会话CRUD+前端对话页，产品化收
 
 ```
 research-agent/                         （主项目：会话化研究问答系统）
-├── pom.xml                             （webflux/openai/resilience4j/aop/pgvector/jdbc/mcp-client/chat-memory-jdbc）
+├── pom.xml                             （webflux/openai/pgvector/jdbc/mcp-client/chat-memory-jdbc）
 ├── src/main/resources/
-│   ├── application.yaml                （DeepSeek + PG + 向量库 + MCP client + 限流 + sql.init 建表）
+│   ├── application.yaml                （DeepSeek + PG + 向量库 + MCP client + sql.init 建表）
 │   └── static/index.html               （第9章前端：会话列表 + 对话区，附录 A.5b）
 └── src/main/java/com/example/research/
     ├── Application.java
     ├── ResearchService.java            （ReAct Agent：简单问题路径）
-    ├── ResearchController.java         （接口 + 限流 + 输入审核 + /deep + 自动标题）
+    ├── ResearchController.java         （接口 + 输入审核 + /deep + 自动标题）
     ├── config/
     │   ├── HttpClientConfig.java       （RestClient 超时 + 重试拦截器，第4章）
     │   ├── ChatClientConfig.java       （MCP 工具 + MessageChatMemoryAdvisor，第3/8章）
@@ -4179,8 +4072,6 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 |------|--------|------|
 | spring-boot-starter-webflux | 第0章 | Web 栈基础（Controller、WebClient） |
 | spring-ai-starter-model-openai | 第0章 | DeepSeek（OpenAI 兼容）+ 第2章起也提供 EmbeddingModel |
-| resilience4j-spring-boot3 | 第0章 | 接口限流（0.2.6 `@RateLimiter`） |
-| spring-boot-starter-aop | 第0章 | Resilience4j 注解靠 AOP 代理生效 |
 | spring-ai-starter-vector-store-pgvector | 第2章 | 向量库 |
 | spring-boot-starter-jdbc | 第2章 | pgvector 需要（issue #6164）；后续审计/会话也复用 |
 | spring-ai-starter-mcp-client | 第3章 | 接入网页搜索 MCP server |
@@ -4197,8 +4088,7 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 
 | 配置块 | 引入章 | 用途 |
 |--------|--------|------|
-| spring.ai.openai.chat + server + 限流 + logging | 第0章 | 最小可跑 |
-| resilience4j.ratelimiter.instances.researchApi | 第0章（0.2.6） | 给 `@RateLimiter(name="researchApi")` 用 |
+| spring.ai.openai.chat + server + logging | 第0章 | 最小可跑 |
 | spring.datasource | 第2章 | PG 连接 |
 | spring.ai.openai.embedding | 第2章 | embedding 模型（入库向量化） |
 | spring.ai.vectorstore.pgvector | 第2章 | 向量库 |
@@ -4241,13 +4131,6 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 >       schema-locations: classpath:org/springframework/ai/chat/memory/repository/jdbc/schema-postgresql.sql
 > server:
 >   port: 8080
-> resilience4j:
->   ratelimiter:
->     instances:
->       researchApi:
->         limit-for-period: 1
->         limit-refresh-period: 1s
->         timeout-duration: 0
 > logging:
 >   level:
 >     org.springframework.ai: info
@@ -4259,8 +4142,6 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 
 **第 0 章**：
 - DuckDuckGo HTML 接口不通/被限频 → 它是非官方接口。退路：先用 mock 返回假数据跑通 Agent 逻辑，或换 Tavily。
-- 限流没生效 → 确认加了 `spring-boot-starter-aop`（Resilience4j 注解靠 AOP）；确认 yaml 里 `researchApi` 实例名和 `@RateLimiter(name="researchApi")` 一致。
-- 启动报"找不到 researchApi 实例" → 0.2.3 的 yaml 没有限流配置（限流配置在 0.2.6 和 `@RateLimiter` 一起加），漏配了。
 
 **第 1 章**：
 - Agent 跑飞搜个不停 → `maxToolCallIterations` 没设或太大。外部用户产品必设。
@@ -4313,7 +4194,7 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 
 ```mermaid
 flowchart TD
-    S0[第0章 固定workflow<br/>搜索→结果+限流] -->|痛点: 固定步骤不够用| S1
+    S0[第0章 固定workflow<br/>搜索→结果] -->|痛点: 固定步骤不够用| S1
     S1[第1章 自主Agent<br/>ToolCallingAdvisor循环+maxSteps+流式] -->|痛点: 网页不够准| S2
     S2[第2章 知识库RAG<br/>pgvector+双工具+输入审核] -->|痛点: 工具散落难复用| S3
     S3[第3章 MCP+编排<br/>搜索做独立MCP server+删本地工具] -->|痛点: 上线运营| S4
