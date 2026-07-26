@@ -523,7 +523,7 @@ git add -A && git commit -m "第0章：固定workflow研究Agent + Bing搜索"
 1. 把 `WebSearchTool` 注册给 ChatClient（让它能调）。
 2. **设最大步数**——防止 Agent 跑飞（无限搜下去，烧钱）。
 3. 让每一步决策可见（黑箱 Agent 很可怕）。
-4. 把最终结果改成流式输出（多步执行更要流式）。
+（第 0 章已经是流式 + SSE ——本章 `research()` 继续保持 `Flux<String>`，Controller 不用改。）
 
 ### 1.2 动手
 
@@ -717,12 +717,12 @@ curl -N "http://localhost:8080/api/research?topic=对比TensorRT-LLM和vLLM在20
 
 ### 1.4 checkpoint
 
-第 1 章结束时，主项目结构（无新增文件，改了两个）：
+第 1 章结束时，主项目结构（无新增文件，改了 2 个，Controller 不用改）：
 
 ```
 research-agent/src/main/java/com/example/research/
-├── ResearchService.java       （改：固定workflow → 自主Agent，.tools() + maxIterations + 流式）
-├── ResearchController.java    （改：同步 String → 流式 Flux<String> + SSE）
+├── ResearchService.java       （改：固定workflow → 自主Agent，.tools() + maxIterations）
+├── ResearchController.java    （不改：第0章已是流式+SSE，签名不变）
 └── tool/
     └── WebSearchTool.java     （改：加调用日志，让 Agent 决策可见）
 ```
@@ -2551,7 +2551,7 @@ curl -N "http://localhost:8080/api/research/deep?topic=对比TensorRT-LLM、vLLM
 ```
 research-agent/src/main/java/com/example/research/
 ├── plan/PlanExecuteService.java   （改：加 executeOneReactive / aggregate / buildEvidence；researchDeep 改并发）
-└── ResearchController.java        （改：/deep 切到并发流式版）
+└── ResearchController.java        （不改：第5章已是流式，Service内部串行→并发，签名不变）
 ```
 
 （pom / application.yaml 不动。）
