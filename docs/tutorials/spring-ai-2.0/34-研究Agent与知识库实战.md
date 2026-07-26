@@ -572,8 +572,9 @@ public class ResearchService {
                 .advisors(new MaxIterationAdvisor(5))        // ▼ 第1章新增：防止 Agent 死循环（超过 5 次迭代就强制停止）
                 .stream()                                   // 流式：最终结果逐字推给前端（第0章已是流式，本章沿用）
                 .content()
-                .onErrorResume(MaxIterationAdvisor.MaxIterationExceededException.class,
-                        e -> Flux.just("[已达到最大研究步数，基于已有资料给出结果。]"));
+                // 硬兜底：不管循环多少轮，30 秒后强制结束流
+                .timeout(java.time.Duration.ofSeconds(60),
+                        Flux.just("[研究超时，基于已有资料给出结果。]"));
     }
 }
 ```
@@ -582,13 +583,29 @@ public class ResearchService {
 
 #### 1.2.2 防死循环：手写 MaxIteration Advisor
 
-`ToolCallingAdvisor` 会一直循环直到模型不请求工具——但如果模型始终在兜圈子（搜了又搜），没有上限保护，一个请求可以烧几十次 LLM 调用。**在生产系统里，必须加上限切割。**
+`ToolCallingAdvisor` 会一直循环直到模型不请求工具——但模型可能兜圈子。**Spring AI 2.0 没有内置的 max iterations 配置项。**
 
-Spring AI 2.0 没有内置的 max iterations 配置项——但它的 **Advisor 链机制**就是标准扩展点。每个 tool calling 迭代都会重新穿过 Advisor 链，`ChatClientRequest` 提供了 `context()` 方法（返回 `Map<String, Object>`，在整个请求生命周期中共享）。
+##### 源码级分析：为什么 order 必须是 +1 而不是 -1
 
-**策略**：把计数器存在 `context()` 里，每次迭代递增。超过上限时抛出一个自定义异常——`ToolCallingAdvisor` 收到异常后会退出循环，异常沿响应式链传到 `ResearchService`，由 `.onErrorResume()` 兜底成一条用户可读的提示。
+通过 `javap -c` 反编译 `ToolCallingAdvisor.adviseCall` 的字节码（Spring AI 2.0.0），找到了内部循环的实际机制：
 
-> **为什么是抛异常而不是改请求**：`ChatClientRequest.mutate()` 的 Builder 只能修改 `prompt` 和 `context`，**没有 `tools()` 方法**——也就是说无法从请求层面清空工具。抛异常是唯一不依赖 Spring AI 内部实现的方式：`ToolCallingAdvisor` 在 advisor 链返回错误时会自然停止循环。
+```
+字节码 83-87:  aload_1.context()          // 取出原始请求的 context Map
+               Builder.context(Map)        // 塞进新请求（不是拷贝，是同一个引用）
+字节码 104:    chain.copy(this)            // 移除 ToolCallingAdvisor 自己
+               .nextCall(newRequest)       // 调 copy 链 → 模型
+字节码 149:    isToolCallResponse()        // 有工具调用？
+字节码 238:    ifne 66                     // 有 → 跳回 66，下一轮循环
+```
+
+**关键结论**:
+1. **`context()` 返回的 Map 在整个循环中共享**——字节码 83-87 每次都把原始 Map 塞进新请求，不会拷贝
+2. **`chain.copy(this)` 只移除自己，排在它后面的 advisor 仍留在 copy 中**
+3. **所以 MaxIterationAdvisor 的 order 必须 >0（排在 ToolCallingAdvisor 之后）**，这样才能在每轮循环的 `链.copy(this).nextCall()` 中被调用
+
+如果把 order 设为 -1（排在 ToolCallingAdvisor 之前），MaxIterationAdvisor 只会在**最外层调用一次**，内部循环完全看不见它。设为 **+1** 后，每轮循环都会经过它，计数器在共享的 context 里递增。
+
+##### 实现
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/config/MaxIterationAdvisor.java`：
 
@@ -609,18 +626,30 @@ import java.util.Map;
 /**
  * 工具调用迭代次数限制 Advisor。
  *
- * 工作机制：
- *   1. ToolCallingAdvisor 的每次迭代都重新穿过 Advisor 链。
- *   2. ChatClientRequest.context() 返回的 Map 在整个请求生命周期中共享。
- *   3. 每次迭代：从 context 中取计数器，递增，放回去。
- *   4. 超过 maxIterations 时抛出 MaxIterationExceededException——
- *      ToolCallingAdvisor 收到异常后退出循环，错误沿链传到 Service 层的 .onErrorResume() 兜底。
+ * 先读 ToolCallingAdvisor 的字节码（javap -c 反编译）搞清楚循环机制再写：
+ *   - ToolCallingAdvisor 每轮循环调用 chain.copy(this).nextCall(req)
+ *   - copy 移除了 ToolCallingAdvisor 自己，但保留了排在它后面的 advisor
+ *   - 新请求的 context 是同一个 Map 引用（不是拷贝）
+ *   - 所以 order 设为 DEFAULT_ORDER + 1（排在 ToolCallingAdvisor 之后），
+ *     利用共享的 context 做计数器——每轮循环经过这里，counter +1
  *
- * order 比 ToolCallingAdvisor (0) 小 → 先于 ToolCallingAdvisor 执行。
+ * 收口机制（不是"硬截断"）：
+ *   counter < maxIterations：不改请求，正常通过。
+ *   counter == maxIterations：修改 user message，追加收口指令——
+ *     "必须基于已收集的信息直接输出最终结果，不得再请求工具"。
+ *     给模型最后一次机会生成答案——即使资料不充分，也比抛异常让用户什么都看不到强。
+ *   counter > maxIterations：不做任何操作，继续放行。
+ *     因为上一轮已经发过收口指令了。模型不听话继续兜圈子，那是模型的问题，
+ *     用 Flux.timeout() 硬兜底（30s → 强制结束流），不在 advisor 里杀。
+ *
+ * 设计原则：
+ *   - 不抛异常：抛异常 = 用户永远得不到答案。你给用户的应该是"基于有限资料的结果"，
+ *     不是"[系统错误]"。即使资料不够，也把已有信息呈现出来，标注"资料可能不完整"。
+ *   - timeout 才是硬截断：计次算预警，timeout 算兜底。不管循环多少轮，30s 必停。
  */
 public class MaxIterationAdvisor implements StreamAdvisor, CallAdvisor {
 
-    private static final String COUNTER = "max_tool_iteration_count";
+    private static final String COUNTER = "max_tool_iter_count";
     private final int maxIterations;
 
     public MaxIterationAdvisor(int maxIterations) {
@@ -631,58 +660,38 @@ public class MaxIterationAdvisor implements StreamAdvisor, CallAdvisor {
     public String getName() { return "maxIteration"; }
 
     @Override
-    public int getOrder() { return ToolCallingAdvisor.DEFAULT_ORDER - 1; }
+    public int getOrder() { return ToolCallingAdvisor.DEFAULT_ORDER + 1; }
 
     @Override
     public Flux<ChatClientResponse> adviseStream(ChatClientRequest req, StreamAdvisorChain chain) {
-        checkIteration(req);
-        return chain.nextStream(req);
+        return chain.nextStream(applyLimit(req));
     }
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest req, CallAdvisorChain chain) {
-        checkIteration(req);
-        return chain.nextCall(req);
+        return chain.nextCall(applyLimit(req));
     }
 
-    private void checkIteration(ChatClientRequest req) {
+    private ChatClientRequest applyLimit(ChatClientRequest req) {
         Map<String, Object> ctx = req.context();
         int count = (int) ctx.getOrDefault(COUNTER, 0) + 1;
         ctx.put(COUNTER, count);
 
-        if (count > maxIterations) {
-            throw new MaxIterationExceededException(
-                "超过最大工具调用次数 (" + maxIterations + ")，已迭代 " + count + " 次");
+        if (count == maxIterations) {
+            // 刚好到上限：追加收口指令，让模型在这一轮给出最终答案
+            UserMessage origUser = req.prompt().getUserMessage();
+            UserMessage modified = new UserMessage(
+                    origUser.getText() +
+                    "\n\n[系统指令] 你已达到最大工具调用次数（" + maxIterations +
+                    "次）。必须基于已收集的所有信息，直接输出最终研究结果。" +
+                    "如果部分资料不足，在结果中如实说明。不得再请求任何工具调用。");
+            return req.mutate()
+                    .prompt(new Prompt(req.prompt().getInstructions(), modified))
+                    .build();
         }
+        // count < max: 不改；count > max: 也不再干预——收口指令上轮已发
+        return req;
     }
-
-    /** 自定义异常：让 Service 层的 .onErrorResume() 精确捕获，不和其它异常混淆。 */
-    public static class MaxIterationExceededException extends RuntimeException {
-        public MaxIterationExceededException(String msg) { super(msg); }
-    }
-}
-```
-
-> **为什么用异常而不是尝试改请求**：经过 `javap` 反编译确认，`ChatClientRequest.Builder`（通过 `req.mutate()` 获得）只有 `prompt()`、`context()`、`build()` 三个方法——没有修改工具回调的能力。抛异常是唯一不需要依赖 Spring AI 内部实现细节的硬截断方式：`ToolCallingAdvisor` 在 advisor 链返回错误时自然停止循环。
->
-> **为什么不担心"抛异常粗暴"**：异常会沿响应式链传播到 Service 层——由 `.onErrorResume(MaxIterationExceededException.class, e -> Flux.just("..."))` 转成一条用户可读的提示。对最终用户来说就是"超过最大步数限制"而不是堆栈异常。这和你在第 4 章学的"错误有归宿"是同一条纪律——只是这次针对的是 tool calling 迭代场景。
-
-##### 在 ResearchService 中兜底
-
-`MaxIterationExceededException` 抛出后需要被接住。在 `ResearchService.research()` 的流式链尾追加一行 `.onErrorResume()`：
-
-```java
-public Flux<String> research(String topic) {
-    return chatClient.prompt()
-            .system("...")
-            .user("研究主题：" + topic)
-            .tools(searchTool)
-            .advisors(new MaxIterationAdvisor(5))
-            .stream()
-            .content()
-            // 兜底：超过最大迭代次数时，给用户一条可读提示，而不是让流断掉
-            .onErrorResume(MaxIterationAdvisor.MaxIterationExceededException.class,
-                    e -> Flux.just("[研究已超过最大步数限制，基于已有资料给出结果。]"));
 }
 ```
 
