@@ -346,9 +346,14 @@ LLM 读到这段"工具清单"，结合用户问题，**自己判断**"该不该
 
 > 这是 **prompt 工程的一部分**——工具的 description 是写给 LLM 看的"说明书"。企业级 Agent 项目里，工具 description 要像写产品文档一样认真：说清干什么、什么时候用、参数含义。第 1、2 章你加更多工具时，会发现 description 质量 = Agent 智能的一半。
 
-#### 0.2.5 固定 workflow：搜索 → 研究结果
+#### 0.2.5 固定 workflow：提炼关键词 → 搜索 → 研究结果
 
-固定两步（第 1 章让 LLM 自主决定几步）：① 调 `search` 拿资料 → ② 把资料喂给 LLM 让它"基于资料写研究结果"。
+固定三步（第 1 章让 LLM 自主决定几步）：
+① **先让 LLM 把用户的自然语言问题提炼成搜索关键词**——用户说"今天有什么科技新闻"，直接拿原话去搜效果差，提炼成"科技新闻 今天 最新"这种关键词，搜索质量高很多；
+② 调 `search` 用关键词拿资料；
+③ 把资料喂给 LLM 让它"基于资料写研究结果"。
+
+> **为什么要多一步"提炼关键词"**：搜索接口（Bing/DuckDuckGo/Google 都一样）匹配的是关键词，不是自然语言。用户输入往往是问句（"对比 A 和 B 框架的发展"），直接搜命中率低。让 LLM 先把问句压成"最可能搜到资料的关键词"，是低成本提升搜索质量的常用手段——这一步在固定 workflow 里手动串，第 1 章升级自主 Agent 后，LLM 会自己决定要不要、搜什么。
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/ResearchService.java`：
 
@@ -360,9 +365,10 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
 
 /**
- * 第 0 章：固定 workflow（搜索 → 研究结果）。
- *   第一步手动调 searchTool.search(topic)；
- *   第二步把资料塞进 prompt，让 LLM 写研究结果。
+ * 第 0 章：固定 workflow（提炼关键词 → 搜索 → 研究结果）。
+ *   第一步让 LLM 把主题提炼成搜索关键词；
+ *   第二步手动调 searchTool.search(关键词) 拿资料；
+ *   第三步把资料塞进 prompt，让 LLM 写研究结果。
  *
  * 第 1 章会让 LLM 自主决定几步（.tools() + ToolCallingAdvisor 循环）——那是"Agent"，现在是"workflow"。
  * 这个文件后续演进：第 1 章改成自主 Agent + 流式；之后各章主要在它上面挂工具、传 sessionId（第 8 章）。
@@ -378,14 +384,23 @@ public class ResearchService {
         this.searchTool = searchTool;
     }
 
-    /** 固定 workflow：① 搜资料 ② 基于资料生成研究结果。 */
+    /** 固定 workflow：① 提炼关键词 ② 搜资料 ③ 基于资料生成研究结果。 */
     public String research(String topic) {
-        // 第一步：搜资料
-        System.out.println("[研究] 开始搜索资料: " + topic);
-        String materials = searchTool.search(topic);
+        // 第一步：让 LLM 把用户问题提炼成搜索关键词（自然语言 → 关键词，提升搜索命中率）
+        System.out.println("[研究] 提炼搜索关键词: " + topic);
+        String searchQuery = chatClient.prompt()
+                .system("你是搜索关键词提炼助手。根据用户的研究主题，输出最适合搜索引擎的关键词。" +
+                        "只输出关键词本身（多个用空格隔开），不要任何解释、不要标点。")
+                .user(topic)
+                .call()
+                .content();
+        System.out.println("[研究] 提炼出的关键词: " + searchQuery);
+
+        // 第二步：用关键词搜资料
+        String materials = searchTool.search(searchQuery);
         System.out.println("[研究] 搜索完成，开始生成结果...");
 
-        // 第二步：基于资料生成研究结果
+        // 第三步：基于资料生成研究结果
         String result = chatClient.prompt()
                 .system("你是研究助理。基于提供的资料，给出结构清晰的研究结果。" +
                         "如果资料不足或不可靠，明确指出，不要编造。")
@@ -398,6 +413,8 @@ public class ResearchService {
 }
 ```
 
+> **`searchTool.search(...)` 是手动调用，不是 `@Tool` 注册给 LLM**：第 0 章是固定 workflow，工具由我们代码按顺序调，不让 LLM 自主决策。所以 `WebSearchTool` 虽然有 `@Tool` 注解，但这一章它只是个普通方法。**第 1 章才会用 `.tools(searchTool)` 把它注册给 LLM**，那时 LLM 自己决定调不调。这个区别很重要——决定了工具的"调用方"是代码还是模型。
+>
 > **三行 `System.out.println` 是第 0 章的"最小可见性"**：研究过程几十秒，纯黑盒等待体验差。第 0 章痛点只是"等待时不知在干嘛"，打印日志就够透光。**第 1 章 Agent 自主多步后，痛点升级为"要看清每步决策"**——那时把可见性挪到工具调用层（1.2.2）。如果将来你觉得"日志不够、要前端实时看、要可追溯"，再演进到事件总线 + SSE——那是更后面的事，现在不做（演进纪律）。
 
 #### 0.2.6 接口
@@ -455,7 +472,7 @@ research-agent/
 └── src/main/
     ├── java/com/example/research/
     │   ├── Application.java            # 启动类
-    │   ├── ResearchService.java        # 固定 workflow：搜索 → 结果
+    │   ├── ResearchService.java        # 固定 workflow：提炼关键词 → 搜索 → 结果
     │   ├── ResearchController.java     # REST 接口
     │   └── tool/
     │       └── WebSearchTool.java      # Bing 网页搜索
@@ -469,7 +486,9 @@ git add -A && git commit -m "第0章：固定workflow研究Agent + Bing搜索"
 
 ### 0.5 复盘
 
-**做了**：固定 workflow（搜索 → 研究结果）跑通；Bing 零成本搜索（国内直连）；最小日志可见性。
+**做了**：固定 workflow（提炼关键词 → 搜索 → 研究结果）跑通；Bing 零成本搜索（国内直连）；最小日志可见性。
+
+**为什么多一步"提炼关键词"**：搜索接口匹配的是关键词不是自然语言。用户输入往往是问句，直接搜命中率低；让 LLM 先把问句压成关键词，是低成本提升搜索质量的常用手段。第 1 章升级自主 Agent 后，LLM 会自己决定搜什么，这步就内化掉了。
 
 **还差（后面章节解决）**：
 - **固定步骤应对不了开放任务**：用户问"对比 A 和 B 的发展"，可能要搜两次（A 一次、B 一次）再综合——固定"搜一次"不够。→ **第 1 章自主 Agent**
@@ -511,7 +530,7 @@ git add -A && git commit -m "第0章：固定workflow研究Agent + Bing搜索"
 
 #### 1.2.1 ResearchService：从固定 workflow 改成自主 Agent
 
-**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 0 章的改动：① `research()` 不再手动调 search，改成 `.tools(searchTool)` 把工具交给 LLM 自主调；② 加 `internalToolExecutionMaxIterations(5)` 防跑飞；③ 新增 `researchStream()` 流式版（1.2.3 用）；④ 保留同步 `research()` 给调试用。
+**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 0 章的改动：① `research()` 不再做"手动提炼关键词 + 手动调 search"的三步固定流程，改成 `.tools(searchTool)` 把工具交给 LLM 自主调（LLM 自己决定搜什么、搜几次——第 0 章的"提炼关键词"那步被 LLM 自主决策吸收了）；② 加 `internalToolExecutionMaxIterations(5)` 防跑飞；③ 新增 `researchStream()` 流式版（1.2.3 用）；④ 保留同步 `research()` 给调试用。
 
 ```java
 package com.example.research;
@@ -528,7 +547,7 @@ import reactor.core.publisher.Flux;
  * LLM 自己决定调几次搜索、搜什么、何时收手。循环由 Spring AI 的 ToolCallingAdvisor 托管（ChatClient 自动注册）。
  *
  * 演进：
- *  第 0 章 —— 固定 workflow（手动调 search → 生成）。
+ *  第 0 章 —— 固定 workflow（手动提炼关键词 → 手动调 search → 生成）。
  *  第 1 章 —— .tools() 把工具交给 LLM；internalToolExecutionMaxIterations(5) 防跑飞；加流式版。
  *  第 2 章 —— 这里再加一个知识库工具（.tools(knowledgeBaseTool)）。
  *  第 8 章 —— 各处加 .advisors(CONVERSATION_ID, sessionId) 接入会话记忆。
@@ -552,7 +571,7 @@ public class ResearchService {
                         "资料矛盾时多搜一轮核实。资料足够后给出结构清晰的研究结果。" +
                         "资料不足要明确说，绝不编造。")
                 .user("研究主题：" + topic)
-                .tools(searchTool)                          // ▼ 第1章替换：第0章是 searchTool.search() 手动调；现在是 .tools() 把工具交给 LLM 自主调
+                .tools(searchTool)                          // ▼ 第1章替换：第0章是手动提炼关键词+手动调 searchTool.search()；现在是 .tools() 把工具交给 LLM 自主调（提炼/搜/搜几次都由 LLM 决定）
                 .options(ToolCallingChatOptions.builder()   // ▼ 第1章新增：自主 Agent 必须设最大步数
                         // internalToolExecutionMaxIterations(5)：自主 Agent 没有它，一个模糊 prompt 就能让 LLM 无限循环调工具——每步一次 LLM 调用都计费。
                         // 设上限 = 成本防火线：超过上限时报"基于有限资料的结果"（收敛规则），不继续调 LLM。
