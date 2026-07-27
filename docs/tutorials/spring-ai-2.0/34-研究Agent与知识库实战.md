@@ -33,8 +33,22 @@
 - [第 7 章：会话持久化——ChatMemory 落库，刷新不丢历史](#第-7-章会话持久化chatmemory-落库刷新不丢历史)
 - [第 8 章：会话管理 CRUD + 前端对话页——从单次研究到产品](#第-8-章会话管理-crud--前端对话页从单次研究到产品)
 - [第 9 章：多设备同步流式——分布式三层广播架构](#第-9-章多设备同步流式分布式三层广播架构)
-- [第 10 章：全文演进总览 + 后续方向](#第-10-章全文演进总览--后续方向)
+- [第 10 章：管数分离——触发与订阅解耦](#第-10-章管数分离触发与订阅解耦)
+- [第 11 章：Redis 高可用——消除单点](#第-11-章redis-高可用消除单点)
+- [第 12 章：消息队列升级——Redis Streams → Kafka](#第-12-章消息队列升级redis-streams--kafka)
+- [第 13 章：微服务拆分（一）——先拆订阅服务](#第-13-章微服务拆分一先拆订阅服务)
+- [第 14 章：微服务拆分（二）——再拆触发服务](#第-14-章微服务拆分二再拆触发服务)
+- [第 15 章：微服务拆分（三）——加 API 网关](#第-15-章微服务拆分三加-api-网关)
+- [第 16 章：微服务拆分（四）——拆 LLM 网关](#第-16-章微服务拆分四拆-llm-网关)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
+- [第 17 章：分布式 ChatMemory——拆服务后恢复多轮记忆](#第-17-章分布式-chatmemory拆服务后恢复多轮记忆)
+- [第 18 章：多租户 + 用户体系——JWT 认证与租户隔离](#第-18-章多租户--用户体系jwt-认证与租户隔离)
+- [第 19 章：可观测性——链路追踪 + 指标 + 日志聚合](#第-19-章可观测性链路追踪--指标--日志聚合)
+- [第 20 章：幻觉检测与反馈闭环——质量保障](#第-20-章幻觉检测与反馈闭环质量保障)
+- [第 21 章：DAG 工作流——条件分支与多 Agent 协作](#第-21-章dag-工作流条件分支与多-agent-协作)
+- [第 22 章：长期记忆与个性化——跨会话用户画像](#第-22-章长期记忆与个性化跨会话用户画像)
+- [第 23 章：成本治理——token 计量、预算与分摊](#第-23-章成本治理token-计量预算与分摊)
+- [第 24 章：全文演进总览 + 后续方向](#第-24-章全文演进总览--后续方向)
 
 ---
 
@@ -65,6 +79,22 @@
 | 记忆 | 刷新就丢、无法多轮追问 → 会话历史落库（ChatMemory 持久化） | 第 7 章 |
 | 产品化 | 只有单次研究没法当产品用 → 会话 CRUD + 前端对话页 | 第 8 章 |
 | 分布式 | 单机热流跨实例不可见 → Redis Streams + Pub/Sub 三层广播 + 生产化加固 | 第 9 章 |
+| 管数分离 | 触发与订阅耦合，切换设备会重复触发 → POST 触发 + GET 只读流 | 第 10 章 |
+| 高可用 | Redis 单点故障全系统瘫痪 → Sentinel 主从 + 自动故障转移 | 第 11 章 |
+| 总线升级 | chunk 要跨服务消费/长期保留 → Redis Streams 升级 Kafka 消费组 | 第 12 章 |
+| 微服务① | SSE 长连接挤爆单进程 → 拆出独立订阅服务 | 第 13 章 |
+| 微服务② | 触发(IO)与业务(CPU)资源画像冲突 → 拆出独立触发服务 | 第 14 章 |
+| 微服务③ | 前端要记一堆端口、扩容 IP 漂移 → 加 API 网关 + 服务发现 | 第 15 章 |
+| 微服务④ | 换 LLM 厂商要改业务代码 → 拆 LLM 网关屏蔽厂商差异 | 第 16 章 |
+| 分布式记忆 | 拆服务后触发服务失忆 → Redis 热缓存 + PG 兜底恢复多轮记忆 | 第 17 章 |
+| 多租户 | 所有接口匿名、sessionId 可越权 → JWT 认证 + 网关验签 + 租户隔离 | 第 18 章 |
+| 可观测 | 六服务黑盒、出问题不知卡哪 → 链路追踪 + 指标 + 日志聚合 | 第 19 章 |
+| 质量保障 | LLM 幻觉、错了不自知 → 引用核对标注"未核实" + 用户反馈闭环改善 RAG | 第 20 章 |
+| 编排进阶 | 线性 Plan-Execute 表达不了条件分支 → DAG 工作流引擎 | 第 21 章 |
+| 个性化 | 换会话 Agent 失忆、不懂用户 → 跨会话长期记忆（向量库按 userId 沉淀画像） | 第 22 章 |
+| 成本治理 | LLM 调用无感、恶意用户烧光预算 → token 计量 + 租户预算 + 分摊 | 第 23 章 |
+
+> **架构演进（第 10 章起）**：前 9 章是"功能演进"（原型→产品）。第 10 章开始进入"架构演进"——把"能上线的单体"一步步推向"分布式企业级终极形态"：管数分离（第10章）→ Redis 高可用 → Kafka 升级 → 微服务拆分 → 全文总览。每章一个痛点驱动，一步步推进，**不跳章**。
 
 > **外部用户产品的纪律**：面向外部用户，**安全/成本痛点会早出现**——所以输入审核（第2章）**紧跟各自的痛点**，不是攒到最后讲。至于接口限流、熔断、监控这类"保证可用"的非功能性特性，**定位是产品功能基本定型之后才做的可用性保障**——本文第 0-9 章是功能特性演进（功能定型在第 8 章），所以这类特性不在本文范围，留给功能做完之后的下一阶段（见末尾"后续演进方向"）。
 >
@@ -4778,9 +4808,3931 @@ public class RedisStreamBus {
 
 ---
 
-## 第 10 章：全文演进总览 + 后续方向
+## 第 10 章：管数分离——触发与订阅解耦
 
-### 10.1 你走过了什么
+### 10.0 场景：一个接口干了三件事
+
+第 9 章上线后，产品提了个需求：**用户在手机上发起研究，中途切到 iPad 继续，不能因为切换就重新触发 LLM**。
+
+照第 9 章的接口，这做不到——`GET /api/research?topic=...&sessionId=...` 一个接口干了三件事：
+
+| 干的事 | 问题 |
+|-------|------|
+| 触发 LLM（抢锁、跑 upstream） | iPad 请求时要不要带 `topic`？带了=又触发一次，不带=语义不对 |
+| 返回流式数据（订阅 Redis） | 订阅是"读"，却被塞进一个"触发"接口 |
+| 写 Redis（XADD） | 副作用藏在"看似查询"的 GET 里，违反 REST 语义 |
+
+更深的耦合：订阅流出问题（Redis 抖动、SSE 编码失败），错误冒泡会连累正在跑的 LLM。**触发和订阅绑在一起，一损俱损**。
+
+**本章解法**：管数分离——把"触发 LLM"（管理面）和"订阅流"（数据面）拆成两个独立接口。
+
+```
+管理面（触发）  POST /api/research         → 抢锁 + 启动 LLM，立即返回 202（不阻塞）
+数据面（订阅）  GET  /api/research/stream  → 纯只读，从 Redis 读流，不触发 LLM、不写任何存储
+```
+
+> **管数分离 ≠ 微服务拆分**：本章只在**单进程内**把接口拆开，两者仍共享同一个 Redis。是否进一步拆成独立部署的微服务，是第 13 章的事。管数分离是逻辑解耦，微服务拆分是物理解耦——先逻辑后物理，顺序不能反。
+
+### 10.1 思路：两个接口、两个职责
+
+| 接口 | 方法 | 职责 | REST 语义 |
+|------|------|------|----------|
+| 管理面 | POST | 抢锁、跑 LLM、写 Redis | 写操作（有副作用、要鉴权、非幂等） |
+| 数据面 | GET | 只读订阅 Redis 流 | 读操作（幂等、可缓存、可负载均衡到任意实例） |
+
+**两种历史的分工**（管数分离的关键认知）：
+
+| 历史 | 存储 | 接口 | 形态 |
+|------|------|------|------|
+| LLM 已输出完毕的完整历史 | PostgreSQL（ChatMemory，第 7 章） | `GET /api/sessions/{id}/messages` | JSON 一次性返回 |
+| LLM 正在输出中的流式 chunk | Redis Streams（第 9 章） | `GET /api/research/stream` | SSE 流式推送 |
+
+PG 管永久历史、Redis 管实时流态，各司其职。客户端打开旧会话 → 查 PG；打开正在输出的会话 → 订阅 Redis SSE。
+
+### 10.2 动手
+
+#### 10.2.1 RedisStreamBus：subscribe() 拆成 trigger() + subscribeReadOnly()
+
+第 9 章的 `subscribe(sessionId, upstream)` 一个方法既触发又订阅。本章把它拆成两个公开方法，并把重复的写入/收尾逻辑抽成私有方法。
+
+**【改已有文件，完整版覆盖】** `RedisStreamBus.java`（相对第 9 章终态版，拆分方法，标 `▼ 第10章`）：
+
+```java
+package com.example.research.stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Range;
+import org.springframework.data.redis.connection.stream.StreamRecords;
+import org.springframework.data.redis.connection.stream.StringRecord;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
+
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+
+@Component
+public class RedisStreamBus {
+
+    private static final Logger log = LoggerFactory.getLogger(RedisStreamBus.class);
+
+    private static final String KEY_STREAM = "stream:%s:chunks";
+    private static final String CHANNEL    = "stream:%s";
+    private static final String KEY_LOCK   = "stream:%s:lock";
+    private static final Duration LOCK_TTL   = Duration.ofMinutes(5);
+    private static final Duration STREAM_TTL = Duration.ofHours(24);
+    private static final long STREAM_MAXLEN = 10_000L;
+
+    private final ReactiveRedisTemplate<String, String> redis;
+    private final ReactiveRedisMessageListenerContainer listener;
+
+    public RedisStreamBus(ReactiveRedisTemplate<String, String> redis,
+                          ReactiveRedisMessageListenerContainer listener) {
+        this.redis = redis;
+        this.listener = listener;
+    }
+
+    /**
+     * ▼ 第10章新增：管理面——触发 LLM。全局同一 sessionId 只触发一次。
+     * 不返回流数据，只负责"把 LLM 跑起来、写入 Redis"。HTTP 立即返回 202。
+     *
+     * cancel 处理（方案 A：锁 TTL 兜底）：trigger 不持有 SSE Flux，无法靠 doFinally 绑 cancel。
+     * LLM 自然完成（doOnComplete）或出错（doOnError）时清锁；进程崩溃则锁 5min TTL 到期自动释放。
+     * 这符合管数分离的本质——触发是一次性动作，触发完就和前端无关，LLM 跑完写进 Redis，前端看不看是另一回事。
+     */
+    public Mono<Boolean> trigger(String sessionId, reactor.core.publisher.Flux<String> upstream) {
+        String streamKey = KEY_STREAM.formatted(sessionId);
+        String channel   = CHANNEL.formatted(sessionId);
+        String lockKey   = KEY_LOCK.formatted(sessionId);
+
+        return redis.opsForValue().setIfAbsent(lockKey, "1", LOCK_TTL)
+                .doOnNext(acquired -> {
+                    if (Boolean.TRUE.equals(acquired)) {
+                        log.info("[StreamBus] trigger 获得锁，启动 LLM (session={})", sessionId);
+                        upstream
+                                .doOnNext(chunk -> writeChunk(streamKey, channel, sessionId, chunk))
+                                .doOnComplete(() -> finishStream(streamKey, channel, lockKey, sessionId))
+                                .doOnError(err -> {
+                                    redis.delete(lockKey).subscribe();
+                                    log.error("[StreamBus] 流错误 (session={}): {}", sessionId, err.getMessage());
+                                })
+                                .subscribe();
+                    }
+                });
+    }
+
+    /**
+     * ▼ 第10章新增：数据面——纯只读订阅流。不触发 LLM、不抢锁、不写任何存储。
+     * 管理面已触发时，这里读到正在输出的 chunk；若 LLM 还没触发，读到空流（前端显示等待中）。
+     */
+    public reactor.core.publisher.Flux<String> subscribeReadOnly(String sessionId) {
+        String streamKey = KEY_STREAM.formatted(sessionId);
+        String channel   = CHANNEL.formatted(sessionId);
+        return replayThenListen(streamKey, channel);
+    }
+
+    // —— 以下是从第 9 章 subscribe() 抽出的私有方法，trigger/subscribeReadOnly 共用 ——
+
+    /** ▼ 第10章抽取：写入一条 chunk（XADD + XTRIM + retry + PUBLISH）。 */
+    private void writeChunk(String streamKey, String channel, String sessionId, String chunk) {
+        StringRecord record = StreamRecords.string(Map.of("chunk", chunk)).withStreamKey(streamKey);
+        redis.opsForStream().add(record)
+                .flatMap(ignored -> redis.opsForStream().trim(streamKey, STREAM_MAXLEN, true))
+                .retryWhen(Retry.max(3))
+                .doOnError(err -> log.error("[StreamBus] XADD 失败 (session={}): {}", sessionId, err.getMessage()))
+                .onErrorResume(err -> Mono.empty())
+                .subscribe();
+        redis.convertAndSend(channel, chunk).subscribe();
+    }
+
+    /** ▼ 第10章抽取：流正常完成的收尾（设 TTL、清锁、发 __END__）。 */
+    private void finishStream(String streamKey, String channel, String lockKey, String sessionId) {
+        redis.expire(streamKey, STREAM_TTL).subscribe();
+        redis.delete(lockKey).subscribe();
+        redis.convertAndSend(channel, "__END__").subscribe();
+        log.info("[StreamBus] 流完成 (session={})", sessionId);
+    }
+
+    private reactor.core.publisher.Flux<String> replayThenListen(String streamKey, String channel) {
+        AtomicReference<String> cursor = new AtomicReference<>("0-0");
+        reactor.core.publisher.Flux<String> history = readFrom(streamKey, cursor);
+        reactor.core.publisher.Flux<String> live = listener.receive(ChannelTopic.of(channel))
+                .takeUntil("__END__"::equals)
+                .flatMap(msg -> readFrom(streamKey, cursor));
+        return history.concatWith(live)
+                .takeUntil("__END__"::equals)
+                .filter(chunk -> !"__END__".equals(chunk));
+    }
+
+    private reactor.core.publisher.Flux<String> readFrom(String streamKey, AtomicReference<String> cursor) {
+        Range<String> window = Range.from(Range.Bound.exclusive(cursor.get()), Range.Bound.unbounded());
+        return redis.opsForStream()
+                .range(streamKey, window)
+                .map(record -> {
+                    cursor.set(record.getId().getValue());
+                    return (String) record.getValue().get("chunk");
+                });
+    }
+}
+```
+
+> **为什么用全限定名 `reactor.core.publisher.Flux` 而不 import**：演示时为了让"这里是 Reactor 类型"一目了然。实际项目里正常 `import reactor.core.publisher.Flux;` 然后写 `Flux<String>` 即可。
+
+> **原 `subscribe()` 方法去哪了**：第 9 章的 `subscribe(sessionId, upstream)` 本章不再需要——它的职责被 `trigger()` + `subscribeReadOnly()` 取代。如果你想保留向后兼容（旧调用方还在用），可以留一个 delegating 的 `subscribe()`：先 `trigger()` 再返回 `subscribeReadOnly()`。但新代码应直接用两个新方法。
+
+#### 10.2.2 ResearchService：暴露 trigger + subscribeReadOnly
+
+**【改已有文件，完整版覆盖】** `ResearchService.java`（相对第 9 章版本，拆出两个方法，标 `▼ 第10章`）：
+
+```java
+package com.example.research;
+
+import com.example.research.stream.RedisStreamBus;
+import com.example.research.tool.KnowledgeBaseTool;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+@Service
+public class ResearchService {
+
+    private final ChatClient chatClient;
+    private final KnowledgeBaseTool knowledgeBaseTool;
+    private final RedisStreamBus bus;
+
+    public ResearchService(ChatClient chatClient,
+                           KnowledgeBaseTool knowledgeBaseTool,
+                           RedisStreamBus bus) {
+        this.chatClient = chatClient;
+        this.knowledgeBaseTool = knowledgeBaseTool;
+        this.bus = bus;
+    }
+
+    /** ▼ 第10章新增：管理面——触发一次 LLM 调用（写 Redis，不返回流）。 */
+    public Mono<Boolean> trigger(String topic, String sessionId) {
+        Flux<String> upstream = chatClient.prompt()
+                .system("你是研究助理。你可以调用搜索工具查资料。" +
+                        "自主决定搜索几次、搜什么关键词。" +
+                        "资料矛盾时多搜一轮核实。资料足够后给出结构清晰的研究结果。" +
+                        "资料不足要明确说，绝不编造。")
+                .user("研究主题：" + topic)
+                .tools(knowledgeBaseTool)
+                .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
+                .stream()
+                .content();
+        return bus.trigger(sessionId, upstream);
+    }
+
+    /** ▼ 第10章新增：数据面——只读订阅流（不触发 LLM）。 */
+    public Flux<String> subscribeReadOnly(String sessionId) {
+        return bus.subscribeReadOnly(sessionId);
+    }
+}
+```
+
+#### 10.2.3 ResearchController：管数分离双接口
+
+**【改已有文件，完整版覆盖】** `ResearchController.java`（POST 触发 + GET 只读流，标 `▼ 第10章`）：
+
+```java
+package com.example.research;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+
+import java.time.Duration;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/research")
+public class ResearchController {
+
+    private final ResearchService researchService;
+
+    public ResearchController(ResearchService researchService) {
+        this.researchService = researchService;
+    }
+
+    /** ▼ 第10章新增：管理面——触发 LLM，立即返回 202 Accepted。 */
+    @PostMapping
+    public ResponseEntity<Map<String, String>> trigger(@RequestParam String topic,
+                                                       @RequestParam String sessionId) {
+        researchService.trigger(topic, sessionId);   // 异步：抢锁 + 跑 LLM 写 Redis
+        return ResponseEntity.accepted()              // 202
+                .body(Map.of("sessionId", sessionId, "status", "started"));
+    }
+
+    /** ▼ 第10章替换：数据面——纯只读 SSE 订阅流（不触发 LLM）。SSE 心跳沿用第 9 章加固②。 */
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> stream(@RequestParam String sessionId) {
+        Flux<ServerSentEvent<String>> data = researchService.subscribeReadOnly(sessionId)
+                .map(c -> ServerSentEvent.<String>builder().data(c).build());
+        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(1))
+                .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
+        return data.mergeWith(heartbeat).takeUntilOther(data.then());
+    }
+}
+```
+
+> **前端怎么配合**：原来前端直接 `GET /api/research?topic=X&sessionId=Y` 拿流。现在分两步：先 `POST /api/research?topic=X&sessionId=Y` 触发，再 `GET /api/research/stream?sessionId=Y` 订阅。多设备场景下，第二台设备**只发 GET 订阅**（不带 topic），不会重复触发 LLM——这正是 10.0 场景里要解决的痛点。
+
+### 10.3 验证
+
+```bash
+# 1. 触发（管理面）——立即返回 202，不阻塞
+curl -X POST "http://localhost:8080/api/research?topic=2026年AI框架对比&sessionId=split-001"
+# → {"sessionId":"split-001","status":"started"}
+
+# 2. 订阅（数据面）——任意设备、任意次数，都不重新触发 LLM
+curl -N "http://localhost:8080/api/research/stream?sessionId=split-001"
+
+# 3. 换个终端再订阅（模拟 iPad）——内容一致，且日志里只有一次"trigger 获得锁"
+curl -N "http://localhost:8080/api/research/stream?sessionId=split-001"
+```
+
+预期：应用日志只有**一条** `[StreamBus] trigger 获得锁`（不管多少设备订阅），所有订阅终端内容一致。
+
+### 10.4 checkpoint
+
+```
+research-agent/
+└── src/main/java/com/example/research/
+    ├── stream/
+    │   └── RedisStreamBus.java          （改：subscribe → trigger + subscribeReadOnly）
+    ├── ResearchService.java             （改：暴露 trigger + subscribeReadOnly）
+    └── ResearchController.java          （改：POST 触发 + GET 只读流）
+```
+
+```bash
+git add -A && git commit -m "第10章：管数分离——POST触发(GET只读流)"
+```
+
+### 10.5 复盘
+
+**做了**：把第 9 章"一个接口既触发又订阅"拆成两个接口——POST 触发（管理面，写操作）+ GET 只读流（数据面，读操作）。`RedisStreamBus` 的 `subscribe()` 拆成 `trigger()` + `subscribeReadOnly()`，重复逻辑抽成 `writeChunk`/`finishStream` 私有方法。
+
+**核心跃迁**：从"触发与订阅耦合"到"职责清晰分离"。触发是一次性写动作、订阅是持续性读动作——语义、鉴权、扩容策略都不同，混在一个接口里是技术债。
+
+**工程教训**：
+- **管数分离 ≠ 微服务拆分**：本章是单进程内的逻辑解耦。物理拆成独立部署是第 13 章。先逻辑后物理——逻辑没分清就拆进程，只会得到"分布式的大泥球"。
+- **trigger 的 cancel 用锁 TTL 兜底**：管理面不持有 SSE Flux，无法绑 cancel。LLM 跑完/出错自然清锁，崩溃靠 TTL。这是"触发是一次性动作"语义的必然结果——触发完就独立运行，不依赖前端连接。
+- **PG 和 Redis 各司其职**：完整历史查 PG（第 7 章已有），实时流态查 Redis（第 9 章）。管数分离让这两种"历史"的边界更清晰。
+
+---
+
+> **第 10 章结束。** 下一步（第 11 章）：管数分离后，触发和订阅仍共享同一个 Redis——Redis 挂了全系统瘫痪。第 11 章做 Redis 高可用（Sentinel）。
+
+---
+
+## 第 11 章：Redis 高可用——消除单点
+
+### 11.0 场景：Redis 挂了，全系统瘫痪
+
+第 10 章管数分离后，一次复盘暴露了问题：
+
+> 凌晨 Redis 所在机器 OOM 重启。结果：触发接口（抢不到锁）失败、订阅接口（读不到流）空转、正在输出的研究全部中断、SETNX 锁状态丢失（重启后某些会话被误判为"锁已占"卡 5 分钟）。
+
+整个多设备同步压在 Redis 上——Streams 持久化、Pub/Sub 推送、SETNX 锁。**Redis 是单点故障（SPOF）**：它挂 = 全系统瘫痪。这和第 9 章做分布式广播的初衷（"重启、断连都能追回"）矛盾——单节点 Redis 一挂， Streams 数据也跟着丢（没开 RDB/AOF 的话）。
+
+**本章解法**：Redis Sentinel（哨兵）——主从复制 + 哨兵监控 + 自动故障转移。Master 挂了，哨兵自动把 Slave 提升为新 Master，业务无感切换。
+
+### 11.1 思路：主从 + 哨兵
+
+```
+单节点（第 9-10 章）              Sentinel（主从 + 哨兵）
+┌─────────┐                       ┌──────┐  复制  ┌──────┐
+│ Redis   │                       │Master│ ─────→ │Slave │
+│ (单点)  │                       └──┬───┘        └──┬───┘
+└─────────┘                          │               │
+                                  ┌───┴───────────────┴───┐
+                                  │  哨兵 ×3（投票监控）    │
+                                  └───────────────────────┘
+                                  Master 挂 → 哨兵投票 → 选 Slave 提升为新 Master
+```
+
+| 角色 | 职责 | 数量 |
+|------|------|------|
+| Master | 读写都走它 | 1 |
+| Slave | 实时复制 Master 数据，故障时被提升为 Master | ≥1 |
+| Sentinel（哨兵） | 监控 Master 存活，Master 挂时投票选新 Master | ≥3（奇数，防脑裂） |
+
+**为什么用 Sentinel 而不是 Cluster**：Cluster 是"分片集群"，数据量大到单机放不下才用。本项目的 Redis 数据量小（Streams 24h 过期、ChatMemory 缓存、锁状态），**痛点是"单点故障"不是"容量不够"**——Sentinel 的主从 + 故障转移刚好对症。Cluster 反而是过度设计。
+
+### 11.2 动手
+
+#### 11.2.1 起 Redis 主从 + 哨兵（docker-compose）
+
+用 `docker-compose` 一次起 1 主 1 从 3 哨兵（最小高可用集群）。
+
+**【新建文件】** `research-agent/redis-ha/docker-compose.yml`：
+
+```yaml
+# 第 11 章：Redis Sentinel 高可用（1 主 1 从 3 哨兵）
+version: "3.8"
+
+services:
+  redis-master:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes   # 开 AOF 持久化，重启不丢数据
+    ports: ["6380:6379"]
+
+  redis-slave:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --replicaof redis-master 6379
+    depends_on: [redis-master]
+    ports: ["6381:6379"]
+
+  sentinel-1:
+    image: redis:7-alpine
+    command: >
+      sh -c 'echo "sentinel monitor mymaster redis-master 6379 2" > /etc/sentinel.conf &&
+             echo "sentinel down-after-milliseconds mymaster 3000" >> /etc/sentinel.conf &&
+             echo "sentinel failover-timeout mymaster 10000" >> /etc/sentinel.conf &&
+             redis-server /etc/sentinel.conf --sentinel'
+    depends_on: [redis-master, redis-slave]
+    ports: ["26379:26379"]
+
+  sentinel-2:
+    image: redis:7-alpine
+    command: >
+      sh -c 'echo "sentinel monitor mymaster redis-master 6379 2" > /etc/sentinel.conf &&
+             echo "sentinel down-after-milliseconds mymaster 3000" >> /etc/sentinel.conf &&
+             echo "sentinel failover-timeout mymaster 10000" >> /etc/sentinel.conf &&
+             redis-server /etc/sentinel.conf --sentinel'
+    depends_on: [redis-master, redis-slave]
+    ports: ["26380:26379"]
+
+  sentinel-3:
+    image: redis:7-alpine
+    command: >
+      sh -c 'echo "sentinel monitor mymaster redis-master 6379 2" > /etc/sentinel.conf &&
+             echo "sentinel down-after-milliseconds mymaster 3000" >> /etc/sentinel.conf &&
+             echo "sentinel failover-timeout mymaster 10000" >> /etc/sentinel.conf &&
+             redis-server /etc/sentinel.conf --sentinel'
+    depends_on: [redis-master, redis-slave]
+    ports: ["26381:26379"]
+```
+
+启动：`docker-compose -f redis-ha/docker-compose.yml up -d`
+
+> **关键配置解释**：
+> - `sentinel monitor mymaster redis-master 6379 2`：哨兵监控名为 `mymaster` 的 Master，`2` = 至少 2 个哨兵同意才判定 Master 下线（quorum，防误判）。
+> - `down-after-milliseconds 3000`：Master 3 秒无响应才判定下线（太短易误判，太长故障感知慢）。
+> - `failover-timeout 10000`：故障转移 10 秒超时。
+> - `--appendonly yes`：开 AOF 持久化。第 9 章的 Streams 数据落盘——即使整个集群重启，Streams 里的 chunk 也能恢复。
+
+#### 11.2.2 application.yaml：连哨兵而不是直连 Redis
+
+**【改已有文件】** `application.yaml`，`spring.data.redis` 节替换：
+
+```yaml
+spring:
+  data:
+    redis:
+      # ▼ 第11章替换：单节点 → Sentinel
+      # 第 9-10 章是 host/port 直连单节点；现在连哨兵，由哨兵告诉客户端"谁是当前 Master"
+      sentinel:
+        master: mymaster
+        nodes: localhost:26379,localhost:26380,localhost:26381
+        password: ${REDIS_PASSWORD:}
+      timeout: 5s
+```
+
+> **业务代码零改动**：这是用 Redis（而非自研中间件）的红利。Spring Data Redis 的 `ReactiveRedisTemplate` 检测到 Sentinel 配置后，自动从哨兵查询 Master 地址、连接 Master；故障转移时自动重连新 Master。**`RedisStreamBus`、`ResearchService`、`ResearchController` 一行都不用改**。
+
+#### 11.2.3 处理故障转移瞬间（可选但推荐）
+
+故障转移有 3-10 秒空窗（哨兵投票 + Slave 提升 + 客户端重连）。这期间写 Redis 会短暂失败。第 9 章加固①的 `writeChunk` 已有 `.retryWhen(Retry.max(3))`——但默认重试是立即重试，故障转移期间 3 次重试可能都失败。
+
+**【改已有文件，片段】** `RedisStreamBus.writeChunk` 的重试策略加退避：
+
+```java
+redis.opsForStream().add(record)
+        .flatMap(ignored -> redis.opsForStream().trim(streamKey, STREAM_MAXLEN, true))
+        // ▼ 第11章加强：重试加指数退避，覆盖故障转移的几秒空窗
+        .retryWhen(Retry.backoff(3, Duration.ofSeconds(1))   // 最多 3 次，间隔 1s/2s/4s
+                .maxBackoff(Duration.ofSeconds(5)))
+        .doOnError(err -> log.error("[StreamBus] XADD 最终失败 (session={}): {}", sessionId, err.getMessage()))
+        .onErrorResume(err -> Mono.empty())
+        .subscribe();
+```
+
+> 补 import：`import java.time.Duration;`（如果还没有）。`Retry.backoff` 替代第 9 章的 `Retry.max(3)`——指数退避让重试跨过故障转移空窗。
+
+### 11.3 验证
+
+```bash
+# 1. 起高可用集群
+docker-compose -f redis-ha/docker-compose.yml up -d
+
+# 2. 启动应用（连哨兵）
+mvn spring-boot:run
+
+# 3. 触发一次研究
+curl -X POST "http://localhost:8080/api/research?topic=高可用测试&sessionId=ha-001"
+curl -N "http://localhost:8080/api/research/stream?sessionId=ha-001"
+
+# 4. 模拟 Master 挂掉（开另一个终端）
+docker stop research-redis-master   # 或对应容器名
+
+# 预期：
+# - 应用日志：几秒内出现连接异常 → 重试 → 重连新 Master
+# - SSE 流：短暂卡顿（故障转移空窗）后继续输出，不中断
+# - 哨兵日志：选举新 Master（原 Slave 提升）
+```
+
+### 11.4 checkpoint
+
+```
+research-agent/
+├── redis-ha/
+│   └── docker-compose.yml          （新增：1主1从3哨兵）
+├── application.yaml                 （改：host/port → sentinel）
+└── src/main/java/com/example/research/stream/
+    └── RedisStreamBus.java          （改：writeChunk 重试加指数退避）
+```
+
+```bash
+git add -A && git commit -m "第11章：Redis Sentinel高可用+故障转移退避重试"
+```
+
+### 11.5 复盘
+
+**做了**：Redis 从单节点升级为 Sentinel 主从集群——1 主 1 从 3 哨兵，Master 挂了自动故障转移。业务代码零改动（Spring Data Redis 自动适配 Sentinel），只有 `writeChunk` 的重试加了指数退避覆盖故障转移空窗。
+
+**核心跃迁**：从"Redis 是单点"到"Redis 高可用"。第 10 章管数分离在逻辑上解耦了触发与订阅，但物理上两者还共享同一个 Redis——**Sentinel 才是真正的物理解耦**：共享依赖不会因单点故障而全瘫。
+
+**工程教训**：
+- **Sentinel 对症、Cluster 过度**：本项目痛点是单点故障不是容量不够。选 Sentinel（主从+故障转移）而非 Cluster（分片）——架构选型要扣痛点，不是追复杂。
+- **故障转移不是瞬时的**：有 3-10 秒空窗。客户端的重试必须带退避（`Retry.backoff`），立即重试会在空窗里连续失败。这是高可用系统最容易被忽略的细节。
+- **持久化要开**：`--appendonly yes`（AOF）。高可用解决"节点挂了能切"，但切到 Slave 后数据是否齐全取决于复制 + 持久化。不开持久化，Master 挂时还没复制到 Slave 的 chunk 会丢。
+- **业务代码零改动 = 中间件选对的红利**：因为用 Redis（标准协议、Spring 原生支持），从单节点到 Sentinel 只改配置。如果第 9 章自研了消息总线，这步要改一大片客户端代码——这就是"不要造轮子"的具象收益。
+
+---
+
+> **第 11 章结束。** 下一步（第 12 章）：Redis 高可用后，chunk 总线仍是 Redis Streams（内存型）。当 chunk 要跨服务消费、长期持久保留时，Redis Streams 不够——第 12 章升级到 Kafka。
+
+---
+
+## 第 12 章：消息队列升级——Redis Streams → Kafka
+
+### 12.0 场景：chunk 总线成了公司级数据资产
+
+第 11 章后系统稳定运行，新需求陆续冒出来：
+
+1. **跨服务消费**：审计服务要把 chunk 落合规日志、计费服务按 token 计费、分析服务做延迟统计——**三个服务都要消费同一批 chunk**。第 9 章的 Redis Streams 多播能做到，但每个服务各自管理订阅、各自处理断连重连，运维麻烦。
+2. **长期持久**：法规要求 chunk 流保留 30 天做审计回溯。Redis Streams 是内存型，保留 30 天成本太高（要堆内存）。
+3. **多团队共用**：chunk 流成了公司级数据资产，多个团队各自消费、各自管理消费进度——需要标准化的消费组、offset 管理、重放能力。
+
+**本章解法**：chunk 总线从 Redis Streams 升级到 Kafka——天然支持消费组、磁盘持久、跨服务标准化订阅。
+
+> **Redis 不下岗，是职责重新分工**：Kafka 接管 chunk 持久总线（高吞吐、跨服务、长期保留）；Redis 继续做 SETNX 锁（低延迟协调）、ChatMemory 缓存（低延迟读）。两者并存，各司其职。**不是 Kafka 替代 Redis，是 Redis 回归它擅长的低延迟场景**。
+
+### 12.1 思路：Streams 多播 → Kafka 消费组
+
+```
+第 9-11 章（Redis Streams）              第 12 章（Kafka）
+LLM → XADD stream:{sid}                  LLM → produce topic=research-chunks
+     ↓                                        ↓
+本服务内多播订阅                         消费组各自管理 offset：
+                                         - 订阅服务（SSE 推前端）
+                                         - 审计服务（落合规日志）
+                                         - 计费服务（按 token 计费）
+                                         磁盘持久 30 天，按需重放
+```
+
+| 维度 | Redis Streams（第 9 章） | Kafka（第 12 章） |
+|------|------------------------|------------------|
+| 持久 | 内存（AOF 落盘但成本高） | 磁盘原生（保留 30 天成本低） |
+| 消费模式 | 多播（所有订阅者收全量） | 消费组（每组各自进度，互不干扰） |
+| offset 管理 | 手写游标（第 9 章加固④） | 内建（消费组自动提交） |
+| 跨服务消费 | 能，但订阅管理各自为战 | 标准化（groupId + topic） |
+| 延迟 | 毫秒级 | 毫秒级 |
+
+### 12.2 动手
+
+#### 12.2.1 pom 加依赖
+
+**【改已有文件】** `pom.xml`，追加：
+
+```xml
+        <!-- 第 12 章：Kafka（chunk 持久总线，跨服务消费） -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+```
+
+#### 12.2.2 application.yaml：Kafka 配置
+
+**【改已有文件】** `application.yaml`，追加：
+
+```yaml
+spring:
+  kafka:
+    # ▼ 第12章新增：chunk 持久总线
+    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # acks=all：所有副本确认才算写入成功，防丢 chunk
+      acks: all
+      retries: 3
+    consumer:
+      group-id: research-sse   # 订阅服务的消费组（每个消费服务不同 group-id）
+      auto-offset-reset: earliest   # 无 offset 时从头读（回放）
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+```
+
+#### 12.2.3 KafkaChunkBus：替代 RedisStreamBus 的 chunk 总线职责
+
+chunk 总线从 Redis 搬到 Kafka，但**锁仍留在 Redis**（低延迟协调 Kafka 不擅长）。新建 `KafkaChunkBus` 专管 chunk 读写，`RedisStreamBus` 只保留锁职责。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/stream/KafkaChunkBus.java`：
+
+```java
+package com.example.research.stream;
+
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.listener.MessageListener;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
+
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * ▼ 第12章新增：基于 Kafka 的 chunk 持久总线。
+ *
+ * 职责：LLM chunk 的持久存储 + 跨服务消费。
+ * - 写：produce 到 topic=research-chunks，key=sessionId（同会话进同一分区，保序）
+ * - 读：每个 SSE 订阅者建一个临时消费组，从 earliest 读（回放）+ 实时接续
+ *
+ * 和 RedisStreamBus 的分工：Kafka 管 chunk 持久总线，Redis 管 SETNX 锁（低延迟）。
+ */
+@Component
+public class KafkaChunkBus {
+
+    private static final Logger log = LoggerFactory.getLogger(KafkaChunkBus.class);
+    private static final String TOPIC = "research-chunks";
+
+    private final KafkaTemplate<String, String> kafka;
+    // 每个 sessionId 一个内存 Sink，把 Kafka 的推送扇出给本实例多个 SSE 订阅者
+    private final ConcurrentHashMap<String, Sinks.Many<String>> sinks = new ConcurrentHashMap<>();
+
+    public KafkaChunkBus(KafkaTemplate<String, String> kafka) {
+        this.kafka = kafka;
+    }
+
+    /** 写一条 chunk（LLM 每输出一个 chunk 调一次）。key=sessionId 保证同会话进同一分区、保序。 */
+    public void write(String sessionId, String chunk) {
+        kafka.send(TOPIC, sessionId, chunk);
+    }
+
+    /** 订阅指定会话的 chunk 流：先回放历史（从 earliest），再接实时。 */
+    public Flux<String> subscribe(String sessionId) {
+        // 每个 sessionId 一个内存 Sink：把 Kafka 的推送扇出给本实例多个 SSE 订阅者
+        // onBackpressureBuffer：订阅者消费慢时先缓冲，不丢 chunk
+        Sinks.Many<String> sink = sinks.computeIfAbsent(sessionId,
+                k -> Sinks.many().multicast().onBackpressureBuffer());
+        return sink.asFlux();
+    }
+
+    /**
+     * 由 Kafka MessageListener 调用：收到一条消息，按 key（sessionId）分发到对应 sink。
+     * 这是"按 sessionId 路由"的核心——一条 topic 里有所有会话的 chunk，靠 key 分发到各自的 sink。
+     */
+    public void dispatch(ConsumerRecord<String, String> record) {
+        Sinks.Many<String> sink = sinks.get(record.key());
+        if (sink != null) {
+            sink.tryEmitNext(record.value());
+        }
+    }
+
+    /** 订阅结束时清理 sink，防内存泄漏。由 Controller 的 doFinally 调用。 */
+    public void unsubscribe(String sessionId) {
+        Sinks.Many<String> sink = sinks.remove(sessionId);
+        if (sink != null) {
+            sink.tryEmitComplete();
+        }
+    }
+}
+```
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/stream/KafkaConfig.java`——配置全局 Kafka 消费容器，把消息路由到 `KafkaChunkBus.dispatch()`：
+
+```java
+package com.example.research.stream;
+
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.springframework.boot.autoconfigure.kafka.ConcurrentKafkaListenerContainerFactoryConfigurer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.MessageListener;
+
+/**
+ * ▼ 第12章新增：Kafka 消费配置。
+ *
+ * 核心：起一个全局 MessageListenerContainer 订阅 research-chunks topic，
+ * 收到的每条消息按 key（sessionId）经 KafkaChunkBus.dispatch() 分发到对应 sink。
+ * 这样订阅服务只维护一个消费者（高效），而不是每个 SSE 连接一个消费者（会爆）。
+ */
+@Configuration
+public class KafkaConfig {
+
+    @Bean
+    public ConcurrentMessageListenerContainer<String, String> chunkContainer(
+            ConsumerFactory<String, String> cf, KafkaChunkBus bus) {
+
+        ContainerProperties props = new ContainerProperties("research-chunks");
+        // MessageListener：每条消息到达时回调——把 record 交给 bus 分发
+        props.setMessageListener((MessageListener<String, String>) record -> bus.dispatch(record));
+
+        ConcurrentMessageListenerContainer<String, String> container =
+                new ConcurrentMessageListenerContainer<>(cf, props);
+        container.getContainerProperties().setGroupId("research-sse");
+        container.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
+        return container;
+    }
+}
+```
+
+> **回放怎么实现（不用手写游标）**：Kafka 消费组首次订阅时，因为 `auto-offset-reset: earliest`（12.2.2 配的），消费者从 topic 最早可用的 chunk 开始读——这就是"回放历史"。读完存量消息后，自动接续实时新消息。**offset 由 Kafka 消费组托管、自动提交**——不用像第 9 章那样手写 `AtomicReference<String> cursor`。这是用对工具省掉整类代码的典型例子。
+>
+> **为什么用一个全局 Container 而不是每个 SSE 连接一个消费者**：一个 topic 的分区数有限（比如 12），消费者数超过分区数时多出的消费者闲置。用**一个全局 Container + 按 key 分发到 sink**，N 个 SSE 连接共享一个消费者，高效且不爆。这是 Kafka 消费模式的关键设计。
+
+#### 12.2.4 ResearchService：改用 KafkaChunkBus 写 chunk
+
+**【改已有文件，片段】** `ResearchService.trigger()` 的 upstream 处理：
+
+```java
+public Mono<Boolean> trigger(String topic, String sessionId) {
+    Flux<String> upstream = chatClient.prompt()
+            /* ... 同第 10 章 ... */
+            .stream()
+            .content();
+    // ▼ 第12章替换：chunk 写入从 RedisStreamBus → KafkaChunkBus
+    return bus.trigger(sessionId, upstream, chunkBus);   // 传入 kafkaChunkBus
+}
+```
+
+`RedisStreamBus.trigger()` 签名调整——加一个 `KafkaChunkBus` 参数，`writeChunk` 改为写 Kafka：
+
+```java
+// RedisStreamBus —— 第12章：锁仍归 Redis，chunk 写入委托给 KafkaChunkBus
+public Mono<Boolean> trigger(String sessionId, Flux<String> upstream, KafkaChunkBus chunkBus) {
+    String lockKey = KEY_LOCK.formatted(sessionId);
+    return redis.opsForValue().setIfAbsent(lockKey, "1", LOCK_TTL)
+            .doOnNext(acquired -> {
+                if (Boolean.TRUE.equals(acquired)) {
+                    log.info("[StreamBus] trigger 获得锁 (session={})", sessionId);
+                    upstream
+                            .doOnNext(chunk -> chunkBus.write(sessionId, chunk))   // ▼ 第12章：写 Kafka
+                            .doOnComplete(() -> { redis.delete(lockKey).subscribe(); })
+                            .doOnError(err -> { redis.delete(lockKey).subscribe(); })
+                            .subscribe();
+                }
+            });
+}
+```
+
+#### 12.2.5 ResearchController：订阅改用 KafkaChunkBus
+
+```java
+// ResearchController.stream() —— 第12章：订阅从 RedisStreamBus → KafkaChunkBus
+@GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> stream(@RequestParam String sessionId) {
+    Flux<ServerSentEvent<String>> data = chunkBus.subscribe(sessionId)   // ▼ 第12章：读 Kafka
+            .map(c -> ServerSentEvent.<String>builder().data(c).build());
+    Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(1))
+            .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
+    return data.mergeWith(heartbeat).takeUntilOther(data.then());
+}
+```
+
+### 12.3 验证
+
+```bash
+# 1. 起 Kafka（单节点演示）
+docker run -d --name research-kafka -p 9092:9092 \
+  -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
+  -e KAFKA_LISTENERS=PLAINTEXT://:9092 -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+  -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9092 -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
+  confluentinc/cp-kafka:latest
+
+# 2. 触发 + 订阅（和管理面一样）
+curl -X POST "http://localhost:8080/api/research?topic=Kafka测试&sessionId=kafka-001"
+curl -N "http://localhost:8080/api/research/stream?sessionId=kafka-001"
+
+# 3. 验证跨服务消费：另起一个消费组（模拟审计服务）
+docker exec research-kafka kafka-console-consumer --bootstrap-server localhost:9092 \
+  --topic research-chunks --group audit-service --from-beginning
+# 预期：审计服务消费组能独立读到全部 chunk，不影响订阅服务
+```
+
+### 12.4 checkpoint
+
+```
+research-agent/
+├── pom.xml                          （加 spring-kafka）
+├── application.yaml                 （加 spring.kafka）
+└── src/main/java/com/example/research/
+    ├── stream/
+    │   ├── KafkaChunkBus.java       （新增：chunk 持久总线）
+    │   └── RedisStreamBus.java      （改：只管锁，chunk 写入委托 KafkaChunkBus）
+    ├── ResearchService.java         （改：trigger 用 KafkaChunkBus 写）
+    └── ResearchController.java      （改：stream 订阅 KafkaChunkBus）
+```
+
+```bash
+git add -A && git commit -m "第12章：chunk总线升级Kafka+消费组跨服务消费"
+```
+
+### 12.5 复盘
+
+**做了**：chunk 持久总线从 Redis Streams 升级到 Kafka。新建 `KafkaChunkBus` 管 chunk 读写，`RedisStreamBus` 回归只管 SETNX 锁。Kafka 的消费组让审计/计费/分析等服务各自消费、各自管理 offset，互不干扰。
+
+**核心跃迁**：从"内存型多播总线"到"磁盘型消费组总线"。chunk 流从"本服务的内部数据"升级为"公司级可共享的数据资产"——多团队、多服务标准化订阅。
+
+**工程教训**：
+- **Kafka 不是替代 Redis，是分工**：Kafka 接管高吞吐持久总线，Redis 回归低延迟协调（锁）和缓存（ChatMemory）。混用最常见错误是"用 Redis 做持久总线"或"用 Kafka 做锁"——都错位。
+- **消费组隔离是 Kafka 的核心价值**：审计服务消费慢了、重启了、回放了——都不影响计费服务。Redis Streams 多播做不到这点（所有订阅者共享数据流）。这是"多团队共用总线"的关键。
+- **offset 托管省掉手写游标**：第 9 章加固④手写 `AtomicReference<String> cursor` 防 chunk 丢失；Kafka 把 offset 管理**内建**了——消费组自动提交、重启续读、按需重放。这是用对工具省掉整类代码的例子。
+- **同会话保序靠 key 分区**：`send(topic, sessionId, chunk)` 中 sessionId 作为 key——Kafka 保证同 key 进同分区、同分区内有序。多设备订阅同一 sessionId 看到的 chunk 顺序一致。这是第 9 章"多设备内容一致"在 Kafka 下的实现方式。
+
+---
+
+> **第 12 章结束。** 下一步（第 13 章）：chunk 总线已升级 Kafka，触发与订阅也已解耦。但所有逻辑还在一个进程里——当触发（IO 密集）和订阅（连接密集）资源画像冲突时，要拆成独立部署的服务。第 13 章做微服务拆分。
+
+---
+
+## 第 13 章：微服务拆分（一）——先拆订阅服务
+
+### 13.0 场景：SSE 长连接挤爆了单进程
+
+第 12 章后系统稳定运行。但一次线上事故暴露了单进程的瓶颈：
+
+> 一次热门活动让 SSE 订阅连接数暴涨——订阅逻辑（维持海量长连接）占满文件描述符、堆内存吃紧。触发逻辑（调 LLM、等 token）和订阅逻辑**抢同一个进程的资源**，结果触发请求也跟着超时。明明只想扩订阅能力，却不得不把整个单体复制 N 份。
+
+核心矛盾：**触发（IO 密集）和订阅（连接密集）资源画像不同**，混在一个进程里互相挤占。解决思路是把它们拆开——但**不是一次全拆**，而是**先拆痛点最尖锐的那个**：订阅服务。
+
+为什么先拆订阅？它的痛点最具体（SSE 长连接挤占文件描述符，是可观测的资源瓶颈），拆出来收益最直接（能独立按连接数扩容）。触发服务、API 网关、LLM 网关留给后续章节逐个拆——每章拆一个，步子小。
+
+**本章解法**：把订阅逻辑独立成 `research-subscribe` 服务，原 `research-agent` 保留触发等其余职责。两者通过 Kafka 解耦（第 12 章已铺好总线）——这是拆第一个微服务的最小可行步。
+
+### 13.1 思路：单体 + 一个独立订阅服务
+
+```
+拆分前（第 12 章）                    拆分后（第 13 章）
+┌─────────────────────┐              ┌─────────────────────┐
+│  research-agent      │              │  research-agent      │ ← 触发/锁/写 Kafka
+│  ├ 触发（POST）      │              │  ├ 触发（POST）      │   保留在原进程
+│  ├ 订阅（GET SSE）◀──┼── 拆出 ──▶  └─────────────────────┘
+│  └ 锁/ChatMemory     │              ┌─────────────────────┐
+└─────────────────────┘              │  research-subscribe  │ ← 新独立进程
+   共享 Kafka/Redis/PG                │  └ 订阅（GET SSE）   │   只读 Kafka 推 SSE
+                                     └──────────┬──────────┘
+                                                │ 读
+                                     共享 Kafka/Redis/PG
+```
+
+| 进程 | 职责 | 扩容依据 |
+|------|------|---------|
+| `research-agent`（原单体） | 触发（POST）、SETNX 锁、写 Kafka、ChatMemory | LLM 并发数 |
+| `research-subscribe`（新） | 订阅 Kafka、SSE 推前端 | SSE 长连接数 |
+
+> **关键**：两个进程**只通过 Kafka 通信**（触发写、订阅读），不直接 RPC。第 12 章把 chunk 总线升级成 Kafka，恰好为这一步铺好了路——服务拆分后天然异步解耦，不用引入分布式事务。**这就是"先升级总线（12 章）、再拆服务（13 章）"顺序的理由**。
+
+### 13.2 动手
+
+#### 13.2.1 新建订阅服务项目：research-subscribe
+
+**【新建项目】** `research-subscribe/pom.xml`——独立 Spring Boot 应用，只引订阅需要的依赖：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.0</version>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>research-subscribe</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <dependencies>
+        <!-- WebFlux：SSE 流式推送 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <!-- Kafka：订阅 chunk 总线 -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+> 订阅服务**不引 Redis、不引 PG、不引 Spring AI**——它纯只读 Kafka 推 SSE，不碰锁、不碰 ChatMemory、不调 LLM。依赖最小化 = 职责单一 = 可独立部署扩容。这是微服务"高内聚低耦合"的具象体现。
+
+#### 13.2.2 订阅服务启动类
+
+**【新建文件】** `research-subscribe/src/main/java/com/example/subscribe/SubscribeApplication.java`：
+
+```java
+package com.example.subscribe;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class SubscribeApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(SubscribeApplication.class, args);
+    }
+}
+```
+
+#### 13.2.3 订阅服务的 KafkaChunkBus + KafkaConfig
+
+把第 12 章的 `KafkaChunkBus`（读侧）和 `KafkaConfig` 复制到订阅服务——只保留订阅相关逻辑（`subscribe`/`dispatch`/`unsubscribe` + container 配置），去掉写侧（`write`）。
+
+**【新建文件】** `research-subscribe/src/main/java/com/example/subscribe/KafkaChunkBus.java`：
+
+```java
+package com.example.subscribe;
+
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
+
+import java.util.concurrent.ConcurrentHashMap;
+
+/** 订阅服务的 chunk 总线（只读侧）。写侧在 research-agent。 */
+@Component
+public class KafkaChunkBus {
+
+    private static final String TOPIC = "research-chunks";
+    private final ConcurrentHashMap<String, Sinks.Many<String>> sinks = new ConcurrentHashMap<>();
+
+    /** 订阅指定会话的 chunk 流（回放 + 实时）。 */
+    public Flux<String> subscribe(String sessionId) {
+        Sinks.Many<String> sink = sinks.computeIfAbsent(sessionId,
+                k -> Sinks.many().multicast().onBackpressureBuffer());
+        return sink.asFlux();
+    }
+
+    /** Kafka MessageListener 回调：按 sessionId 分发到对应 sink。 */
+    public void dispatch(ConsumerRecord<String, String> record) {
+        Sinks.Many<String> sink = sinks.get(record.key());
+        if (sink != null) {
+            sink.tryEmitNext(record.value());
+        }
+    }
+
+    /** 订阅结束清理（Controller 的 doFinally 调）。 */
+    public void unsubscribe(String sessionId) {
+        Sinks.Many<String> sink = sinks.remove(sessionId);
+        if (sink != null) sink.tryEmitComplete();
+    }
+}
+```
+
+**【新建文件】** `research-subscribe/src/main/java/com/example/subscribe/KafkaConfig.java`：
+
+```java
+package com.example.subscribe;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.listener.ContainerProperties;
+
+@Configuration
+public class KafkaConfig {
+
+    @Bean
+    public ConcurrentMessageListenerContainer<String, String> chunkContainer(
+            ConsumerFactory<String, String> cf, KafkaChunkBus bus) {
+        ContainerProperties props = new ContainerProperties("research-chunks");
+        props.setMessageListener(record -> bus.dispatch((ConsumerRecord<String, String>) record));
+        ConcurrentMessageListenerContainer<String, String> container =
+                new ConcurrentMessageListenerContainer<>(cf, props);
+        container.getContainerProperties().setGroupId("research-sse");
+        return container;
+    }
+}
+```
+
+#### 13.2.4 订阅服务的 Controller
+
+**【新建文件】** `research-subscribe/src/main/java/com/example/subscribe/SubscribeController.java`：
+
+```java
+package com.example.subscribe;
+
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+
+import java.time.Duration;
+
+@RestController
+@RequestMapping("/api/research")
+public class SubscribeController {
+
+    private final KafkaChunkBus chunkBus;
+
+    public SubscribeController(KafkaChunkBus chunkBus) {
+        this.chunkBus = chunkBus;
+    }
+
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> stream(@RequestParam String sessionId) {
+        Flux<ServerSentEvent<String>> data = chunkBus.subscribe(sessionId)
+                .map(c -> ServerSentEvent.<String>builder().data(c).build());
+        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(1))
+                .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
+        // doFinally：客户端断开时清理 sink，防内存泄漏
+        return data.mergeWith(heartbeat)
+                .takeUntilOther(data.then())
+                .doFinally(sig -> chunkBus.unsubscribe(sessionId));
+    }
+}
+```
+
+#### 13.2.5 订阅服务配置
+
+**【新建文件】** `research-subscribe/src/main/resources/application.yml`：
+
+```yaml
+server:
+  port: 8082          # 订阅服务独立端口（research-agent 仍在 8080）
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:localhost:9092}
+    consumer:
+      group-id: research-sse
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+```
+
+#### 13.2.6 原 research-agent 删掉订阅逻辑
+
+订阅逻辑搬走后，原 `research-agent` 的 `ResearchController.stream()`（GET 只读流）删掉，只保留 `trigger()`（POST）。订阅相关的 `KafkaChunkBus.subscribe/dispatch` 也删（写侧 `write` 保留）。
+
+**【改已有文件，片段】** `ResearchController.java`——删 `stream` 方法：
+
+```java
+@RestController
+@RequestMapping("/api/research")
+public class ResearchController {
+
+    private final ResearchService researchService;
+
+    // ... 构造器 ...
+
+    @PostMapping
+    public ResponseEntity<Map<String, String>> trigger(@RequestParam String topic,
+                                                       @RequestParam String sessionId) {
+        researchService.trigger(topic, sessionId);
+        return ResponseEntity.accepted().body(Map.of("sessionId", sessionId, "status", "started"));
+    }
+
+    // ▼ 第13章删除：stream() 方法搬到 research-subscribe 服务，这里不再保留
+    //   原 GET /api/research/stream 改由订阅服务（8082）提供
+}
+```
+
+### 13.3 验证
+
+```bash
+# 1. 起两个进程
+cd research-agent && mvn spring-boot:run        # 触发服务 :8080
+cd research-subscribe && mvn spring-boot:run     # 订阅服务 :8082
+
+# 2. 触发（打 8080）
+curl -X POST "http://localhost:8080/api/research?topic=拆分测试&sessionId=split-001"
+
+# 3. 订阅（打 8082，和触发是不同进程）
+curl -N "http://localhost:8082/api/research/stream?sessionId=split-001"
+
+# 4. 独立扩容订阅服务——只复制订阅进程，触发不动
+cd research-subscribe && mvn spring-boot:run -Dspring-boot.run.arguments="--server.port=8083"
+# 现在 8082/8083 都是订阅服务，可轮询分担 SSE 连接
+```
+
+预期：触发打 8080、订阅打 8082，两个独立进程通过 Kafka 协作，功能等价于拆分前的单进程。订阅服务可独立扩容到 8083、8084… 不影响触发。
+
+### 13.4 checkpoint
+
+```
+research-platform/                 ← 原 research-agent + 新订阅服务
+├── research-agent/                （改：删订阅逻辑，只留触发/锁/写 Kafka）
+└── research-subscribe/            （新增：独立订阅服务，只读 Kafka 推 SSE）
+    ├── pom.xml                    （最小依赖：webflux + kafka）
+    └── src/main/
+        ├── java/.../subscribe/
+        │   ├── SubscribeApplication.java
+        │   ├── SubscribeController.java
+        │   ├── KafkaChunkBus.java       （只读侧）
+        │   └── KafkaConfig.java
+        └── resources/application.yml    （端口 8082）
+```
+
+```bash
+git add -A && git commit -m "第13章：拆出独立订阅服务research-subscribe"
+```
+
+### 13.5 复盘
+
+**做了**：把订阅逻辑从 `research-agent` 独立成 `research-subscribe` 服务（独立 pom/启动类/配置）。两个进程通过 Kafka 异步协作，不直接 RPC。订阅服务依赖最小化（只 webflux + kafka），可独立按 SSE 连接数扩容。
+
+**核心跃迁**：从"单进程"到"单体 + 一个独立微服务"。这是微服务拆分的**第一步**——不是一次全拆，而是先拆痛点最尖锐的订阅。拆完跑通"两个进程 + Kafka 协作"的形态，为后续拆触发、网关铺路。
+
+**工程教训**：
+- **一次只拆一个服务**：微服务拆分最大的坑是"一刀切全拆"，结果是分布式的大泥球。先拆痛点最具体、收益最直接的（订阅：SSE 连接挤占可观测），跑通再拆下一个。
+- **拆分顺序依赖前置条件**：本章能拆订阅，是因为第 12 章已把 chunk 总线升级成 Kafka——触发和订阅天然通过消息队列解耦，拆开不用引入分布式事务。**如果第 12 章没做 Kafka 升级，这步拆分会卡在"两个进程怎么共享 chunk 流"**。这就是"先总线升级、再服务拆分"顺序的具象理由。
+- **新服务依赖最小化**：订阅服务不引 Redis/PG/Spring AI——职责单一、部署轻量、扩容成本低。微服务最忌讳"新服务复制原单体全部依赖"，那只是换了个进程跑同样的代码。
+- **服务间用消息队列不用 RPC**：触发 produce、订阅 consume，异步解耦。RPC 会引入同步依赖、超时传递、事务难题——这是规避分布式事务最有效的手段。
+
+---
+
+> **第 13 章结束。** 拆出了第一个微服务（订阅）。下一步（第 14 章）：把触发逻辑也独立成 `research-trigger` 服务，让触发和订阅彻底各自独立部署、各自扩缩容。
+
+---
+
+## 第 14 章：微服务拆分（二）——再拆触发服务
+
+### 14.0 场景：触发和订阅还共享原进程，扩容仍耦合
+
+第 13 章拆出订阅服务后，新问题浮现：
+
+> 触发逻辑仍留在原 `research-agent` 进程里。高峰期 LLM 调用并发上涨，想扩容触发能力——但原进程里还带着 ChatMemory、知识库查询、Plan-Execute 等一堆逻辑，复制整个进程成本高、启动慢。而且触发（调 LLM、等 token）和这些业务逻辑资源画像不同，混部仍互相挤占。
+
+核心矛盾：**触发是 IO 密集（等 LLM token），业务逻辑（知识库查询、Plan）是 CPU 密集**，混在一个进程里，扩容触发要连带扩容业务逻辑。该把触发也独立出去。
+
+**本章解法**：把触发逻辑独立成 `research-trigger` 服务，原 `research-agent` 退化成纯业务核心（知识库、Plan、ChatMemory）。触发服务调 LLM、写 Kafka、抢 Redis 锁；业务核心只管业务逻辑。
+
+### 14.1 思路：触发与业务核心分离
+
+```
+第 13 章后                          第 14 章后
+┌─────────────────────┐            ┌─────────────────────┐
+│  research-agent      │            │  research-agent      │ ← 业务核心
+│  ├ 触发（POST）◀─────┼── 拆出     │  ├ 知识库查询        │   （知识库/Plan/ChatMemory）
+│  ├ 知识库查询        │  ──▶       │  ├ Plan-Execute      │
+│  ├ Plan-Execute      │            │  └ ChatMemory        │
+│  └ ChatMemory        │            └─────────────────────┘
+└─────────────────────┘            ┌─────────────────────┐
+   research-subscribe（已拆）       │  research-trigger    │ ← 新独立进程
+                                    │  └ 触发（POST）      │   调 LLM + 抢锁 + 写 Kafka
+                                    └──────────┬──────────┘
+                                               │ 写
+                                    共享 Kafka/Redis/PG
+```
+
+| 进程 | 职责 | 扩容依据 |
+|------|------|---------|
+| `research-agent`（业务核心） | 知识库查询、Plan-Execute、ChatMemory | 业务 QPS |
+| `research-trigger`（新） | POST 触发、调 LLM、抢 Redis 锁、写 Kafka | LLM 并发数 |
+| `research-subscribe`（第 13 章） | 订阅 Kafka、SSE 推前端 | SSE 长连接数 |
+
+> **触发服务调 LLM 直连，还是走 LLM 网关？** 本章先**直连**（最小步）。LLM 网关屏蔽厂商差异是第 16 章的事——一步步来，不要提前引入。
+
+### 14.2 动手
+
+#### 14.2.1 新建触发服务项目：research-trigger
+
+**【新建项目】** `research-trigger/pom.xml`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.0</version>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>research-trigger</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <dependencies>
+        <!-- WebFlux：POST 接口 + 响应式 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <!-- Spring AI：调 LLM -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-openai-spring-boot-starter</artifactId>
+        </dependency>
+        <!-- Redis reactive：SETNX 锁 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+        <!-- Kafka：写 chunk 总线 -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+> 触发服务**不引 pgvector、不引 ChatMemory 的 jdbc**——它只调 LLM、抢锁、写 Kafka。知识库查询、ChatMemory 落库都在业务核心（原 research-agent）。**触发服务调 LLM 时不带 ChatMemory**（本章简化），多轮记忆留给业务核心管——这是职责分离的代价，也是第 17 章"分布式 ChatMemory"的演进起点。
+
+#### 14.2.2 触发服务启动类 + 配置
+
+**【新建文件】** `research-trigger/src/main/java/com/example/trigger/TriggerApplication.java`：
+
+```java
+package com.example.trigger;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class TriggerApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(TriggerApplication.class, args);
+    }
+}
+```
+
+**【新建文件】** `research-trigger/src/main/resources/application.yml`：
+
+```yaml
+server:
+  port: 8081          # 触发服务独立端口
+spring:
+  ai:
+    openai:
+      base-url: ${DEEPSEEK_BASE_URL}
+      api-key: ${DEEPSEEK_API_KEY}
+      chat:
+        options:
+          model: deepseek-chat
+  data:
+    redis:
+      sentinel:
+        master: mymaster
+        nodes: localhost:26379,localhost:26380,localhost:26381
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+```
+
+#### 14.2.3 触发服务的 RedisStreamBus（锁）+ KafkaChunkBus（写侧）
+
+把第 12 章的 `RedisStreamBus`（锁部分）和 `KafkaChunkBus`（写侧）复制到触发服务——只保留触发需要的。
+
+**【新建文件】** `research-trigger/src/main/java/com/example/trigger/RedisStreamBus.java`：
+
+```java
+package com.example.trigger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.time.Duration;
+
+/** 触发服务的 RedisStreamBus：只保留锁职责（chunk 写入委托 KafkaChunkBus）。 */
+@Component
+public class RedisStreamBus {
+
+    private static final Logger log = LoggerFactory.getLogger(RedisStreamBus.class);
+    private static final String KEY_LOCK = "stream:%s:lock";
+    private static final Duration LOCK_TTL = Duration.ofMinutes(5);
+
+    private final ReactiveRedisTemplate<String, String> redis;
+    private final KafkaChunkBus chunkBus;
+
+    public RedisStreamBus(ReactiveRedisTemplate<String, String> redis, KafkaChunkBus chunkBus) {
+        this.redis = redis;
+        this.chunkBus = chunkBus;
+    }
+
+    /** 触发 LLM：抢锁 + 跑 upstream，每个 chunk 写 Kafka。全局同 sessionId 只触发一次。 */
+    public Mono<Boolean> trigger(String sessionId, Flux<String> upstream) {
+        String lockKey = KEY_LOCK.formatted(sessionId);
+        return redis.opsForValue().setIfAbsent(lockKey, "1", LOCK_TTL)
+                .doOnNext(acquired -> {
+                    if (Boolean.TRUE.equals(acquired)) {
+                        log.info("[Trigger] 获得锁，启动 LLM (session={})", sessionId);
+                        upstream.doOnNext(chunk -> chunkBus.write(sessionId, chunk))
+                                .doOnComplete(() -> {
+                                    redis.delete(lockKey).subscribe();
+                                    chunkBus.write(sessionId, "__END__");   // 通知订阅服务流结束
+                                })
+                                .doOnError(err -> {
+                                    redis.delete(lockKey).subscribe();
+                                    log.error("[Trigger] 流错误 (session={}): {}", sessionId, err.getMessage());
+                                })
+                                .subscribe();
+                    }
+                });
+    }
+}
+```
+
+**【新建文件】** `research-trigger/src/main/java/com/example/trigger/KafkaChunkBus.java`（写侧）：
+
+```java
+package com.example.trigger;
+
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.stereotype.Component;
+
+/** 触发服务的 chunk 总线（只写侧）。读侧在 research-subscribe。 */
+@Component
+public class KafkaChunkBus {
+
+    private static final String TOPIC = "research-chunks";
+    private final KafkaTemplate<String, String> kafka;
+
+    public KafkaChunkBus(KafkaTemplate<String, String> kafka) {
+        this.kafka = kafka;
+    }
+
+    /** 写一条 chunk。key=sessionId 保证同会话进同一分区、保序。 */
+    public void write(String sessionId, String chunk) {
+        kafka.send(TOPIC, sessionId, chunk);
+    }
+}
+```
+
+#### 14.2.4 触发服务的 Controller
+
+**【新建文件】** `research-trigger/src/main/java/com/example/trigger/TriggerController.java`：
+
+```java
+package com.example.trigger;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/research")
+public class TriggerController {
+
+    private final ChatClient.Builder chatClientBuilder;
+    private final RedisStreamBus bus;
+
+    public TriggerController(ChatClient.Builder chatClientBuilder, RedisStreamBus bus) {
+        this.chatClientBuilder = chatClientBuilder;
+        this.bus = bus;
+    }
+
+    @PostMapping
+    public Mono<ResponseEntity<Map<String, String>>> trigger(@RequestParam String topic,
+                                                             @RequestParam String sessionId) {
+        return bus.trigger(sessionId,
+                chatClientBuilder.build().prompt()
+                        .system("你是研究助理。自主决定搜索几次、搜什么关键词。资料足够后给出结构清晰的研究结果。绝不编造。")
+                        .user("研究主题：" + topic)
+                        .stream()
+                        .content()
+        ).thenReturn(ResponseEntity.accepted()
+                .body(Map.of("sessionId", sessionId, "status", "started")));
+    }
+}
+```
+
+#### 14.2.5 原 research-agent 删掉触发逻辑
+
+触发搬走后，原 `research-agent` 的 `ResearchController.trigger()`、`RedisStreamBus`、`KafkaChunkBus`（写侧）删掉。原进程只留业务核心（知识库、Plan、ChatMemory）——对外暴露的是业务接口（知识库查询、会话 CRUD 等），不再接 `/api/research` POST。
+
+> 原 `research-agent` 此后定位为**业务核心服务**：管理知识库、跑 Plan-Execute（供触发服务通过 RPC 调用查询资料）、管 ChatMemory。本章不展开它的接口——聚焦"触发服务拆出来"这一步。
+
+### 14.3 验证
+
+```bash
+# 1. 起三个进程
+cd research-agent && mvn spring-boot:run        # 业务核心 :8080
+cd research-trigger && mvn spring-boot:run       # 触发服务 :8081
+cd research-subscribe && mvn spring-boot:run     # 订阅服务 :8082
+
+# 2. 触发（打 8081，触发服务）
+curl -X POST "http://localhost:8081/api/research?topic=拆分测试&sessionId=split-001"
+
+# 3. 订阅（打 8082，订阅服务）
+curl -N "http://localhost:8082/api/research/stream?sessionId=split-001"
+
+# 4. 独立扩容触发服务——只复制触发进程
+cd research-trigger && mvn spring-boot:run -Dspring-boot.run.arguments="--server.port=8083"
+```
+
+预期：触发（8081）、订阅（8082）、业务核心（8080）三个独立进程，通过 Kafka + Redis 协作。触发和订阅各自独立扩容。
+
+### 14.4 checkpoint
+
+```
+research-platform/
+├── research-agent/          （改：业务核心，删触发逻辑，留知识库/Plan/ChatMemory）
+├── research-trigger/        （新增：触发服务，调 LLM + 锁 + 写 Kafka）
+│   ├── pom.xml              （依赖：webflux + spring-ai + redis-reactive + kafka）
+│   └── src/main/
+│       ├── java/.../trigger/{TriggerApplication,TriggerController,RedisStreamBus,KafkaChunkBus}.java
+│       └── resources/application.yml   （端口 8081）
+└── research-subscribe/      （第 13 章已拆）
+```
+
+```bash
+git add -A && git commit -m "第14章：拆出独立触发服务research-trigger"
+```
+
+### 14.5 复盘
+
+**做了**：把触发逻辑从 `research-agent` 独立成 `research-trigger` 服务。原进程退化为业务核心（知识库/Plan/ChatMemory）。现在三个进程——业务核心、触发、订阅——各自独立部署、各自扩缩容。
+
+**核心跃迁**：从"单体 + 订阅服务"到"业务核心 + 触发 + 订阅"三服务。触发（IO 密集）和业务逻辑（CPU 密集）彻底分开，扩容触发不再连带扩容业务逻辑。
+
+**工程教训**：
+- **按资源画像拆，不是按代码量拆**：触发拆出来是因为它"等 LLM token"是 IO 密集，和知识库查询（CPU 密集）资源画像不同。拆分依据是"资源冲突 + 独立扩容需求"，不是"代码多就拆"。
+- **触发服务暂不带 ChatMemory**：本章触发调 LLM 不带历史记忆——因为 ChatMemory 落库在业务核心，跨进程拿记忆要 RPC（引入同步依赖）。这是职责分离的代价。多轮记忆在分布式下的解法是第 17 章"分布式 ChatMemory 缓存"——又是"先拆服务、再补跨服务能力"的演进顺序。
+- **`__END__` 标记也走 Kafka**：第 9 章 `__END__` 走 Redis Pub/Sub；拆服务后，触发和订阅只共享 Kafka，`__END__` 改走 Kafka（作为一条特殊 chunk）。共享通道统一，避免触发-订阅之间再加一条 Redis Pub/Sub 通道。
+
+---
+
+> **第 14 章结束。** 触发、订阅、业务核心三服务独立。下一步（第 15 章）：前端要访问多个端口（8081 触发、8082 订阅）太麻烦——加 API 网关统一入口，前端只访问一个地址。
+
+---
+
+## 第 15 章：微服务拆分（三）——加 API 网关
+
+### 15.0 场景：前端要记一堆端口
+
+第 14 章后，前端要面对三个地址：
+
+> 触发打 `http://api.example.com:8081/api/research`（POST），订阅打 `http://api.example.com:8082/api/research/stream`（GET），知识库查询打 `:8080`。前端要记三个端口、三个域名，还要自己处理"哪个请求该打哪个服务"。更糟的是：服务扩容换了实例 IP，前端配置要跟着改。
+
+核心矛盾：**后端拆了微服务，前端的复杂度也跟着涨**。这违背了"对内微服务、对外仍是单体 API"的原则。
+
+**本章解法**：加一个 **API 网关**（Spring Cloud Gateway）作为对外唯一入口。前端只访问网关一个地址，网关按 URL/方法路由到对应后端服务。前端无感知后端拆分。
+
+### 15.1 思路：网关 + 服务发现
+
+```
+前端 ──→ api.example.com (网关 :8080)
+              │ 按路由规则分发
+              ├── POST /api/research        ──→ research-trigger  (lb 负载均衡)
+              ├── GET  /api/research/stream ──→ research-subscribe
+              └── /api/knowledge/**         ──→ research-agent（业务核心）
+```
+
+| 能力 | 说明 |
+|------|------|
+| **路由** | 按 URL + HTTP 方法分发到对应服务 |
+| **服务发现** | 服务名 → 实例 IP（`lb://research-trigger`），实例增减网关自动感知 |
+| **负载均衡** | 一个服务多实例时，请求轮询/加权分发 |
+| **统一鉴权/限流**（后续） | 在网关层集中做，不用每个服务各做一遍 |
+
+> **为什么用 Spring Cloud Gateway + Eureka（服务发现）**：本章要解决"实例 IP 变化前端不感知"——靠服务发现。Spring Cloud Netflix Eureka 是免费、免装（相对 Nacos）的服务发现方案，配合 Spring Cloud Gateway 是 Spring 生态标准组合。
+
+### 15.2 动手
+
+#### 15.2.1 新建服务发现：research-registry（Eureka Server）
+
+**【新建项目】** `research-registry/pom.xml`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.0</version>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>research-registry</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <dependencies>
+        <!-- Eureka Server：服务注册中心 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-server</artifactId>
+        </dependency>
+    </dependencies>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>2023.0.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
+```
+
+**【新建文件】** `research-registry/src/main/java/com/example/registry/RegistryApplication.java`：
+
+```java
+package com.example.registry;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.netflix.eureka.server.EnableEurekaServer;
+
+@EnableEurekaServer   // 开启 Eureka 服务端
+@SpringBootApplication
+public class RegistryApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(RegistryApplication.class, args);
+    }
+}
+```
+
+**【新建文件】** `research-registry/src/main/resources/application.yml`：
+
+```yaml
+server:
+  port: 8761
+eureka:
+  client:
+    register-with-eureka: false   # 自己是注册中心，不用注册自己
+    fetch-registry: false
+```
+
+#### 15.2.2 新建 API 网关：research-gateway
+
+**【新建项目】** `research-gateway/pom.xml`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.0</version>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>research-gateway</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <dependencies>
+        <!-- Spring Cloud Gateway：响应式网关（支持 SSE 透传） -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-gateway</artifactId>
+        </dependency>
+        <!-- Eureka Client：从注册中心发现服务实例 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+    </dependencies>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>2023.0.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
+```
+
+**【新建文件】** `research-gateway/src/main/resources/application.yml`：
+
+```yaml
+server:
+  port: 8080          # 网关端口——前端唯一访问入口
+spring:
+  application:
+    name: research-gateway
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: false   # 关闭"按服务名自动路由"，用下面显式路由
+      routes:
+        # POST 触发 → 触发服务
+        - id: trigger
+          uri: lb://research-trigger      # lb = 负载均衡，research-trigger 是注册的服务名
+          predicates:
+            - Path=/api/research
+            - Method=POST
+        # GET 订阅 → 订阅服务（SSE 透传，网关不缓冲）
+        - id: subscribe
+          uri: lb://research-subscribe
+          predicates:
+            - Path=/api/research/stream
+            - Method=GET
+        # 知识库/会话等业务 → 业务核心
+        - id: business
+          uri: lb://research-agent
+          predicates:
+            - Path=/api/**
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/   # 注册中心地址
+```
+
+**【新建文件】** `research-gateway/src/main/java/com/example/gateway/GatewayApplication.java`：
+
+```java
+package com.example.gateway;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class GatewayApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(GatewayApplication.class, args);
+    }
+}
+```
+
+#### 15.2.3 各服务注册到 Eureka
+
+触发、订阅、业务核心三个服务的 `application.yml` 都加 Eureka 注册配置：
+
+```yaml
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+```
+
+并在各自的 pom 加 `spring-cloud-starter-netflix-eureka-client` 依赖、启动类加 `@EnableDiscoveryClient`（Spring Cloud Edgware 后可省略注解，有依赖自动注册）。
+
+> **SSE 透传的关键**：Spring Cloud Gateway 是响应式的（基于 WebFlux），天然支持 SSE 流透传——网关不会缓冲整个响应再转发，而是逐 chunk 透传。订阅服务的 SSE 流经网关时，心跳和 chunk 都能实时到前端。**如果用传统的 Servlet 网关（如 Zuul 1），会缓冲响应破坏 SSE**——这是选 Spring Cloud Gateway 的关键理由。
+
+### 15.3 验证
+
+```bash
+# 1. 起注册中心
+cd research-registry && mvn spring-boot:run     # :8761，浏览器打开能看到注册面板
+
+# 2. 起网关 + 三个服务（各自注册到 Eureka）
+cd research-gateway && mvn spring-boot:run       # :8080
+cd research-agent && mvn spring-boot:run         # 业务核心，注册
+cd research-trigger && mvn spring-boot:run       # 触发，注册
+cd research-subscribe && mvn spring-boot:run     # 订阅，注册
+
+# 3. 前端只访问网关（一个地址）
+curl -X POST "http://localhost:8080/api/research?topic=网关测试&sessionId=gw-001"
+curl -N "http://localhost:8080/api/research/stream?sessionId=gw-001"
+# 网关自动把 POST 路由到 trigger、GET 路由到 subscribe
+
+# 4. 扩容订阅服务，网关自动感知
+cd research-subscribe && mvn spring-boot:run -Dspring-boot.run.arguments="--server.port=8083"
+# Eureka 面板能看到两个 subscribe 实例，网关 GET 流量自动分担
+```
+
+### 15.4 checkpoint
+
+```
+research-platform/
+├── research-registry/       （新增：Eureka 服务发现 :8761）
+├── research-gateway/        （新增：API 网关 :8080，路由 + lb）
+├── research-agent/          （改：注册到 Eureka）
+├── research-trigger/        （改：注册到 Eureka）
+└── research-subscribe/      （改：注册到 Eureka）
+```
+
+```bash
+git add -A && git commit -m "第15章：加API网关+Eureka服务发现统一入口"
+```
+
+### 15.5 复盘
+
+**做了**：加 Eureka 服务发现 + Spring Cloud Gateway 网关。前端只访问网关一个地址（:8080），网关按 URL+方法路由到对应服务，服务实例增减网关自动感知。三个后端服务都注册到 Eureka。
+
+**核心跃迁**：从前端"访问多个端口"到"只访问网关一个地址"。实现了"对内微服务、对外单体 API"——后端拆几个服务、怎么扩容，前端完全无感知。
+
+**工程教训**：
+- **网关屏蔽后端拓扑**：前端不关心后端有几个服务、实例 IP 是什么、怎么扩容。这是降低前端复杂度、让后端能自由演进的关键。没有网关，每次后端拆分/扩容都要前端配合改配置——微服务的价值打了对折。
+- **服务发现解决"IP 漂移"**：容器/K8s 部署下实例 IP 每次重启都变。靠服务名（`lb://research-trigger`）+ 注册中心，网关自动拿到最新实例列表。**没有服务发现，微服务扩容后网关路由会指向已失效的旧 IP**。
+- **网关必须响应式才支持 SSE**：选 Spring Cloud Gateway（WebFlux）而非 Zuul 1（Servlet）——响应式网关逐 chunk 透传 SSE，Servlet 网关会缓冲破坏流式。这是流式系统和普通 REST 系统在网关选型上的关键差异。
+
+---
+
+> **第 15 章结束。** 网关 + 服务发现就位。下一步（第 16 章）：触发服务直连 DeepSeek，换厂商要改代码——拆出 LLM 网关，屏蔽厂商差异，业务服务不再直连任何 LLM。
+
+---
+
+## 第 16 章：微服务拆分（四）——拆 LLM 网关
+
+### 16.0 场景：换 LLM 厂商要改触发服务代码
+
+第 15 章后，一次运营调整暴露了问题：
+
+> 产品决定从 DeepSeek 切到通义千问（性价比更高）。结果：触发服务的 `application.yml` 要改 model 配置、pom 可能要换 starter、system prompt 要按新模型调优、流式格式差异要适配……改完还要重新部署触发服务。更麻烦的是：想做 A/B 测试（一半流量走 DeepSeek、一半走通义），现有架构根本做不到。
+
+核心矛盾：**触发服务直连具体 LLM 厂商**，厂商细节（API 格式、model 名、限流策略、计费）耦合在业务代码里。换厂商 = 改业务代码 = 重新部署业务服务。
+
+**本章解法**：拆出 **LLM 网关**（`research-llm-gateway`），封装所有 LLM 厂商细节。触发服务不再直连任何 LLM，而是调 LLM 网关的统一接口；网关内部决定走哪个厂商、怎么做 A/B、怎么熔断。**业务服务与 LLM 选型彻底解耦**。
+
+### 16.1 思路：业务服务调统一接口，网关路由到具体厂商
+
+```
+拆分前（第 14-15 章）                 拆分后（第 16 章）
+research-trigger                      research-trigger
+  └ 直连 DeepSeek（API key 在这）       └ 调 LLM 网关统一接口（不知厂商）
+                                          │
+                                       research-llm-gateway（新）
+                                         ├ 路由：DeepSeek / 通义 / GPT
+                                         ├ A/B 测试、熔断、计费
+                                         └ 厂商适配（API 格式转换）
+```
+
+| 职责 | 落在哪 | 为什么 |
+|------|--------|------|
+| 业务逻辑（研究/Plan） | 触发服务 | 不该关心用哪个 LLM |
+| 厂商路由/A/B/熔断 | LLM 网关 | 集中管控，业务无感 |
+| 厂商 API 适配 | LLM 网关 | 屏蔽 DeepSeek/通义/GPT 的接口差异 |
+| API key 管理 | LLM 网关 | 密钥集中，不散落各业务服务 |
+
+> **LLM 网关的统一接口**：对外暴露一个标准的"流式补全"接口（类似 OpenAI 格式），内部转换到各厂商的真实 API。业务服务只认这个统一接口——换厂商、加厂商、A/B 测试，全在网关内部改，业务服务一行不动。
+
+### 16.2 动手
+
+#### 16.2.1 新建 LLM 网关：research-llm-gateway
+
+**【新建项目】** `research-llm-gateway/pom.xml`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.0</version>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>research-llm-gateway</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <!-- Spring AI 多厂商：用哪个引哪个 -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-openai-spring-boot-starter</artifactId>   <!-- DeepSeek 兼容 OpenAI 协议 -->
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+    </dependencies>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>2023.0.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
+```
+
+> 多厂商支持：每个厂商引对应 starter（如 `spring-ai-azure-openai`、通义的 `dashscope-sdk`）。本章演示 DeepSeek（兼容 OpenAI 协议，用 openai starter 即可）。加新厂商 = 加 starter + 加路由分支，业务服务不动。
+
+#### 16.2.2 LLM 网关的统一接口
+
+**【新建文件】** `research-llm-gateway/src/main/java/com/example/llmgateway/LlmController.java`：
+
+```java
+package com.example.llmgateway;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+
+import java.util.Map;
+
+/**
+ * LLM 网关统一接口。业务服务调这个，不直连任何 LLM。
+ *
+ * 对外：标准的"流式补全"接口（system + user → chunk 流）
+ * 对内：路由到具体厂商（本章演示单厂商 DeepSeek，A/B/多厂商路由是扩展点）
+ */
+@RestController
+@RequestMapping("/llm")
+public class LlmController {
+
+    private final ChatClient.Builder chatClientBuilder;
+    private final LlmRouter router;   // 厂商路由（A/B、熔断在此扩展）
+
+    public LlmController(ChatClient.Builder chatClientBuilder, LlmRouter router) {
+        this.chatClientBuilder = chatClientBuilder;
+        this.router = router;
+    }
+
+    /** 流式补全：system + user → chunk 流。 */
+    @PostMapping(value = "/chat/stream", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<String> chatStream(@RequestBody ChatRequest req) {
+        // router.select(req) 决定走哪个厂商（本章返回默认 DeepSeek；扩展点：A/B、按租户路由、熔断降级）
+        ChatClient client = router.select(req).build();
+        return client.prompt()
+                .system(req.system())
+                .user(req.user())
+                .stream()
+                .content();
+    }
+
+    public record ChatRequest(String system, String user) {}
+}
+```
+
+**【新建文件】** `research-llm-gateway/src/main/java/com/example/llmgateway/LlmRouter.java`：
+
+```java
+package com.example.llmgateway;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.stereotype.Component;
+
+/**
+ * 厂商路由。本章：单厂商（DeepSeek），直接返回注入的 ChatClient.Builder。
+ *
+ * 扩展点（企业级终极形态）：
+ *   - A/B 测试：按 hash(userId) % 100 < 50 选 DeepSeek，否则选通义
+ *   - 按租户路由：VIP 租户走 GPT-4，普通租户走 DeepSeek
+ *   - 熔断降级：DeepSeek 5xx 率超阈值，自动切到通义
+ *   - token 计费：每个响应记 token 数，按厂商计价
+ */
+@Component
+public class LlmRouter {
+
+    private final ChatClient.Builder chatClientBuilder;
+
+    public LlmRouter(ChatClient.Builder chatClientBuilder) {
+        this.chatClientBuilder = chatClientBuilder;
+    }
+
+    public ChatClient.Builder select(LlmController.ChatRequest req) {
+        // 本章：直接返回默认 builder。扩展点见类注释。
+        return chatClientBuilder;
+    }
+}
+```
+
+#### 16.2.3 LLM 网关配置
+
+**【新建文件】** `research-llm-gateway/src/main/resources/application.yml`：
+
+```yaml
+server:
+  port: 8084          # LLM 网关端口
+spring:
+  application:
+    name: research-llm-gateway
+  ai:
+    openai:
+      base-url: ${DEEPSEEK_BASE_URL}
+      api-key: ${DEEPSEEK_API_KEY}     # ▼ 密钥集中在 LLM 网关，业务服务不持有任何 LLM key
+      chat:
+        options:
+          model: deepseek-chat
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+```
+
+#### 16.2.4 触发服务改为调 LLM 网关（不再直连 LLM）
+
+触发服务去掉 `spring-ai` 依赖、去掉 API key 配置，改为通过 WebFlux 调用 LLM 网关的统一接口。
+
+**【改已有文件，片段】** `research-trigger/.../TriggerController.java`：
+
+```java
+package com.example.trigger;
+
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/research")
+public class TriggerController {
+
+    private final RedisStreamBus bus;
+    private final WebClient llmGateway;   // ▼ 第16章：调 LLM 网关，不直连 LLM
+
+    public TriggerController(RedisStreamBus bus, WebClient.Builder webClientBuilder) {
+        this.bus = bus;
+        this.llmGateway = webClientBuilder.baseUrl("http://research-llm-gateway").build();  // lb 服务名
+    }
+
+    @PostMapping
+    public Mono<ResponseEntity<Map<String, String>>> trigger(@RequestParam String topic,
+                                                             @RequestParam String sessionId) {
+        // ▼ 第16章替换：ChatClient 直调 → WebClient 调 LLM 网关统一接口
+        Flux<String> upstream = llmGateway.post()
+                .uri("/llm/chat/stream")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of(
+                        "system", "你是研究助理。自主决定搜索几次。资料足够后给出结构清晰的研究结果。绝不编造。",
+                        "user", "研究主题：" + topic))
+                .retrieve()
+                .bodyToFlux(String.class);
+
+        return bus.trigger(sessionId, upstream)
+                .thenReturn(ResponseEntity.accepted()
+                        .body(Map.of("sessionId", sessionId, "status", "started")));
+    }
+}
+```
+
+> 触发服务现在**没有任何 LLM 依赖**——不引 spring-ai、不持有 API key、不知道用的是 DeepSeek 还是通义。它只认 LLM 网关的统一接口 `/llm/chat/stream`。换厂商、加厂商、A/B、熔断、计费，全在 LLM 网关内部改，触发服务一行不动。
+
+### 16.3 验证
+
+```bash
+# 1. 起全部服务（含新的 LLM 网关）
+cd research-registry && mvn spring-boot:run       # :8761
+cd research-gateway && mvn spring-boot:run         # :8080
+cd research-llm-gateway && mvn spring-boot:run     # :8084 ← 新
+cd research-agent && mvn spring-boot:run           # 业务核心
+cd research-trigger && mvn spring-boot:run         # :8081
+cd research-subscribe && mvn spring-boot:run       # :8082
+
+# 2. 前端只访问 API 网关
+curl -X POST "http://localhost:8080/api/research?topic=LLM网关测试&sessionId=llm-001"
+curl -N "http://localhost:8080/api/research/stream?sessionId=llm-001"
+
+# 调用链：前端 → API网关 → 触发服务 → LLM网关 → DeepSeek
+#         触发服务把 chunk 写 Kafka → 订阅服务消费推 SSE → 经 API网关 → 前端
+```
+
+### 16.4 checkpoint
+
+```
+research-platform/                 ← 五服务 + 注册中心，微服务拆分完成
+├── research-registry/             （Eureka 服务发现）
+├── research-gateway/              （API 网关）
+├── research-llm-gateway/          （新增：LLM 网关，封装厂商）
+├── research-agent/                （业务核心：知识库/Plan/ChatMemory）
+├── research-trigger/              （触发：调 LLM 网关 + 锁 + 写 Kafka）
+└── research-subscribe/            （订阅：读 Kafka + SSE）
+```
+
+```bash
+git add -A && git commit -m "第16章：拆出LLM网关屏蔽厂商差异"
+```
+
+### 16.5 复盘
+
+**做了**：拆出 `research-llm-gateway`，封装所有 LLM 厂商细节。触发服务改为调 LLM 网关统一接口（`/llm/chat/stream`），不再直连任何 LLM、不持有 API key。LLM 网关内部有 `LlmRouter` 路由扩展点（A/B、按租户、熔断、计费）。
+
+**核心跃迁**：从"业务直连 LLM"到"业务调统一接口、网关路由厂商"。业务逻辑和 LLM 选型彻底解耦——换厂商、加厂商、A/B 测试、token 计费，全在网关内部改，业务服务零改动。这是第 10-16 章架构演进的**终点**。
+
+**工程教训**：
+- **API key 集中在 LLM 网关**：密钥不散落在各业务服务。安全审计、key 轮换、用量统计都在一处——这是企业级 LLM 治理的基础。
+- **统一接口屏蔽厂商差异**：业务服务认 `/llm/chat/stream`（OpenAI 风格），不认 DeepSeek/通义/GPT 的私有格式。厂商 SDK 升级、接口变更，只影响 LLM 网关，业务服务不受波及。
+- **A/B、熔断、计费是 LlmRouter 的扩展点**：本章 `LlmRouter.select()` 只返回默认厂商。企业级终极形态里，它按用户哈希做 A/B、按租户路由、按错误率熔断降级、按 token 计费——**所有 LLM 治理逻辑都收敛在这一处**，不污染业务代码。
+- **微服务拆分到此完整**：第 13-16 章逐个拆出订阅、触发、网关、LLM 网关，每次只拆一个、跑通再拆下一个。加上第 10-12 章的管数分离/Redis HA/Kafka，整套企业级分布式架构成形。
+
+---
+
+> **第 16 章结束。** 微服务拆分四步完成：订阅（13）→ 触发（14）→ 网关（15）→ LLM 网关（16）。第 17 章做全文演进总览。
+
+---
+
+## 第 17 章：分布式 ChatMemory——拆服务后恢复多轮记忆
+
+### 17.0 场景：触发服务"失忆"了
+
+第 14 章拆出触发服务时，留了个代价——**触发服务调 LLM 不带历史记忆**（跨进程拿 ChatMemory 要 RPC，会引入同步依赖）。上线后用户立刻反馈：
+
+> 用户第一轮问"vLLM 是什么"，触发服务调 LLM 回答了。第二轮追问"PagedAttention 和它什么关系"——触发服务**完全不记得第一轮**，又把 vLLM 当新问题重新研究一遍。多轮对话体验退化成单次问答。
+
+核心矛盾：第 7 章的 ChatMemory 落在 PG（业务核心服务管），触发服务是独立进程，**跨进程拿记忆 = RPC 同步调用 = 违背微服务异步解耦原则**。第 14 章选择"暂不带记忆"是当时的最小步，现在要补这个缺口。
+
+**本章解法**：用 **Redis 做 ChatMemory 热缓存层**。触发服务调 LLM 前，先从 Redis 读历史（热缓存，毫秒级）；LLM 回复后，把新消息写回 Redis（同时异步落 PG 兜底）。这样触发服务在自己的进程内就能拿到记忆，不跨进程 RPC。
+
+> **为什么用 Redis 而不是 RPC 调业务核心**：Redis 读是毫秒级、完全异步、天然适合响应式；RPC 调业务核心是同步依赖（要等业务核心响应）、还要处理超时/熔断/重试。把热数据放 Redis，触发服务和业务核心都从 Redis 读写——**共享缓存而非同步调用**，这是分布式系统避免同步依赖的标准模式。
+
+### 17.1 思路：PG（冷）+ Redis（热）两级存储
+
+```
+第 7 章（单体）              第 17 章（分布式）
+ChatMemory                    ChatMemory
+  ↓ 读写                       ↓ 读写冷数据（全量历史，落库）
+PG（单库）                     PG
+                             ▲
+                             │ 读热数据（最近 N 轮，毫秒级）
+                             │
+触发/业务核心 ──→ Redis（热缓存，所有进程共享）
+```
+
+| 存储 | 职责 | 访问方 |
+|------|------|--------|
+| PG（冷） | 全量历史、重启不丢、回溯审计 | 业务核心（异步写入兜底） |
+| Redis（热） | 最近 N 轮、毫秒级读、所有进程共享 | 触发服务、业务核心都直接读 |
+
+> **缓存一致性**：LLM 回复后，新消息**先写 Redis（同步，热数据立即可见）再异步落 PG（兜底）**。即使 PG 写失败，Redis 里的热数据仍在，短期多轮不受影响；Redis 过期或丢失时，从 PG 回灌。这是经典的"缓存先行、数据库兜底"模式。
+
+### 17.2 动手
+
+#### 17.2.1 CachedChatMemoryRepository：Redis 缓存 + PG 兜底
+
+第 7 章用的是 Spring AI 的 `JdbcChatMemoryRepository`（直接读写 PG）。本章包一层 Redis 缓存——读先查 Redis、miss 再查 PG 并回灌；写先更 Redis、异步落 PG。
+
+**【新建文件】** `research-trigger/src/main/java/com/example/trigger/memory/CachedChatMemoryRepository.java`：
+
+```java
+package com.example.trigger.memory;
+
+import org.springframework.ai.chat.memory.ChatMemoryRepository;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.time.Duration;
+import java.util.List;
+
+/**
+ * ▼ 第17章新增：Redis 缓存 + PG 兜底的 ChatMemory 仓库。
+ *
+ * 读：先查 Redis（热缓存，毫秒级）；miss 则查底层 PG 仓库，并回灌 Redis。
+ * 写：先更 Redis（同步，立即可见），再异步落底层 PG（兜底）。
+ *
+ * 这样触发服务在自己的进程内就能拿到记忆，不跨进程 RPC 业务核心。
+ */
+public class CachedChatMemoryRepository implements ChatMemoryRepository {
+
+    private static final Duration CACHE_TTL = Duration.ofDays(1);   // 热缓存保留 1 天
+    private final ChatMemoryRepository delegate;                      // 底层 PG 仓库（第 7 章 JdbcChatMemoryRepository）
+    private final ReactiveRedisTemplate<String, String> redis;
+
+    public CachedChatMemoryRepository(ChatMemoryRepository delegate,
+                                      ReactiveRedisTemplate<String, String> redis) {
+        this.delegate = delegate;
+        this.redis = redis;
+    }
+
+    private String cacheKey(String sessionId) {
+        return "chatmemory:" + sessionId;
+    }
+
+    @Override
+    public Mono<List<String>> findByConversationId(String sessionId) {
+        // 先查 Redis（这里简化为存 JSON，实际用 Jackson 序列化消息列表）
+        return redis.opsForList().range(cacheKey(sessionId), 0, -1)
+                .collectList()
+                .flatMap(cached -> {
+                    if (!cached.isEmpty()) {
+                        return Mono.just(cached);   // 缓存命中
+                    }
+                    // miss：查 PG 并回灌 Redis
+                    return delegate.findByConversationId(sessionId)
+                            .doOnNext(messages -> {
+                                if (!messages.isEmpty()) {
+                                    redis.opsForList().rightPushAll(cacheKey(sessionId), messages)
+                                            .then(redis.expire(cacheKey(sessionId), CACHE_TTL))
+                                            .subscribe();
+                                }
+                            });
+                });
+    }
+
+    @Override
+    public Mono<Void> saveAll(String sessionId, List<String> messages) {
+        // 先更 Redis（同步，立即可见）
+        return redis.opsForList().rightPushAll(cacheKey(sessionId), messages)
+                .then(redis.expire(cacheKey(sessionId), CACHE_TTL))
+                // 再异步落 PG（兜底，不等它完成）
+                .then(delegate.saveAll(sessionId, messages));
+    }
+
+    // 其他方法（deleteById 等）委托给 delegate，略
+}
+```
+
+> **简化说明**：上面 `findByConversationId` 返回 `List<String>` 是为演示缓存逻辑。Spring AI 的 `ChatMemoryRepository` 实际存的是 `Message` 对象——生产代码用 Jackson 序列化 Message 为 JSON 字符串存 Redis。核心思路（Redis 先行、PG 兜底、回灌）不变。
+
+#### 17.2.2 配置 CachedChatMemoryRepository Bean
+
+**【新建文件】** `research-trigger/src/main/java/com/example/trigger/memory/ChatMemoryConfig.java`：
+
+```java
+package com.example.trigger.memory;
+
+import org.springframework.ai.chat.memory.ChatMemoryRepository;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+
+@Configuration
+public class ChatMemoryConfig {
+
+    @Bean
+    public ChatMemoryRepository chatMemoryRepository(
+            ChatMemoryRepository jdbcDelegate,                  // Spring AI 自动配的 JdbcChatMemoryRepository
+            ReactiveRedisTemplate<String, String> redis) {
+        // ▼ 第17章：包装一层 Redis 缓存
+        return new CachedChatMemoryRepository(jdbcDelegate, redis);
+    }
+}
+```
+
+> **注意 Bean 覆盖**：Spring AI 自动注册了 `JdbcChatMemoryRepository`。这里自定义的 `chatMemoryRepository` Bean 要覆盖它——在 `application.yml` 加 `spring.main.allow-bean-definition-overriding: true`，或用 `@Primary`。本章自定义 Bean 命名不同（用 `ChatMemoryRepository` 类型注入），让自定义版优先。
+
+#### 17.2.3 触发服务恢复 ChatMemory advisor
+
+第 14 章触发服务调 LLM 不带记忆（注释说"留给第 17 章"）。现在加回 `MessageChatMemoryAdvisor`：
+
+**【改已有文件，片段】** `research-trigger/.../TriggerController.java`——给 LLM 网关调用加历史拼装：
+
+```java
+// ▼ 第17章替换：触发服务恢复多轮记忆
+@PostMapping
+public Mono<ResponseEntity<Map<String, String>>> trigger(@RequestParam String topic,
+                                                         @RequestParam String sessionId) {
+    // 1. 先从 Redis 缓存读历史（CachedChatMemoryRepository 自动处理 miss→PG 回灌）
+    return chatMemoryRepository.findByConversationId(sessionId)
+            .map(historyMessages -> {
+                // 2. 把历史拼进本次请求（system + 历史 + 新 user）
+                String fullUser = String.join("\n", historyMessages) + "\n研究主题：" + topic;
+                return Map.of(
+                        "system", "你是研究助理。自主决定搜索几次。资料足够后给出结构清晰的研究结果。绝不编造。",
+                        "user", fullUser);
+            })
+            .flatMap(req -> {
+                Flux<String> upstream = llmGateway.post()
+                        .uri("/llm/chat/stream")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(req)
+                        .retrieve()
+                        .bodyToFlux(String.class);
+                // 3. 回复后保存到 Redis+PG（CachedChatMemoryRepository.saveAll 处理）
+                return bus.trigger(sessionId, upstream
+                        .doOnComplete(() -> saveReply(sessionId, upstream)));
+            })
+            .thenReturn(ResponseEntity.accepted()
+                    .body(Map.of("sessionId", sessionId, "status", "started")));
+}
+```
+
+> **关键**：触发服务现在**从 Redis 读历史、写历史到 Redis**，全程不调用业务核心服务——共享 Redis 缓存，不是 RPC 同步调用。业务核心服务（管 PG）也读同一个 Redis——**热数据在 Redis 共享，冷数据在 PG 兜底**，两个服务通过缓存层协作，不直接耦合。
+
+### 17.3 验证
+
+```bash
+# 1. 起全部服务（含触发服务的新 ChatMemory 配置）
+# 略——同第 16 章
+
+# 2. 第一轮研究
+curl -X POST "http://localhost:8080/api/research?topic=vLLM是什么&sessionId=mem-001"
+curl -N "http://localhost:8080/api/research/stream?sessionId=mem-001"
+# → 触发服务从 Redis 读历史（空）、调 LLM、回复存 Redis+PG
+
+# 3. 第二轮追问（同 sessionId）
+curl -X POST "http://localhost:8080/api/research?topic=PagedAttention和它什么关系&sessionId=mem-001"
+curl -N "http://localhost:8080/api/research/stream?sessionId=mem-001"
+# 预期：触发服务从 Redis 读到第一轮历史，LLM 基于上一轮展开——多轮记忆恢复
+
+# 4. 验证缓存命中（Redis 里有历史）
+docker exec research-redis redis-cli LRANGE chatmemory:mem-001 0 -1
+# → 能看到第一轮的消息列表
+```
+
+### 17.4 checkpoint
+
+```
+research-trigger/
+└── src/main/java/com/example/trigger/memory/
+    ├── CachedChatMemoryRepository.java   （新增：Redis 缓存 + PG 兜底）
+    └── ChatMemoryConfig.java             （新增：包装 Bean）
+```
+
+```bash
+git add -A && git commit -m "第17章：分布式ChatMemory——Redis热缓存+PG兜底"
+```
+
+### 17.5 复盘
+
+**做了**：用 Redis 做 ChatMemory 热缓存层（`CachedChatMemoryRepository` 包装 `JdbcChatMemoryRepository`）。触发服务从 Redis 读历史、写历史到 Redis，恢复多轮记忆；PG 做冷兜底（异步落库）。触发服务和业务核心共享 Redis 缓存，不跨进程 RPC。
+
+**核心跃迁**：从"触发服务失忆"到"分布式共享记忆"。补上了第 14 章拆服务时留的缺口——拆服务后跨进程拿记忆，靠共享缓存而非同步调用。这是"先拆服务（14）、再补跨服务能力（17）"演进顺序的具象兑现。
+
+**工程教训**：
+- **共享缓存 > 同步 RPC**：多个服务要访问同一份数据时，把热数据放共享缓存（Redis），各服务直接读写——避免同步 RPC 引入的超时/熔断/事务难题。这是分布式系统避免耦合的标准模式。
+- **缓存先行、数据库兜底**：写先更 Redis（立即可见）、再异步落 PG（兜底）。即使 PG 慢或失败，短期多轮不受影响；Redis 丢失从 PG 回灌。一致性要求不高的场景都用这个模式。
+- **第 7 章的 ChatMemory 没白做**：单体的 `JdbcChatMemoryRepository` 在分布式下成了兜底层（PG 冷存储），外面套一层 Redis 缓存即可。**好的单体内核设计能平滑演进到分布式**——这是"先单体后分布式"的复利。
+
+---
+
+> **第 17 章结束。** 微服务拆分后的跨服务记忆补齐。下一步（第 18 章）：全文演进总览。
+
+---
+
+## 第 18 章：多租户 + 用户体系——JWT 认证与租户隔离
+
+### 18.0 场景：sessionId 匿名，数据串了
+
+第 17 章后系统功能完整。但对外开放后立即暴露安全问题：
+
+> 用户 A 登录后，把请求里的 `sessionId` 改成 `sessionId=B-001`（猜的或偷看到的），就能**读到用户 B 的研究历史和会话内容**。所有接口都靠前端传 `sessionId`，后端不校验"这个 sessionId 属于谁"——任何匿名用户都能访问任何会话。更糟：多租户 SaaS 场景下，租户 X 的用户能猜到租户 Y 的 sessionId 读对方数据。
+
+核心矛盾：**所有接口都是匿名的**——没有用户登录、没有身份认证、没有租户隔离。第 0-17 章为了聚焦业务演进，一直用匿名 `sessionId`，这在企业级 SaaS 里是严重的安全漏洞。
+
+**本章解法**：建 **JWT 认证 + 租户隔离**。三件事：
+1. **认证服务**：用户登录，签发 JWT（含 userId、tenantId）。
+2. **网关验签**：API 网关校验每个请求的 JWT，拒绝匿名访问，把 userId/tenantId 注入请求头透传给后端。
+3. **租户数据隔离**：Redis key / PG 查询 / Kafka topic 都带 tenantId 前缀——租户 A 的数据租户 B 物理上访问不到。
+
+### 18.1 思路：认证（你是谁）+ 鉴权（你能访问什么）
+
+```
+登录：POST /auth/login {username, password}
+         ↓
+    认证服务校验 → 签发 JWT（含 userId, tenantId，签名防篡改）
+         ↓
+    返回 token 给前端
+
+访问：前端带 Authorization: Bearer <token>
+         ↓
+    API 网关验签 → 校验签名 + 过期时间 → 注入 X-User-Id / X-Tenant-Id 头 → 路由到后端
+         ↓
+    后端服务从头里读 tenantId → 所有数据操作都带 tenantId 过滤/前缀
+```
+
+| 层 | 职责 | 落在哪 |
+|----|------|------|
+| 认证 | 校验账号密码、签发 JWT | 认证服务（新建 research-auth） |
+| 鉴权 | 验签、注入用户身份、拒绝匿名 | API 网关（第 15 章已有，加过滤器） |
+| 隔离 | 数据按 tenantId 分隔 | 各后端服务（Redis key / PG where / Kafka topic） |
+
+> **为什么用 JWT 而不是 Session**：微服务下 Session 要共享（存 Redis 或粘性会话），JWT 是无状态的——网关验签后任何服务都能从 token 信任用户身份，不用查 Session 存储。这是分布式系统认证的标准选择。
+
+### 18.2 动手
+
+#### 18.2.1 新建认证服务：research-auth
+
+**【新建项目】** `research-auth/pom.xml`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.0</version>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>research-auth</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- JJWT：JWT 签发与验证 -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.12.5</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.12.5</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.12.5</version>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- JDBC：查用户表（账号密码校验） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+    </dependencies>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>2023.0.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
+```
+
+#### 18.2.2 用户表 + 认证服务逻辑
+
+**【建表 SQL】** `research-auth/src/main/resources/schema.sql`：
+
+```sql
+-- 第 18 章：用户表（含 tenantId，多租户隔离的根基）
+CREATE TABLE IF NOT EXISTS app_user (
+    id           BIGSERIAL PRIMARY KEY,
+    username     VARCHAR(100) NOT NULL UNIQUE,
+    password_hash VARCHAR(100) NOT NULL,    -- 存 BCrypt 哈希，绝不存明文
+    tenant_id    VARCHAR(50)  NOT NULL,     -- 租户 ID：同租户数据互相可见，跨租户隔离
+    created_at   TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_app_user_tenant ON app_user(tenant_id);
+```
+
+> **密码必须存哈希**：用 BCrypt（`password_hash`），绝不存明文。数据库泄露时哈希不可逆——这是用户数据安全的底线。本章演示用预生成的 BCrypt 哈希，生产环境注册接口里用 `BCryptPasswordEncoder` 加密。
+
+**【新建文件】** `research-auth/src/main/java/com/example/auth/AuthController.java`：
+
+```java
+package com.example.auth;
+
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.bind.annotation.*;
+
+import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.Date;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/auth")
+public class AuthController {
+
+    private final JdbcTemplate jdbc;
+    private final SecretKey signingKey;
+
+    public AuthController(JdbcTemplate jdbc,
+                          @Value("${jwt.secret}") String secret) {
+        this.jdbc = jdbc;
+        this.signingKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** 登录：校验账号密码 → 签发 JWT（含 userId、tenantId）。 */
+    @PostMapping("/login")
+    public Map<String, String> login(@RequestBody LoginRequest req) {
+        // 1. 查用户（演示简化，生产用 BCrypt 校验密码哈希）
+        Map<String, Object> user = jdbc.queryForMap(
+                "SELECT id, password_hash, tenant_id FROM app_user WHERE username = ?",
+                req.username());
+        if (!user.get("password_hash").equals(req.password())) {   // 生产：BCrypt.matches(...)
+            throw new RuntimeException("密码错误");
+        }
+
+        // 2. 签发 JWT：subject=userId，claims 含 tenantId，签名防篡改
+        String token = Jwts.builder()
+                .subject(String.valueOf(user.get("id")))
+                .claim("tenantId", user.get("tenant_id"))    // 关键：tenantId 写进 token，各服务从 token 拿
+                .issuedAt(Date.from(Instant.now()))
+                .expiration(Date.from(Instant.now().plusSeconds(3600)))   // 1 小时过期
+                .signWith(signingKey)
+                .compact();
+        return Map.of("token", token, "userId", String.valueOf(user.get("id")));
+    }
+
+    public record LoginRequest(String username, String password) {}
+}
+```
+
+**【配置】** `research-auth/src/main/resources/application.yml`：
+
+```yaml
+server:
+  port: 8085
+spring:
+  application:
+    name: research-auth
+  datasource:
+    url: jdbc:postgresql://localhost:5432/research
+    username: postgres
+    password: postgres
+  sql:
+    init:
+      mode: always   # 启动时执行 schema.sql 建表
+jwt:
+  secret: ${JWT_SECRET:change-this-to-a-long-random-secret-at-least-32-chars}   # 生产用环境变量注入
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+```
+
+> **JWT secret 的安全**：生产环境**必须**用环境变量注入长随机串（≥32 字符），绝不硬编码、绝不进仓库。这个 secret 是验签的根——泄露了任何人都能伪造 token。
+
+#### 18.2.3 API 网关加 JWT 验签过滤器
+
+**【改已有文件，片段】** `research-gateway/src/main/resources/application.yml`——加全局鉴权过滤器：
+
+```yaml
+spring:
+  cloud:
+    gateway:
+      default-filters:
+        # ▼ 第18章新增：JWT 验签过滤器（除 /auth/** 外所有请求都要带 token）
+        - DedupeResponseHeader=Access-Control-Allow-Origin *
+      routes:
+        - id: auth
+          uri: lb://research-auth
+          predicates:
+            - Path=/auth/**             # 登录接口免鉴权
+        # 其余路由（trigger/subscribe/business）同第 15 章
+```
+
+**【新建文件】** `research-gateway/src/main/java/com/example/gateway/JwtAuthFilter.java`——全局验签过滤器：
+
+```java
+package com.example.gateway;
+
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import org.springframework.cloud.gateway.filter.GlobalFilter;
+import org.springframework.core.Ordered;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
+
+import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * ▼ 第18章新增：全局 JWT 验签过滤器。
+ *
+ * 每个请求（除 /auth/**）必须带 Authorization: Bearer <token>。
+ * 验签通过 → 注入 X-User-Id / X-Tenant-Id 头 → 后端服务从头里读身份。
+ * 验签失败 → 401。后端服务信任网关注入的头（因为只有网关能验签）。
+ */
+@Component
+public class JwtAuthFilter implements GlobalFilter, Ordered {
+
+    private final SecretKey signingKey;
+
+    public JwtAuthFilter(@Value("${jwt.secret}") String secret) {
+        this.signingKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        String path = exchange.getRequest().getURI().getPath();
+        if (path.startsWith("/auth")) {
+            return chain.filter(exchange);   // 登录接口放行
+        }
+
+        String auth = exchange.getRequest().getHeaders().getFirst("Authorization");
+        if (auth == null || !auth.startsWith("Bearer ")) {
+            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+            return exchange.getResponse().setComplete();
+        }
+
+        try {
+            String token = auth.substring(7);
+            var claims = Jwts.parser().verifyWith(signingKey).build().parseSignedClaims(token).getPayload();
+            String userId = claims.getSubject();
+            String tenantId = (String) claims.get("tenantId");
+
+            // 注入身份头，后端服务从这里读（信任网关，因为只有网关验签）
+            ServerHttpRequest mutated = exchange.getRequest().mutate()
+                    .header("X-User-Id", userId)
+                    .header("X-Tenant-Id", tenantId)
+                    .build();
+            return chain.filter(exchange.mutate().request(mutated).build());
+        } catch (Exception e) {
+            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+            return exchange.getResponse().setComplete();
+        }
+    }
+
+    @Override
+    public int getOrder() {
+        return Ordered.HIGHEST_PRECEDENCE;   // 最高优先级，路由前先验签
+    }
+}
+```
+
+> **信任边界**：后端服务**信任网关注入的 `X-Tenant-Id` 头**，自己不再验签——因为只有网关能验签（持有 secret）。后端服务不暴露给外部（只网关对外），所以头不会被伪造。**这是网关集中鉴权的核心收益**——各服务不用各自实现一套 JWT 验签。
+
+#### 18.2.4 租户数据隔离：Redis key / PG / Kafka 都带 tenantId
+
+后端服务从 `X-Tenant-Id` 头读租户，所有数据操作按租户隔离。
+
+**① Redis key 加 tenantId 前缀**：
+
+```java
+// ▼ 第18章改：RedisStreamBus 的 key 全部带 tenantId
+// 改前：stream:{sessionId}:chunks
+// 改后：tenant:{tenantId}:stream:{sessionId}:chunks
+private static final String KEY_STREAM = "tenant:%s:stream:%s:chunks";
+
+public Mono<Boolean> trigger(String tenantId, String sessionId, Flux<String> upstream) {
+    String streamKey = KEY_STREAM.formatted(tenantId, sessionId);   // 租户 A 的 stream 和租户 B 物理隔离
+    // ... 其余逻辑不变
+}
+```
+
+**② PG 查询加 tenantId 过滤**：
+
+```java
+// ▼ 第18章改：会话查询加 tenant_id 条件（防跨租户读）
+// 改前：SELECT * FROM session WHERE session_id = ?
+// 改后：SELECT * FROM session WHERE tenant_id = ? AND session_id = ?
+jdbc.queryForList(
+    "SELECT * FROM session WHERE tenant_id = ? AND session_id = ?",
+    tenantId, sessionId);
+```
+
+**③ Kafka topic 按租户分**（可选，租户少时用单 topic + key 分区）：
+
+```java
+// 方案 A（租户少）：单 topic，key 用 tenantId:sessionId，按租户分区分组
+kafka.send("research-chunks", tenantId + ":" + sessionId, chunk);
+
+// 方案 B（租户多/强隔离）：每租户独立 topic
+kafka.send("research-chunks-" + tenantId, sessionId, chunk);
+```
+
+> **三层隔离的取舍**：Redis key 前缀和 PG where 过滤是必做（轻量、有效）；Kafka topic 按租户分是可选（租户多时 topic 数会爆炸，通常用单 topic + key 分区）。**核心是 tenantId 贯穿所有数据操作**——漏一处就是越权漏洞。
+
+### 18.3 验证
+
+```bash
+# 1. 起认证服务 + 网关 + 业务服务
+cd research-auth && mvn spring-boot:run       # :8085
+cd research-gateway && mvn spring-boot:run     # :8080（带 JwtAuthFilter）
+# ... 其余服务
+
+# 2. 登录拿 token
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"alice-pass"}' | jq -r .token)
+echo $TOKEN   # eyJhbGc...
+
+# 3. 带 token 访问（正常）
+curl -X POST "http://localhost:8080/api/research?topic=测试&sessionId=s1" \
+  -H "Authorization: Bearer $TOKEN"
+# → 200，X-Tenant-Id 头被网关注入，后端按租户隔离数据
+
+# 4. 不带 token 访问（被拒）
+curl -X POST "http://localhost:8080/api/research?topic=测试&sessionId=s1"
+# → 401 Unauthorized
+
+# 5. 跨租户隔离验证：用 alice 的 token 访问 bob 的 sessionId
+curl -X POST "http://localhost:8080/api/research?topic=测试&sessionId=bob-s1" \
+  -H "Authorization: Bearer $TOKEN"
+# → 后端按 alice 的 tenantId 查 stream:tenant:alice:...:bob-s1 → 查不到 bob 的数据
+#   即使猜对 sessionId，跨租户也读不到
+```
+
+### 18.4 checkpoint
+
+```
+research-platform/
+├── research-auth/             （新增：认证服务，登录签 JWT）
+│   ├── pom.xml
+│   └── src/main/
+│       ├── java/.../auth/AuthController.java
+│       └── resources/{schema.sql, application.yml}
+├── research-gateway/
+│   └── src/main/java/.../gateway/JwtAuthFilter.java   （新增：全局验签）
+└── 各后端服务                    （改：Redis key / PG where / Kafka key 带 tenantId）
+```
+
+```bash
+git add -A && git commit -m "第18章：JWT认证+网关验签+租户数据隔离"
+```
+
+### 18.5 复盘
+
+**做了**：建认证服务（登录签 JWT）、API 网关加全局验签过滤器（注入 X-User-Id/X-Tenant-Id 头）、各服务数据操作按 tenantId 隔离（Redis key 前缀、PG where 过滤、Kafka key 分区）。三件事构成完整的多租户安全闭环：认证（你是谁）+ 鉴权（你能访问）+ 隔离（跨租户读不到）。
+
+**核心跃迁**：从"所有接口匿名、sessionId 可越权"到"JWT 认证 + 租户隔离"。补上了对外开放的安全地基——这是企业级 SaaS 的入场券，没有它所有数据都裸奔。
+
+**工程教训**：
+- **网关集中鉴权，后端信任注入头**：JWT 验签只在网关做（持有 secret），后端服务从 `X-Tenant-Id` 头读身份、自己不验签。各服务不用重复实现一套认证逻辑——这是微服务下网关的核心价值之一。
+- **tenantId 必须贯穿所有数据操作**：Redis key、PG where、Kafka key——漏任何一处就是越权漏洞。安全隔离是系统性工程，不是某个服务的任务。
+- **密码存哈希、secret 用环境变量**：`password_hash` 用 BCrypt（不可逆），JWT secret 用环境变量注入（不进仓库）。这两个是用户/系统身份安全的底线，**任何明文存储都是严重漏洞**。
+- **信任边界设计**：后端服务不对外（只网关对外），所以它信任网关注入的头。如果后端服务也对外暴露，就必须自己验签——不能信任未经验证的头。**安全的前提是边界清晰**。
+
+---
+
+> **第 18 章结束。** 多租户用户体系就位，系统可安全对外开放。下一步（第 19 章）：全文演进总览。
+
+---
+
+## 第 19 章：可观测性——链路追踪 + 指标 + 日志聚合
+
+### 19.0 场景：六服务分布式，出问题不知道卡在哪
+
+第 18 章后系统六服务独立部署。一次线上事故暴露了运维盲区：
+
+> 用户反馈"研究请求一直转圈不出结果"。但请求链路是：前端 → API 网关 → 触发服务 → LLM 网关 → DeepSeek，中间还经过 Kafka、Redis、PG。**到底卡在哪一环？** 后端看自己的日志只能看到"我这边没问题"，串联不起来——每个服务一个日志文件、没有关联 ID，六份日志对不上时间线。运维排查一个慢请求要花几小时翻日志。
+
+核心矛盾：**分布式系统是黑盒**。第 7 章的审计日志只记业务事件（PLAN/SUBTASK/AGGREGATE），不记跨服务调用链。没有链路追踪，一个请求经过六个服务，无法知道"在哪一环、耗多久、成功还是失败"。
+
+**本章解法**：补齐可观测性三支柱——**链路追踪（Trace）+ 指标（Metrics）+ 日志聚合（Logs）**。三者协同：追踪还原调用链、指标量化健康度、日志查根因细节。
+
+### 19.1 思路：可观测性三支柱
+
+```
+链路追踪（Trace）        指标（Metrics）           日志聚合（Logs）
+"这个请求经过哪些服务    "系统当前健康吗"          "那一环到底发生了什么"
+ 各耗多久"              P95延迟/QPS/错误率         错误堆栈/业务上下文
+   ↓                      ↓                         ↓
+ Zipkin（可视化调用链）  Prometheus + Grafana      ELK（全文检索）
+   │                      │                         │
+   └────── 共享 traceId ──┴─────────────────────────┘
+           三者通过 traceId 关联，一个 ID 串起全部视角
+```
+
+| 支柱 | 回答的问题 | 工具 | 数据特征 |
+|------|----------|------|---------|
+| 链路追踪 | "请求经过哪些服务、各耗多久、卡在哪" | Micrometer Tracing + Zipkin | 树状 span，带 traceId |
+| 指标 | "系统整体健康吗、P95 延迟、错误率、QPS" | Micrometer + Prometheus + Grafana | 时序数值，可告警 |
+| 日志聚合 | "那一环具体发生了什么、错误堆栈" | Logback + ELK（Elasticsearch/Logstash/Kibana） | 文本，带 traceId 可检索 |
+
+> **三支柱协同的关键：traceId 串联**。一个请求生成一个 traceId，追踪、指标、日志都带上它。出问题时：先看 Grafana 指标发现"P95 飙升"→ 看 Zipkin 追踪定位"卡在触发服务调 LLM 网关"→ 用 traceId 去 Kibana 搜日志看具体错误堆栈。三个视角一个 ID 串起来，分钟级定位问题。
+
+### 19.2 动手
+
+#### 19.2.1 链路追踪：Micrometer Tracing + Zipkin
+
+**【各服务 pom.xml 加依赖】**（触发/订阅/网关/业务核心/LLM网关 都加）：
+
+```xml
+        <!-- 第 19 章：链路追踪（Micrometer Tracing + Zipkin） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-brave</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.zipkin.reporter2</groupId>
+            <artifactId>zipkin-reporter-brave</artifactId>
+        </dependency>
+```
+
+**【各服务 application.yml 加配置】**：
+
+```yaml
+management:
+  tracing:
+    sampling:
+      probability: 1.0           # 采样率：1.0=全采样（生产用 0.1 降开销）
+  zipkin:
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans   # Zipkin Server 地址
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus   # 暴露指标端点（供 Prometheus 抓取）
+```
+
+**【起 Zipkin Server】**（docker）：
+
+```bash
+docker run -d --name research-zipkin -p 9411:9411 openzipkin/zipkin
+```
+
+> **自动埋点**：Spring Boot + Micrometer Tracing 会**自动**给 HTTP 调用、Kafka 收发、Redis 操作加 span（无需手写）。比如触发服务调 LLM 网关（WebClient），自动生成一个 span 记录"这次调用耗时"。**OpenTelemetry 的核心红利**——框架自动埋点，业务代码零侵入。
+>
+> **traceId 自动跨服务传递**：网关生成 traceId → 通过 HTTP 头（`traceparent`）传给触发服务 → 触发服务继续传给 LLM 网关。整条链路共享一个 traceId，Zipkin 上能看到完整的调用树。
+
+#### 19.2.2 指标：Micrometer + Prometheus + Grafana
+
+**【各服务 pom.xml 加 Prometheus 暴露依赖】**：
+
+```xml
+        <!-- 第 19 章：Prometheus 指标暴露 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+```
+
+**【自定义业务指标】** `research-trigger/.../metrics/ResearchMetrics.java`：
+
+```java
+package com.example.trigger.metrics;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import org.springframework.stereotype.Component;
+
+/**
+ * ▼ 第19章新增：业务指标——LLM 调用次数、耗时、失败率。
+ * Micrometer 自动暴露到 /actuator/prometheus，Prometheus 抓取后 Grafana 可视化。
+ */
+@Component
+public class ResearchMetrics {
+
+    private final Counter llmCallCounter;
+    private final Timer llmCallTimer;
+    private final Counter llmFailCounter;
+
+    public ResearchMetrics(MeterRegistry registry) {
+        this.llmCallCounter = Counter.builder("research.llm.calls")
+                .description("LLM 调用次数")
+                .tag("service", "trigger")
+                .register(registry);
+        this.llmCallTimer = Timer.builder("research.llm.duration")
+                .description("LLM 调用耗时")
+                .register(registry);
+        this.llmFailCounter = Counter.builder("research.llm.failures")
+                .description("LLM 调用失败次数")
+                .register(registry);
+    }
+
+    public void recordLlmCall(long durationNanos, boolean success) {
+        llmCallCounter.increment();
+        llmCallTimer.record(java.time.Duration.ofNanos(durationNanos));
+        if (!success) llmFailCounter.increment();
+    }
+}
+```
+
+> **关键指标（企业级四金指标）**：
+> - **延迟**（Latency）：`research.llm.duration` 的 P50/P95/P99
+> - **流量**（Traffic）：`research.llm.calls` 的 QPS
+> - **错误**（Errors）：`research.llm.failures` 的错误率
+> - **饱和度**（Saturation）：JVM 堆、线程池、连接池（Actuator 自带）
+>
+> 这四个是 Google SRE 的"四大黄金信号"——监控只看这四个就能判断系统是否健康。
+
+**【起 Prometheus + Grafana】**（docker-compose）：
+
+```yaml
+# observability/docker-compose.yml
+version: "3.8"
+services:
+  prometheus:
+    image: prom/prometheus
+    ports: ["9090:9090"]
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml"]
+  grafana:
+    image: grafana/grafana
+    ports: ["3000:3000"]
+```
+
+```yaml
+# observability/prometheus.yml
+scrape_configs:
+  - job_name: "research-services"
+    metrics_path: "/actuator/prometheus"
+    static_configs:
+      - targets: ["host.docker.internal:8080","host.docker.internal:8081","host.docker.internal:8082","host.docker.internal:8084"]
+```
+
+#### 19.2.3 日志聚合：Logback + ELK
+
+**【各服务 logback-spring.xml 加 traceId 注入】**：
+
+```xml
+<!-- 第 19 章：日志带 traceId，可跨服务串联 -->
+<pattern>%d{HH:mm:ss} [%X{traceId},%X{spanId}] %-5level %logger{20} - %msg%n</pattern>
+```
+
+`%X{traceId}` 从 MDC（Mapped Diagnostic Context）取当前请求的 traceId——Micrometer Tracing 自动塞进去。这样每条日志都带 traceId，**用 Zipkin 定位到卡在哪环后，拿 traceId 去 Kibana 搜这一环的全部日志**。
+
+**【起 ELK】**（docker-compose 追加）：
+
+```yaml
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    ports: ["9200:9200"]
+  logstash:
+    image: logstash:8.11.0
+    ports: ["5044:5044"]
+    volumes: ["./logstash.conf:/usr/share/logstash/pipeline/logstash.conf"]
+  kibana:
+    image: kibana:8.11.0
+    ports: ["5601:5601"]
+```
+
+> 各服务的日志通过 Filebeat 或 Logstash TCP 输入，汇聚到 Elasticsearch，Kibana 做全文检索。**核心价值**：六服务的日志在一处检索，用 traceId 过滤就能看到一个请求经过的全部服务的日志时间线——不用再挨个服务翻日志文件。
+
+### 19.3 验证
+
+```bash
+# 1. 起可观测性基础设施
+cd observability && docker-compose up -d   # Zipkin:9411, Prometheus:9090, Grafana:3000, ELK:9200/5601
+
+# 2. 起六个服务（都带追踪+指标+日志配置）
+# 略
+
+# 3. 发一个请求（带 token）
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/login ... | jq -r .token)
+curl -X POST "http://localhost:8080/api/research?topic=可观测测试&sessionId=obs-001" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 4. 看 Zipkin 调用链
+open http://localhost:9411    # 搜 obs-001，能看到：
+                              # gateway(8080) → trigger(8081) → llm-gateway(8084) → deepseek
+                              # 每个 span 标注耗时，卡在哪环一目了然
+
+# 5. 看 Grafana 指标
+open http://localhost:3000    # research.llm.duration P95、research.llm.calls QPS
+
+# 6. 拿 traceId 搜 Kibana 日志
+open http://localhost:5601    # 用 Zipkin 里看到的 traceId 搜，看到该请求全部日志
+```
+
+### 19.4 checkpoint
+
+```
+observability/
+├── docker-compose.yml       （Zipkin + Prometheus + Grafana + ELK）
+└── prometheus.yml           （抓取配置）
+
+各服务改：
+├── pom.xml                  （加 actuator + micrometer-tracing + prometheus）
+├── application.yml          （加 tracing/zipkin/management 配置）
+├── logback-spring.xml       （日志带 traceId）
+└── research-trigger/.../metrics/ResearchMetrics.java   （业务指标）
+```
+
+```bash
+git add -A && git commit -m "第19章：可观测性——Zipkin链路追踪+Prometheus指标+ELK日志"
+```
+
+### 19.5 复盘
+
+**做了**：补齐可观测性三支柱——链路追踪（Micrometer Tracing + Zipkin，自动埋点跨六服务）、指标（Micrometer + Prometheus + Grafana，四大黄金信号）、日志聚合（Logback traceId 注入 + ELK 全文检索）。三者通过 traceId 串联，一个 ID 串起追踪/指标/日志三个视角。
+
+**核心跃迁**：从"分布式黑盒"到"全链路可观测"。出问题不再是"翻六份日志对时间线"，而是 Grafana 看指标 → Zipkin 定位卡点 → Kibana 查日志，分钟级定位。这是分布式系统运维的地基——没有它，六服务的生产环境根本无法运维。
+
+**工程教训**：
+- **三支柱协同靠 traceId 串联**：单独看追踪/指标/日志都不够。追踪告诉你"卡在哪"、指标告诉你"系统整体怎样"、日志告诉你"具体发生了什么"——三者用 traceId 关联，才是完整的可观测性。少一个支柱，定位问题就缺一个视角。
+- **自动埋点是 OpenTelemetry 的红利**：Micrometer Tracing 自动给 HTTP/Kafka/Redis 加 span，业务代码零侵入。不要自己手写埋点——那是上世纪的做法。Spring Boot + Micrometer 自动覆盖了 90% 的调用点，自定义指标（如 LLM 调用次数）才需手写。
+- **四大黄金信号判断健康**：延迟/流量/错误/饱和度——Google SRE 的金标准。监控看板至少包含这四个，告警阈值也基于它们（如 P95 > 5s 告警）。
+- **采样率权衡**：开发环境 `probability: 1.0`（全采样），生产用 0.1（10% 采样）降开销。关键路径（如支付）可强制全采样。追踪数据量大，全采样生产环境扛不住。
+
+---
+
+> **第 19 章结束。** 可观测性就位，系统运维可见。下一步（第 20 章）：全文演进总览。
+
+---
+
+## 第 20 章：幻觉检测与反馈闭环——质量保障
+
+### 20.0 场景：答案错了，系统自己不知道
+
+第 19 章后系统可观测、可运维。但一次用户投诉暴露了质量盲区：
+
+> 用户问"vLLM 支持 PagedAttention 吗"，系统回答"支持，vLLM 的核心就是 PagedAttention"。但这是错的——PagedAttention 是 vLLM 团队提出的，但该用户实际问的是另一个引擎。系统**自信地输出了错误结论**，没有任何提示"这条没核实"。更糟：这个错误答案已经存进 ChatMemory，后续多轮都基于这个错误展开。
+
+核心矛盾：**LLM 会幻觉**——编造看似合理但错误的事实。第 2 章 RAG 只保证"检索了知识库"，不保证"答案和检索到的片段一致"。研究系统对外输出错误结论而不自知，企业级场景下这是**信任崩塌**的根源。
+
+**本章解法**：补**幻觉检测 + 反馈闭环**两件事：
+1. **检测**：答案生成时，自动核对"答案里的每个事实声明是否都有检索到的片段支撑"（引用核对）+ "多路搜索结果是否一致"（交叉验证）。不通过的标注"未核实"。
+2. **闭环**：用户点"这个答案不对"（反馈）→ 记录到反馈表 → 人工/自动修正 RAG 数据 → 下次同样问题不再错。**单向输出变成有学习能力的闭环**。
+
+### 20.1 思路：检测（事前）+ 闭环（事后）
+
+```
+检测（生成时，事前）              闭环（用户反馈，事后）
+答案 ← 检索片段                    答案 → 用户
+  ↓ 引用核对                         ↓ 点"答案不对"
+  ↓ 交叉验证                         ↓ 落反馈表
+有支撑 → 正常输出                   ↓ 人工/自动修正
+无支撑 → 标"⚠️ 未核实"             ↓ 改善 RAG 数据
+                                  ↓
+                                  下次同类问题 → 检索到修正后的数据 → 答对
+```
+
+| 环节 | 做什么 | 何时做 |
+|------|--------|--------|
+| 引用核对 | 答案的每个事实声明，回查检索片段是否有支撑 | 生成答案后、返回前端前 |
+| 交叉验证 | 多路搜索（网页/知识库）结果是否一致 | 多源结果汇聚时 |
+| 用户反馈 | 点赞/点踩/具体纠错 | 用户看到答案后 |
+| 数据修正 | 反馈进库 → 修正/补充 RAG 数据 | 反馈积累后（离线或半自动） |
+
+> **检测的边界**：幻觉检测无法 100% 准确（本身也是模型判断）。企业级做法是**分级标注**——高置信（引用核对通过）正常输出；低置信（无支撑声明）标"⚠️ 未核实，请核查"。把"不确定"诚实地告诉用户，比"自信地错"安全得多。
+
+### 20.2 动手
+
+#### 20.2.1 引用核对：答案的每个声明都要有检索片段支撑
+
+**【新建文件】** `research-agent/.../quality/CitationChecker.java`：
+
+```java
+package com.example.research.quality;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
+
+import java.util.List;
+
+/**
+ * ▼ 第20章新增：引用核对——用 LLM 判断"答案的每个事实声明是否都被检索片段支撑"。
+ *
+ * 输入：答案 + 检索到的片段列表
+ * 输出：每个声明是否有支撑（hasSupport），无支撑的标出来
+ *
+ * 这是"用 LLM 审 LLM"——一个模型生成答案，另一个判断它是否可信。
+ */
+@Component
+public class CitationChecker {
+
+    private final ChatClient.Builder checkerBuilder;
+
+    public CitationChecker(ChatClient.Builder checkerBuilder) {
+        this.checkerBuilder = checkerBuilder;
+    }
+
+    public Mono<CheckResult> check(String answer, List<String> citations) {
+        String prompt = """
+            你是事实核查员。判断下面的【答案】里每个事实声明，是否被【检索片段】支撑。
+
+            【答案】
+            %s
+
+            【检索片段】
+            %s
+
+            要求：
+            1. 逐条核对答案里的每个事实声明
+            2. 输出 JSON：{"allSupported": true/false, "unsupported": ["声明1","声明2"]}
+            3. allSupported=true 当且仅当所有声明都有片段支撑
+            """.formatted(answer, String.join("\n---\n", citations));
+
+        return checkerBuilder.build().prompt()
+                .user(prompt)
+                .call()
+                .entity(CheckResult.class);   // Spring AI 自动把 JSON 反序列化成 CheckResult
+    }
+
+    public record CheckResult(boolean allSupported, List<String> unsupported) {}
+}
+```
+
+#### 20.2.2 在 Aggregate 阶段接入核对
+
+**【改已有文件，片段】** `research-agent/.../PlanExecuteService.java` 的 Aggregate 阶段——生成报告后、返回前插入核对：
+
+```java
+// ▼ 第20章新增：Aggregate 生成报告后，做引用核对
+public Flux<String> aggregateAndCheck(String sessionId, List<SubTaskResult> results) {
+    return generateReport(results)                    // 原有：LLM 生成报告
+            .flatMap(report -> citationChecker.check(report, collectCitations(results))
+                    .map(check -> {
+                        if (check.allSupported()) {
+                            return report;            // 全部有支撑，正常返回
+                        }
+                        // 有无支撑声明 → 追加警告
+                        return report + "\n\n⚠️ 未核实声明：" + String.join("、", check.unsupported())
+                                + "\n（系统标注：这些声明未在检索资料中找到支撑，请核查）";
+                    }));
+}
+```
+
+#### 20.2.3 反馈表 + 用户反馈接口
+
+**【建表 SQL】**：
+
+```sql
+-- 第 20 章：用户反馈表（点赞/点踩/纠错）
+CREATE TABLE IF NOT EXISTS answer_feedback (
+    id           BIGSERIAL PRIMARY KEY,
+    session_id   VARCHAR(50) NOT NULL,
+    tenant_id    VARCHAR(50) NOT NULL,        -- 多租户隔离（第 18 章）
+    answer_hash  VARCHAR(64) NOT NULL,         -- 答案的哈希（同答案聚合反馈）
+    feedback     VARCHAR(20) NOT NULL,         -- like / dislike / correction
+    correction   TEXT,                          -- 用户给的纠正内容（discharge 时填）
+    created_at   TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_answer ON answer_feedback(answer_hash);
+```
+
+**【新建文件】** `research-agent/.../quality/FeedbackController.java`：
+
+```java
+package com.example.research.quality;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/feedback")
+public class FeedbackController {
+
+    private final JdbcTemplate jdbc;
+
+    public FeedbackController(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    /** 用户对答案的反馈：like / dislike / 带纠正。 */
+    @PostMapping
+    public void feedback(@RequestHeader("X-Tenant-Id") String tenantId,
+                         @RequestBody FeedbackRequest req) {
+        jdbc.update("""
+            INSERT INTO answer_feedback (session_id, tenant_id, answer_hash, feedback, correction)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            req.sessionId(), tenantId, hash(req.answer()), req.feedback(), req.correction());
+    }
+
+    private String hash(String s) {
+        return Integer.toHexString(s.hashCode());   // 演示用，生产用 SHA-256
+    }
+
+    public record FeedbackRequest(String sessionId, String answer,
+                                   String feedback, String correction) {}
+}
+```
+
+#### 20.2.4 闭环：反馈触发 RAG 数据修正
+
+**【新建文件】** `research-agent/.../quality/FeedbackLoop.java`：
+
+```java
+package com.example.research.quality;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * ▼ 第20章新增：反馈闭环——定期扫描反馈表，对高频纠错触发 RAG 数据修正。
+ *
+ * 企业级闭环（三种修正策略，按自动化程度递进）：
+ *   1. 人工修正：高频纠错进人工审核队列，人工补充知识库（最稳，慢）
+ *   2. 半自动：LLM 根据纠错生成候选文档，人工 approve 后入库（平衡）
+ *   3. 全自动：高频确证纠错直接 patch 知识库（快，风险高，需置信度阈值）
+ *
+ * 本章演示策略 1（人工修正）的触发逻辑。
+ */
+@Component
+public class FeedbackLoop {
+
+    private final JdbcTemplate jdbc;
+
+    public FeedbackLoop(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    /** 每天扫一次：找出被多次纠错的答案，生成修正任务。 */
+    @Scheduled(cron = "0 0 2 * * *")   // 每天凌晨 2 点
+    public void scanHighFrequencyCorrections() {
+        List<Map<String, Object>> hot = jdbc.queryForList("""
+            SELECT answer_hash, correction, COUNT(*) AS cnt
+            FROM answer_feedback
+            WHERE feedback = 'correction' AND created_at > NOW() - INTERVAL '7 days'
+            GROUP BY answer_hash, correction
+            HAVING COUNT(*) >= 3    -- 同答案被纠错 ≥3 次，触发修正
+            """);
+        for (Map<String, Object> row : hot) {
+            // 生成人工审核任务（演示：打日志。生产：进审核队列/通知知识库管理员）
+            System.out.println("[FeedbackLoop] 触发修正：answer=" + row.get("answer_hash")
+                    + " 纠正=" + row.get("correction") + " 次数=" + row.get("cnt"));
+            // 实际：jdbc.update("INSERT INTO kb_revision_task ...") 进人工审核队列
+        }
+    }
+}
+```
+
+> **闭环的价值**：没有反馈，系统是"一次性输出机器"——错了就错了，下次还错。有了反馈，系统是"有学习能力的"——用户的纠错积累成数据资产，反哺 RAG，同类问题下次答对。**这是企业级 Agent 和一次性 Demo 的本质区别**。
+
+### 20.3 验证
+
+```bash
+# 1. 问一个容易幻觉的问题（检索不到准确资料）
+curl -X POST "http://localhost:8080/api/research?topic=某冷门引擎是否支持某特性&sessionId=hall-001" \
+  -H "Authorization: Bearer $TOKEN"
+curl -N "http://localhost:8080/api/research/stream?sessionId=hall-001"
+# 预期：若答案有无支撑声明，末尾带 "⚠️ 未核实声明：..."
+
+# 2. 用户反馈纠错
+curl -X POST "http://localhost:8080/api/feedback" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"hall-001","answer":"...原答案...","feedback":"correction","correction":"正确答案是..."}'
+
+# 3. 反馈积累后（≥3 次同类纠错），凌晨扫描触发修正任务
+#    应用日志：[FeedbackLoop] 触发修正：answer=xxx 纠正=正确答案... 次数=3
+#    之后人工 approve 修正进知识库，下次同类问题答对
+```
+
+### 20.4 checkpoint
+
+```
+research-agent/src/main/java/.../quality/
+├── CitationChecker.java       （新增：引用核对，用 LLM 审 LLM）
+├── FeedbackController.java    （新增：用户反馈接口）
+└── FeedbackLoop.java          （新增：反馈闭环，定期扫描触发修正）
++ answer_feedback 表            （新增：反馈存储）
++ PlanExecuteService 改：Aggregate 接入核对
+```
+
+```bash
+git add -A && git commit -m "第20章：幻觉检测(引用核对)+用户反馈闭环"
+```
+
+### 20.5 复盘
+
+**做了**：幻觉检测（`CitationChecker` 用 LLM 审 LLM，核对答案声明是否有检索片段支撑，无支撑标"⚠️ 未核实"）+ 用户反馈闭环（反馈表 + `FeedbackController` 收集点赞/纠错 + `FeedbackLoop` 定期扫描高频纠错触发 RAG 修正）。单向输出变成有学习能力的闭环。
+
+**核心跃迁**：从"自信地输出"到"诚实标注不确定 + 从错误中学习"。补上了 Agent 系统的质量地基——前 19 章保证"能跑、能扩容、能运维、能观测"，本章保证"答案可信赖、错了能改"。
+
+**工程教训**：
+- **用 LLM 审 LLM**：幻觉检测本身用另一个 LLM 调用做判断（引用核对）。这是 LLM 应用的标准模式——生成和审核分离，审核模型只做事实核查、不生成内容，降低幻觉。
+- **诚实标注 > 自信地错**：幻觉检测无法 100% 准确。企业级做法是分级标注（高置信正常输出、低置信标"未核实"）——把不确定告诉用户，比自信输出错误结论安全得多。**"不知道"比"瞎说"专业**。
+- **反馈是数据资产**：用户的纠错是免费的、真实的、高质量的数据。积累起来反哺 RAG，系统的准确率随时间提升——这是产品越用越好的飞轮。
+- **修正要分级**：人工修正最稳但慢、全自动最快但风险高。按纠错的频次和置信度选策略——高频确证可半自动，低频模糊进人工队列。一刀切全自动会把错误反馈也吸收进知识库。
+
+---
+
+> **第 20 章结束。** 质量保障闭环就位，系统可信赖且能自我改进。下一步（第 21 章）：全文演进总览。
+
+---
+
+## 第 21 章：DAG 工作流——条件分支与多 Agent 协作
+
+### 21.0 场景：线性 Plan-Execute 表达不了"如果...就..."
+
+第 4-5 章的 Plan-Execute 是**线性编排**：拆出 N 个子任务 → 串行/并行执行 → 聚合。但复杂研究出现新需求：
+
+> 研究主题"对比 vLLM 和 TensorRT-LLM 的推理性能"。线性做法：并行查两者 → 聚合对比。但真实研究有**条件分支**：查到 vLLM 后，如果发现它支持某新特性（如 speculative decoding），就要**深入再查这个特性的性能**；否则跳过。线性 Plan-Execute 拆任务时不知道"查完 A 才知道要不要查 B"——这种**跨步骤依赖 + 条件跳转**，扁平的任务列表表达不了。
+
+核心矛盾：Plan-Execute 是**静态扁平列表**（拆完就知道所有任务），但真实研究是**动态有向图**（前序结果决定后续走向）。需要工作流引擎——用 DAG（有向无环图）表达"任务间的依赖和条件分支"。
+
+**本章解法**：引入 DAG 工作流引擎。把研究过程建模成节点图：每个节点是一个子任务，节点间有依赖边（B 依赖 A 的结果）和条件边（A 结果满足某条件才走 B，否则走 C）。引擎按拓扑顺序执行、动态决定分支。
+
+### 21.1 思路：节点（任务）+ 边（依赖/条件）
+
+```
+线性 Plan-Execute（第 4-5 章）：        DAG 工作流（第 21 章）：
+[查A] [查B] [对比]                      [查A] ───┬─(支持特性X)─→ [深入查X性能] ─┐
+   并行 → 聚合                                   └─(不支持)──→ (跳过)        ─┤
+扁平、静态、无分支                                                                ├─→ [对比聚合]
+                                                [查B] ─────────────────────────┘
+                                                有依赖、有条件分支、动态决定走向
+```
+
+| 概念 | 说明 |
+|------|------|
+| **节点（Node）** | 一个子任务（查某资料、做某分析）。带输入/输出 |
+| **依赖边（依赖）** | B 依赖 A：A 完成后 B 才执行，B 能拿 A 的输出 |
+| **条件边（分支）** | A → B 带条件：A 的输出满足条件才走 B，否则跳过/走其他 |
+| **拓扑顺序** | 引擎按"无入边的节点先执行"的顺序推进，依赖满足才触发下游 |
+
+> **DAG = Directed Acyclic Graph（有向无环图）**：有向（A→B 有方向）、无环（不能 A→B→A 循环）。工作流必须无环——否则死循环。需要循环的场景（如"反复优化直到达标"）用带状态的循环控制，不在 DAG 里。
+
+### 21.2 动手
+
+#### 21.2.1 工作流模型：节点 + 边
+
+**【新建文件】** `research-agent/.../workflow/Workflow.java`：
+
+```java
+package com.example.research.workflow;
+
+import java.util.*;
+
+/**
+ * ▼ 第21章新增：DAG 工作流模型。
+ *
+ * 一个工作流 = 节点集合 + 边集合（依赖边 + 条件边）。
+ * 引擎按拓扑顺序执行：节点的前序全部完成后，根据条件决定是否触发本节点。
+ */
+public class Workflow {
+
+    private final Map<String, Node> nodes = new LinkedHashMap<>();
+    private final List<Edge> edges = new ArrayList<>();
+
+    public Workflow addNode(Node node) {
+        nodes.put(node.id(), node);
+        return this;
+    }
+
+    /** 依赖边：from 完成后，to 才能执行。 */
+    public Workflow addDependency(String from, String to) {
+        edges.add(new Edge(from, to, null));   // condition=null 表示无条件依赖
+        return this;
+    }
+
+    /** 条件边：from 完成后，若 condition 对 from 的输出求值为 true，才走 to。 */
+    public Workflow addConditional(String from, String to, java.util.function.Predicate<Map<String, Object>> condition) {
+        edges.add(new Edge(from, to, condition));
+        return this;
+    }
+
+    public Collection<Node> nodes() { return nodes.values(); }
+    public List<Edge> edges() { return edges; }
+    public Node node(String id) { return nodes.get(id); }
+}
+```
+
+**【新建文件】** `research-agent/.../workflow/Node.java` + `Edge.java`：
+
+```java
+package com.example.research.workflow;
+
+import java.util.function.Function;
+import java.util.Map;
+
+/** 一个节点 = 一个子任务。input 是前序节点的输出（按 id 索引），output 是本节点的结果。 */
+public record Node(String id, String description,
+                   Function<Map<String, Object>, String> task) {}
+```
+
+```java
+package com.example.research.workflow;
+
+import java.util.Map;
+import java.util.function.Predicate;
+
+/** 边：from → to。condition 为 null 是依赖边，非 null 是条件边。 */
+public record Edge(String from, String to, Predicate<Map<String, Object>> condition) {}
+```
+
+#### 21.2.2 工作流引擎：拓扑执行 + 条件分支
+
+**【新建文件】** `research-agent/.../workflow/WorkflowEngine.java`：
+
+```java
+package com.example.research.workflow;
+
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * ▼ 第21章新增：DAG 工作流引擎。
+ *
+ * 执行策略：
+ *   1. 找出所有"入边的前序都已完成"的节点，执行它们
+ *   2. 节点执行完，把输出存入 results
+ *   3. 遍历它的出边：依赖边直接标记后序可执行；条件边判断 condition，true 才标记
+ *   4. 重复直到所有可达节点完成
+ *
+ * 并行：同层无依赖的节点可并行执行（用 CompletableFuture，本章演示串行简化）。
+ */
+@Component
+public class WorkflowEngine {
+
+    /**
+     * 执行工作流，返回每个节点的输出（按节点 id 索引）。
+     * @param workflow 工作流定义
+     * @param initialInput 初始输入（给起始节点）
+     */
+    public Map<String, String> execute(Workflow workflow, String initialInput) {
+        Map<String, Object> context = new ConcurrentHashMap<>();  // 节点输出（供下游读取）
+        Map<String, String> outputs = new LinkedHashMap<>();      // 最终输出
+        Set<String> completed = new HashSet<>();                  // 已完成节点
+        Set<String> skipped = new HashSet<>();                    // 条件不满足跳过的节点
+
+        context.put("__input__", initialInput);
+
+        // 简化版：循环直到没有可执行节点（生产用拓扑排序 + 并行）
+        boolean progressed = true;
+        while (progressed) {
+            progressed = false;
+            for (Node node : workflow.nodes()) {
+                if (completed.contains(node.id()) || skipped.contains(node.id())) continue;
+
+                // 检查所有入边的前序是否就绪 + 条件是否满足
+                boolean ready = true;
+                boolean conditionFailed = false;
+                for (Edge edge : workflow.edges()) {
+                    if (edge.to().equals(node.id())) {
+                        if (!completed.contains(edge.from())) {
+                            ready = false;
+                            break;
+                        }
+                        if (edge.condition() != null && !edge.condition().test(context)) {
+                            conditionFailed = true;   // 条件不满足，跳过本节点
+                            break;
+                        }
+                    }
+                }
+                if (conditionFailed) {
+                    skipped.add(node.id());
+                    progressed = true;
+                    continue;
+                }
+                if (!ready) continue;
+
+                // 执行节点：把前序输出（context）传给节点的 task
+                String output = node.task().apply(context);
+                context.put(node.id(), output);
+                outputs.put(node.id(), output);
+                completed.add(node.id());
+                progressed = true;
+            }
+        }
+        return outputs;
+    }
+}
+```
+
+#### 21.2.3 定义一个带条件分支的研究工作流
+
+**【改已有文件，片段】** `research-agent/.../PlanExecuteService.java`——新增 DAG 入口：
+
+```java
+// ▼ 第21章新增：DAG 版研究——带条件分支
+public Map<String, String> researchDeepDag(String topic) {
+    Workflow wf = new Workflow()
+            .addNode(new Node("查A", "查 vLLM 性能", ctx -> searchDetail(topic + " vLLM 性能")))
+            .addNode(new Node("查B", "查 TensorRT-LLM 性能", ctx -> searchDetail(topic + " TensorRT-LLM 性能")))
+            // 条件分支：查A 后，如果结果提到"speculative decoding"，深入查这个特性
+            .addNode(new Node("查A特性", "深入查 vLLM 的 speculative decoding",
+                    ctx -> searchDetail("vLLM speculative decoding 性能")))
+            .addNode(new Node("聚合", "对比三者", ctx -> aggregate(ctx.values())))
+            // 边
+            .addDependency("查A", "查A特性依赖查A")           // 写法示意，实际传 id
+            .addDependency("查A", "聚合")
+            .addDependency("查B", "聚合");
+    // 修正：用真正的 id 调用
+    wf = new Workflow()
+            .addNode(new Node("查A", "查 vLLM", ctx -> searchDetail(topic + " vLLM 性能")))
+            .addNode(new Node("查B", "查 TensorRT-LLM", ctx -> searchDetail(topic + " TensorRT-LLM 性能")))
+            .addNode(new Node("查A特性", "深入查 speculative decoding",
+                    ctx -> searchDetail("vLLM speculative decoding")))
+            .addNode(new Node("聚合", "对比", ctx -> aggregate(ctx.values())))
+            .addConditional("查A", "查A特性",
+                    ctx -> String.valueOf(ctx.get("查A")).contains("speculative decoding"))
+            .addDependency("查A特性", "聚合")
+            .addDependency("查A", "聚合")
+            .addDependency("查B", "聚合");
+
+    return workflowEngine.execute(wf, topic);
+}
+```
+
+> 上面的双 wf 赋值是为了演示"写法示意 → 真正调用"的修正过程，实际代码只保留第二个。**重点看条件边**：`查A → 查A特性` 带条件"查A 结果包含 speculative decoding"——查完 A 才能判断要不要查特性，这是线性 Plan-Execute 做不到的。
+
+### 21.3 验证
+
+```bash
+# 研究一个会触发条件分支的主题
+curl -X POST "http://localhost:8080/api/research/dag?topic=vLLM vs TensorRT-LLM 推理性能&sessionId=dag-001" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 应用日志能看到工作流执行过程：
+# [Workflow] 执行节点：查A
+# [Workflow] 执行节点：查B
+# [Workflow] 查A 结果包含 "speculative decoding" → 触发条件边 → 执行节点：查A特性
+# [Workflow] 执行节点：聚合（依赖查A、查A特性、查B 全完成）
+#
+# 如果查A 结果不含该特性 → 查A特性 节点被跳过，聚合只基于查A、查B
+```
+
+### 21.4 checkpoint
+
+```
+research-agent/src/main/java/.../workflow/
+├── Workflow.java          （新增：DAG 模型，节点+边）
+├── Node.java              （新增：节点=子任务）
+├── Edge.java              （新增：依赖边/条件边）
+└── WorkflowEngine.java    （新增：拓扑执行+条件分支引擎）
++ PlanExecuteService 加 researchDeepDag 入口
+```
+
+```bash
+git add -A && git commit -m "第21章：DAG工作流引擎(条件分支+跨步骤依赖)"
+```
+
+### 21.5 复盘
+
+**做了**：建 DAG 工作流引擎（`Workflow` 模型 + `Node`/`Edge` + `WorkflowEngine` 拓扑执行）。节点是子任务，边分依赖边（无条件）和条件边（前序输出满足条件才触发）。引擎按"前序就绪+条件满足"推进，动态决定分支走向。
+
+**核心跃迁**：从"线性扁平任务列表"到"有向无环图编排"。Plan-Execute（第 4-5 章）是静态拆分、一次性知道所有任务；DAG 是动态图、前序结果决定后续走向——能表达"查完 A 才知道要不要查 B"的真实研究逻辑。
+
+**工程教训**：
+- **DAG 适合静态依赖，动态规划仍要 LLM**：本章的 DAG 图是**预定义的**（节点和边在执行前就定好）。但有些研究的分支结构是**运行时才确定**的（LLM 看完中间结果决定加新节点）——那需要更动态的图引擎（如 LangGraph 的运行时改图）。本章是 DAG 的入门形态（预定义图+条件边），覆盖 80% 场景。
+- **条件边是 DAG 区别于 Plan-Execute 的关键**：依赖边（A 完成才执行 B）Plan-Execute 也能表达（串行）。**条件边（A 结果满足某条件才执行 B，否则跳过）**是 DAG 独有的——它让工作流有了"判断"能力。
+- **多 Agent 协作 = 节点 = 不同 Agent**：本章每个节点是一个任务函数，但节点可以换成"调用某个专用 Agent"（如查A 节点调"性能调研 Agent"、聚合节点调"对比分析 Agent"）——这就是多 Agent 协作编排。DAG 是多 Agent 系统的骨架。
+- **无环是 DAG 的约束，循环要带状态**：DAG 必须无环（防死循环）。需要"反复优化直到达标"这种循环的，用带迭代计数器的有限循环包裹 DAG，不要在图里画环。
+
+---
+
+> **第 21 章结束。** DAG 工作流就位，编排能力进阶。下一步（第 22 章）：全文演进总览。
+
+---
+
+## 第 22 章：长期记忆与个性化——跨会话用户画像
+
+### 22.0 场景：换个会话，Agent 就"失忆"了
+
+第 17 章补了分布式 ChatMemory，触发服务恢复了多轮记忆。但用户反馈又来了：
+
+> 用户 A 在会话 1 里说过"我是后端工程师，主要用 Java"。关掉会话 1、新开会话 2 问"推荐一个推理框架"——Agent **完全不记得用户是后端 Java 工程师**，给了一堆 Python/C++ 的推荐。用户每次新开会话都要重新自我介绍。
+
+核心矛盾：第 17 章的 ChatMemory 是**会话级**的（`sessionId` 索引，会话间隔离）。用户在会话 1 里的偏好，会话 2 读不到。**跨会话的长期记忆**（用户画像、偏好、历史交互）没做——Agent 对每个用户都是"初次见面"。
+
+**本章解法**：建**长期记忆层**——用 `userId`（不是 sessionId）索引，沉淀用户的偏好/画像/历史交互。新会话开始时，先从长期记忆捞"这个用户是谁、喜欢什么"，注入 system prompt。Agent 越用越懂用户。
+
+> **会话记忆 vs 长期记忆**：
+> - 会话记忆（第 17 章）：`sessionId` 索引，存"这段对话说了啥"，短期、会话内复用。
+> - 长期记忆（本章）：`userId` 索引，存"这个用户是谁、偏好什么"，长期、跨会话复用。
+>
+> 两者协同：新会话开始 → 先读长期记忆（用户画像）注入 prompt → 会话过程中读写会话记忆 → 会话结束后把"本次学到的新偏好"沉淀回长期记忆。
+
+### 22.1 思路：用户画像 + 语义检索（RAG over 用户历史）
+
+```
+会话开始
+  ↓
+按 userId 检索长期记忆（向量库）→ "用户是后端 Java 工程师，关注性能，偏好简洁回答"
+  ↓
+注入 system prompt：你是研究助理。用户画像：[后端/Java/关注性能/偏好简洁]
+  ↓
+本次会话正常进行（读写会话记忆）
+  ↓
+会话结束 → 提取"本次新学到的偏好"→ 写入长期记忆（向量库，按 userId 索引）
+  ↓
+下次任何会话 → 检索到积累的画像 → 越用越懂用户
+```
+
+| 存储 | 索引 | 内容 | 复用范围 |
+|------|------|------|---------|
+| 会话记忆（第 17 章）Redis+PG | `sessionId` | 对话消息序列 | 单会话内 |
+| 长期记忆（本章）向量库 | `userId` | 用户画像/偏好/关键交互（向量化） | 跨所有会话 |
+
+> **为什么用向量库存长期记忆，而不是关系表**：长期记忆要"语义检索"——用户问"推荐框架"时，要捞出"用户是后端工程师"这条相关画像，不是按关键词匹配。向量库（pgvector，第 2 章已有）按语义相似度检索，能匹配"后端工程师→Java 框架"。**第 2 章的 RAG 基础设施，复用到用户记忆上**——这是基础设施的复利。
+
+### 22.2 动手
+
+#### 22.2.1 长期记忆表（向量库）
+
+**【建表 SQL】**（复用第 2 章的 pgvector）：
+
+```sql
+-- 第 22 章：用户长期记忆（向量化的用户画像/偏好/关键交互）
+CREATE TABLE IF NOT EXISTS user_memory (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      VARCHAR(50) NOT NULL,          -- 按用户索引（跨会话）
+    tenant_id    VARCHAR(50) NOT NULL,          -- 多租户隔离（第 18 章）
+    content      TEXT NOT NULL,                  -- "用户是后端 Java 工程师，关注性能"
+    embedding    vector(1536),                   -- content 的向量（语义检索用）
+    created_at   TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_user_memory_user ON user_memory(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_memory_vec ON user_memory USING ivfflat (embedding vector_cosine_ops);
+```
+
+#### 22.2.2 长期记忆服务：读写用户画像
+
+**【新建文件】** `research-agent/.../memory/LongTermMemoryService.java`：
+
+```java
+package com.example.research.memory;
+
+import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * ▼ 第22章新增：长期记忆服务——按 userId 沉淀/检索用户画像。
+ *
+ * 写：把"本次学到的用户偏好"向量化后存入（按 userId 索引）。
+ * 读：按当前话题语义检索该用户的相关画像（"推荐框架"→ 捞出"后端工程师"画像）。
+ *
+ * 复用第 2 章的 VectorStore（pgvector），不引新基础设施。
+ */
+@Service
+public class LongTermMemoryService {
+
+    private final VectorStore vectorStore;
+    private final JdbcTemplate jdbc;
+
+    public LongTermMemoryService(VectorStore vectorStore, JdbcTemplate jdbc) {
+        this.vectorStore = vectorStore;
+        this.jdbc = jdbc;
+    }
+
+    /** 会话开始时：按当前话题，语义检索用户的相关画像。 */
+    public String recall(String userId, String tenantId, String currentTopic) {
+        // 用当前话题作为查询，语义检索该用户的相关长期记忆
+        List<Document> hits = vectorStore.similaritySearch(SearchRequest.builder()
+                .query(currentTopic)
+                .topK(5)
+                .filterExpression("user_id == '" + userId + "' && tenant_id == '" + tenantId + "'")
+                .build());
+        if (hits.isEmpty()) return "";
+        return hits.stream().map(Document::getText).collect(Collectors.joining("; "));
+    }
+
+    /** 会话结束时：提取本次新偏好，沉淀到长期记忆。 */
+    public void remember(String userId, String tenantId, String preference) {
+        // 向量化后存入（VectorStore 自动用 embedding 模型向量化 content）
+        vectorStore.add(List.of(new Document(preference,
+                java.util.Map.of("user_id", userId, "tenant_id", tenantId))));
+    }
+}
+```
+
+#### 22.2.3 触发时注入用户画像
+
+**【改已有文件，片段】** `research-trigger/.../TriggerController.java`——会话开始先捞长期记忆：
+
+```java
+// ▼ 第22章新增：触发时先检索用户画像，注入 system prompt
+@PostMapping
+public Mono<ResponseEntity<Map<String, String>>> trigger(@RequestParam String topic,
+                                                         @RequestParam String sessionId,
+                                                         @RequestHeader("X-User-Id") String userId,
+                                                         @RequestHeader("X-Tenant-Id") String tenantId) {
+
+    // 1. 先按当前话题，检索用户的长期记忆（"推荐框架"→ 捞出"后端 Java 工程师"画像）
+    return longTermMemoryService.recallAsync(userId, tenantId, topic)
+            .map(userProfile -> {
+                // 2. 把用户画像注入 system prompt
+                String system = "你是研究助理。" +
+                        (userProfile.isEmpty() ? "" : "用户画像：" + userProfile + "。按画像定制回答。") +
+                        "资料不足要明确说，绝不编造。";
+                return Map.of("system", system, "user", "研究主题：" + topic);
+            })
+            .flatMap(req -> {
+                Flux<String> upstream = llmGateway.post()
+                        .uri("/llm/chat/stream")
+                        .bodyValue(req)
+                        .retrieve()
+                        .bodyToFlux(String.class);
+                // 3. 会话结束后，提取新偏好沉淀（简化：把 topic 作为候选偏好，实际用 LLM 提取）
+                return bus.trigger(sessionId, upstream)
+                        .doOnSuccess(v -> longTermMemoryService.rememberAsync(userId, tenantId, topic));
+            })
+            .thenReturn(ResponseEntity.accepted().body(Map.of("sessionId", sessionId, "status", "started")));
+}
+```
+
+> **偏好提取的简化**：上面把 `topic` 直接当候选偏好沉淀，是演示。生产环境用 LLM 从会话中**提取真正的偏好**（如"用户偏好简洁回答""用户是后端工程师"），过滤掉无关内容（如"研究主题：天气"不是偏好）。这是 `remember` 的进阶——用 LLM 做偏好抽取。
+
+### 22.3 验证
+
+```bash
+# 1. 会话 1：用户透露身份
+curl -X POST "http://localhost:8080/api/research?topic=我是后端Java工程师，推荐推理框架&sessionId=mem-A" \
+  -H "Authorization: Bearer $TOKEN_ALICE"
+# → 会话结束，长期记忆写入："用户是后端 Java 工程师..."
+
+# 2. 新开会话 2（同用户，不同 sessionId），问无关话题
+curl -X POST "http://localhost:8080/api/research?topic=推荐推理框架&sessionId=mem-B" \
+  -H "Authorization: Bearer $TOKEN_ALICE"
+# 预期：触发时检索到"后端 Java 工程师"画像 → 注入 prompt → Agent 推荐 Java 相关框架
+#       （而不是像第 17 章那样失忆，推荐 Python/C++）
+
+# 3. 验证长期记忆库
+docker exec research-pg psql -U postgres -d research \
+  -c "SELECT user_id, content FROM user_memory WHERE user_id = 'alice';"
+# → 看到沉淀的画像
+```
+
+### 22.4 checkpoint
+
+```
+research-agent/src/main/java/.../memory/
+└── LongTermMemoryService.java   （新增：按 userId 读写用户画像，复用 pgvector）
++ user_memory 表                  （新增：向量化的用户长期记忆）
++ TriggerController 改：触发前检索画像注入、结束后沉淀
+```
+
+```bash
+git add -A && git commit -m "第22章：长期记忆与个性化(跨会话用户画像)"
+```
+
+### 22.5 复盘
+
+**做了**：建长期记忆层（`user_memory` 表 + `LongTermMemoryService`），按 `userId` 沉淀用户画像/偏好。新会话触发时，按当前话题语义检索用户画像注入 system prompt；会话结束后把新偏好沉淀。复用第 2 章的 pgvector 基础设施，不引新组件。
+
+**核心跃迁**：从"会话级失忆"到"跨会话用户画像"。Agent 对每个用户从"初次见面"变成"越用越懂"——个性化是企业级消费产品的核心体验（ChatGPT 的 Custom Instructions、推荐系统的用户画像，本质都是长期记忆）。
+
+**工程教训**：
+- **会话记忆管"说了啥"，长期记忆管"你是谁"**：两者索引维度不同（sessionId vs userId）、内容不同（消息序列 vs 画像偏好）、复用范围不同（单会话 vs 跨会话）。不要混为一谈——会话记忆频繁读写、长期记忆低频沉淀。
+- **长期记忆用向量库，复用第 2 章 RAG**：用户画像要语义检索（"推荐框架"匹配"后端工程师"），向量库天然支持。第 2 章的 pgvector + embedding 基础设施直接复用——**好的基础设施层复利**，一份向量库既服务知识库 RAG，又服务用户记忆。
+- **偏好提取要过滤**：不能把每句对话都当偏好沉淀（"研究主题：天气"不是偏好）。用 LLM 从会话里抽取真正的稳定偏好（身份/技术栈/回答风格），过滤临时内容。质量 > 数量。
+- **隐私边界**：长期记忆存用户画像，是敏感数据。要符合隐私法规（GDPR/个保法）——允许用户查看/删除自己的画像（"忘记我"权利）。第 18 章的多租户隔离是基础，本章之上还要加隐私控制接口。
+
+---
+
+> **第 22 章结束。** 长期记忆与个性化就位。下一步（第 23 章）：全文演进总览。
+
+---
+
+## 第 23 章：成本治理——token 计量、预算与分摊
+
+### 23.0 场景：一个恶意用户烧光了月度预算
+
+第 22 章后系统功能完备、个性化良好。但一次运营事故敲了警钟：
+
+> 月初发现 LLM API 账单暴涨——某个租户的一个用户，用脚本疯狂触发深度研究（每次 Plan-Execute 拆 5 个子任务、每个子任务调 LLM 多轮），一晚上烧掉了几千美元 token。**系统没有任何成本管控**：不限调用次数、不计量 token、超额不拦截。月底结算时才发现严重超预算。
+
+核心矛盾：**LLM 调用按 token 收费，但系统对成本"无感"**——不知道每个用户/租户花了多少、没设预算上限、超额不拦截。企业级 SaaS 下，一个恶意或失控的用户能烧光所有人的预算。**成本治理是 LLM 商业化的地基**——不计量就无法计费、不限额就无法止损。
+
+**本章解法**：补三件事：
+1. **token 计量**：每次 LLM 调用记录 prompt/completion token 数，按用户/租户/会话累计。
+2. **预算上限**：租户设月度 token 预算，调用前检查余额，超额拒绝（或降级）。
+3. **成本分摊**：按用户/租户聚合用量，出账单、做成本分析。
+
+### 23.1 思路：计量（记多少）+ 预算（限多少）+ 分摊（算给谁）
+
+```
+LLM 调用
+  ↓
+调用前：查租户本月已用 token vs 预算上限
+  ├ 超额 → 拒绝（或降级到便宜模型）
+  └ 未超额 → 放行
+  ↓
+调用后：从响应里拿 usage.prompt_tokens / completion_tokens
+  ↓
+记录：usage_log 表（user_id, tenant_id, session_id, tokens, cost, model, 时间）
+  ↓
+聚合：按 tenant_id 汇总本月用量 → 出账单 / 成本分析看板
+```
+
+| 环节 | 做什么 | 何时做 |
+|------|--------|--------|
+| 预算检查 | 查租户月度余额，超额拦截 | LLM 调用前 |
+| token 计量 | 从 LLM 响应的 usage 字段拿 token 数，落日志 | LLM 调用后 |
+| 成本计算 | tokens × 模型单价 = 成本 | 计量时同步算 |
+| 分摊出账 | 按 tenant/user 聚合用量和成本 | 离线或定期 |
+
+> **token 从哪来**：OpenAI 兼容协议（DeepSeek/GPT/通义都遵循）的响应里有 `usage` 字段——`prompt_tokens`（输入）+ `completion_tokens`（输出）。这是计量的**权威数据源**，不要自己估算（分词器不准）。Spring AI 的 `ChatResponse.metadata.usage()` 直接拿到。
+
+### 23.2 动手
+
+#### 23.2.1 用量表 + 预算表
+
+**【建表 SQL】**：
+
+```sql
+-- 第 23 章：token 用量日志（每次 LLM 调用一条）
+CREATE TABLE IF NOT EXISTS llm_usage_log (
+    id                BIGSERIAL PRIMARY KEY,
+    tenant_id         VARCHAR(50)  NOT NULL,
+    user_id           VARCHAR(50)  NOT NULL,
+    session_id        VARCHAR(50)  NOT NULL,
+    model             VARCHAR(50)  NOT NULL,     -- 不同模型单价不同
+    prompt_tokens     INT          NOT NULL,     -- 输入 token
+    completion_tokens INT          NOT NULL,     -- 输出 token
+    cost_cents        NUMERIC(10,4) NOT NULL,    -- 本次成本（分），tokens × 单价
+    created_at        TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_usage_tenant_time ON llm_usage_log(tenant_id, created_at);
+
+-- 第 23 章：租户月度预算
+CREATE TABLE IF NOT EXISTS tenant_budget (
+    tenant_id        VARCHAR(50) PRIMARY KEY,
+    monthly_budget_cents NUMERIC(12,2) NOT NULL,   -- 月度预算上限（分）
+    over_limit_action VARCHAR(20) NOT NULL DEFAULT 'block'   -- block 拒绝 / degrade 降级到便宜模型
+);
+```
+
+> **成本用"分"存（`cost_cents`）**：金额用整数（分）存，不用浮点——浮点有精度问题，财务计算禁用 float/double。这是企业级金融数据的铁律。
+
+#### 23.2.2 成本服务：预算检查 + 用量记录
+
+**【新建文件】** `research-llm-gateway/.../cost/CostService.java`（放 LLM 网关，因为 token 从 LLM 响应拿）：
+
+```java
+package com.example.llmgateway.cost;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.Map;
+
+/**
+ * ▼ 第23章新增：成本服务——预算检查 + 用量记录 + 成本计算。
+ *
+ * 放在 LLM 网关（第 16 章），因为 token 数据从 LLM 响应拿，网关是唯一调 LLM 的地方。
+ */
+@Service
+public class CostService {
+
+    private final JdbcTemplate jdbc;
+    private final Map<String, BigDecimal> modelPrices = Map.of(    // 模型单价（分/千 token）
+            "deepseek-chat", new BigDecimal("0.10"),
+            "deepseek-reasoner", new BigDecimal("0.50"),
+            "gpt-4", new BigDecimal("30.00")     // 贵模型贵单价
+    );
+
+    public CostService(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    /** LLM 调用前：检查租户本月预算，超额返回 false。 */
+    public boolean checkBudget(String tenantId) {
+        Map<String, Object> budget = jdbc.queryForMap(
+                "SELECT monthly_budget_cents, over_limit_action FROM tenant_budget WHERE tenant_id = ?",
+                tenantId);
+        BigDecimal used = jdbc.queryForObject("""
+            SELECT COALESCE(SUM(cost_cents), 0) FROM llm_usage_log
+            WHERE tenant_id = ? AND created_at >= date_trunc('month', NOW())
+            """, BigDecimal.class, tenantId);
+
+        BigDecimal limit = (BigDecimal) budget.get("monthly_budget_cents");
+        if (used.compareTo(limit) >= 0) {
+            // 超额：block 拒绝；degrade 降级（实际由调用方根据返回值处理）
+            return false;
+        }
+        return true;
+    }
+
+    /** LLM 调用后：记录本次用量和成本。 */
+    public void recordUsage(String tenantId, String userId, String sessionId,
+                            String model, int promptTokens, int completionTokens) {
+        // 成本 = (prompt_tokens × 输入单价 + completion_tokens × 输出单价) / 1000
+        BigDecimal price = modelPrices.getOrDefault(model, new BigDecimal("0.10"));
+        BigDecimal cost = price.multiply(BigDecimal.valueOf(promptTokens + completionTokens))
+                .divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP);
+
+        jdbc.update("""
+            INSERT INTO llm_usage_log (tenant_id, user_id, session_id, model,
+                                        prompt_tokens, completion_tokens, cost_cents)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, tenantId, userId, sessionId, model, promptTokens, completionTokens, cost);
+    }
+}
+```
+
+#### 23.2.3 LLM 网关接入成本管控
+
+**【改已有文件，片段】** `research-llm-gateway/.../LlmController.java`——调用前查预算、调用后记用量：
+
+```java
+@PostMapping(value = "/chat/stream")
+public Flux<String> chatStream(@RequestBody ChatRequest req,
+                               @RequestHeader("X-Tenant-Id") String tenantId,
+                               @RequestHeader("X-User-Id") String userId) {
+    // ▼ 第23章新增：调用前查预算，超额拒绝
+    if (!costService.checkBudget(tenantId)) {
+        return Flux.error(new RuntimeException("租户本月 LLM 预算已用尽"));
+    }
+
+    // 调 LLM（流式：token 在最后一个 chunk 的 usage 里）
+    ChatClient client = router.select(req).build();
+    return client.prompt()
+            .system(req.system())
+            .user(req.user())
+            .stream()
+            .chatResponse()                    // 拿完整响应（含 usage）
+            .doOnNext(resp -> {
+                // ▼ 第23章新增：流末拿 usage，记录用量
+                var usage = resp.getMetadata().getUsage();
+                if (usage != null && usage.getTotalTokens() > 0) {
+                    costService.recordUsage(tenantId, userId, req.sessionId(),
+                            "deepseek-chat",
+                            (int) usage.getPromptTokens(),
+                            (int) usage.getCompletionTokens());
+                }
+            })
+            .map(resp -> resp.getResult().getOutput().getText());
+}
+```
+
+> **流式响应的 token 计量**：流式输出时，token 数在**最后一个 chunk** 的 `usage` 字段里（前面 chunk 都是内容、无 usage）。上面用 `.chatResponse()` 拿完整响应流，在 `doOnNext` 里判断 `usage != null` 时记录——只在流末记一次。**不要每个 chunk 都记**，会重复。
+
+#### 23.2.4 成本分摊：出账单接口
+
+**【新建文件】** `research-llm-gateway/.../cost/BillingController.java`：
+
+```java
+package com.example.llmgateway.cost;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * ▼ 第23章新增：成本分摊——按租户/用户聚合用量，出账单。
+ */
+@RestController
+@RequestMapping("/api/billing")
+public class BillingController {
+
+    private final JdbcTemplate jdbc;
+
+    public BillingController(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    /** 租户本月账单：总用量、总成本、按用户明细。 */
+    @GetMapping("/tenant/{tenantId}/monthly")
+    public Map<String, Object> tenantMonthly(@PathVariable String tenantId) {
+        // 汇总
+        Map<String, Object> summary = jdbc.queryForMap("""
+            SELECT COUNT(*) AS calls,
+                   SUM(prompt_tokens) AS prompt_tokens,
+                   SUM(completion_tokens) AS completion_tokens,
+                   SUM(cost_cents) AS total_cost_cents
+            FROM llm_usage_log
+            WHERE tenant_id = ? AND created_at >= date_trunc('month', NOW())
+            """, tenantId);
+        // 按用户明细
+        List<Map<String, Object>> byUser = jdbc.queryForList("""
+            SELECT user_id, SUM(cost_cents) AS cost_cents, COUNT(*) AS calls
+            FROM llm_usage_log
+            WHERE tenant_id = ? AND created_at >= date_trunc('month', NOW())
+            GROUP BY user_id ORDER BY cost_cents DESC
+            """, tenantId);
+        summary.put("by_user", byUser);
+        return summary;
+    }
+}
+```
+
+### 23.3 验证
+
+```bash
+# 1. 给租户设月度预算（例如 100 元 = 10000 分）
+curl -X POST "http://localhost:8085/api/billing/budget" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '{"tenantId":"acme","monthlyBudgetCents":10000,"overLimitAction":"block"}'
+
+# 2. 正常触发研究
+curl -X POST "http://localhost:8080/api/research?topic=成本测试&sessionId=cost-001" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. 查账单
+curl "http://localhost:8080/api/billing/tenant/acme/monthly" -H "Authorization: Bearer $TOKEN"
+# → {calls:5, prompt_tokens:3200, completion_tokens:1800, total_cost_cents:5.00, by_user:[...]}
+
+# 4. 模拟超额（把预算调到极低，再触发）
+curl -X POST "http://localhost:8085/api/billing/budget" -d '{"tenantId":"acme","monthlyBudgetCents":1,...}'
+curl -X POST "http://localhost:8080/api/research?topic=超额测试&sessionId=cost-002" \
+  -H "Authorization: Bearer $TOKEN"
+# → 429/403：租户本月 LLM 预算已用尽
+```
+
+### 23.4 checkpoint
+
+```
+research-llm-gateway/src/main/java/.../cost/
+├── CostService.java          （新增：预算检查 + 用量记录 + 成本计算）
+└── BillingController.java    （新增：成本分摊/出账单）
++ llm_usage_log / tenant_budget 表
++ LlmController 改：调用前查预算、调用后记 usage
+```
+
+```bash
+git add -A && git commit -m "第23章：成本治理(token计量+预算上限+分摊)"
+```
+
+### 23.5 复盘
+
+**做了**：建成本治理三件套——token 计量（`llm_usage_log` 记每次调用）、预算上限（`tenant_budget` + 调用前检查超额拦截）、成本分摊（`BillingController` 按租户/用户聚合出账单）。放在 LLM 网关（唯一调 LLM 的地方），token 从响应的 `usage` 字段权威获取。
+
+**核心跃迁**：从"成本无感"到"计量+限额+分摊"。LLM 调用从"随便用"变成"可计费、可止损、可分析"——这是 LLM 商业化的地基，SaaS 盈利模式的前提。
+
+**工程教训**：
+- **token 从 LLM 响应的 usage 拿，不要自己估算**：分词器模型各异、估算不准。OpenAI 兼容协议的 `usage` 字段是厂商计费的权威数据，直接用。自己估算是和厂商对不上账的根源。
+- **流式响应的 token 在流末**：流式输出时 token 数在最后一个 chunk。不要每个 chunk 都记，只在 `usage != null` 时记一次。这是流式计量的坑。
+- **金额用整数（分）存**：`cost_cents` 用 `NUMERIC`/整型，绝不用 float。财务计算浮点有精度误差，企业级金融数据这是铁律。
+- **预算放在 LLM 网关检查**：第 16 章拆 LLM 网关时说"它是唯一调 LLM 的地方"——本章兑现这个设计红利：成本管控只在网关做一处，所有业务服务自动受控。**好的架构（LLM 收口在网关）让横切关注点（成本/熔断/审计）单点落地**。
+- **超额策略：block vs degrade**：直接拒绝（block）最稳但体验差；降级到便宜模型（degrade）体验好但实现复杂。按租户等级选——免费租户 block、付费租户 degrade 到廉价模型兜底。
+
+---
+
+> **第 23 章结束。** 成本治理就位，LLM 调用可计费可止损。下一步（第 24 章）：全文演进总览。
+
+---
+
+## 第 24 章：全文演进总览 + 后续方向
+
+### 24.1 你走过了什么
 
 | 章 | 核心跃迁 | 架构关键词 |
 |----|---------|----------|
@@ -4794,27 +8746,31 @@ public class RedisStreamBus {
 | 第7章 | 无状态→有记忆 | JdbcChatMemoryRepository 落 PG，多轮+重启不丢 |
 | 第8章 | 工具→产品 | 会话 CRUD + 自动标题 + 前端对话页 |
 | 第9章 | 单机→分布式 | Redis Streams + Pub/Sub 三层广播 + 四个生产化加固 |
-| 第10章 | 回顾→展望 | 全文演进总览 + 后续方向（含架构演进红线） |
+| 第10章 | 耦合→解耦 | 管数分离：POST 触发（管理面）+ GET 只读流（数据面） |
+| 第11章 | 单点→高可用 | Redis Sentinel/Cluster，故障自动转移 |
+| 第12章 | 内存总线→持久总线 | Redis Streams → Kafka，跨服务消费组 |
+| 第13章 | 单体→微服务① | 拆出独立订阅服务 research-subscribe |
+| 第14章 | 单体→微服务② | 拆出独立触发服务 research-trigger |
+| 第15章 | 单体→微服务③ | 加 API 网关统一入口 |
+| 第16章 | 单体→微服务④ | 拆出 LLM 网关，屏蔽厂商差异 |
+| 第17章 | 无记忆→分布式记忆 | Redis 做 ChatMemory 热缓存，触发服务恢复多轮记忆 |
+| 第18章 | 匿名→多租户 | JWT 认证 + 网关验签 + 租户数据隔离 |
+| 第19章 | 黑盒→可观测 | 链路追踪 + 指标 + 日志聚合（Zipkin + Micrometer + ELK） |
+| 第20章 | 单向→闭环 | 幻觉检测（交叉验证 + 引用核对）+ 用户反馈 → 改善 RAG 数据 |
+| 第21章 | 线性→DAG | 工作流引擎：条件分支、跨步骤依赖、多 Agent 协作编排 |
+| 第22章 | 会话记忆→长期记忆 | 用户画像/偏好跨会话沉淀，Agent 越用越懂用户 |
+| 第23章 | 无管控→成本治理 | token 计量 + 租户预算上限 + 成本分摊 |
 
-### 10.2 后续方向
+### 24.2 后续方向
 
-1. **多租户 + 用户体系**：sessionId 始终匿名。需要 JWT/OAuth2 + 按用户/租户隔离会话、知识库、审计。
-2. **Redis 生产化**：开发用单节点，生产要 Sentinel/Cluster 高可用 + SSL + `maxmemory-policy`。
-3. **分布式 ChatMemory 缓存**：用户量大后，每次 `chatMemory.get()` 查 PG 太重——用 Redis 做 ChatMemory 热数据缓存层。
-4. **完整可观测性**：第7章审计是基础。需要 token 级计量、成本分摊、P95/P99 延迟告警、A/B 评测（33a/33b 文档主题）。
-5. **多模态 Agent + MCP 工具生态**：文本→视觉/代码/文件解析。MCP 协议本身就是为工具生态准备的。
-6. **DAG 工作流**：Plan-Execute 是线性编排。多 Agent 协作、条件分支需要工作流引擎。
-7. **幻觉检测与反馈闭环**：交叉验证 + 用户反馈循环 → 改善 RAG 数据 → 提升答案质量。
-8. **企业级架构终极形态**：第 9 章把多设备同步做成了"单进程 + Redis"的形态——能跑、能上线，但还不是大型互联网公司的终极架构。**管数分离、Redis 高可用、消息队列升级、微服务拆分**这四个跃迁，是把"能上线的单体"推向"大型企业级系统"的完整路径。不再用"当前够用"挡回去——**每个跃迁都展开成可学习的章节**，见第 10 章逐一拆解。
+> 文档已演进到企业级终极形态（第 0-23 章）。后续方向是**更前沿的探索**，不在本文范围内——以下方向留作进阶学习的路标。
 
-   | 跃迁 | 终极形态解决什么 | 在哪一章 |
-   |------|----------------|---------|
-   | 管数分离 | 触发与订阅解耦：切换设备不重新触发 LLM、数据面挂了不影响触发 | 第 10 章 |
-   | Redis 高可用 | 消除单点：Redis Sentinel/Cluster，挂节点不丢会话 | 第 10 章 |
-   | 消息队列升级 | Streams → Kafka：跨服务消费、长期持久、多团队共用总线 | 第 10 章 |
-   | 微服务拆分 | 触发服务/订阅服务/LLM 网关各自独立部署、独立扩缩容 | 第 10 章 |
+1. **多模态 Agent + MCP 工具生态**：文本→视觉/代码/文件解析。MCP 协议标准化工具接入，工具可插拔、跨 Agent 复用。
+2. **Agent 评测与基准**：系统化的 Agent 质量评测框架（任务完成率、工具调用准确率、成本效率）。当前第 20 章的幻觉检测是单点质量保障，评测框架是系统化、可对比的质量度量。
+3. **限流配额与熔断降级**：网关按租户限流、LLM 厂商故障自动熔断切备用——可用性与容错保障。
+4. **配置中心与灰度发布**：system prompt/模型参数/功能开关动态调、A/B 灰度——运维敏捷性。
 
-   > 学习定位：前 9 章是"功能演进"（从原型到产品），第 10 章是"架构演进"（从单体到分布式企业级）。两者是不同维度的成长——功能做完，才谈架构升级。
+> **企业级架构演进（第 10-23 章）**：从"能上线的单体"到"分布式企业级终极形态"——管数分离（10）→ Redis 高可用（11）→ Kafka 升级（12）→ 微服务拆分（13-16，逐个拆订阅/触发/网关/LLM网关）→ 分布式 ChatMemory（17）→ 多租户用户体系（18）→ 可观测性（19）→ 幻觉检测与反馈闭环（20）→ DAG 工作流（21）→ 长期记忆与个性化（22）→ 成本治理（23）。每章一个痛点、一个跃迁，一步步推进，不要跳。微服务拆分尤其忌讳"一刀切全拆"——第 13-16 章一次拆一个，跑通再拆下一个；拆完再补跨服务能力、质量保障、编排能力、个性化能力、成本治理（第 17-23 章）。
 
 ---
 
@@ -4832,5 +8788,9 @@ public class RedisStreamBus {
 
 ---
 
-*全书完。从固定 workflow（第0章）→ 自主 Agent（第1章）→ 知识库 RAG（第2章）→ 上线运营事故（第3章）→ Plan-Execute（第4章）→ 多 Worker 并发（第5章）→ 审计可追溯（第6章）→ 会话持久化（第7章）→ 产品化（第8章）→ 多设备同步流式（第9章），每步痛点驱动、一点点演进。照着敲，得到一个**会规划、多 Worker 并发、可追溯、有记忆、可管理、多设备同步流式的产品级研究问答系统**。*
+*全书完。前 9 章是**功能演进**：固定 workflow（第0章）→ 自主 Agent（第1章）→ 知识库 RAG（第2章）→ 上线运营事故（第3章）→ Plan-Execute（第4章）→ 多 Worker 并发（第5章）→ 审计可追溯（第6章）→ 会话持久化（第7章）→ 产品化（第8章）→ 多设备同步流式（第9章），得到一个会规划、多 Worker 并发、可追溯、有记忆、可管理、多设备同步流式的**产品级研究问答系统**。*
+
+*第 10-23 章是**架构与能力演进**：管数分离（第10章）→ Redis 高可用（第11章）→ Kafka 升级（第12章）→ 微服务拆分（第13-16章，逐个拆订阅/触发/网关/LLM网关）→ 分布式 ChatMemory（第17章）→ 多租户用户体系（第18章）→ 可观测性（第19章）→ 幻觉检测与反馈闭环（第20章）→ DAG 工作流（第21章）→ 长期记忆与个性化（第22章）→ 成本治理（第23章），把它从"能上线的单体"一步步推向**分布式企业级终极形态**——六服务（业务核心/触发/订阅/API网关/LLM网关/认证）+ Eureka 服务发现独立部署，Kafka 做持久总线、Redis Sentinel 做高可用协调、Redis 热缓存共享记忆、JWT 认证 + 租户隔离保障安全、Zipkin+Prometheus+ELK 全链路可观测、引用核对 + 反馈闭环保障答案质量、DAG 工作流编排多 Agent 协作、跨会话长期记忆实现个性化、token 计量 + 预算上限实现成本治理。微服务拆分尤其忌讳一刀切——四步一次拆一个、跑通再拆下一个；拆完再补跨服务能力、质量保障、编排能力、个性化能力、成本治理（第 17-23 章）。每步痛点驱动、一步步推进，不跳章。*
+
+*照着敲完，你不只有一套能跑的代码，还有一套**完整的架构演进思维**——从单机原型到大型分布式系统，每一步为什么走、走到哪、下一步是什么。*
 
