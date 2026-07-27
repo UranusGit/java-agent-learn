@@ -2321,7 +2321,7 @@ CREATE TABLE research_audit (
     output      TEXT,                     -- 输出摘要（计划 JSON / worker 结果 / 聚合答案，截断）
     success     BOOLEAN     NOT NULL,     -- 本步成败（worker 失败时 false）
     duration_ms BIGINT,                   -- 本步耗时
-    created_at  TIMESTAMPTZ DEFAULT now()
+    created_at  TIMESTAMP DEFAULT now()
 );
 CREATE INDEX idx_audit_session_turn ON research_audit(session_id, turn_id);
 ```
