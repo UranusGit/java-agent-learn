@@ -1299,13 +1299,12 @@ Agent 多步搜索 + 长文生成，单次 LLM 调用可能很久。底层 HTTP 
 ```java
 package com.example.research.config;
 
-import org.springframework.boot.web.client.ClientHttpRequestFactoryBuilder;
-import org.springframework.boot.web.client.ClientHttpRequestFactorySettings;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.client.ClientHttpRequestFactory;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import java.net.http.HttpClient;
 import java.time.Duration;
 
 /**
@@ -1323,17 +1322,17 @@ public class HttpClientConfig {
 
     @Bean
     public RestClient.Builder restClientBuilder() {
-        ClientHttpRequestFactorySettings settings = ClientHttpRequestFactorySettings.builder()
+        HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
-                .readTimeout(Duration.ofSeconds(180))   // 读超时 180s，覆盖长生成停顿
                 .build();
-        ClientHttpRequestFactory factory = ClientHttpRequestFactoryBuilder.detect().build(settings);
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
+        factory.setReadTimeout(Duration.ofSeconds(180));   // 读超时 180s，覆盖长生成停顿
         return RestClient.builder().requestFactory(factory);
     }
 }
 ```
 
-> **API 核实**：Spring Boot 4.x 里 `RestClient.builder().requestFactory(...)` 接受的是 `ClientHttpRequestFactory`（工厂对象），不是 `ClientHttpRequestFactorySettings`（配置）。正确两步写法：`ClientHttpRequestFactorySettings.builder()...build()` 配超时 → `ClientHttpRequestFactoryBuilder.detect().build(settings)` 得到工厂 → 传给 `requestFactory`。`detect()` 自动选底层实现（JDK HttpClient / HttpComponents 等）。Spring AI 2.0 的 `OpenAiApi` 接受 `RestClient.Builder`，自定义 Bean 会被自动拾取，对 Agent 内部 LLM 调用生效。
+> **怎么被用到的？** `spring-ai-starter-model-openai` 的 `OpenAiAutoConfiguration` 创建 `OpenAiApi`（负责与 OpenAI API 通信）时需要 `RestClient.Builder` 参数。Spring 容器启动时先加载你的 `@Bean restClientBuilder()`，发现已经有人定义了，就不会再创建默认的——你的 Bean 替换了默认的，被注入到 `OpenAiApi` 里。Agent 工具循环、流式对话、`.call()` 这些最终都是 `OpenAiApi` 发 HTTP 请求，全走这个 RestClient，超时/拦截器对整个 Agent 的 LLM 调用生效。
 >
 > **为什么 180s**：研究 Agent 多步，单次 LLM 调用含停顿可能 60-90s。180s 留余量。太短=误杀；太长=真卡死时用户干等。按你的 P99 生成耗时 × 2-3 倍设。
 
@@ -1356,18 +1355,17 @@ public class HttpClientConfig {
 ```java
 package com.example.research.config;
 
-import org.springframework.boot.web.client.ClientHttpRequestFactoryBuilder;
-import org.springframework.boot.web.client.ClientHttpRequestFactorySettings;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpRequest;
 import org.springframework.http.client.ClientHttpRequestExecution;
-import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.http.client.ClientHttpResponse;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
+import java.net.http.HttpClient;
 import java.time.Duration;
 
 /**
@@ -1381,11 +1379,11 @@ public class HttpClientConfig {
 
     @Bean
     public RestClient.Builder restClientBuilder() {
-        ClientHttpRequestFactorySettings settings = ClientHttpRequestFactorySettings.builder()
+        HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
-                .readTimeout(Duration.ofSeconds(180))
                 .build();
-        ClientHttpRequestFactory factory = ClientHttpRequestFactoryBuilder.detect().build(settings);
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
+        factory.setReadTimeout(Duration.ofSeconds(180));
         return RestClient.builder()
                 .requestFactory(factory)
                 // ▼ 第4章(4.2)新增：重试拦截器，对 429/5xx/网络错误退避重试
@@ -1900,6 +1898,8 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 /**
  * Plan-Execute 编排。
@@ -1985,57 +1985,63 @@ public class PlanExecuteService {
                 .content();
     }
 
+    // ============================================================
+    // 并发编排（第 5 章）
+    // ============================================================
+
     /**
-     * Plan-Execute 入口（并发版，流式）：Plan→并发Execute→Aggregate 流式输出。全程响应式，无 block。
-     * 第 4 章的 researchDeep 是串行 Execute；本章把 Execute 改成多 Worker 并发（flatMap 限并发）。
+     * Plan-Execute 入口（并发版，流式）：Plan→并发Execute→Aggregate 流式输出。
+     * 三段方法链：planAsync → executeConcurrently → aggregateStreaming，每段职责单一。
      */
     public Flux<String> researchDeep(String topic) {
-        // 阶段1 Plan（阻塞）→ 阶段2 并发 Execute（响应式）→ 阶段3 Aggregate 流式
-        return Mono.fromCallable(() -> plan(topic))                  // Plan 阻塞，包成 Mono
-                .subscribeOn(Schedulers.boundedElastic())             // 跑弹性线程
-                .flatMapMany(subtasks -> {
-                    System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
-                    // 阶段2：并发 Execute（每个 worker 是 Mono，flatMap 限并发）
-                    return Flux.fromIterable(subtasks)
-                            .flatMap(this::executeOneReactive,
-                                    Math.min(subtasks.size(), MAX_CONCURRENCY))
-                            .collectList()                            // 收成 List<String>（results）
-                            // 阶段3：Aggregate 流式输出最终报告
-                            .flatMapMany(results -> {
-                                String evidence = buildEvidence(topic, subtasks, results);
-                                return chatClient.prompt()
-                                        .system("你是研究综合员。基于多个子调研结果综合成研究报告。" +
-                                                "若某子任务标注为'调研失败'，在报告中说明该部分缺失。")
-                                        .user(evidence)
-                                        .stream()
-                                        .content();
-                            });
-                });
+        return planAsync(topic)
+                .flatMapMany(subtasks -> executeConcurrently(subtasks)
+                        .collectList()
+                        .flatMapMany(results -> aggregateStreaming(topic, subtasks, results)));
+    }
+
+    /** Plan 阶段（异步包装）：plan() 阻塞在 .call().entity()，切弹性线程防阻塞 event loop。 */
+    private Mono<List<String>> planAsync(String topic) {
+        return Mono.fromCallable(() -> plan(topic))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** 并发 Execute：flatMap 限并发 + 日志。 */
+    private Flux<String> executeConcurrently(List<String> subtasks) {
+        System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
+        return Flux.fromIterable(subtasks)
+                .flatMap(this::executeOneReactive,
+                        Math.min(subtasks.size(), MAX_CONCURRENCY));
+    }
+
+    /** Aggregate 流式版：一次 LLM 调用收口，流式输出最终报告。 */
+    private Flux<String> aggregateStreaming(String topic, List<String> subtasks, List<String> results) {
+        return chatClient.prompt()
+                .system("你是研究综合员。基于多个子调研结果综合成研究报告。" +
+                        "若某子任务标注为'调研失败'，在报告中说明该部分缺失。")
+                .user(buildEvidence(topic, subtasks, results))
+                .stream()
+                .content();
     }
 
     /** 拼接 evidence：把各子任务（带编号）和结果汇总成给 Aggregate 的上下文。 */
     private String buildEvidence(String topic, List<String> subtasks, List<String> results) {
-        StringBuilder sb = new StringBuilder("研究主题：").append(topic).append("\n\n各子调研结果：\n");
-        for (int i = 0; i < results.size(); i++) {
-            String sub = i < subtasks.size() ? subtasks.get(i) : ("子任务" + (i + 1));
-            sb.append("[子任务").append(i + 1).append("] ").append(sub).append("\n")
-                    .append(results.get(i)).append("\n\n");
-        }
-        return sb.toString();
+        var body = IntStream.range(0, results.size())
+                .mapToObj(i -> "[子任务%d] %s\n%s".formatted(i + 1, subtasks.get(i), results.get(i)))
+                .collect(Collectors.joining("\n\n"));
+        return "研究主题：%s\n\n各子调研结果：\n%s".formatted(topic, body);
     }
 }
 ```
 
-> **`flatMap(sub -> ..., Math.min(subtasks.size(), MAX_CONCURRENCY))` 是核心**：
-> - 第一参数是"每个元素怎么变成 Mono"（`executeOneReactive`）。
-> - **第二参数是并发上限**——不传默认 256，瞬间打出所有子任务的 LLM 调用，烧钱+触发 429。这是并发编排最容易翻车的点。
-> - 取 `min(子任务数, MAX_CONCURRENCY)`：子任务只有 2 个时不超发；子任务有 10 个时被 4 卡住，分批跑。
+> **三段方法链**：`planAsync → executeConcurrently → aggregateStreaming`，每段职责单一。
+> - `planAsync`：阻塞 Plan 切弹性线程，`plan()` 内部的 `.call().entity()` 不动。
+> - `executeConcurrently`：`flatMap(fn, concurrency)` 是核心——**第二参数（并发上限）必传**。不传默认 256，瞬间打出所有 LLM 调用，烧钱+触发 429。取 `min(子任务数, MAX_CONCURRENCY)`，子任务只有 2 个时不超发。
+> - `aggregateStreaming`：一次 LLM 调用收口，流式输出最终报告。
 >
-> **`Mono.fromCallable + subscribeOn(boundedElastic)`**：第 2 章 `KnowledgeBaseTool` 用过同一条纪律。`executeOne` 内部是 `.call()`（同步阻塞的 LLM 调用），直接在响应式链上跑会**阻塞 Netty event loop**（整个服务卡住）。`boundedElastic` 是专为阻塞任务设计的弹性线程池。
+> **`onErrorResume` 在 worker 内部**：包在**每个 worker** 上（`executeOneReactive`），不是整个 `flatMap` 外面——后者只能拿到流级错误，救不回已被取消的其他 worker。
 >
-> **`onErrorResume` 在 worker 内部**：注意是包在**每个 worker**上，不是包在整个 `flatMap` 外面——后者只能拿到"流级"错误，救不回已经被取消的其他 worker。
->
-> **Aggregate vs 第 4 章拼接**：第 4 章是 `StringBuilder` 把子结果拼成一段文本返回；本章是一次 LLM 调用，让模型综合、去重、指出矛盾、标注失败部分——**这才是真正的聚合**。代价是多一次 LLM 调用，但报告质量高得多。
+> **Aggregate vs 第 4 章拼接**：第 4 章是 `StringBuilder` 把子结果拼成一段文本；本章是一次 LLM 调用，让模型综合、去重、指出矛盾、标注失败部分——**这才是真正的聚合**。代价是多一次 LLM 调用，但报告质量高得多。
 
 #### 5.2.2 Controller：本章无需改动
 
@@ -2125,17 +2131,44 @@ git add -A && git commit -m "第6章：多Worker并发(flatMap限流+错误隔�
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
-| 存储 | PG 一张 `research_audit` 表（和 pgvector 同库不同表） | 持久化、能按 session_id 查、能 JOIN 会话表；不引新依赖 |
+| 存储 | PG 一张 `research_audit` 表（和 pgvector 同库不同表） | 持久化、能按 session_id 查、能 JOIN 会话表 |
+| ORM | **MyBatis-Plus** | `research_audit` 是本文第一张**业务表**——有 INSERT + 动态条件查询，不再像 pgvector 那样只需 `JdbcTemplate` 一行 SQL。MyBatis-Plus 是国内外企业 Java 项目的事实标准 ORM，LambdaQueryWrapper 写动态条件查询比手拼 SQL 安全（拼错字段名编译期就能发现） |
 | 串联键 | **`session_id` + `turn_id`** | session_id 定位哪个会话（第 7 章正式引入会话；本章先用请求传入的临时 ID）；turn_id 定位会话里第几轮（一次 Plan-Execute 一个 turn） |
 | 粒度 | 每个关键步骤一条：`PLAN` / `SUBTASK` / `AGGREGATE` | 既能看全流程，又不细到 token 级（那是可观测系统干的） |
 | 采集 | 关键节点显式调 `AuditLogger.log(...)` | 不靠 AOP/拦截器（拿不到"这是哪个子任务"的业务语义）；手写一行，语义清晰 |
 | 写入方式 | **fire-and-forget**（`.subscribe()` 触发不等完成） | 审计不是关键路径——写库失败不该让问答失败 |
 
-> **为什么串联键是 `session_id + turn_id` 而不是 `trace_id`**：`trace_id` 是分布式 trace 的概念（一次请求一个，跨服务），本文单实例用不上。你的需求是"回溯某次问答"——一次问答 = 一个 turn，多个 turn 属于一个 session。两层键正好回答"哪次会话的哪一轮，怎么走的"。
+> **为什么这里才引入 MyBatis-Plus**：第 2 章只有 pgvector——Spring AI 的 `VectorStore` 抽象掌管了向量读写，用户代码只需一行 `vectorStore.add()`，MyBatis-Plus 用不上。`research_audit` 是第一个需要手写 INSERT + 动态 WHERE 的业务表——场景匹配了才引依赖，不是"反正后面要用先加上"。第 8 章 `research_session` 表也能复用同一个 Mapper 模式——引入一次，后续受益。
+>
+> **pgvector 仍用 JdbcTemplate**：`spring-ai-starter-vector-store-pgvector` 的自动装配需要 `JdbcTemplate`（issue #6164），MyBatis-Plus 和 JdbcTemplate 共享 DataSource，互不冲突——JdbcTemplate 管向量，MyBatis-Plus 管业务表，各司其职。
 
 ### 6.2 动手
 
-本章建 1 张表、新建 2 个文件（`AuditLogger`、`AuditController`）、改 2 个文件（`PlanExecuteService` 三处埋点 + `Controller` 传 sessionId）。复用第 2 章已引入的 jdbc（审计用 JdbcTemplate，不引新依赖）。
+本章加 1 个 pom 依赖（MyBatis-Plus）、1 处 yaml 配置、建 1 张表、新建 4 个文件（`ResearchAudit` 实体、`ResearchAuditMapper`、`AuditLogger`、`AuditController`）、改 2 个文件（`PlanExecuteService` 三处埋点 + `Controller` 传 sessionId）。
+
+#### 6.2.0 引入 MyBatis-Plus（pom + yaml）
+
+**【改已有文件】** `pom.xml`。本章加 MyBatis-Plus starter（和 pgvector 共享 datasource，不冲突）：
+
+```xml
+<!-- 第 6 章：MyBatis-Plus（业务表 ORM。和 pgvector 的 JdbcTemplate 共享 datasource） -->
+<dependency>
+    <groupId>com.baomidou</groupId>
+    <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+    <version>3.5.12</version>
+</dependency>
+```
+
+> **版本说明**：MyBatis-Plus 3.5.9+ 支持 Spring Boot 3.x。`mybatis-plus-spring-boot3-starter` 是 Spring Boot 3 专用版（内部用 Jakarta EE），别用老版本的 `mybatis-plus-boot-starter`。
+
+**【改已有文件】** `application.yaml`。加 MyBatis-Plus 日志（开发期看 SQL，生产关掉）：
+
+```yaml
+# ▼ 第6章新增：MyBatis-Plus 日志（开发期看 SQL，排查问题用，生产关掉）
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+```
 
 #### 6.2.1 审计日志表
 
@@ -2157,18 +2190,106 @@ CREATE TABLE research_audit (
 CREATE INDEX idx_audit_session_turn ON research_audit(session_id, turn_id);
 ```
 
-> **`output` 截断存**：worker 的搜索结果可能很长，全存费空间。生产截断（如前 500 字）或单独 blob 表。本文演示全存或截断都行，代码里给截断工具方法。
+> **`output` 截断存**：worker 的搜索结果可能很长，全存费空间。代码里给截断工具方法（在实体里）。
 >
-> **`success` 字段**：第 5 章的 worker 错误隔离会把失败的 worker 吞成占位结果——审计里要记 `success=false`，这样查轨迹时能立刻看到"哪个 worker 挂了"，而不是混在正常结果里。
+> **`success` 字段**：第 5 章的 worker 错误隔离会把失败的 worker 吞成占位结果——审计里要记 `success=false`，查轨迹时一眼看到"哪个 worker 挂了"。
 
-#### 6.2.2 AuditLogger：结构化采集
+#### 6.2.2 ResearchAudit 实体
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/audit/ResearchAudit.java`：
+
+```java
+package com.example.research.audit;
+
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+
+import java.time.LocalDateTime;
+
+/** 审计日志实体——一次 Plan-Execute 中的某个步骤。 */
+@TableName("research_audit")
+public class ResearchAudit {
+
+    @TableId(type = IdType.AUTO)
+    private Long id;
+    private String sessionId;
+    private String turnId;
+    private String stepType;      // PLAN / SUBTASK / AGGREGATE
+    private String queryText;
+    private String output;
+    private Boolean success;
+    private Long durationMs;
+    private LocalDateTime createdAt;
+
+    public ResearchAudit() {}
+
+    /** 快捷构造：AuditLogger 用。 */
+    public ResearchAudit(String sessionId, String turnId, String stepType,
+                         String queryText, String output, boolean success, long durationMs) {
+        this.sessionId = sessionId;
+        this.turnId = turnId;
+        this.stepType = stepType;
+        this.queryText = queryText;
+        this.output = truncate(output);
+        this.success = success;
+        this.durationMs = durationMs;
+    }
+
+    private static String truncate(String s) {
+        if (s == null) return null;
+        return s.length() > 500 ? s.substring(0, 500) + "...(截断)" : s;
+    }
+
+    // getters / setters（IDE 生成）
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public String getSessionId() { return sessionId; }
+    public void setSessionId(String v) { this.sessionId = v; }
+    public String getTurnId() { return turnId; }
+    public void setTurnId(String v) { this.turnId = v; }
+    public String getStepType() { return stepType; }
+    public void setStepType(String v) { this.stepType = v; }
+    public String getQueryText() { return queryText; }
+    public void setQueryText(String v) { this.queryText = v; }
+    public String getOutput() { return output; }
+    public void setOutput(String v) { this.output = v; }
+    public Boolean getSuccess() { return success; }
+    public void setSuccess(Boolean v) { this.success = v; }
+    public Long getDurationMs() { return durationMs; }
+    public void setDurationMs(Long v) { this.durationMs = v; }
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime v) { this.createdAt = v; }
+}
+```
+
+> **Lombok 还是手写 getter/setter**：生产项目可以用 `@Data`，但本文保持零 Lombok 依赖——手写 getter/setter 清晰可见，学习阶段知道实体里有什么。
+
+#### 6.2.3 ResearchAuditMapper
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/audit/ResearchAuditMapper.java`：
+
+```java
+package com.example.research.audit;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Mapper;
+
+/** 审计日志 Mapper。继承 BaseMapper 获得免费 CRUD。 */
+@Mapper
+public interface ResearchAuditMapper extends BaseMapper<ResearchAudit> {
+}
+```
+
+> **为什么 Mapper 这么短**：MyBatis-Plus 的 `BaseMapper<T>` 自带 `insert`、`selectList`、`selectPage` 等方法——单表操作不需要写 XML 和 SQL。这就是比 JdbcTemplate 手拼 SQL 优雅的地方：新增字段时不用满世界改 SQL 字符串。
+
+#### 6.2.4 AuditLogger：结构化采集（改：用 Mapper 替代 JdbcTemplate）
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/audit/AuditLogger.java`：
 
 ```java
 package com.example.research.audit;
 
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -2176,50 +2297,38 @@ import reactor.core.scheduler.Schedulers;
 import java.util.UUID;
 
 /**
- * 审计日志：把每次问答的关键步骤落库，按 session_id + turn_id 串联，事后可查。
+ * 审计日志：把每次问答的关键步骤落库，按 session_id + turn_id 串联。
  *
- * 为什么不用 logback / AOP：
- * - logback 输出到文件/控制台，不按会话串联，并发 worker 的日志交错，事后拼不回。
- * - AOP 拿不到"这是哪个子任务、用的什么工具"的业务语义。
- * 所以在 Plan/worker/Aggregate 关键节点显式调 log()，结构化落库。
- *
- * 用 JdbcTemplate 不用 JPA：第 2 章已引入 jdbc（pgvector 需要），审计表一两行 SQL，最直接，不引新依赖。
+ * 第 6 章从 JdbcTemplate 升级到 MyBatis-Plus Mapper——不再手写 SQL 字符串，
+ * new ResearchAudit(...) 设值 → mapper.insert(entity) 落库，字段在实体里管。
  */
 @Component
 public class AuditLogger {
 
-    private final JdbcTemplate jdbc;
-    public AuditLogger(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    private final ResearchAuditMapper mapper;
+    public AuditLogger(ResearchAuditMapper mapper) { this.mapper = mapper; }
 
-    /** 记录一步。stepType: PLAN / SUBTASK / AGGREGATE。返回 Mono<Void>，调用方 .subscribe() 触发（fire-and-forget）。 */
+    /** 记录一步。stepType: PLAN / SUBTASK / AGGREGATE。fire-and-forget。 */
     public Mono<Void> log(String sessionId, String turnId, String stepType,
                           String queryText, String output, boolean success, long durationMs) {
-        // JDBC 阻塞，包 Mono + boundedElastic，不占 Netty event loop（和第 2 章同纪律）
-        return Mono.fromRunnable(() -> jdbc.update(
-                "INSERT INTO research_audit(session_id, turn_id, step_type, query_text, output, success, duration_ms) " +
-                        "VALUES (?,?,?,?,?,?,?)",
-                sessionId, turnId, stepType, queryText, truncate(output), success, durationMs))
+        return Mono.fromRunnable(() ->
+                mapper.insert(new ResearchAudit(sessionId, turnId, stepType,
+                        queryText, output, success, durationMs)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .then();
     }
 
-    /** 生成一个新的 turn_id（一次 Plan-Execute 一个）。 */
     public static String newTurnId() { return UUID.randomUUID().toString().replace("-", ""); }
-
-    private static String truncate(String s) {
-        if (s == null) return null;
-        return s.length() > 500 ? s.substring(0, 500) + "...(截断)" : s;
-    }
 }
 ```
 
-> **`Mono.fromRunnable + boundedElastic`**：JDBC 阻塞，必须切线程（第 2 章纪律）。返回 `Mono<Void>` 让调用方决定怎么触发——**fire-and-forget 用 `.subscribe()`**：调了就返回，不等写库完成，写库失败也不影响主流程。
->
-> **为什么返回 Mono 而不是直接 void 内部 subscribe**：让调用方能选择——主流程 fire-and-forget（`.subscribe()`），测试时可以 `.block()` 等写完再断言。返回 Mono 比内部偷偷 subscribe 更可控。
+> **对比 JdbcTemplate 版**：少了 `"INSERT INTO ... VALUES (?,?,?,?,?,?,?)"` 字符串 + 参数对齐——字段名、顺序、类型都由实体约束，编译期安全。`subscribeOn(boundedElastic)` 切线程纪律不变（MyBatis-Plus 底层还是 JDBC 阻塞）。
 
-#### 6.2.3 PlanExecuteService：Plan/worker/Aggregate 三处埋点
+> **为什么返回 Mono 而不是直接 void 内部 subscribe**：让调用方能选择——主流程 fire-and-forget（`.subscribe()`），测试可以 `.block()` 等写完再断言。
 
-**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 5 章的改动：① 注入 `AuditLogger`（构造函数加参数）；② `researchDeep` 加 `sessionId` 参数（生成 turnId，在 PLAN/AGGREGATE 两处埋点）；③ `executeOneReactive` 加 `sessionId, turnId` 参数（worker 内部记 SUBTASK 成败——成功 `doOnNext`、失败 `onErrorResume`，集中在一处）。`plan()`、`executeOne()`、`aggregate()`、`buildEvidence()` 逻辑不变。
+#### 6.2.5 PlanExecuteService：Plan/worker/Aggregate 三处埋点
+
+**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 5 章的改动：① 注入 `AuditLogger`（构造函数加参数）；② `researchDeep` 加 `sessionId` 参数（生成 turnId，在 planAsync/aggregateStreaming 两处埋点）；③ `executeOneReactive` 加 `sessionId, turnId` 参数（worker 内部记 SUBTASK 成败——成功 `doOnNext`、失败 `onErrorResume`，集中在一处）。
 
 > **审计埋点的位置选择**（这是第 6 章的设计要点）：worker 粒度的成败记录**集中放在 `executeOneReactive` 内部**（成功 `doOnNext`、失败 `onErrorResume`），而不是散在 `researchDeep` 的 `flatMap` 里——因为 `flatMap` 里写 `doOnNext`/`doOnError` 会被 `executeOneReactive` 内部的 `onErrorResume` 抢先吞掉，拿不到原始异常（见 A.3 第 6 章坑）。PLAN 和 AGGREGATE 两处留在编排层。
 
@@ -2236,15 +2345,16 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 /**
  * Plan-Execute 编排。
  * 第 6 章：在 Plan/worker/Aggregate 三处加审计埋点（session_id + turn_id 串联，fire-and-forget 落库）。
- *   worker 粒度的成败记录集中在 executeOneReactive 内部（成功 doOnNext、失败 onErrorResume）。
  *
  * 演进：
  *   第 4 章 —— Plan + 串行 Execute + 简单拼接。
- *   第 5 章 —— 并发 Execute + Aggregate + 流式。
+ *   第 5 章 —— 并发 Execute + Aggregate + 流式（三段方法链：planAsync→executeConcurrently→aggregateStreaming）。
  *   第 6 章（本章）—— 加审计埋点（researchDeep / executeOneReactive 多了 sessionId/turnId 参数）。
  *   第 7 章 —— sessionId 来源从"请求临时传"改成"会话表真实 ID"（参数不变，调用方变）。
  */
@@ -2255,9 +2365,8 @@ public class PlanExecuteService {
 
     private final ChatClient chatClient;
     private final KnowledgeBaseTool knowledgeBaseTool;
-    private final AuditLogger auditLogger;   // ▼ 第7章新增注入
+    private final AuditLogger auditLogger;
 
-    // ▼ 第7章替换：第6章是 (ChatClient, KnowledgeBaseTool)；现在多注入 AuditLogger
     public PlanExecuteService(ChatClient chatClient,
                               KnowledgeBaseTool knowledgeBaseTool,
                               AuditLogger auditLogger) {
@@ -2265,6 +2374,10 @@ public class PlanExecuteService {
         this.knowledgeBaseTool = knowledgeBaseTool;
         this.auditLogger = auditLogger;
     }
+
+    // ============================================================
+    // Plan / Execute 基础方法（第 4 章起不变）
+    // ============================================================
 
     /** Plan：LLM 输出 JSON 子任务数组，.entity() 反序列化成 List<String>。 */
     private List<String> plan(String topic) {
@@ -2292,18 +2405,30 @@ public class PlanExecuteService {
                 .content();
     }
 
+    /** Aggregate 阻塞版：第 4 章兼容（第 5 章起不再被 researchDeep 调用，保留给内部用）。 */
+    private String aggregate(String topic, List<String> subtasks, List<String> results) {
+        return chatClient.prompt()
+                .system("你是研究综合员。基于多个子调研结果，综合成一份结构清晰的研究报告。" +
+                        "若某子任务标注为'调研失败'，在报告中说明该部分缺失。绝不编造。")
+                .user(buildEvidence(topic, subtasks, results))
+                .call()
+                .content();
+    }
+
+    // ============================================================
+    // worker：切线程 + 审计埋点 + 错误隔离（第 5 章引入，第 6 章加审计）
+    // ============================================================
+
     /**
      * worker：阻塞切线程 + 审计埋点（成功/失败都记）+ 错误隔离。
-     * ▼ 第7章替换：第6章是 executeOneReactive(String subtask)；现在多 sessionId/turnId 参数，加 doOnNext/onErrorResume 记 SUBTASK。
+     * ▼ 第6章新增：多 sessionId/turnId 参数，doOnNext/onErrorResume 记 SUBTASK。
      */
     private Mono<String> executeOneReactive(String subtask, String sessionId, String turnId) {
         long start = System.currentTimeMillis();
         return Mono.fromCallable(() -> executeOne(subtask))
                 .subscribeOn(Schedulers.boundedElastic())
-                // 成功记 SUBTASK（doOnNext）
                 .doOnNext(result -> auditLogger.log(sessionId, turnId, "SUBTASK",
                         subtask, result, true, System.currentTimeMillis() - start).subscribe())
-                // 失败记 SUBTASK（onErrorResume，拿得到原始异常）+ 错误隔离（第6章纪律不变）
                 .onErrorResume(err -> {
                     auditLogger.log(sessionId, turnId, "SUBTASK",
                             subtask, err.toString(), false, System.currentTimeMillis() - start).subscribe();
@@ -2311,127 +2436,118 @@ public class PlanExecuteService {
                 });
     }
 
-    /** Aggregate：一次 LLM 调用收口。 */
-    private String aggregate(String topic, List<String> subtasks, List<String> results) {
-        String evidence = buildEvidence(topic, subtasks, results);
-        return chatClient.prompt()
-                .system("你是研究综合员。基于多个子调研结果，综合成一份结构清晰的研究报告。" +
-                        "整合不同来源信息，指出一致和矛盾之处。若某子任务标注为'调研失败'，" +
-                        "在报告中说明该部分缺失。资料整体不足要明说，绝不编造。")
-                .user(evidence)
-                .call()
-                .content();
-    }
+    // ============================================================
+    // 并发编排（第 5 章引入，第 6 章加审计埋点）
+    // ============================================================
 
     /**
-     * Plan-Execute 流式版 + 审计埋点。
-     * ▼ 第7章替换：第6章是 researchDeep(String topic)；现在多 sessionId 参数，
-     *   在 PLAN、AGGREGATE 两处埋点（worker 的 SUBTASK 埋在 executeOneReactive 内部）。
+     * Plan-Execute 入口（并发版，流式 + 审计埋点）。
+     * 三段方法链：planAsync（含 PLAN 审计）→ executeConcurrently → aggregateStreaming（含 AGGREGATE 审计）。
+     * worker 的 SUBTASK 审计埋在 executeOneReactive 内部。
      */
     public Flux<String> researchDeep(String topic, String sessionId) {
         String turnId = AuditLogger.newTurnId();
-        long planStart = System.currentTimeMillis();
+        return planAsync(topic, sessionId, turnId)
+                .flatMapMany(subtasks -> executeConcurrently(subtasks, sessionId, turnId)
+                        .collectList()
+                        .flatMapMany(results -> aggregateStreaming(topic, subtasks, results, sessionId, turnId)));
+    }
 
-        return Mono.fromCallable(() -> {
-                    List<String> subtasks = plan(topic);
-                    long planDur = System.currentTimeMillis() - planStart;
-                    // 记 PLAN 步
-                    auditLogger.log(sessionId, turnId, "PLAN", topic,
-                            subtasks.toString(), true, planDur).subscribe();
-                    return subtasks;
-                })
+    /** Plan 阶段（异步包装 + PLAN 审计埋点）。 */
+    private Mono<List<String>> planAsync(String topic, String sessionId, String turnId) {
+        long planStart = System.currentTimeMillis();
+        return Mono.fromCallable(() -> plan(topic))
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMapMany(subtasks -> {
-                    System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
-                    // 并发 Execute：worker 的审计埋在 executeOneReactive 内部
-                    return Flux.fromIterable(subtasks)
-                            .flatMap(sub -> executeOneReactive(sub, sessionId, turnId),
-                                    Math.min(subtasks.size(), MAX_CONCURRENCY))
-                            .collectList()
-                            .flatMapMany(results -> {
-                                // AGGREGATE：流式推前端，用 doFinally 记审计元信息（耗时+是否完成）
-                                long aggStart = System.currentTimeMillis();
-                                String evidence = buildEvidence(topic, subtasks, results);
-                                return chatClient.prompt()
-                                        .system("你是研究综合员。基于多个子调研结果综合成研究报告。" +
-                                                "若某子任务标注为'调研失败'，在报告中说明该部分缺失。")
-                                        .user(evidence)
-                                        .stream()
-                                        .content()
-                                        // 流结束后记 AGGREGATE（doFinally 无论正常完成还是取消/出错都触发）。
-                                        // 记的是"聚合这一步"的元信息（耗时+是否完成），不存全文——
-                                        // 流式逐字推，要在 doFinally 里拿全文得额外累积，这里从简只记耗时。
-                                        .doFinally(signal -> auditLogger.log(
-                                                sessionId, turnId, "AGGREGATE",
-                                                topic, "[流式输出, " + signal + "]", true,
-                                                System.currentTimeMillis() - aggStart).subscribe());
-                            });
-                });
+                .doOnNext(subtasks -> auditLogger.log(sessionId, turnId, "PLAN",
+                        topic, subtasks.toString(), true,
+                        System.currentTimeMillis() - planStart).subscribe());
+    }
+
+    /** 并发 Execute：flatMap 限并发 + 日志。 */
+    private Flux<String> executeConcurrently(List<String> subtasks, String sessionId, String turnId) {
+        System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
+        return Flux.fromIterable(subtasks)
+                .flatMap(sub -> executeOneReactive(sub, sessionId, turnId),
+                        Math.min(subtasks.size(), MAX_CONCURRENCY));
+    }
+
+    /** Aggregate 流式版 + 审计元信息（doFinally 记耗时+完成信号）。 */
+    private Flux<String> aggregateStreaming(String topic, List<String> subtasks, List<String> results,
+                                            String sessionId, String turnId) {
+        long aggStart = System.currentTimeMillis();
+        return chatClient.prompt()
+                .system("你是研究综合员。基于多个子调研结果综合成研究报告。" +
+                        "若某子任务标注为'调研失败'，在报告中说明该部分缺失。")
+                .user(buildEvidence(topic, subtasks, results))
+                .stream()
+                .content()
+                .doFinally(signal -> auditLogger.log(
+                        sessionId, turnId, "AGGREGATE",
+                        topic, "[流式输出, " + signal + "]", true,
+                        System.currentTimeMillis() - aggStart).subscribe());
     }
 
     /** 拼接 evidence。 */
     private String buildEvidence(String topic, List<String> subtasks, List<String> results) {
-        StringBuilder sb = new StringBuilder("研究主题：").append(topic).append("\n\n各子调研结果：\n");
-        for (int i = 0; i < results.size(); i++) {
-            String sub = i < subtasks.size() ? subtasks.get(i) : ("子任务" + (i + 1));
-            sb.append("[子任务").append(i + 1).append("] ").append(sub).append("\n")
-                    .append(results.get(i)).append("\n\n");
-        }
-        return sb.toString();
+        var body = IntStream.range(0, results.size())
+                .mapToObj(i -> "[子任务%d] %s\n%s".formatted(i + 1, subtasks.get(i), results.get(i)))
+                .collect(Collectors.joining("\n\n"));
+        return "研究主题：%s\n\n各子调研结果：\n%s".formatted(topic, body);
     }
 }
 ```
 
-> **编排层只埋 PLAN 和 AGGREGATE**：worker 的审计在 `executeOneReactive` 内部——`flatMap` 里直接 `executeOneReactive(sub, sessionId, turnId)`，审计参数传进去，由 worker 自己记成败。**不在编排里写 `doOnNext`/`doOnError`**——那些会被 `executeOneReactive` 内部的 `onErrorResume` 抢先吞掉，拿不到原始异常。
+> **编排层只埋 PLAN 和 AGGREGATE**：worker 的审计在 `executeOneReactive` 内部——审计参数传进去，由 worker 自己记成败。**不在编排里写 `doOnNext`/`doOnError`**——那些会被 `executeOneReactive` 内部的 `onErrorResume` 抢先吞掉，拿不到原始异常。
 >
-> **AGGREGATE 用 `doFinally` 记元信息**：流式聚合是逐字推前端的，审计若要存完整全文，得在流上累积（`reduce` 拼回再记）——但那会破坏流式。**务实做法：AGGREGATE 审计只记元信息（耗时 + 完成信号）**，不存全文——`doFinally(signal -> ...)` 无论正常完成、取消、出错都触发。要存全文，改成"Aggregate 非流式 `.call()` 拿完整文本先记审计、再整体返回"（牺牲流式换可追溯全文，二选一）。
+> **`planAsync` 的 PLAN 审计用 `doOnNext`**：`plan()` 是阻塞的 `.call().entity()`，`Mono.fromCallable` 包完切线程后，`doOnNext` 拿到 `subtasks` 列表记 PLAN 一步——切线程纪律不变（第 2 章）。
 >
-> **`doFinally(SignalType)` 是真实 API**：`Flux.doFinally(Consumer<SignalType> afterTerminate)`——流终止（完成/取消/出错）时触发一次，参数是终止类型。
+> **AGGREGATE 用 `doFinally` 记元信息**：流式聚合是逐字推前端的，`doFinally(signal -> ...)` 无论正常完成、取消、出错都触发。只记元信息（耗时 + 完成信号），不存全文——要存全文需累积再记（牺牲流式换可追溯，二选一）。
 
-#### 6.2.4 查询接口：按会话回溯完整轨迹
+#### 6.2.6 查询接口：按会话回溯完整轨迹（改：用 Mapper 替代 JdbcTemplate）
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/audit/AuditController.java`：
 
 ```java
 package com.example.research.audit;
 
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * 审计查询接口：按会话/轮次回溯 Plan-Execute 的完整执行轨迹。
- * 用途：报告出错时排查、用户质疑时取证、复盘 Agent 行为。
+ * 第 6 章从 JdbcTemplate 升级到 MyBatis-Plus——LambdaQueryWrapper 拼动态条件，字段名编译期安全。
  */
 @RestController
 @RequestMapping("/api/audit")
 public class AuditController {
 
-    private final JdbcTemplate jdbc;
-    public AuditController(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    private final ResearchAuditMapper mapper;
+    public AuditController(ResearchAuditMapper mapper) { this.mapper = mapper; }
 
     /** 查某会话（可选某轮）的完整执行轨迹，按时间排序。 */
     @GetMapping
-    public Mono<List<Map<String, Object>>> trace(@RequestParam String sessionId,
-                                                  @RequestParam(required = false) String turnId) {
-        String sql = "SELECT step_type, query_text, output, success, duration_ms, created_at " +
-                     "FROM research_audit WHERE session_id = ? " +
-                     (turnId != null ? "AND turn_id = ? " : "") +
-                     "ORDER BY created_at";
-        Object[] args = turnId != null ? new Object[]{sessionId, turnId} : new Object[]{sessionId};
-        return Mono.fromCallable(() -> jdbc.queryForList(sql, args))
-                .subscribeOn(Schedulers.boundedElastic());
+    public Mono<List<ResearchAudit>> trace(@RequestParam String sessionId,
+                                           @RequestParam(required = false) String turnId) {
+        return Mono.fromCallable(() -> {
+            var wrapper = new LambdaQueryWrapper<ResearchAudit>()
+                    .eq(ResearchAudit::getSessionId, sessionId)
+                    .eq(turnId != null, ResearchAudit::getTurnId, turnId)
+                    .orderByAsc(ResearchAudit::getCreatedAt);
+            return mapper.selectList(wrapper);
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 }
 ```
 
-> **JDBC 查询也要 `boundedElastic`**：和写入同一条纪律——`queryForList` 阻塞，不能占 Netty event loop。
+> **对比 JdbcTemplate 版**：手拼 `"WHERE session_id = ? " + (turnId != null ? "AND turn_id = ? " : "")` → `LambdaQueryWrapper.eq(条件, 字段, 值)`。字段名是 `ResearchAudit::getSessionId`（编译期检查，改名时 IDE 自动重构），不再是字符串拼 `"session_id"`（拼错了编译不报错、SQL 运行时才炸）。
+>
+> **返回类型从 `Map<String,Object>` 升级为 `ResearchAudit`**：MyBatis-Plus 自动映射到实体，不再手写 `SELECT step_type, query_text, output, ...`。前端收到的 JSON 字段名从下划线变成驼峰（MyBatis-Plus 默认驼峰映射）。
 
-#### 6.2.5 Controller：传入 sessionId
+#### 6.2.7 Controller：传入 sessionId
 
 第 7 章正式引入会话前，`/deep` 让请求传一个临时 `sessionId`（或后端生成 UUID）。
 
@@ -2508,33 +2624,35 @@ curl "http://localhost:8080/api/audit?sessionId=test-001"
 
 ### 6.4 checkpoint
 
-第 6 章结束时，主项目结构（建 1 张表、新建 2 个文件、改 2 个文件）：
+第 6 章结束时，主项目结构（加 1 个 pom 依赖、1 处 yaml 配置、建 1 张表、新建 4 个文件、改 2 个文件）：
 
 ```
 research-agent/src/main/java/com/example/research/
 ├── audit/
-│   ├── AuditLogger.java       （新增：结构化采集落库）
-│   └── AuditController.java   （新增：按会话查轨迹）
-├── plan/PlanExecuteService.java （改：注入 AuditLogger + Plan/worker/Aggregate 三处埋点）
-└── ResearchController.java    （改：/deep 加 sessionId 参数）
+│   ├── ResearchAudit.java      （新增：审计实体，@TableName + @TableId）
+│   ├── ResearchAuditMapper.java（新增：MyBatis-Plus Mapper，继承 BaseMapper）
+│   ├── AuditLogger.java        （新增：结构化采集落库，用 Mapper 替代 JdbcTemplate）
+│   └── AuditController.java    （新增：按会话查轨迹，LambdaQueryWrapper 动态条件）
+├── plan/PlanExecuteService.java（改：注入 AuditLogger + 三段方法链 + 审计埋点）
+└── ResearchController.java     （改：/deep 加 sessionId 参数）
 ```
 
-建表 SQL：`research_audit`（session_id + turn_id 串联）。
+pom：`mybatis-plus-spring-boot3-starter`。yaml：mybatis-plus 日志。建表：`research_audit`（session_id + turn_id 串联）。
 
 ```bash
-git add -A && git commit -m "第7章：结构化审计日志，按会话串联全流程可追溯"
+git add -A && git commit -m "第6章：结构化审计日志（MyBatis-Plus），按会话串联全流程可追溯"
 ```
 
 ### 6.5 复盘
 
-**做了**：审计日志表（`session_id + turn_id` 串联）；`AuditLogger` 结构化采集（PLAN/SUBTASK/AGGREGATE + 成败 + 耗时）；埋点集中在 worker 内部（成功失败都能记）；查询接口按会话回溯。
+**做了**：MyBatis-Plus 实体 + Mapper 管理审计表；`AuditLogger` 结构化采集（PLAN/SUBTASK/AGGREGATE + 成败 + 耗时）；`LambdaQueryWrapper` 动态条件查询；埋点集中在 worker 内部（成功失败都能记）；查询接口按会话回溯。
 
-**核心跃迁**：从"散落滚动的控制台日志"升级到"按会话串联的、持久化的、可查询的执行轨迹"。**AI 系统没有可追溯性 = 黑箱**——审计日志是"事后取证"的最小可用形态。
+**核心跃迁**：从"散落滚动的控制台日志"升级到"按会话串联的、持久化的、可查询的执行轨迹"。`research_audit` 是第一张业务表——MyBatis-Plus 从此接管业务表 ORM（pgvector 仍用 JdbcTemplate），后续章节新增业务表复用同一 Mapper 模式。
 
 **工程教训**：
-- **审计按业务语义串联**：用 `session_id + turn_id`，不是 `trace_id`（那是分布式 trace 的概念，本文单实例用不上）。串联键要能回答"这次问答怎么走的"。
-- **fire-and-forget**：审计非关键路径，写库失败不该让问答失败。`.subscribe()` 触发即走。
-- **埋点跟着被审计代码走**：worker 粒度的成败记录放进 `executeOneReactive` 内部（成功 doOnNext、失败 onErrorResume），比散在编排里清晰。
+- **ORM 按需引入，等场景匹配了再加**：第 2 章只有 pgvector（Spring AI VectorStore 抽象，用不到 ORM），到第 6 章第一张业务表（INSERT + 动态查询）才引入 MyBatis-Plus——不是"反正以后要用先加上"。
+- **LambdaQueryWrapper vs 手拼 SQL**：`eq(ResearchAudit::getSessionId, sessionId)` 比 `"WHERE session_id = ?"` 安全——字段名编译期检查，改名时 IDE 自动重构。
+- **fire-and-forget 不变**：审计非关键路径，MyBatis-Plus 来改不改这条纪律——`subscribeOn(boundedElastic)` + `.subscribe()` 继续生效。
 
 **还差**：
 - **`session_id` 还是临时的**（每次问答传一个匿名 ID）：没有真正的"会话"概念，用户追问"刚才那个再展开"时 Agent 不记得上次。→ **第 7 章 会话持久化**（引入真正的 session + ChatMemory 落库，审计和会话 JOIN 起来）。
@@ -2702,7 +2820,7 @@ public class ChatClientConfig {
 
 先改 `PlanExecuteService`——`plan`、`executeOne`、`aggregate` 都要加 sessionId 参数并传 CONVERSATION_ID；调用它们的 `researchDeep` 把 sessionId 透传下去（sessionId 已是它的入参，第 6 章加的）。
 
-**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 6 章的改动：① `plan(topic)` → `plan(topic, sessionId)`；② `executeOne(subtask)` → `executeOne(subtask, sessionId)`；③ `aggregate(...)` 加 sessionId 参数；④ `researchDeep` 内部把 sessionId 透传到 plan/executeOne/aggregate；⑤ 每个 chatClient 调用加 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))`。
+**【改已有文件，完整版覆盖】** `PlanExecuteService.java`。本章相对第 6 章的改动：① `plan(topic)` → `plan(topic, sessionId)`，`executeOne(subtask)` → `executeOne(subtask, sessionId)`；② 每个 chatClient 调用加 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))`；③ `researchDeep` 内部把 sessionId 透传到 planAsync/executeOneReactive/aggregateStreaming。
 
 ```java
 package com.example.research.plan;
@@ -2718,17 +2836,18 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 /**
  * Plan-Execute 编排。
- * 第 7 章：plan/executeOne/aggregate 各处加 sessionId 参数 + CONVERSATION_ID，让规划、调研、聚合都带会话历史。
- *   （会话历史让追问更精准：用户追问"展开 PagedAttention"，Plan 能参考上一轮结论拆出更聚焦的子任务。）
+ * 第 7 章：plan/executeOne/aggregate 各处加 sessionId + CONVERSATION_ID，让规划、调研、聚合都带会话历史。
  *
  * 演进：
  *   第 4 章 —— Plan + 串行 Execute + 简单拼接。
- *   第 5 章 —— 并发 Execute + Aggregate + 流式。
+ *   第 5 章 —— 并发 Execute + Aggregate + 流式（三段方法链）。
  *   第 6 章 —— 加审计埋点（researchDeep / executeOneReactive 多 sessionId/turnId）。
- *   第 7 章（本章）—— plan/executeOne/aggregate 多 sessionId 参数 + CONVERSATION_ID。
+ *   第 7 章（本章）—— plan/executeOne 多 sessionId + CONVERSATION_ID。
  */
 @Service
 public class PlanExecuteService {
@@ -2747,7 +2866,10 @@ public class PlanExecuteService {
         this.auditLogger = auditLogger;
     }
 
-    /** Plan：LLM 输出 JSON 子任务数组。 */   // ▼ 第8章替换：加 sessionId 参数
+    // ============================================================
+    // Plan / Execute 基础方法（加 sessionId + CONVERSATION_ID）
+    // ============================================================
+
     private List<String> plan(String topic, String sessionId) {
         return chatClient.prompt()
                 .system("""
@@ -2756,27 +2878,29 @@ public class PlanExecuteService {
                         只输出 JSON 数组，如 ["子任务1","子任务2"]，不要任何额外文字。
                         """)
                 .user("研究主题：" + topic)
-                .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })   // ▼ 第8章新增
+                .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })
                 .call()
                 .entity(new ParameterizedTypeReference<>() {});
     }
 
-    /** Execute 单步：复用 ReAct。 */   // ▼ 第8章替换：加 sessionId 参数
     private String executeOne(String subtask, String sessionId) {
         return chatClient.prompt()
                 .system("你是调研员。针对给定的子任务，自主调用工具（网页搜索/知识库）收集资料，" +
                         "然后给出该子任务的调研结果。资料不足要明说，绝不编造。")
                 .user("子任务：" + subtask)
                 .tools(knowledgeBaseTool)
-                .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })   // ▼ 第8章新增
+                .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })
                 .call()
                 .content();
     }
 
-    /** worker：阻塞切线程 + 审计埋点 + 错误隔离。 */   // ▼ 第8章替换：executeOne 调用改传 sessionId
+    // ============================================================
+    // worker：切线程 + 审计埋点 + 错误隔离（第 7 章传 sessionId）
+    // ============================================================
+
     private Mono<String> executeOneReactive(String subtask, String sessionId, String turnId) {
         long start = System.currentTimeMillis();
-        return Mono.fromCallable(() -> executeOne(subtask, sessionId))     // ▼ 第8章替换：传 sessionId
+        return Mono.fromCallable(() -> executeOne(subtask, sessionId))
                 .subscribeOn(Schedulers.boundedElastic())
                 .doOnNext(result -> auditLogger.log(sessionId, turnId, "SUBTASK",
                         subtask, result, true, System.currentTimeMillis() - start).subscribe())
@@ -2787,63 +2911,55 @@ public class PlanExecuteService {
                 });
     }
 
-    /** Aggregate：一次 LLM 调用收口。 */   // ▼ 第8章替换：加 sessionId 参数
-    private String aggregate(String topic, List<String> subtasks, List<String> results, String sessionId) {
-        String evidence = buildEvidence(topic, subtasks, results);
-        return chatClient.prompt()
-                .system("你是研究综合员。基于多个子调研结果，综合成一份结构清晰的研究报告。" +
-                        "若某子任务标注为'调研失败'，在报告中说明该部分缺失。绝不编造。")
-                .user(evidence)
-                .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })   // ▼ 第8章新增
-                .call()
-                .content();
-    }
+    // ============================================================
+    // 并发编排 + 会话记忆（第 5 章三段方法链，第 6 章加审计，第 7 章 sessionId 透传）
+    // ============================================================
 
-    /** Plan-Execute 流式版 + 审计埋点 + 会话记忆。 */
     public Flux<String> researchDeep(String topic, String sessionId) {
         String turnId = AuditLogger.newTurnId();
-        long planStart = System.currentTimeMillis();
+        return planAsync(topic, sessionId, turnId)
+                .flatMapMany(subtasks -> executeConcurrently(subtasks, sessionId, turnId)
+                        .collectList()
+                        .flatMapMany(results -> aggregateStreaming(topic, subtasks, results, sessionId, turnId)));
+    }
 
-        return Mono.fromCallable(() -> {
-                    List<String> subtasks = plan(topic, sessionId);                    // ▼ 第8章替换：传 sessionId
-                    long planDur = System.currentTimeMillis() - planStart;
-                    auditLogger.log(sessionId, turnId, "PLAN", topic,
-                            subtasks.toString(), true, planDur).subscribe();
-                    return subtasks;
-                })
+    private Mono<List<String>> planAsync(String topic, String sessionId, String turnId) {
+        long planStart = System.currentTimeMillis();
+        return Mono.fromCallable(() -> plan(topic, sessionId))
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMapMany(subtasks -> {
-                    System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
-                    return Flux.fromIterable(subtasks)
-                            .flatMap(sub -> executeOneReactive(sub, sessionId, turnId),
-                                    Math.min(subtasks.size(), MAX_CONCURRENCY))
-                            .collectList()
-                            .flatMapMany(results -> {
-                                long aggStart = System.currentTimeMillis();
-                                String evidence = buildEvidence(topic, subtasks, results);
-                                return chatClient.prompt()
-                                        .system("你是研究综合员。基于多个子调研结果综合成研究报告。" +
-                                                "若某子任务标注为'调研失败'，在报告中说明该部分缺失。")
-                                        .user(evidence)
-                                        .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))   // ▼ 第8章新增
-                                        .stream()
-                                        .content()
-                                        .doFinally(signal -> auditLogger.log(
-                                                sessionId, turnId, "AGGREGATE",
-                                                topic, "[流式输出, " + signal + "]", true,
-                                                System.currentTimeMillis() - aggStart).subscribe());
-                            });
-                });
+                .doOnNext(subtasks -> auditLogger.log(sessionId, turnId, "PLAN",
+                        topic, subtasks.toString(), true,
+                        System.currentTimeMillis() - planStart).subscribe());
+    }
+
+    private Flux<String> executeConcurrently(List<String> subtasks, String sessionId, String turnId) {
+        System.out.println("[Plan] 拆出 " + subtasks.size() + " 个子任务: " + subtasks);
+        return Flux.fromIterable(subtasks)
+                .flatMap(sub -> executeOneReactive(sub, sessionId, turnId),
+                        Math.min(subtasks.size(), MAX_CONCURRENCY));
+    }
+
+    private Flux<String> aggregateStreaming(String topic, List<String> subtasks, List<String> results,
+                                            String sessionId, String turnId) {
+        long aggStart = System.currentTimeMillis();
+        return chatClient.prompt()
+                .system("你是研究综合员。基于多个子调研结果综合成研究报告。" +
+                        "若某子任务标注为'调研失败'，在报告中说明该部分缺失。")
+                .user(buildEvidence(topic, subtasks, results))
+                .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
+                .stream()
+                .content()
+                .doFinally(signal -> auditLogger.log(
+                        sessionId, turnId, "AGGREGATE",
+                        topic, "[流式输出, " + signal + "]", true,
+                        System.currentTimeMillis() - aggStart).subscribe());
     }
 
     private String buildEvidence(String topic, List<String> subtasks, List<String> results) {
-        StringBuilder sb = new StringBuilder("研究主题：").append(topic).append("\n\n各子调研结果：\n");
-        for (int i = 0; i < results.size(); i++) {
-            String sub = i < subtasks.size() ? subtasks.get(i) : ("子任务" + (i + 1));
-            sb.append("[子任务").append(i + 1).append("] ").append(sub).append("\n")
-                    .append(results.get(i)).append("\n\n");
-        }
-        return sb.toString();
+        var body = IntStream.range(0, results.size())
+                .mapToObj(i -> "[子任务%d] %s\n%s".formatted(i + 1, subtasks.get(i), results.get(i)))
+                .collect(Collectors.joining("\n\n"));
+        return "研究主题：%s\n\n各子调研结果：\n%s".formatted(topic, body);
     }
 }
 ```
@@ -3064,7 +3180,7 @@ git add -A && git commit -m "第8章：ChatMemory落PG(JdbcChatMemoryRepository)
 
 ### 8.2 动手
 
-本章建 1 张表、新建 2 个文件（`SessionService`、`SessionController`）、改 1 个文件（`ResearchController` 自动标题）、新建前端 `index.html`。不引新依赖、不改配置（复用第 2 章的 jdbc）。
+本章建 1 张表、新建 4 个文件（`ResearchSession` 实体、`ResearchSessionMapper`、`SessionService`、`SessionController`）、改 1 个文件（`ResearchController` 自动标题）、新建前端 `index.html`。不引新依赖（复用第 6 章的 MyBatis-Plus）、不改配置。
 
 #### 8.2.1 会话元信息表
 
@@ -3081,52 +3197,104 @@ CREATE INDEX idx_session_created ON research_session(created_at DESC);
 
 > **`id` 就是 `conversation_id`**：新建会话生成一个 UUID 当 id，这个 id 同时是传给 `ChatMemory.CONVERSATION_ID` 的值——会话表和消息表通过它关联。**一个 id，两表共用**。
 
-#### 8.2.2 会话 CRUD Service + Controller
+#### 8.2.2 ResearchSession 实体
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/session/ResearchSession.java`：
+
+```java
+package com.example.research.session;
+
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+
+import java.time.LocalDateTime;
+
+/** 会话实体——research_session 表的 ORM 映射。第 8 章新增。 */
+@TableName("research_session")
+public class ResearchSession {
+
+    @TableId
+    private String id;            // 会话 ID（即 ChatMemory 的 conversation_id）
+    private String title;
+    private LocalDateTime createdAt;
+
+    public ResearchSession() {}
+    public ResearchSession(String id) { this.id = id; }
+
+    // getters / setters
+    public String getId() { return id; }
+    public void setId(String v) { this.id = v; }
+    public String getTitle() { return title; }
+    public void setTitle(String v) { this.title = v; }
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime v) { this.createdAt = v; }
+}
+```
+
+#### 8.2.3 ResearchSessionMapper
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/session/ResearchSessionMapper.java`：
+
+```java
+package com.example.research.session;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Mapper;
+
+/** 会话 Mapper。继承 BaseMapper 获得免费 CRUD——和第 6 章 ResearchAuditMapper 相同模式。 */
+@Mapper
+public interface ResearchSessionMapper extends BaseMapper<ResearchSession> {
+}
+```
+
+> **复用第 6 章的 MyBatis-Plus 模式**：新增一张业务表只需三步——建表 SQL → 实体（`@TableName` + `@TableId`）→ Mapper（`extends BaseMapper`）。依赖、配置、日志都在第 6 章已配好，零追加成本。
+
+#### 8.2.4 会话 CRUD Service + Controller
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/session/SessionService.java`：
 
 ```java
 package com.example.research.session;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
  * 会话管理：CRUD 会话元信息 + 查历史消息。
- * 会话元信息存 research_session 表；消息内容复用 ChatMemory（SPRING_AI_CHAT_MEMORY 表）。
+ * 第 8 章从 JdbcTemplate 升级到 MyBatis-Plus Mapper（和第 6 章审计表一致）。
+ * 会话元信息走 ResearchSessionMapper；消息内容复用 ChatMemory。
  */
 @Service
 public class SessionService {
 
-    private final JdbcTemplate jdbc;
-    private final ChatMemory chatMemory;   // 用它的 get() 查历史消息（不直接读消息表）
+    private final ResearchSessionMapper mapper;
+    private final ChatMemory chatMemory;
 
-    public SessionService(JdbcTemplate jdbc, ChatMemory chatMemory) {
-        this.jdbc = jdbc;
+    public SessionService(ResearchSessionMapper mapper, ChatMemory chatMemory) {
+        this.mapper = mapper;
         this.chatMemory = chatMemory;
     }
 
-    /** 新建会话：生成 id，标题先留空（第一轮问答后补）。返回新会话 id。 */
+    /** 新建会话：生成 id，标题先留空。返回新会话 id。 */
     public Mono<String> create() {
         String id = UUID.randomUUID().toString().replace("-", "");
-        return Mono.fromRunnable(() -> jdbc.update(
-                "INSERT INTO research_session(id) VALUES (?)", id))
+        return Mono.fromRunnable(() -> mapper.insert(new ResearchSession(id)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .thenReturn(id);
     }
 
-    /** 列出所有会话（按创建时间倒序）。 */
-    public Mono<List<Map<String, Object>>> list() {
-        return Mono.fromCallable(() -> jdbc.queryForList(
-                "SELECT id, title, created_at FROM research_session ORDER BY created_at DESC"))
+    /** 列出所有会话（按创建时间倒序）。MyBatis-Plus 自动映射到 ResearchSession。 */
+    public Mono<List<ResearchSession>> list() {
+        return Mono.fromCallable(() ->
+                mapper.selectList(new LambdaQueryWrapper<ResearchSession>()
+                        .orderByDesc(ResearchSession::getCreatedAt)))
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -3136,25 +3304,32 @@ public class SessionService {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    /** 改标题（第一轮问答后自动调，或用户手动改名）。 */
+    /** 改标题。 */
     public Mono<Void> rename(String sessionId, String title) {
-        return Mono.fromRunnable(() -> jdbc.update(
-                "UPDATE research_session SET title = ? WHERE id = ?", title, sessionId))
+        ResearchSession entity = new ResearchSession(sessionId);
+        entity.setTitle(title);
+        return Mono.fromRunnable(() -> mapper.updateById(entity))
                 .subscribeOn(Schedulers.boundedElastic())
                 .then();
     }
 
-    /** 删除会话：删元信息 + 删消息（两边都清）。 */
+    /** 删除会话：删元信息 + 删消息（ChatMemory 的表不归 Mapper 管，仍用 JdbcTemplate）。
+     *  MyBatis-Plus 和 JdbcTemplate 共享 DataSource，混用不冲突。 */
     public Mono<Void> delete(String sessionId) {
         return Mono.fromRunnable(() -> {
-                    jdbc.update("DELETE FROM SPRING_AI_CHAT_MEMORY WHERE conversation_id = ?", sessionId);
-                    jdbc.update("DELETE FROM research_session WHERE id = ?", sessionId);
+                    mapper.deleteById(sessionId);
+                    // ChatMemory 表归 Spring AI 管，MyBatis-Plus 不管它——用 JdbcTemplate 直接删
+                    chatMemory.clear(sessionId);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .then();
     }
 }
 ```
+
+> **删除会话的 JdbcTemplate 还在？** `delete` 方法里删 `SPRING_AI_CHAT_MEMORY` 表用到了 JdbcTemplate——因为那张表是 Spring AI 的内部表，MyBatis-Plus 不该管理它。实际上 `chatMemory.clear(sessionId)` 就能清消息（Spring AI 原生 API），不需要 JdbcTemplate。所以本版直接用 `chatMemory.clear()` 替代——SessionService 构造函数不再需要 JdbcTemplate 参数。
+>
+> **`chatMemory.clear(String)` 是真实 API**：Spring AI 2.0 的 `ChatMemory` 接口有 `void clear(String conversationId)`。
 
 > **历史查询用 `chatMemory.get(sessionId)`**：不直接 SQL 读消息表——ChatMemory 的 `get()` 会按窗口裁剪（maxMessages=20）返回最近的消息。**想看全部历史**（不裁剪）则直接 SQL 读 `SPRING_AI_CHAT_MEMORY`。本文演示用 `chatMemory.get()`，和 Agent 看到的上下文一致。
 >
@@ -3174,7 +3349,7 @@ import java.util.Map;
 /**
  * 会话管理 REST 接口。
  * POST   /api/sessions              新建会话
- * GET    /api/sessions              列出所有会话
+ * GET    /api/sessions              列出所有会话（返回 ResearchSession，自动驼峰映射）
  * GET    /api/sessions/{id}/history 查某会话历史消息
  * PATCH  /api/sessions/{id}         改标题
  * DELETE /api/sessions/{id}         删除会话
@@ -3192,9 +3367,9 @@ public class SessionController {
         return sessionService.create().map(id -> Map.of("sessionId", id));
     }
 
-    /** 列出所有会话。 */
+    /** 列出所有会话（MyBatis-Plus 自动映射，返回 ResearchSession 列表）。 */
     @GetMapping
-    public Mono<List<Map<String, Object>>> list() {
+    public Mono<List<ResearchSession>> list() {
         return sessionService.list();
     }
 
@@ -3362,33 +3537,40 @@ curl http://localhost:8080/api/sessions/a1b2c3.../history
 
 ### 8.4 checkpoint
 
-第 8 章结束时，主项目结构（建 1 张表、新建 2 文件、改 1 文件、前端 1 文件）：
+第 8 章结束时，主项目结构（建 1 张表、新建 4 文件、改 1 文件、前端 1 文件）：
 
 ```
 research-agent/src/main/java/com/example/research/
+├── audit/
+│   ├── ResearchAudit.java       （第 6 章：审计实体）
+│   ├── ResearchAuditMapper.java （第 6 章：审计 Mapper）
+│   ├── AuditLogger.java         （第 6 章：采集落库，调 Mapper）
+│   └── AuditController.java     （第 6 章：查轨迹，LambdaQueryWrapper）
 ├── session/
-│   ├── SessionService.java     （新增：会话 CRUD + 查历史）
-│   └── SessionController.java  （新增：REST 接口）
-├── ResearchController.java     （改：注入 SessionService + /deep 自动补标题）
-└── resources/static/index.html （升级：会话列表 + 对话区，附录 A.5 第9章版）
-└── 建表 SQL：research_session
+│   ├── ResearchSession.java     （新增：会话实体，@TableName + @TableId）
+│   ├── ResearchSessionMapper.java（新增：会话 Mapper，继承 BaseMapper）
+│   ├── SessionService.java      （新增：会话 CRUD，用 Mapper 替代 JdbcTemplate）
+│   └── SessionController.java   （新增：REST 接口）
+├── plan/PlanExecuteService.java （第 5-7 章：并发编排 + 审计 + 会话记忆）
+├── ResearchController.java      （第 8 章改：注入 SessionService + 自动补标题）
+└── resources/static/index.html  （升级：会话列表 + 对话区）
 ```
 
+MyBatis-Plus 覆盖两张业务表（`research_audit` + `research_session`），pgvector 仍用 JdbcTemplate。建表：`research_session`。
+
 ```bash
-git add -A && git commit -m "第9章：会话CRUD+前端对话页，产品化收口"
+git add -A && git commit -m "第8章：会话CRUD(MyBatis-Plus)+前端对话页，产品化收口"
 ```
 
 ### 8.5 复盘
 
-**做了**：会话元信息表（`research_session`）；CRUD 接口（新建/列表/历史/改名/删除）；第一轮自动生成标题；前端对话页（会话列表 + 流式对话 + 历史回看）。
+**做了**：会话元信息表（`research_session`）+ MyBatis-Plus 实体/Mapper 管理；CRUD 接口（新建/列表/历史/改名/删除）；第一轮自动生成标题；前端对话页（会话列表 + 流式对话 + 历史回看）。
 
-**核心跃迁**：从"研究工具"升级到"问答产品"。用户能管理自己的会话、回看历史、多会话切换——这是产品级的最低门槛。
+**核心跃迁**：从"研究工具"升级到"问答产品"——用户能管理自己的会话、回看历史、多会话切换。MyBatis-Plus 在第 6 章引入后，到第 8 章新增第二张表时零配置成本——加实体 + Mapper 就行。
 
 **工程教训**：
-- **会话元信息和消息内容分表**：消息表（ChatMemory 内部）管内容，`research_session` 管元信息（列表/标题），各司其职。一个 id 两表共用。
-- **标题自动生成**：用户不想手动起标题。最简用问题截取，生产用 LLM 精炼。
-- **历史查询用 `chatMemory.get`**：和 Agent 看到的上下文一致（带窗口裁剪）；想看全量再直接 SQL。
-- **前端会话隔离靠 sessionId**：后端无状态，前端切换会话就是换 currentSessionId。
+- **ORM 引入后复利**：第 6 章 `research_audit` 配了 MyBatis-Plus，第 8 章 `research_session` 直接复用——新增一张表只需实体（`@TableName`）和 Mapper（`extends BaseMapper`）两个文件。
+- **MyBatis-Plus 和 JdbcTemplate 混用合理**：业务表走 Mapper，Spring AI 内部表（ChatMemory、pgvector）走 JdbcTemplate/ChatMemory API，各管各的，共享 DataSource。
 
 ---
 
@@ -3402,7 +3584,7 @@ git add -A && git commit -m "第9章：会话CRUD+前端对话页，产品化收
 
 ```
 research-agent/                         （主项目：会话化研究问答系统）
-├── pom.xml                             （webflux/openai/pgvector/jdbc/mcp-client/chat-memory-jdbc）
+├── pom.xml                             （webflux/openai/pgvector/jdbc/mybatis-plus/mcp-client/chat-memory-jdbc）
 ├── src/main/resources/
 │   ├── application.yaml                （DeepSeek + PG + 向量库 + MCP client + sql.init 建表）
 │   └── static/index.html               （第9章前端：会话列表 + 对话区，附录 A.5b）
@@ -3417,11 +3599,15 @@ research-agent/                         （主项目：会话化研究问答系�
     ├── plan/
     │   └── PlanExecuteService.java     （Plan + 多Worker并发Execute + Aggregate + 审计埋点，第5/6/7/8章）
     ├── audit/
-    │   ├── AuditLogger.java            （结构化采集落库，第7章）
-    │   └── AuditController.java        （按会话查执行轨迹，第7章）
+    │   ├── ResearchAudit.java          （审计实体，第6章）
+    │   ├── ResearchAuditMapper.java    （审计 Mapper，第6章）
+    │   ├── AuditLogger.java            （结构化采集落库，第6章）
+    │   └── AuditController.java        （按会话查轨迹，第6章）
     ├── session/
-    │   ├── SessionService.java         （会话 CRUD + 查历史，第9章）
-    │   └── SessionController.java      （会话 REST 接口，第9章）
+    │   ├── ResearchSession.java        （会话实体，第8章）
+    │   ├── ResearchSessionMapper.java  （会话 Mapper，第8章）
+    │   ├── SessionService.java         （会话 CRUD + 查历史，第8章）
+    │   └── SessionController.java      （会话 REST 接口，第8章）
     ├── tool/
     │   └── KnowledgeBaseTool.java      （本地工具：知识库检索；网页搜索来自 MCP）
     ├── kb/
@@ -3441,9 +3627,10 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 | spring-boot-starter-webflux | 第0章 | Web 栈基础（Controller、WebClient） |
 | spring-ai-starter-model-openai | 第0章 | DeepSeek（OpenAI 兼容）+ 第2章起也提供 EmbeddingModel |
 | spring-ai-starter-vector-store-pgvector | 第2章 | 向量库 |
-| spring-boot-starter-jdbc | 第2章 | pgvector 需要（issue #6164）；后续审计/会话也复用 |
+| spring-boot-starter-jdbc | 第2章 | pgvector 需要（issue #6164）；ChatMemory 官方建表也走 jdbc |
 | spring-ai-starter-mcp-client | 第3章 | 接入网页搜索 MCP server |
-| spring-ai-starter-model-chat-memory-repository-jdbc | 第8章 | ChatMemory 落 PG |
+| mybatis-plus-spring-boot3-starter | 第6章 | 业务表 ORM（审计、会话），pgvector 仍用 JdbcTemplate |
+| spring-ai-starter-model-chat-memory-repository-jdbc | 第7章 | ChatMemory 落 PG |
 
 **`research-agent/application.yaml` 配置演进轨迹**：
 
@@ -3453,7 +3640,8 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 | spring.datasource | 第2章 | PG 连接 |
 | spring.ai.openai.embedding | 第2章 | embedding 模型（入库向量化） |
 | spring.ai.vectorstore.pgvector | 第2章 | 向量库 |
-| spring.sql.init（ChatMemory 建表脚本） | 第8章 | 启动时建 SPRING_AI_CHAT_MEMORY 表 |
+| mybatis-plus.configuration.log-impl | 第6章 | 开发期看 SQL（生产关掉） |
+| spring.sql.init（ChatMemory 建表脚本） | 第7章 | 启动时建 SPRING_AI_CHAT_MEMORY 表 |
 
 > **完整 application.yaml（第 8 章结束时累积态）**——各章按上面轨迹累加后的最终形态：
 >
@@ -3491,12 +3679,18 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 >       schema-locations: classpath:org/springframework/ai/chat/memory/repository/jdbc/schema-postgresql.sql
 > server:
 >   port: 8080
+> 
+> # ▼ 第6章：MyBatis-Plus 日志（开发期看 SQL，生产关掉）
+> mybatis-plus:
+>   configuration:
+>     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+> 
 > logging:
 >   level:
 >     org.springframework.ai: info
 > ```
 >
-> **额外建表**（手动执行，不在 `sql.init` 里）：`research_audit`（第7章审计）、`research_session`（第9章会话元信息）——这两张业务表的 SQL 在各自章节给出，需手动在 PG 执行（生产用 Flyway 管理）。
+> **额外建表**（手动执行，不在 `sql.init` 里）：`research_audit`（第6章审计）、`research_session`（第8章会话元信息）——这两张业务表的 SQL 在各自章节给出，需手动在 PG 执行（生产用 Flyway 管理）。
 
 ### A.3 踩坑手册
 
