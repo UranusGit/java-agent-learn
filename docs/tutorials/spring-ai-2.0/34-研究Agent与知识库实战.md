@@ -185,7 +185,7 @@ research-agent/
             webflux        —— Web 栈基础（Controller、WebClient 调 Bing 都靠它；第 1 章起流式也用它）
             openai starter —— Spring AI + DeepSeek（OpenAI 兼容协议）
           演进纪律：后续章节用到了再加——
-            第 2 章加 pgvector + jdbc；第 3 章加 mcp-client；第 7 章加 chat-memory-jdbc。
+            第 2 章加 pgvector + jdbc；第 3 章加 mcp-client；第 6 章加 mybatis-plus；第 7 章加 chat-memory-jdbc。
             actuator（生产健康检查）、resilience4j（限流/熔断）等真需要可用性治理时再加，
             第 0 章聚焦功能特性，不预先引非功能性依赖。
         -->
@@ -1286,7 +1286,143 @@ git add -A && git commit -m "第2章：pgvector知识库RAG + Agent双工具 + �
 
 这些是**外部用户 + 自主 Agent**才高频的事故（内部工具、固定步骤踩不到）。本章一个个解，每个给最小实现。
 
-### 3.1 事故①：长研究超时 → 配底层超时
+但在解决事故之前，还有一个前提工作——第 2 章的网页搜索是本地 `WebSearchTool`（WebClient 抓 Bing 页面），零 key 但脆弱。上线对外要对工具做一次升级：**把网页搜索从本地 `@Tool` 替换成独立的 MCP server**（标准协议、可独立部署、工具可插拔）。
+
+> **MCP server 不在本文范围**：本文聚焦 Java Agent 侧，MCP server 本身的实现（Python/Node.js 起一个搜索服务）不在本文代码里——你只需要确保一个 MCP server 跑在 `localhost:8081`，提供网页搜索能力。本文只做 Java 侧的接入配置。
+
+### 3.1 工具升级：WebSearchTool → MCP server
+
+#### 3.1.0 痛点：本地工具不够用
+
+第 2 章的 `WebSearchTool` 是本地 `@Tool` 类，用 WebClient 抓 Bing 搜索结果 HTML 再解析——能用，但脆弱：Bing 页面结构变了就挂、没有鉴权、不能独立扩缩。生产环境的搜索应该是一个独立的服务（MCP server），Java Agent 通过标准协议接入。
+
+#### 3.1.1 pom：加 mcp-client 依赖
+
+**【改已有文件】** `pom.xml`。在 `spring-ai-starter-vector-store-pgvector` 后面追加：
+
+```xml
+<!-- 第 3 章：MCP client（接入独立 MCP 网页搜索 server，替代本地 WebSearchTool） -->
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-starter-mcp-client</artifactId>
+</dependency>
+```
+
+#### 3.1.2 yaml：加 MCP client 连接配置
+
+**【改已有文件】** `application.yaml`。在 `spring.ai.vectorstore.pgvector` 后面追加：
+
+```yaml
+    # ▼ 第3章新增：MCP client（连接独立网页搜索 server）
+    mcp:
+      client:
+        streamable-http:
+          connections:
+            web-search:
+              url: http://localhost:8081
+```
+
+> **MCP server 端口**：本文假设搜索 MCP server 跑在 `localhost:8081`（和第 0 章的 Bing 搜索不同——那是本地调用，这是独立服务）。你的搜索 server 实际端口以部署为准，改 url 即可。
+
+#### 3.1.3 新建 ChatClientConfig：注册 MCP 工具
+
+`spring-ai-starter-mcp-client` 会自动把 MCP server 暴露的工具注册为 `ToolCallbackProvider[]` Bean。但 Spring AI 的**默认 ChatClient 不会自动包含它们**——必须自定义 `@Bean ChatClient`，显式 `.defaultTools(mcpToolProviders)`。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/config/ChatClientConfig.java`：
+
+```java
+package com.example.research.config;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+/**
+ * ChatClient 自定义配置。
+ * 第 3 章：注册 MCP 工具（网页搜索由 MCP server 提供，通过 defaultTools 注入所有 ChatClient 调用）。
+ * 第 7 章：加 ChatMemory advisor（会话记忆）。
+ */
+@Configuration
+public class ChatClientConfig {
+
+    @Bean
+    public ChatClient chatClient(ChatClient.Builder builder,
+                                  ToolCallbackProvider[] mcpToolProviders) {
+        return builder
+                .defaultTools(mcpToolProviders)   // 第3章：MCP 工具注入
+                .build();
+    }
+}
+```
+
+> **为什么 ChatClient 要自定义**：不自定义的话，Spring AI 给的默认 ChatClient 不带 `defaultTools`——你的 `.tools(knowledgeBaseTool)` 只传了本地工具，MCP 工具不会被加进去。显式 `.defaultTools(mcpToolProviders)` 后，每个 ChatClient 调用（包括 Agent 内部的思维循环）都能调 MCP 工具。
+
+#### 3.1.4 改 ResearchService：删 WebSearchTool
+
+MCP 工具已经通过 ChatClient 级别的 `defaultTools` 注入——`ResearchService` 不再需要注入 `WebSearchTool`，`.tools()` 只传本地工具。
+
+**【改已有文件，完整版覆盖】** `ResearchService.java`。本章相对第 2 章的改动：① 删除 `WebSearchTool` 注入（构造函数少一个参数）；② `.tools()` 只传 `knowledgeBaseTool`；③ SYSTEM_PROMPT 更新（"网页搜索（来自 MCP）"）。
+
+```java
+package com.example.research;
+
+import com.example.research.tool.KnowledgeBaseTool;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+
+/**
+ * 自主研究 Agent（ReAct 循环）。
+ * 第 3 章：WebSearchTool → MCP server——网页搜索走 MCP 工具（ChatClientConfig 注入），本地只保留知识库。
+ */
+@Service
+public class ResearchService {
+
+    private static final String SYSTEM_PROMPT = """
+            你是研究助理。你有工具：网页搜索（来自 MCP）、知识库搜索（本地）。
+            研究步骤：
+            1. 先搜知识库——有资料直接引用
+            2. 知识库没覆盖的再搜网页
+            3. 信息不够就明说，绝不编造
+            """;
+
+    private static final String CONVERGENCE_RULES = """
+            [收敛规则]
+            - 最多搜 6 次（网页+知识库合计），超了就基于已有资料回答
+            - 同一方向搜 3 次无新信息就停
+            """;
+
+    private final ChatClient chatClient;
+    private final KnowledgeBaseTool knowledgeBaseTool;
+
+    public ResearchService(ChatClient chatClient, KnowledgeBaseTool knowledgeBaseTool) {
+        this.chatClient = chatClient;
+        this.knowledgeBaseTool = knowledgeBaseTool;
+    }
+
+    public Flux<String> research(String topic) {
+        return chatClient.prompt()
+                .system(SYSTEM_PROMPT)
+                .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
+                .tools(knowledgeBaseTool)           // 只传本地工具；MCP 工具由 ChatClientConfig.defaultTools 注入
+                .stream()
+                .content();
+    }
+}
+```
+
+#### 3.1.5 删 WebSearchTool.java
+
+**【删除文件】** `research-agent/src/main/java/com/example/research/tool/WebSearchTool.java`。
+
+MCP server 接管网页搜索后，本地 `WebSearchTool` 不再需要。删除该文件，同时检查所有引用它的代码已更新（`ResearchService` 已在 3.1.4 去掉它的注入，第 0-2 章的历史代码不受影响——它们的完整版里仍保留 WebSearchTool）。
+
+> **MCP tool 权限隔离**：`defaultTools` 注册的 MCP 工具在所有 ChatClient 实例上可用。如果你的 Agent 里某些场景不需要 MCP 搜索（如纯知识库问答），可以建一个不带 MCP 的 ChatClient 实例。本文场景是所有对话都需要网页搜索能力，所以用全局 `defaultTools`——最简。
+
+---
+
+### 3.2 事故①：长研究超时 → 配底层超时
 
 Agent 多步搜索 + 长文生成，单次 LLM 调用可能很久。底层 HTTP 客户端默认读超时太短，把正常停顿误杀。
 
@@ -1315,7 +1451,7 @@ import java.time.Duration;
  * 内部的 LLM 调用不生效。Agent 内部的 LLM 调用（含工具循环的 ToolCallingAdvisor）都经过这个 RestClient，
  * 超时配置生效。
  *
- * 第 3 章事故②（4.2）会在这个 bean 上追加重试拦截器。
+ * 第 3 章事故②（3.3）会在这个 bean 上追加重试拦截器。
  */
 @Configuration
 public class HttpClientConfig {
@@ -1336,7 +1472,7 @@ public class HttpClientConfig {
 >
 > **为什么 180s**：研究 Agent 多步，单次 LLM 调用含停顿可能 60-90s。180s 留余量。太短=误杀；太长=真卡死时用户干等。按你的 P99 生成耗时 × 2-3 倍设。
 
-### 3.2 事故②：LLM 429 → 怎么重试
+### 3.3 事故②：LLM 429 → 怎么重试
 
 429（限流）/503（过载）是**瞬时错误**，不该直接让用户失败，而该自动重试。但**本文的 Agent 是流式自主循环**（`.tools().stream()`），它的 LLM 调用由 `ToolCallingAdvisor` 在框架内部发起——这带来一个关键限制：
 
@@ -1344,13 +1480,13 @@ public class HttpClientConfig {
 > Resilience4j 的 `@Retry` 注解能套在"你代码显式调的 LLM"上（如 `chatClient...call()`）。但** Agent 循环的 LLM 调用是框架内部发起的，你够不着那个调用点**——`@Retry` 注解管不到它。这是 Spring AI 当前的限制（Agent 循环的重试支持还不完善）。
 >
 > **那 Agent 遇到 429 怎么办？** 三个务实做法（不假装一个注解能解决）：
-> 1. **底层 HTTP 客户端重试**（最有效）：在 4.1 的 `RestClient.Builder` 上加**重试拦截器**（`ClientHttpRequestInterceptor`），对 429/5xx/超时在 HTTP 层重试——Agent 内部的 LLM 调用也走这个 RestClient，重试对它生效。
-> 2. **错误归宿 + 用户重试**（最简单）：429 耗尽就当失败处理，靠 4.3 的错误归宿告诉用户"稍后重试"。
+> 1. **底层 HTTP 客户端重试**（最有效）：在 3.2 的 `RestClient.Builder` 上加**重试拦截器**（`ClientHttpRequestInterceptor`），对 429/5xx/超时在 HTTP 层重试——Agent 内部的 LLM 调用也走这个 RestClient，重试对它生效。
+> 2. **错误归宿 + 用户重试**（最简单）：429 耗尽就当失败处理，靠 3.4 的错误归宿告诉用户"稍后重试"。
 > 3. **关注 Spring AI 演进**：Agent 循环重试是社区在推进的点，框架完善后直接用。
 
-**本文用做法 1**（底层 HTTP 重试）——在 4.1 的 `restClientBuilder()` 上**追加**一个重试拦截器。
+**本文用做法 1**（底层 HTTP 重试）——在 3.2 的 `restClientBuilder()` 上**追加**一个重试拦截器。
 
-**【改已有文件，完整版覆盖】** `HttpClientConfig.java`。本章相对 4.1 的改动：在 `RestClient.builder()` 链上多加 `.requestInterceptor(...)`（重试拦截器）。超时配置不变。
+**【改已有文件，完整版覆盖】** `HttpClientConfig.java`。本章相对 3.2 的改动：在 `RestClient.builder()` 链上多加 `.requestInterceptor(...)`（重试拦截器）。超时配置不变。
 
 ```java
 package com.example.research.config;
@@ -1370,8 +1506,8 @@ import java.time.Duration;
 
 /**
  * 第 3 章：HTTP 客户端配置。
- *   事故①（4.1）：设读超时 180s，覆盖长生成停顿。
- *   事故②（4.2）：加重试拦截器，对 429/5xx/网络错误退避重试 3 次。
+ *   事故①（3.2）：设读超时 180s，覆盖长生成停顿。
+ *   事故②（3.3）：加重试拦截器，对 429/5xx/网络错误退避重试 3 次。
  * 两者都在同一个 RestClient.Builder 上叠加。
  */
 @Configuration
@@ -1386,7 +1522,7 @@ public class HttpClientConfig {
         factory.setReadTimeout(Duration.ofSeconds(180));
         return RestClient.builder()
                 .requestFactory(factory)
-                // ▼ 第4章(4.2)新增：重试拦截器，对 429/5xx/网络错误退避重试
+                // ▼ 第3章(3.3)新增：重试拦截器，对 429/5xx/网络错误退避重试
                 .requestInterceptor(new RetryInterceptor(3));
     }
 
@@ -1438,7 +1574,7 @@ public class HttpClientConfig {
 >
 > **429 重试的纪律**：429 是"服务器让你慢点"，重试务必**退避**（不能立即重试，会加剧过载）。指数退避（2s→4s→8s）或按 `Retry-After` 头，二选一。立即重试 = 把服务器往死里打。
 
-### 3.3 事故③：错误没归宿 → onErrorResume 把错误转成失败消息
+### 3.4 事故③：错误没归宿 → onErrorResume 把错误转成失败消息
 
 从第 0 章起 `research` 就返回 `Flux<String>`。如果中途出错（超时/429 耗尽），错误沿 Flux 往下传——前端收到的是"连接断"，不知道是失败还是还在跑。
 
@@ -1478,7 +1614,7 @@ public class ResearchService {
                 .tools(knowledgeBaseTool)
                 .stream()
                 .content()
-                // ▼ 第4章(4.3)新增：错误归宿。用 onErrorResume 而不是 doOnError：
+                // ▼ 第3章(3.4)新增：错误归宿。用 onErrorResume 而不是 doOnError：
                 //   doOnError 只是副作用，执行完错误信号照常往下传，前端仍收到"连接断"；
                 //   onErrorResume 把错误信号替换成一条正常数据，前端收到可读文本后才正常完成。
                 .onErrorResume(err -> {
@@ -1508,14 +1644,14 @@ public class ResearchService {
 >
 > **核心**：错误要有归宿——要么转成用户可读的提示，要么前端能感知"失败了"。不能让错误默默吞掉或让前端一直转。这是生产代码的基本要求。
 
-### 3.4 验证 + checkpoint
+### 3.5 验证 + checkpoint
 
 ```bash
 # 1. 超时复测：长主题不再 Stream failed
 curl -N "http://localhost:8080/api/research?topic=（一个需要长研究的主题）"
 
-# 2. 重试复测：用脚本快速打到 DeepSeek 真实速率上限触发 429 → 底层 RestClient 重试拦截器退避重试（见 4.2）；
-#    耗尽后由错误归宿兜底（4.3）。注意：改错 key 触发的是 401（不重试），不是 429——别用改 key 测重试。
+# 2. 重试复测：用脚本快速打到 DeepSeek 真实速率上限触发 429 → 底层 RestClient 重试拦截器退避重试（见 3.3）；
+#    耗尽后由错误归宿兜底（3.4）。注意：改错 key 触发的是 401（不重试），不是 429——别用改 key 测重试。
 # 3. 错误归宿：失败时前端/日志能看到明确提示，不是无限转
 ```
 
@@ -1527,13 +1663,13 @@ research-agent/src/main/java/com/example/research/
 └── ResearchService.java             （改：onErrorResume 修事故③）
 ```
 
-（pom / application.yaml 不动——4.2 的重试用 RestClient 拦截器实现，不引新依赖、不加新配置。）
+（pom / application.yaml 不动——3.3 的重试用 RestClient 拦截器实现，不引新依赖、不加新配置。）
 
 ```bash
-git add -A && git commit -m "第4章：上线运营事故——超时/429重试/错误归宿"
+git add -A && git commit -m "第3章：工具升级(MCP)+上线运营事故——超时/429重试/错误归宿"
 ```
 
-### 3.5 复盘
+### 3.6 复盘
 
 **做了**：解了上线后三个高频事故（超时、429、错误归宿），每个最小实现。
 
@@ -1561,7 +1697,7 @@ git add -A && git commit -m "第4章：上线运营事故——超时/429重试/
 
 ### 4.0 场景：复杂主题查不全
 
-第 1-4 章的 Agent 是**隐式 ReAct**——LLM 边想边调工具，"想到哪搜到哪"。简单主题够用，但复杂主题（对比、综述类）会**漏角度**：
+第 0-3 章的 Agent 是**隐式 ReAct**（Ch4 起升级为 Plan-Execute 显式两阶段）——LLM 边想边调工具，"想到哪搜到哪"。简单主题够用，但复杂主题（对比、综述类）会**漏角度**：
 
 ```
 用户：对比 TensorRT-LLM、vLLM、SGLang 的推理性能
@@ -1735,10 +1871,10 @@ import reactor.core.publisher.Flux;
 public class ResearchController {
 
     private final ResearchService researchService;
-    private final PlanExecuteService planExecuteService;   // ▼ 第5章新增注入
+    private final PlanExecuteService planExecuteService;   // ▼ 第4章新增注入
     private final InputGuard inputGuard;
 
-    // ▼ 第5章替换：第2章是 (ResearchService, InputGuard)；现在多注入 PlanExecuteService
+    // ▼ 第4章替换：第2章是 (ResearchService, InputGuard)；现在多注入 PlanExecuteService
     public ResearchController(ResearchService researchService,
                               PlanExecuteService planExecuteService,
                               InputGuard inputGuard) {
@@ -1755,7 +1891,7 @@ public class ResearchController {
         return researchService.research(topic);
     }
 
-    /** Plan-Execute 入口（复杂问题，流式）。 */   // ▼ 第5章新增方法
+    /** Plan-Execute 入口（复杂问题，流式）。 */   // ▼ 第4章新增方法
     @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> researchDeep(@RequestParam String topic) {
         String reject = inputGuard.check(topic);            // 输入审核不撤（第 2 章）
@@ -1797,7 +1933,7 @@ research-agent/src/main/java/com/example/research/
 （pom / application.yaml 不动——Plan-Execute 复用已有 ChatClient + 工具，不引新依赖。）
 
 ```bash
-git add -A && git commit -m "第5章：Plan-Execute串行版，先规划拆子任务解决漏角度"
+git add -A && git commit -m "第4章：Plan-Execute串行版，先规划拆子任务解决漏角度"
 ```
 
 ### 4.5 复盘
@@ -2076,7 +2212,7 @@ research-agent/src/main/java/com/example/research/
 （pom / application.yaml 不动。）
 
 ```bash
-git add -A && git commit -m "第6章：多Worker并发(flatMap限流+错误隔离)+真正Aggregate+流式"
+git add -A && git commit -m "第5章：多Worker并发(flatMap限流+错误隔离)+真正Aggregate+流式"
 ```
 
 ### 5.5 复盘
@@ -2283,7 +2419,7 @@ public interface ResearchAuditMapper extends BaseMapper<ResearchAudit> {
 
 > **为什么 Mapper 这么短**：MyBatis-Plus 的 `BaseMapper<T>` 自带 `insert`、`selectList`、`selectPage` 等方法——单表操作不需要写 XML 和 SQL。这就是比 JdbcTemplate 手拼 SQL 优雅的地方：新增字段时不用满世界改 SQL 字符串。
 
-#### 6.2.4 AuditLogger：结构化采集（改：用 Mapper 替代 JdbcTemplate）
+#### 6.2.4 AuditLogger：结构化采集（MyBatis-Plus 版）
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/audit/AuditLogger.java`：
 
@@ -2299,7 +2435,7 @@ import java.util.UUID;
 /**
  * 审计日志：把每次问答的关键步骤落库，按 session_id + turn_id 串联。
  *
- * 第 6 章从 JdbcTemplate 升级到 MyBatis-Plus Mapper——不再手写 SQL 字符串，
+ * 第 6 章选择 MyBatis-Plus Mapper 管理审计表——不再手写 SQL 字符串，
  * new ResearchAudit(...) 设值 → mapper.insert(entity) 落库，字段在实体里管。
  */
 @Component
@@ -2322,7 +2458,7 @@ public class AuditLogger {
 }
 ```
 
-> **对比 JdbcTemplate 版**：少了 `"INSERT INTO ... VALUES (?,?,?,?,?,?,?)"` 字符串 + 参数对齐——字段名、顺序、类型都由实体约束，编译期安全。`subscribeOn(boundedElastic)` 切线程纪律不变（MyBatis-Plus 底层还是 JDBC 阻塞）。
+> **相比直接用 JdbcTemplate 手写 SQL**：少了 `"INSERT INTO ... VALUES (?,?,?,?,?,?,?)"` 字符串 + 参数对齐——字段名、顺序、类型都由实体约束，编译期安全。`subscribeOn(boundedElastic)` 切线程纪律不变（MyBatis-Plus 底层还是 JDBC 阻塞）。
 
 > **为什么返回 Mono 而不是直接 void 内部 subscribe**：让调用方能选择——主流程 fire-and-forget（`.subscribe()`），测试可以 `.block()` 等写完再断言。
 
@@ -2405,7 +2541,7 @@ public class PlanExecuteService {
                 .content();
     }
 
-    /** Aggregate 阻塞版：第 4 章兼容（第 5 章起不再被 researchDeep 调用，保留给内部用）。 */
+    /** Aggregate 阻塞版：第 5 章引入（第 5 章起不再被 researchDeep 调用，保留给内部兼容用）。 */
     private String aggregate(String topic, List<String> subtasks, List<String> results) {
         return chatClient.prompt()
                 .system("你是研究综合员。基于多个子调研结果，综合成一份结构清晰的研究报告。" +
@@ -2503,7 +2639,7 @@ public class PlanExecuteService {
 >
 > **AGGREGATE 用 `doFinally` 记元信息**：流式聚合是逐字推前端的，`doFinally(signal -> ...)` 无论正常完成、取消、出错都触发。只记元信息（耗时 + 完成信号），不存全文——要存全文需累积再记（牺牲流式换可追溯，二选一）。
 
-#### 6.2.6 查询接口：按会话回溯完整轨迹（改：用 Mapper 替代 JdbcTemplate）
+#### 6.2.6 查询接口：按会话回溯完整轨迹（MyBatis-Plus 版）
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/audit/AuditController.java`：
 
@@ -2519,7 +2655,7 @@ import java.util.List;
 
 /**
  * 审计查询接口：按会话/轮次回溯 Plan-Execute 的完整执行轨迹。
- * 第 6 章从 JdbcTemplate 升级到 MyBatis-Plus——LambdaQueryWrapper 拼动态条件，字段名编译期安全。
+ * 第 6 章选择 MyBatis-Plus——LambdaQueryWrapper 拼动态条件，字段名编译期安全。
  */
 @RestController
 @RequestMapping("/api/audit")
@@ -2543,7 +2679,7 @@ public class AuditController {
 }
 ```
 
-> **对比 JdbcTemplate 版**：手拼 `"WHERE session_id = ? " + (turnId != null ? "AND turn_id = ? " : "")` → `LambdaQueryWrapper.eq(条件, 字段, 值)`。字段名是 `ResearchAudit::getSessionId`（编译期检查，改名时 IDE 自动重构），不再是字符串拼 `"session_id"`（拼错了编译不报错、SQL 运行时才炸）。
+> **相比直接用 JdbcTemplate 手写 SQL**：手拼 `"WHERE session_id = ? " + (turnId != null ? "AND turn_id = ? " : "")` → `LambdaQueryWrapper.eq(条件, 字段, 值)`。字段名是 `ResearchAudit::getSessionId`（编译期检查，改名时 IDE 自动重构），不再是字符串拼 `"session_id"`（拼错了编译不报错、SQL 运行时才炸）。
 >
 > **返回类型从 `Map<String,Object>` 升级为 `ResearchAudit`**：MyBatis-Plus 自动映射到实体，不再手写 `SELECT step_type, query_text, output, ...`。前端收到的 JSON 字段名从下划线变成驼峰（MyBatis-Plus 默认驼峰映射）。
 
@@ -2631,7 +2767,7 @@ research-agent/src/main/java/com/example/research/
 ├── audit/
 │   ├── ResearchAudit.java      （新增：审计实体，@TableName + @TableId）
 │   ├── ResearchAuditMapper.java（新增：MyBatis-Plus Mapper，继承 BaseMapper）
-│   ├── AuditLogger.java        （新增：结构化采集落库，用 Mapper 替代 JdbcTemplate）
+│   ├── AuditLogger.java        （新增：结构化采集落库，MyBatis-Plus 版）
 │   └── AuditController.java    （新增：按会话查轨迹，LambdaQueryWrapper 动态条件）
 ├── plan/PlanExecuteService.java（改：注入 AuditLogger + 三段方法链 + 审计埋点）
 └── ResearchController.java     （改：/deep 加 sessionId 参数）
@@ -2727,7 +2863,7 @@ ChatMemory（逻辑层：管窗口/裁剪）          ChatMemoryRepository（持
 ```yaml
 spring:
   # （datasource / ai.openai / ai.vectorstore / ai.mcp 同第2/3章，不变）
-  # ▼ 第8章新增：ChatMemory 建表（官方 schema 脚本）
+  # ▼ 第7章新增：ChatMemory 建表（官方 schema 脚本）
   sql:
     init:
       mode: always          # 启动时建表（生产用 Flyway 管理，这里演示用 init）
@@ -2799,14 +2935,14 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class ChatClientConfig {
 
-    // ▼ 第8章替换：第3章是 chatClient(builder, mcpToolProviders)；现在多注入 ChatMemory
+    // ▼ 第7章替换：第3章是 chatClient(builder, mcpToolProviders)；现在多注入 ChatMemory
     @Bean
     public ChatClient chatClient(ChatClient.Builder builder,
                                   ToolCallbackProvider[] mcpToolProviders,
                                   ChatMemory chatMemory) {
         return builder
                 .defaultTools(mcpToolProviders)                                              // 第3章：MCP 工具
-                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())        // ▼ 第8章新增：记忆
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())        // ▼ 第7章新增：记忆
                 .build();
     }
 }
@@ -2998,13 +3134,13 @@ public class ResearchService {
         this.knowledgeBaseTool = knowledgeBaseTool;
     }
 
-    /** 流式版（Controller 用 SSE）。sessionId 可选——传了带历史，不传是无记忆单次。 */   // ▼ 第8章替换：加 sessionId 参数
+    /** 流式版（Controller 用 SSE）。sessionId 可选——传了带历史，不传是无记忆单次。 */   // ▼ 第7章替换：加 sessionId 参数
     public Flux<String> research(String topic, String sessionId) {
         return chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .user("研究主题：" + topic + "\n\n" + CONVERGENCE_RULES)
                 .tools(knowledgeBaseTool)
-                .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })   // ▼ 第8章新增
+                .advisors(a -> { if (sessionId != null) a.param(ChatMemory.CONVERSATION_ID, sessionId); })   // ▼ 第7章新增
                 .stream()
                 .content()
                 .onErrorResume(err -> {
@@ -3124,7 +3260,7 @@ research-agent/
 ```
 
 ```bash
-git add -A && git commit -m "第8章：ChatMemory落PG(JdbcChatMemoryRepository)，多轮+重启不丢"
+git add -A && git commit -m "第7章：ChatMemory落PG(JdbcChatMemoryRepository)，多轮+重启不丢"
 ```
 
 ### 7.5 复盘
@@ -3268,7 +3404,7 @@ import java.util.UUID;
 
 /**
  * 会话管理：CRUD 会话元信息 + 查历史消息。
- * 第 8 章从 JdbcTemplate 升级到 MyBatis-Plus Mapper（和第 6 章审计表一致）。
+ * 第 8 章用 MyBatis-Plus Mapper（和第 6 章审计表一致）。
  * 会话元信息走 ResearchSessionMapper；消息内容复用 ChatMemory。
  */
 @Service
@@ -3420,9 +3556,9 @@ public class ResearchController {
     private final ResearchService researchService;
     private final PlanExecuteService planExecuteService;
     private final InputGuard inputGuard;
-    private final SessionService sessionService;   // ▼ 第9章新增注入
+    private final SessionService sessionService;   // ▼ 第8章新增注入
 
-    // ▼ 第9章替换：第8章是 (ResearchService, PlanExecuteService, InputGuard)；现在多注入 SessionService
+    // ▼ 第8章替换：第8章是 (ResearchService, PlanExecuteService, InputGuard)；现在多注入 SessionService
     public ResearchController(ResearchService researchService,
                               PlanExecuteService planExecuteService,
                               InputGuard inputGuard,
@@ -3442,7 +3578,7 @@ public class ResearchController {
         return researchService.research(topic, sessionId);
     }
 
-    /** Plan-Execute 入口（复杂问题，并发流式）。问答开始前自动补标题。 */   // ▼ 第9章替换：加自动标题
+    /** Plan-Execute 入口（复杂问题，并发流式）。问答开始前自动补标题。 */   // ▼ 第8章替换：加自动标题
     @GetMapping(value = "/deep", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> researchDeep(@RequestParam String topic,
                                       @RequestParam String sessionId) {
@@ -3549,7 +3685,7 @@ research-agent/src/main/java/com/example/research/
 ├── session/
 │   ├── ResearchSession.java     （新增：会话实体，@TableName + @TableId）
 │   ├── ResearchSessionMapper.java（新增：会话 Mapper，继承 BaseMapper）
-│   ├── SessionService.java      （新增：会话 CRUD，用 Mapper 替代 JdbcTemplate）
+│   ├── SessionService.java      （新增：会话 CRUD，MyBatis-Plus 版）
 │   └── SessionController.java   （新增：REST 接口）
 ├── plan/PlanExecuteService.java （第 5-7 章：并发编排 + 审计 + 会话记忆）
 ├── ResearchController.java      （第 8 章改：注入 SessionService + 自动补标题）
@@ -3574,7 +3710,7 @@ git add -A && git commit -m "第8章：会话CRUD(MyBatis-Plus)+前端对话页�
 
 ---
 
-> **第 8 章结束。本文完。** 从固定 workflow（第0章）一路演进：自主 Agent（1）→ 知识库（2）→ MCP（3）→ 生产化（4）→ Plan-Execute（5）→ 多 Worker 并发（6）→ 审计可追溯（7）→ 会话记忆（8）→ 产品化（9），每步痛点驱动。最后得到一个**会规划、多 Worker 并发调研、流程可追溯、有记忆、可管理的产品级研究问答系统**。
+> **第 8 章结束——功能演进完成。** 从固定 workflow（第0章）一路演进：自主 Agent（1）→ 知识库（2）→ 工具升级+可靠性加固（3）→ Plan-Execute（4）→ 多 Worker 并发（5）→ 审计可追溯（6）→ 会话记忆（7）→ 产品化（8），每步痛点驱动。得到一个**会规划、多 Worker 并发调研、流程可追溯、有记忆、可管理的产品级研究问答系统**。第 9 章起进入架构演进——分布式、微服务、企业治理。
 
 ---
 
@@ -3587,17 +3723,17 @@ research-agent/                         （主项目：会话化研究问答系�
 ├── pom.xml                             （webflux/openai/pgvector/jdbc/mybatis-plus/mcp-client/chat-memory-jdbc）
 ├── src/main/resources/
 │   ├── application.yaml                （DeepSeek + PG + 向量库 + MCP client + sql.init 建表）
-│   └── static/index.html               （第9章前端：会话列表 + 对话区，附录 A.5b）
+│   └── static/index.html               （第8章前端：会话列表 + 对话区）
 └── src/main/java/com/example/research/
     ├── Application.java
     ├── ResearchService.java            （ReAct Agent：简单问题路径）
     ├── ResearchController.java         （接口 + 输入审核 + /deep + 自动标题）
     ├── config/
-    │   ├── HttpClientConfig.java       （RestClient 超时 + 重试拦截器，第4章）
-    │   ├── ChatClientConfig.java       （MCP 工具 + MessageChatMemoryAdvisor，第3/8章）
+    │   ├── HttpClientConfig.java       （RestClient 超时 + 重试拦截器，第3章）
+    │   ├── ChatClientConfig.java       （MCP 工具 + MessageChatMemoryAdvisor，第3/7章）
     │   └── ChatMemoryConfig.java       （JdbcChatMemoryRepository + PG dialect，第8章）
     ├── plan/
-    │   └── PlanExecuteService.java     （Plan + 多Worker并发Execute + Aggregate + 审计埋点，第5/6/7/8章）
+    │   └── PlanExecuteService.java     （Plan + 多Worker并发Execute + Aggregate + 审计埋点，第4/5/6/7章）
     ├── audit/
     │   ├── ResearchAudit.java          （审计实体，第6章）
     │   ├── ResearchAuditMapper.java    （审计 Mapper，第6章）
@@ -3707,16 +3843,16 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 - `similaritySearch` 查不到 → 库空（先 ingest）；或 `similarityThreshold` 设太高；或 query 太离谱。
 - **结果不带出处/用户无法核实** → 工具返回没带来源编号 + system prompt 没要求引用。见 2.2.5 防幻觉。
 
-**第 3 章**：
-- ⚠️ **MCP server 对外被白嫖** → 没鉴权，任何人能调你的搜索 server 烧配额。必须加鉴权（OAuth2/API key），见 3.2.3。
+**第 3 章（MCP 相关）**：
+- ⚠️ **MCP server 对外被白嫖** → 没鉴权，任何人能调你的搜索 server 烧配额。必须加鉴权（OAuth2/API key）。
 - MCP server 的 `@McpTool` 没注册 → [issue #4392](https://github.com/spring-projects/spring-ai/issues/4392)，早期版本 bug；或 starter 名/版本不对（用 `spring-ai-starter-mcp-server-webmvc`）。查[官方 MCP Server 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html)。
 - MCP client 连不上 server → server 没起/端口不对/鉴权头没带；**client 配置键按你的 starter 版本核对**——webmvc server（Streamable HTTP transport）和 webflux server（SSE transport）的 client 配置键不同（`spring.ai.mcp.client.streamable-http.connections` vs `spring.ai.mcp.client.sse.connections`），别用错。
 - ⚠️ **SSE 下工具执行时鉴权丢失** → [issue #2506](https://github.com/spring-projects/spring-ai/issues/2506)，连接时鉴权生效但工具执行阶段可能丢。生产必测。
-- ⚠️ **MCP 工具不进默认 ChatClient** → starter 把工具注册成 `ToolCallbackProvider` Bean，但默认 ChatClient 不自动包含。必须自定义 `@Bean ChatClient` 显式 `defaultTools(mcpToolProviders)`，见 3.2.4。
-- 删了 `WebSearchTool` 后编译报错 → `ResearchService` 构造函数引用了它，按 3.2.5 新构造函数改。
+- ⚠️ **MCP 工具不进默认 ChatClient** → starter 把工具注册成 `ToolCallbackProvider` Bean，但默认 ChatClient 不自动包含。必须自定义 `@Bean ChatClient` 显式 `defaultTools(mcpToolProviders)`，见 3.1.3（ChatClientConfig）。
+- 删了 `WebSearchTool` 后编译报错 → `ResearchService` 构造函数引用了它，按 3.1.4（ResearchService 新构造函数）改。
 
-**第 3 章**：
-- **以为 `@Retry` 能保护 Agent 循环** → 错。Agent 的 LLM 调用是框架内部发起的，`@Retry` 够不着。Agent 场景的重试靠底层 RestClient 重试拦截器（`ClientHttpRequestInterceptor`，见 4.2）——Spring AI 的 OpenAI client 走 RestClient，重试拦截器对它生效。`@Retry` 只管你显式调的 LLM。
+**第 3 章（运营事故相关）**：
+- **以为 `@Retry` 能保护 Agent 循环** → 错。Agent 的 LLM 调用是框架内部发起的，`@Retry` 够不着。Agent 场景的重试靠底层 RestClient 重试拦截器（`ClientHttpRequestInterceptor`，见 3.3）——Spring AI 的 OpenAI client 走 RestClient，重试拦截器对它生效。`@Retry` 只管你显式调的 LLM。
 - **429 重试把服务器打更挂** → 没退避立即重试，加剧过载。必须指数退避或按 `Retry-After` 头等。
 
 **第 4 章**：
@@ -3725,16 +3861,16 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 
 **第 5 章**：
 - ⚠️ **`flatMap` 没传第二参数（并发上限）** → 默认 256，4 个子任务瞬间打出 256 个请求并发上限被打爆、触发 429。**必传 `flatMap(fn, concurrency)`**，取 `min(子任务数, MAX)`。
-- **一个 worker 抛异常，整个调研失败** → `flatMap` 默认"一个出错取消整个流"。必须每个 worker 包 `onErrorResume` 做错误隔离（见 6.2.1）。
+- **一个 worker 抛异常，整个调研失败** → `flatMap` 默认"一个出错取消整个流"。必须每个 worker 包 `onErrorResume` 做错误隔离（见 5.2.1）。
 - **并发后 Netty event loop 卡死** → LLM/搜索是阻塞调用，没 `subscribeOn(boundedElastic)` 切线程会占满 event loop。和第 2 章同一条纪律。
 
 **第 6 章**：
-- **审计的 `doOnError` 拿不到错误** → worker 内部的 `onErrorResume` 已把异常吞成占位，外部 `doOnError` 拿不到原始异常。把审计调用挪进 `executeOneReactive` 的 `onErrorResume` 里（见 7.2.3 推荐写法）。
+- **审计的 `doOnError` 拿不到错误** → worker 内部的 `onErrorResume` 已把异常吞成占位，外部 `doOnError` 拿不到原始异常。把审计调用挪进 `executeOneReactive` 的 `onErrorResume` 里（见 6.2.5 推荐写法）。
 - **流式 Aggregate 的审计记不全** → `.stream()` 是逐字推，审计要完整文本得 `.reduce` 拼回再记。或只记元信息（起止时间+长度），不存全文。
 
 **第 7 章**：
-- ⚠️ **ChatMemory 没落库（重启丢）** → 只挂了 `MessageChatMemoryAdvisor` 但用的是默认 `InMemoryChatMemoryRepository`。必须配 `JdbcChatMemoryRepository` + PG dialect（见 8.2.2）。
-- **多轮不生效（Agent 仍不记得历史）** → 光挂 advisor 不够，每次调用要 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))` 传会话标识（见 8.2.4）。
+- ⚠️ **ChatMemory 没落库（重启丢）** → 只挂了 `MessageChatMemoryAdvisor` 但用的是默认 `InMemoryChatMemoryRepository`。必须配 `JdbcChatMemoryRepository` + PG dialect（见 7.2.2）。
+- **多轮不生效（Agent 仍不记得历史）** → 光挂 advisor 不够，每次调用要 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))` 传会话标识（见 7.2.4）。
 - **`PostgresChatMemoryRepositoryDialect` 找不到** → 确认加了 `spring-ai-starter-model-chat-memory-repository-jdbc`；包路径 `org.springframework.ai.chat.memory.repository.jdbc`。
 - **建表脚本报"表已存在"** → `spring.sql.init.mode: always` 每次启动执行。生产换 Flyway，或脚本加 `IF NOT EXISTS`。
 
@@ -3748,15 +3884,15 @@ PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· re
 ```mermaid
 flowchart TD
     S0[第0章 固定workflow<br/>搜索→结果] -->|痛点: 固定步骤不够用| S1
-    S1[第1章 自主Agent<br/>ToolCallingAdvisor循环+maxSteps+流式] -->|痛点: 网页不够准| S2
-    S2[第2章 知识库RAG<br/>pgvector+双工具+输入审核] -->|痛点: 工具散落难复用| S3
-    S3[第3章 MCP+编排<br/>搜索做独立MCP server+删本地工具] -->|痛点: 上线运营| S4
-    S4[第4章 运营事故<br/>超时+429重试+错误归宿] -->|痛点: 复杂主题漏角度| S5
-    S5[第5章 Plan-Execute<br/>先规划拆子任务串行执行] -->|痛点: 串行太慢| S6
-    S6[第6章 多Worker并发<br/>flatMap限流+错误隔离+Aggregate] -->|痛点: 过程不可追溯| S7
-    S7[第7章 审计日志<br/>按会话串联全流程落库] -->|痛点: 刷新丢/不能多轮| S8
-    S8[第8章 会话持久化<br/>ChatMemory落PG+CONVERSATION_ID] -->|痛点: 没法当产品用| S9
-    S9[第9章 产品化<br/>会话CRUD+自动标题+前端对话页]
+    S1[第1章 自主Agent<br/>ToolCallingAdvisor循环+流式] -->|痛点: 网页不够准| S2
+    S2[第2章 知识库RAG<br/>pgvector+双工具+输入审核] -->|痛点: 本地工具脆弱| S3
+    S3[第3章 工具升级+可靠性加固<br/>MCP server+超时/429重试/错误归宿] -->|痛点: 复杂主题漏角度| S4
+    S4[第4章 Plan-Execute<br/>先规划拆子任务串行执行] -->|痛点: 串行太慢| S5
+    S5[第5章 多Worker并发<br/>flatMap限流+错误隔离+Aggregate] -->|痛点: 过程不可追溯| S6
+    S6[第6章 审计日志<br/>按会话串联全流程落库(MyBatis-Plus)] -->|痛点: 刷新丢/不能多轮| S7
+    S7[第7章 会话持久化<br/>ChatMemory落PG+CONVERSATION_ID] -->|痛点: 没法当产品用| S8
+    S8[第8章 产品化<br/>会话CRUD+自动标题+前端对话页] -->|痛点: 单机不能多设备| S9
+    S9[第9章 分布式流式<br/>Redis Streams+Pub/Sub三层广播]
 ```
 
 ### A.5 调试页面（第 0-4 章单次研究版）
@@ -6988,7 +7124,7 @@ git add -A && git commit -m "第16章：拆出LLM网关屏蔽厂商差异"
 
 ---
 
-> **第 16 章结束。** 微服务拆分四步完成：订阅（13）→ 触发（14）→ 网关（15）→ LLM 网关（16）。第 17 章做全文演进总览。
+> **第 16 章结束。** 微服务拆分四步完成：订阅（13）→ 触发（14）→ 网关（15）→ LLM 网关（16）。第 17 章恢复拆服务后的分布式 ChatMemory（Redis 热缓存 + PG 兜底）。
 
 ---
 
@@ -7217,7 +7353,7 @@ git add -A && git commit -m "第17章：分布式ChatMemory——Redis热缓存+
 
 ---
 
-> **第 17 章结束。** 微服务拆分后的跨服务记忆补齐。下一步（第 18 章）：全文演进总览。
+> **第 17 章结束。** 微服务拆分后的跨服务记忆补齐。下一步（第 18 章）：JWT 认证与租户隔离。
 
 ---
 
@@ -7627,7 +7763,7 @@ git add -A && git commit -m "第18章：JWT认证+网关验签+租户数据隔�
 
 ---
 
-> **第 18 章结束。** 多租户用户体系就位，系统可安全对外开放。下一步（第 19 章）：全文演进总览。
+> **第 18 章结束。** 多租户用户体系就位，系统可安全对外开放。下一步（第 19 章）：链路追踪 + 指标 + 日志聚合。
 
 ---
 
@@ -7887,7 +8023,7 @@ git add -A && git commit -m "第19章：可观测性——Zipkin链路追踪+Pro
 
 ---
 
-> **第 19 章结束。** 可观测性就位，系统运维可见。下一步（第 20 章）：全文演进总览。
+> **第 19 章结束。** 可观测性就位，系统运维可见。下一步（第 20 章）：幻觉检测与反馈闭环。
 
 ---
 
@@ -8165,7 +8301,7 @@ git add -A && git commit -m "第20章：幻觉检测(引用核对)+用户反馈�
 
 ---
 
-> **第 20 章结束。** 质量保障闭环就位，系统可信赖且能自我改进。下一步（第 21 章）：全文演进总览。
+> **第 20 章结束。** 质量保障闭环就位，系统可信赖且能自我改进。下一步（第 21 章）：DAG 工作流。
 
 ---
 
@@ -8432,7 +8568,7 @@ git add -A && git commit -m "第21章：DAG工作流引擎(条件分支+跨步�
 
 ---
 
-> **第 21 章结束。** DAG 工作流就位，编排能力进阶。下一步（第 22 章）：全文演进总览。
+> **第 21 章结束。** DAG 工作流就位，编排能力进阶。下一步（第 22 章）：长期记忆与个性化。
 
 ---
 
