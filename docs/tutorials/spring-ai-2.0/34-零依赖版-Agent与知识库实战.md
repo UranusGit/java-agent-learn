@@ -35,7 +35,6 @@
 - [第 10 章：管数分离——触发与订阅解耦](#第-10-章管数分离触发与订阅解耦)
 - [补强 A：传输层真相——SSE / WebSocket / Flux 到底用哪个](#补强-a传输层真相sse--websocket--flux-到底用哪个)
 - [补强 B：管数分离的企业级真相——OpenAI Assistants 式的 run 资源](#补强-b管数分离的企业级真相openai-assistants-式的-run-资源)
-- [补强 C：多页面同步的端到端证明——A 输出 30% 时 B 打开要看到前 30% 且两页继续一致](#补强-c多页面同步的端到端证明a-输出-30-时-b-打开要看到前-30-且两页继续一致)
 - [第 10.5 章：管理数据持久层——引入 H2（开发期零硬件，生产一行配置切 PG）](#第-105-章管理数据持久层引入-h2开发期零硬件生产一行配置切-pg)
 - [第 11 章：Redis 高可用——消除单点](#第-11-章redis-高可用消除单点)
 - [第 12 章：消息队列升级——Redis Streams → Kafka](#第-12-章消息队列升级redis-streams--kafka)
@@ -44,6 +43,7 @@
 - [第 15 章：微服务拆分（三）——加 API 网关](#第-15-章微服务拆分三加-api-网关)
 - [第 16 章：微服务拆分（四）——拆 LLM 网关](#第-16-章微服务拆分四拆-llm-网关)
 - [第 17 章：分布式 ChatMemory——拆服务后恢复多轮记忆](#第-17-章分布式-chatmemory拆服务后恢复多轮记忆)
+- [补强 C：多页面同步的端到端证明——A 输出 30% 时 B 打开要看到前 30% 且两页继续一致](#补强-c多页面同步的端到端证明a-输出-30-时-b-打开要看到前-30-且两页继续一致)
 - [第 18 章：多租户 + 用户体系——JWT 认证与租户隔离](#第-18-章多租户--用户体系jwt-认证与租户隔离)
 - [第 19 章：成本治理——token 计量、租户预算与分摊](#第-19-章成本治理token-计量租户预算与分摊)
 - [第 20 章：可观测性——链路追踪 + 指标 + 告警](#第-20-章可观测性链路追踪--指标--告警)
@@ -296,7 +296,7 @@ public interface LlmClient {
     record LlmTool(String name, String description,
                    java.util.function.Function<String, String> invoke) {}
 }
-```
+```javascript
 
 > **这个接口为什么是"换实现不换业务"的关键**：注意 `stream(...)` 的签名——`system + user + history + tools`。这正是 Spring AI `ChatClient.prompt().system().user().advisors(记忆).tools(工具).stream().content()` 的扁平化表达。Mock 用它驱动 Agent 循环，真模型用它驱动真实 function calling。**ResearchService 只认 `LlmClient`**——这就是第 16 章"拆 LLM 网关"能在零依赖版照样成立的基础。
 
@@ -610,7 +610,7 @@ public class ResearchController {
         return researchService.research(topic);
     }
 }
-```
+```bash
 
 ### 0.3 验证
 
@@ -738,13 +738,13 @@ public class ResearchService {
                 .timeout(Duration.ofSeconds(60));
     }
 }
-```
+```bash
 
 ### 1.3 验证最小版
 
 ```bash
 curl -N "http://localhost:8080/api/research?topic=对比vLLM和TensorRT-LLM的发展"
-```
+```javascript
 
 预期：Mock 命中"搜索/查询"关键词 → 调 `web_search` → 内置条目命中 → 摘要拼进结果逐字输出。
 
@@ -907,7 +907,7 @@ git add -A && git commit -m "第1章：自主Agent（先注册工具，再演进
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
         </dependency>
-```
+```yaml
 
 #### 2.2.2 application.yaml：Redis 连接
 
@@ -1215,7 +1215,7 @@ public class ResearchService {
                 .timeout(Duration.ofSeconds(60));
     }
 }
-```
+```bash
 
 ### 2.3 验证最朴素版
 
@@ -1539,7 +1539,7 @@ public class GlobalErrorFilter {
                 });
     }
 }
-```
+```bash
 
 ### 3.3 验证
 
@@ -1683,7 +1683,7 @@ private final PlanExecuteService planExecuteService;   // ▼ 第4章
 public Flux<String> deep(@RequestParam String topic) {
     return planExecuteService.researchDeep(topic);   // ▼ 第4章：Plan-Execute 深度研究
 }
-```
+```bash
 
 ### 4.3 验证
 
@@ -1754,7 +1754,7 @@ private Flux<String> executeSubtask(String sub) {
                     "### " + sub + "\n（该子方向调研失败，已隔离：" + e.getMessage() + "）\n\n"))
             .flux();   // Mono→Flux 以便 flatMap 合流
 }
-```
+```bash
 
 > **`flatMap` 限流的意义**：`flatMap(mapper, concurrency)` 的第二个参数是最大并发数。即使有 10 个子任务，也只同时跑 3 个——保护下游（真实场景下保护 LLM API 的 QPS 限制）。**错误隔离**：单个子任务 `onErrorResume` 降级，其他子任务不受影响——这是"部分失败不拖垮整体"的标准模式。
 
@@ -1875,7 +1875,7 @@ public class AuditController {
         return audit.query(sessionId);
     }
 }
-```
+```bash
 
 ### 6.3 验证
 
@@ -2043,7 +2043,7 @@ public class ResearchService {
 public Flux<String> research(@RequestParam String topic, @RequestParam String sessionId) {
     return researchService.research(topic, sessionId);
 }
-```
+```bash
 
 ### 7.3 验证
 
@@ -2306,7 +2306,7 @@ function openSession(id){
     document.getElementById('out').textContent = msgs.map(m=>JSON.parse(m).content).join('\n');
   });
 }
-```
+```bash
 
 **这版就是产品级的会话页了**：新建/切换/历史回看/流式输出全齐。
 
@@ -2614,7 +2614,7 @@ public class ResearchController {
         return data.mergeWith(heartbeat).takeUntilOther(data.then());
     }
 }
-```
+```bash
 
 ### 9.3 验证最小版
 
@@ -2991,7 +2991,7 @@ public Flux<ServerSentEvent<String>> stream(@RequestParam String sessionId,
     return researchService.subscribeReadOnly(sessionId, lastEventId != null ? lastEventId : 0)
             .map(s -> ServerSentEvent.<String>builder().data(s).build());
 }
-```
+```bash
 
 **验证最小分离版**：
 
@@ -3183,7 +3183,9 @@ public class SyncStreamBus {
 
 #### 10.2.2 ResearchService：暴露 trigger(runId) + subscribeReadOnly(runId)
 
-**【改已有文件，完整版覆盖】** `ResearchService.java`（相对第 9 章，方法改为 `runId` 隔离）：
+**【改已有文件，完整版覆盖】** `ResearchService.java`。
+
+> **⚠️ 第 9→10 章迁移重点**：ResearchService 的调用方式彻底变了——第 9 章用 `bus.subscribe(sessionId, lastSeq, upstream).flatMapMany(flux -> flux)`（一个方法既触发又订阅），本章拆成两个独立方法：`bus.trigger(runId, upstream)`（管理面触发） + `bus.subscribeReadOnly(runId, lastSeq)`（数据面只读订阅）。Controller 也因此拆成 `POST /api/runs`（调 trigger）和 `GET /api/runs/{id}/stream`（调 subscribeReadOnly）。**如果从第 9 章照抄过来，下面的完整版覆盖会替换掉旧的 ResearchService——改动锚点 `▼ 第10章` 已标出所有变化。**
 
 ```java
 package com.example.research;
@@ -4226,7 +4228,7 @@ SyncStreamBus.trigger（单一写者，抢 SETNX 锁）
   │              run.status==RUNNING → 读流（Redis Streams）
   │
   └─ 衔接点③ 下次多轮：load() 读库（不读流，流会过期）→ 注入 LLM history
-```
+```bash
 
 > **一句话记忆**：**流服务"现在正在发生的"，库服务"已经发生完的"**；衔接靠 run 状态分流，落库收敛到单一写者（锁保证幂等）。这套配合齐了，才不会出现"流完没落库 / 刷新看不到正在吐的 / 多轮失忆"三类问题。
 
@@ -4245,7 +4247,7 @@ curl -N "http://localhost:8080/api/runs/<runId>/stream"
 # 重启应用，数据还在（文件库持久）
 # 验证查询能力（Redis 做不到的）：
 curl "http://localhost:8080/api/sessions/db-001/messages"   # 历史——现在从 H2 读，TTL 不会再丢
-```
+```yaml
 
 ### 10.5.4 一行配置切 PostgreSQL（生产）
 
@@ -4261,7 +4263,7 @@ spring:
   sql:
     init:
       mode: always            # schema.sql 同一份，PG 也能跑（AUTO_INCREMENT 改 SERIAL 见下）
-```
+```xml
 
 pom 加 PG 驱动：
 
@@ -4377,7 +4379,7 @@ services:
              echo "sentinel down-after-milliseconds mymaster 3000" >> /etc/sentinel.conf &&
              redis-server /etc/sentinel.conf --sentinel',
       depends_on: [redis-master, redis-slave], ports: ["26381:26379"] }
-```
+```yaml
 
 #### 11.2.2 application.yaml：连哨兵
 
@@ -4403,7 +4405,7 @@ spring:
 ```java
 // writeChunk 内的 redis.opsForStream().add(...)
 .retryWhen(reactor.util.retry.Retry.backoff(3, Duration.ofSeconds(1)).maxBackoff(Duration.ofSeconds(5)))
-```
+```bash
 
 ### 11.3 验证
 
@@ -4578,7 +4580,7 @@ upstream.doOnNext(chunk -> chunkBus.write(sessionId, chunk))   // ▼ 第12章�
         .doOnComplete(() -> { redis.delete(lockKey).subscribe(); chunkBus.write(sessionId, "__END__"); })
         .subscribe();
 // 锁仍归 Redis，chunk 写入委托 KafkaChunkBus（trigger 签名加 KafkaChunkBus 参数）
-```
+```bash
 
 Controller 的 `stream()` 改调 `chunkBus.subscribe(sessionId)`。
 
@@ -5015,7 +5017,7 @@ public Mono<ResponseEntity<Map<String, String>>> trigger(@RequestParam String to
                 .thenReturn(ResponseEntity.accepted().body(Map.of("sessionId", sessionId, "status", "started")));
         });
 }
-```
+```bash
 
 ### 17.3 验证
 
@@ -5460,7 +5462,7 @@ public Flux<String> list() {
 ```yaml
 # research-gateway：加一个 JWT 过滤器（用 Spring Cloud Gateway 的全局过滤器）
 # 伪代码：解析 JWT → 把 X-User-Id / X-Tenant-Id 头注入下游请求 → 业务服务信任这两个头
-```
+```bash
 
 > **网关验签的前提**：业务服务和网关之间是**内网可信通道**（网关注入的头，业务服务直接信任）。如果业务服务也对外暴露，它们仍需各自验签（不信任外部头）。**这是"边界验签、内部信任"的标准微服务安全模式**。
 
@@ -5569,7 +5571,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
     created_at  TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_usage_tenant_time ON usage_record(tenant_id, created_at);
-```
+```sql
 
 **【改已有文件】** `tenant` 表加预算字段（ALTER 或直接改建表语句）：
 

@@ -244,7 +244,7 @@ public class Application {
         SpringApplication.run(Application.class, args);
     }
 }
-```
+```yaml
 
 #### 0.2.3 配置文件（最小可跑版）
 
@@ -477,7 +477,7 @@ public class ResearchController {
         return researchService.research(topic);
     }
 }
-```
+```bash
 
 ### 0.3 验证
 
@@ -667,7 +667,7 @@ public class ResearchService {
           不够 → 再输出一个 tool_call（再搜/换词）
   ↓
 ... 直到 LLM 不再请求工具，或撞 maxIterations 兜底
-```
+```javascript
 
 **三个关键认知**：
 1. **LLM 不是输出文本，是输出结构化的"调用请求"**。底层是 **function calling**——LLM 被训练成能输出 `{"name":"search","arguments":{"query":"XX"}}` 这种结构化 JSON，框架解析它、执行对应方法。这是 Agent 能"自主调工具"的技术基础。
@@ -1213,7 +1213,7 @@ public class ResearchController {
         return researchService.research(topic);
     }
 }
-```
+```bash
 
 ### 2.3 验证
 
@@ -1899,7 +1899,7 @@ public class ResearchController {
         return planExecuteService.researchDeep(topic);
     }
 }
-```
+```bash
 
 > **两套并存**：`/api/research`（ReAct，简单/快速）+ `/api/research/deep`（Plan-Execute，复杂/全面），都是流式 SSE。本章 deep 是串行 Execute + 简单综合——**够演示"Plan 让复杂主题查得全"这个痛点被解掉**。并发提速是第 5 章的事。
 
@@ -2304,7 +2304,7 @@ git add -A && git commit -m "第5章：多Worker并发(flatMap限流+错误隔�
 mybatis-plus:
   configuration:
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
-```
+```sql
 
 #### 6.2.1 审计日志表
 
@@ -2456,7 +2456,7 @@ public class AuditLogger {
 
     public static String newTurnId() { return UUID.randomUUID().toString().replace("-", ""); }
 }
-```
+```sql
 
 > **相比直接用 JdbcTemplate 手写 SQL**：少了 `"INSERT INTO ... VALUES (?,?,?,?,?,?,?)"` 字符串 + 参数对齐——字段名、顺序、类型都由实体约束，编译期安全。`subscribeOn(boundedElastic)` 切线程纪律不变（MyBatis-Plus 底层还是 JDBC 阻塞）。
 
@@ -2677,7 +2677,7 @@ public class AuditController {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 }
-```
+```sql
 
 > **相比直接用 JdbcTemplate 手写 SQL**：手拼 `"WHERE session_id = ? " + (turnId != null ? "AND turn_id = ? " : "")` → `LambdaQueryWrapper.eq(条件, 字段, 值)`。字段名是 `ResearchAudit::getSessionId`（编译期检查，改名时 IDE 自动重构），不再是字符串拼 `"session_id"`（拼错了编译不报错、SQL 运行时才炸）。
 >
@@ -2739,7 +2739,7 @@ public class ResearchController {
                 .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
     }
 }
-```
+```bash
 
 ### 6.3 验证
 
@@ -2856,7 +2856,7 @@ ChatMemory（逻辑层：管窗口/裁剪）          ChatMemoryRepository（持
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-chat-memory-repository-jdbc</artifactId>
         </dependency>
-```
+```yaml
 
 **【改已有文件】** `research-agent/src/main/resources/application.yaml`。本章相对第 3 章的改动：在 `spring` 节下**追加 `sql.init`** 块（启动时执行官方 PG 建表脚本）。其余不变。
 
@@ -2868,7 +2868,7 @@ spring:
     init:
       mode: always          # 启动时建表（生产用 Flyway 管理，这里演示用 init）
       schema-locations: classpath:org/springframework/ai/chat/memory/repository/jdbc/schema-postgresql.sql
-```
+```sql
 
 > **官方 schema 脚本路径**：`classpath:org/springframework/ai/chat/memory/repository/jdbc/schema-postgresql.sql`——starter jar 里自带的 PG 建表 SQL（建一张 `SPRING_AI_CHAT_MEMORY` 表，字段：`conversation_id` / `content` / `type`（USER/ASSISTANT等）/ `timestamp`）。**不用自己写建表 SQL**，官方提供。
 >
@@ -3220,7 +3220,7 @@ public class ResearchController {
                 .onErrorResume(err -> Flux.just("[研究失败] " + err.getMessage()));
     }
 }
-```
+```bash
 
 ### 7.3 验证
 
@@ -4052,7 +4052,7 @@ public Flux<String> researchDeep(String topic, String sessionId) {
             .flatMapMany(subtasks -> ...)  // Plan → 并发 Execute → Aggregate 全链
     ).flatMapMany(Function.identity());
 }
-```
+```bash
 
 ### 9.3 验证
 
@@ -4062,7 +4062,7 @@ docker run -d --name research-redis -p 6379:6379 redis:7-alpine
 
 # 2. 启动应用
 mvn spring-boot:run
-```
+```bash
 
 **验证①：单实例多终端同步**
 
@@ -4071,7 +4071,7 @@ mvn spring-boot:run
 curl -N "http://localhost:8080/api/research?topic=2026年AI大模型发展&sessionId=multi-001"
 # 终端2（晚 5 秒开始）
 curl -N "http://localhost:8080/api/research?topic=2026年AI大模型发展&sessionId=multi-001"
-```
+```bash
 
 预期：两终端内容一致。终端2 先快速回放已输出的内容（Streams XREAD），然后实时跟进。
 
@@ -4779,7 +4779,7 @@ public class RedisStreamBus {
                 });
     }
 }
-```
+```java
 
 > **为什么用全限定名 `reactor.core.publisher.Flux` 而不 import**：演示时为了让"这里是 Reactor 类型"一目了然。实际项目里正常 `import reactor.core.publisher.Flux;` 然后写 `Flux<String>` 即可。
 
@@ -4883,7 +4883,7 @@ public class ResearchController {
         return data.mergeWith(heartbeat).takeUntilOther(data.then());
     }
 }
-```
+```bash
 
 > **前端怎么配合**：原来前端直接 `GET /api/research?topic=X&sessionId=Y` 拿流。现在分两步：先 `POST /api/research?topic=X&sessionId=Y` 触发，再 `GET /api/research/stream?sessionId=Y` 订阅。多设备场景下，第二台设备**只发 GET 订阅**（不带 topic），不会重复触发 LLM——这正是 10.0 场景里要解决的痛点。
 
@@ -5087,7 +5087,7 @@ public class RunController {
         return ResponseEntity.ok("{\"status\":\"cancelled\"}");
     }
 }
-```
+```sql
 
 > **和简化版（10.2.3 ResearchController）的关系**：10.2 的 `POST /api/research` + `GET /api/research/stream` 是学习起步——帮你看清"管数分离的核心就是拆两个接口"。**RunController 是对它的企业级升级**——把"触发"建成一个一等公民资源（run），配幂等键/状态机/取消。两者是演进关系：先理解 10.2 的"为什么要拆"，再用 10.6 的"怎么拆得更专业"。
 
@@ -5099,7 +5099,30 @@ public class RunController {
 > CREATE TABLE IF NOT EXISTS run_idempotent (
 >     key VARCHAR(128) PRIMARY KEY, run_id VARCHAR(64) NOT NULL);
 > ```
-> `SyncStreamBus.trigger` 签名从 `trigger(String sessionId, ...)` 改为 `trigger(String runId, ...)`，流 key 从 `stream:{sessionId}:chunks` 改为 `stream:{runId}:chunks`——run 是一等公民，一次会话多次研究互不干扰。
+> `RedisStreamBus.trigger` 签名从 `trigger(String sessionId, ...)` 改为 `trigger(String runId, ...)`，流 key 从 `stream:{sessionId}:chunks` 改为 `run:{runId}:chunks`——run 是一等公民，一次会话多次研究互不干扰。
+>
+> **10.2→10.6 迁移清单**（在 10.2 代码基础上改这几处即可）：
+> ```java
+> // RedisStreamBus：流 key 常量改为以 runId 命名
+> private static final String KEY_STREAM = "run:%s:chunks";  // 原 "stream:%s:chunks"
+>
+> // trigger 重载（加 runId，原 sessionId 版保留向后兼容）
+> public Mono<Boolean> trigger(String runId, Flux<String> upstream) {
+>     return redis.opsForValue().setIfAbsent("run:" + runId + ":lock", "1", LOCK_TTL)
+>             .doOnNext(acquired -> {
+>                 if (Boolean.TRUE.equals(acquired)) { /* 同上 */ }
+>             });
+> }
+> ```
+> ```java
+> // ResearchService：新增重载（传 runId）
+> public Mono<Boolean> trigger(String topic, String sessionId, String runId) {
+>     // ... 构造 upstream 同 10.2.2 ...
+>     return bus.trigger(runId, upstream);   // 改为 runId
+> }
+> // 原 trigger(topic, sessionId) 保留（向后兼容 10.2 的 ResearchController）
+> ```
+> `RunController` 调 `researchService.trigger(topic, sessionId, runId)`，`GET /runs/{runId}/stream` 调 `subscribeReadOnly(runId)`——10.2 和 10.6 共存，逐步过渡。
 
 ### 10.7 流式数据与历史记录的协调（管数分离后的关键衔接）
 
@@ -5218,7 +5241,7 @@ services:
              redis-server /etc/sentinel.conf --sentinel'
     depends_on: [redis-master, redis-slave]
     ports: ["26381:26379"]
-```
+```bash
 
 启动：`docker-compose -f redis-ha/docker-compose.yml up -d`
 
@@ -5262,7 +5285,7 @@ redis.opsForStream().add(record)
         .doOnError(err -> log.error("[StreamBus] XADD 最终失败 (session={}): {}", sessionId, err.getMessage()))
         .onErrorResume(err -> Mono.empty())
         .subscribe();
-```
+```java
 
 > 补 import：`import java.time.Duration;`（如果还没有）。`Retry.backoff` 替代第 9 章的 `Retry.max(3)`——指数退避让重试跨过故障转移空窗。
 
@@ -5290,7 +5313,7 @@ docker stop research-redis-master   # 或对应容器名
 
 ### 11.4 checkpoint
 
-```
+```bash
 research-agent/
 ├── redis-ha/
 │   └── docker-compose.yml          （新增：1主1从3哨兵）
@@ -5368,7 +5391,7 @@ LLM → XADD stream:{sid}                  LLM → produce topic=research-chunks
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
         </dependency>
-```
+```yaml
 
 #### 12.2.2 application.yaml：Kafka 配置
 
@@ -5564,7 +5587,7 @@ public Flux<ServerSentEvent<String>> stream(@RequestParam String sessionId) {
             .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
     return data.mergeWith(heartbeat).takeUntilOther(data.then());
 }
-```
+```bash
 
 ### 12.3 验证
 
@@ -5866,7 +5889,7 @@ public class ResearchController {
     // ▼ 第13章删除：stream() 方法搬到 research-subscribe 服务，这里不再保留
     //   原 GET /api/research/stream 改由订阅服务（8082）提供
 }
-```
+```bash
 
 ### 13.3 验证
 
@@ -6026,7 +6049,7 @@ public class TriggerApplication {
         SpringApplication.run(TriggerApplication.class, args);
     }
 }
-```
+```yaml
 
 **【新建文件】** `research-trigger/src/main/resources/application.yml`：
 
@@ -6379,7 +6402,7 @@ eureka:
         </dependencies>
     </dependencyManagement>
 </project>
-```
+```yaml
 
 **【新建文件】** `research-gateway/src/main/resources/application.yml`：
 
@@ -6737,7 +6760,7 @@ public class TriggerController {
                         .body(Map.of("sessionId", sessionId, "status", "started")));
     }
 }
-```
+```bash
 
 > 触发服务现在**没有任何 LLM 依赖**——不引 spring-ai、不持有 API key、不知道用的是 DeepSeek 还是通义。它只认 LLM 网关的统一接口 `/llm/chat/stream`。换厂商、加厂商、A/B、熔断、计费，全在 LLM 网关内部改，触发服务一行不动。
 
@@ -7130,7 +7153,7 @@ git add -A && git commit -m "第17章：分布式ChatMemory——Redis热缓存+
         </dependencies>
     </dependencyManagement>
 </project>
-```
+```sql
 
 #### 18.2.2 用户表 + 认证服务逻辑
 
@@ -7204,7 +7227,7 @@ public class AuthController {
 
     public record LoginRequest(String username, String password) {}
 }
-```
+```yaml
 
 **【配置】** `research-auth/src/main/resources/application.yml`：
 
@@ -7342,7 +7365,7 @@ public Mono<Boolean> trigger(String tenantId, String sessionId, Flux<String> ups
     String streamKey = KEY_STREAM.formatted(tenantId, sessionId);   // 租户 A 的 stream 和租户 B 物理隔离
     // ... 其余逻辑不变
 }
-```
+```sql
 
 **② PG 查询加 tenantId 过滤**：
 
@@ -7363,7 +7386,7 @@ kafka.send("research-chunks", tenantId + ":" + sessionId, chunk);
 
 // 方案 B（租户多/强隔离）：每租户独立 topic
 kafka.send("research-chunks-" + tenantId, sessionId, chunk);
-```
+```bash
 
 > **三层隔离的取舍**：Redis key 前缀和 PG where 过滤是必做（轻量、有效）；Kafka topic 按租户分是可选（租户多时 topic 数会爆炸，通常用单 topic + key 分区）。**核心是 tenantId 贯穿所有数据操作**——漏一处就是越权漏洞。
 
@@ -7502,7 +7525,7 @@ management:
     web:
       exposure:
         include: health,metrics,prometheus   # 暴露指标端点（供 Prometheus 抓取）
-```
+```bash
 
 **【起 Zipkin Server】**（docker）：
 
@@ -7607,7 +7630,7 @@ scrape_configs:
 ```xml
 <!-- 第 19 章：日志带 traceId，可跨服务串联 -->
 <pattern>%d{HH:mm:ss} [%X{traceId},%X{spanId}] %-5level %logger{20} - %msg%n</pattern>
-```
+```bash
 
 `%X{traceId}` 从 MDC（Mapped Diagnostic Context）取当前请求的 traceId——Micrometer Tracing 自动塞进去。这样每条日志都带 traceId，**用 Zipkin 定位到卡在哪环后，拿 traceId 去 Kibana 搜这一环的全部日志**。
 
@@ -7627,7 +7650,7 @@ scrape_configs:
   kibana:
     image: kibana:8.11.0
     ports: ["5601:5601"]
-```
+```bash
 
 > 各服务的日志通过 Filebeat 或 Logstash TCP 输入，汇聚到 Elasticsearch，Kibana 做全文检索。**核心价值**：六服务的日志在一处检索，用 traceId 过滤就能看到一个请求经过的全部服务的日志时间线——不用再挨个服务翻日志文件。
 
@@ -7659,7 +7682,7 @@ open http://localhost:5601    # 用 Zipkin 里看到的 traceId 搜，看到该�
 
 ### 19.4 checkpoint
 
-```
+```bash
 observability/
 ├── docker-compose.yml       （Zipkin + Prometheus + Grafana + ELK）
 └── prometheus.yml           （抓取配置）
@@ -7805,7 +7828,7 @@ public Flux<String> aggregateAndCheck(String sessionId, List<SubTaskResult> resu
                                 + "\n（系统标注：这些声明未在检索资料中找到支撑，请核查）";
                     }));
 }
-```
+```sql
 
 #### 20.2.3 反馈表 + 用户反馈接口
 
@@ -7914,7 +7937,7 @@ public class FeedbackLoop {
         }
     }
 }
-```
+```bash
 
 > **闭环的价值**：没有反馈，系统是"一次性输出机器"——错了就错了，下次还错。有了反馈，系统是"有学习能力的"——用户的纠错积累成数据资产，反哺 RAG，同类问题下次答对。**这是企业级 Agent 和一次性 Demo 的本质区别**。
 
@@ -8185,7 +8208,7 @@ public Map<String, String> researchDeepDag(String topic) {
 
     return workflowEngine.execute(wf, topic);
 }
-```
+```bash
 
 > 上面的双 wf 赋值是为了演示"写法示意 → 真正调用"的修正过程，实际代码只保留第二个。**重点看条件边**：`查A → 查A特性` 带条件"查A 结果包含 speculative decoding"——查完 A 才能判断要不要查特性，这是线性 Plan-Execute 做不到的。
 
@@ -8388,7 +8411,7 @@ public Mono<ResponseEntity<Map<String, String>>> trigger(@RequestParam String to
             })
             .thenReturn(ResponseEntity.accepted().body(Map.of("sessionId", sessionId, "status", "started")));
 }
-```
+```bash
 
 > **偏好提取的简化**：上面把 `topic` 直接当候选偏好沉淀，是演示。生产环境用 LLM 从会话中**提取真正的偏好**（如"用户偏好简洁回答""用户是后端工程师"），过滤掉无关内容（如"研究主题：天气"不是偏好）。这是 `remember` 的进阶——用 LLM 做偏好抽取。
 
@@ -8668,7 +8691,7 @@ public class BillingController {
         return summary;
     }
 }
-```
+```bash
 
 ### 23.3 验证
 
@@ -8949,7 +8972,7 @@ flowchart TD
     S7[第7章 会话持久化<br/>ChatMemory落PG+CONVERSATION_ID] -->|痛点: 没法当产品用| S8
     S8[第8章 产品化<br/>会话CRUD+自动标题+前端对话页] -->|痛点: 单机不能多设备| S9
     S9[第9章 分布式流式<br/>Redis Streams+Pub/Sub三层广播]
-```
+```html
 
 ### A.5 调试页面（第 0-4 章单次研究版）
 
