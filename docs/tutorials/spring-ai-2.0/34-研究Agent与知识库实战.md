@@ -40,7 +40,6 @@
 - [第 14 章：微服务拆分（二）——再拆触发服务](#第-14-章微服务拆分二再拆触发服务)
 - [第 15 章：微服务拆分（三）——加 API 网关](#第-15-章微服务拆分三加-api-网关)
 - [第 16 章：微服务拆分（四）——拆 LLM 网关](#第-16-章微服务拆分四拆-llm-网关)
-- [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 - [第 17 章：分布式 ChatMemory——拆服务后恢复多轮记忆](#第-17-章分布式-chatmemory拆服务后恢复多轮记忆)
 - [第 18 章：多租户 + 用户体系——JWT 认证与租户隔离](#第-18-章多租户--用户体系jwt-认证与租户隔离)
 - [第 19 章：可观测性——链路追踪 + 指标 + 日志聚合](#第-19-章可观测性链路追踪--指标--日志聚合)
@@ -49,6 +48,7 @@
 - [第 22 章：长期记忆与个性化——跨会话用户画像](#第-22-章长期记忆与个性化跨会话用户画像)
 - [第 23 章：成本治理——token 计量、预算与分摊](#第-23-章成本治理token-计量预算与分摊)
 - [第 24 章：全文演进总览 + 后续方向](#第-24-章全文演进总览--后续方向)
+- [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
 ---
 
@@ -3714,561 +3714,6 @@ git add -A && git commit -m "第8章：会话CRUD(MyBatis-Plus)+前端对话页�
 
 ---
 
-## 附录：项目结构与踩坑手册
-
-### A.1 项目结构（第 8 章结束时，最终态）
-
-```
-research-agent/                         （主项目：会话化研究问答系统）
-├── pom.xml                             （webflux/openai/pgvector/jdbc/mybatis-plus/mcp-client/chat-memory-jdbc）
-├── src/main/resources/
-│   ├── application.yaml                （DeepSeek + PG + 向量库 + MCP client + sql.init 建表）
-│   └── static/index.html               （第8章前端：会话列表 + 对话区）
-└── src/main/java/com/example/research/
-    ├── Application.java
-    ├── ResearchService.java            （ReAct Agent：简单问题路径）
-    ├── ResearchController.java         （接口 + 输入审核 + /deep + 自动标题）
-    ├── config/
-    │   ├── HttpClientConfig.java       （RestClient 超时 + 重试拦截器，第3章）
-    │   ├── ChatClientConfig.java       （MCP 工具 + MessageChatMemoryAdvisor，第3/7章）
-    │   └── ChatMemoryConfig.java       （JdbcChatMemoryRepository + PG dialect，第8章）
-    ├── plan/
-    │   └── PlanExecuteService.java     （Plan + 多Worker并发Execute + Aggregate + 审计埋点，第4/5/6/7章）
-    ├── audit/
-    │   ├── ResearchAudit.java          （审计实体，第6章）
-    │   ├── ResearchAuditMapper.java    （审计 Mapper，第6章）
-    │   ├── AuditLogger.java            （结构化采集落库，第6章）
-    │   └── AuditController.java        （按会话查轨迹，第6章）
-    ├── session/
-    │   ├── ResearchSession.java        （会话实体，第8章）
-    │   ├── ResearchSessionMapper.java  （会话 Mapper，第8章）
-    │   ├── SessionService.java         （会话 CRUD + 查历史，第8章）
-    │   └── SessionController.java      （会话 REST 接口，第8章）
-    ├── tool/
-    │   └── KnowledgeBaseTool.java      （本地工具：知识库检索；网页搜索来自 MCP）
-    ├── kb/
-    │   └── IngestController.java       （知识库入库）
-    └── safety/
-        └── InputGuard.java             （输入审核）
-
-PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· research_session（会话）· pgvector 向量表
-```
-
-### A.2 依赖与配置演进总账
-
-**`research-agent/pom.xml` 依赖引入轨迹**（每章只引本章用到的）：
-
-| 依赖 | 引入章 | 用途 |
-|------|--------|------|
-| spring-boot-starter-webflux | 第0章 | Web 栈基础（Controller、WebClient） |
-| spring-ai-starter-model-openai | 第0章 | DeepSeek（OpenAI 兼容）+ 第2章起也提供 EmbeddingModel |
-| spring-ai-starter-vector-store-pgvector | 第2章 | 向量库 |
-| spring-boot-starter-jdbc | 第2章 | pgvector 需要（issue #6164）；ChatMemory 官方建表也走 jdbc |
-| spring-ai-starter-mcp-client | 第3章 | 接入网页搜索 MCP server |
-| mybatis-plus-spring-boot3-starter | 第6章 | 业务表 ORM（审计、会话），pgvector 仍用 JdbcTemplate |
-| spring-ai-starter-model-chat-memory-repository-jdbc | 第7章 | ChatMemory 落 PG |
-
-**`research-agent/application.yaml` 配置演进轨迹**：
-
-| 配置块 | 引入章 | 用途 |
-|--------|--------|------|
-| spring.ai.openai.chat + server + logging | 第0章 | 最小可跑 |
-| spring.datasource | 第2章 | PG 连接 |
-| spring.ai.openai.embedding | 第2章 | embedding 模型（入库向量化） |
-| spring.ai.vectorstore.pgvector | 第2章 | 向量库 |
-| mybatis-plus.configuration.log-impl | 第6章 | 开发期看 SQL（生产关掉） |
-| spring.sql.init（ChatMemory 建表脚本） | 第7章 | 启动时建 SPRING_AI_CHAT_MEMORY 表 |
-
-> **完整 application.yaml（第 8 章结束时累积态）**——各章按上面轨迹累加后的最终形态：
->
-> ```yaml
-> spring:
->   datasource:
->     url: jdbc:postgresql://localhost:5432/research
->     username: postgres
->     password: postgres
->   ai:
->     openai:
->       api-key: ${DEEPSEEK_API_KEY}
->       base-url: https://api.deepseek.com
->       chat:
->         model: deepseek-chat
->         temperature: 0.3
->       embedding:
->         model: text-embedding-3-small
->         api-key: ${OPENAI_API_KEY}
->     vectorstore:
->       pgvector:
->         dimensions: 1536
->         distance-type: cosine_distance
->         index-type: hnsw
->         initialize-schema: true
->     mcp:
->       client:
->         streamable-http:
->           connections:
->             web-search:
->               url: http://localhost:8081
->   sql:
->     init:
->       mode: always
->       schema-locations: classpath:org/springframework/ai/chat/memory/repository/jdbc/schema-postgresql.sql
-> server:
->   port: 8080
-> 
-> # ▼ 第6章：MyBatis-Plus 日志（开发期看 SQL，生产关掉）
-> mybatis-plus:
->   configuration:
->     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
-> 
-> logging:
->   level:
->     org.springframework.ai: info
-> ```
->
-> **额外建表**（手动执行，不在 `sql.init` 里）：`research_audit`（第6章审计）、`research_session`（第8章会话元信息）——这两张业务表的 SQL 在各自章节给出，需手动在 PG 执行（生产用 Flyway 管理）。
-
-### A.3 踩坑手册
-
-**第 0 章**：
-- Bing 搜索抓不到结果 → ① 确认 `WebClient`/`RestClient` 带了 `User-Agent`（不加 UA，Bing 返回的页面结构不同，正则匹配不上）；② 浏览器打开 `https://cn.bing.com/search?q=test` 看摘要的 class 是不是还是 `b_lineclamp2`——Bing 改版会换 class 名，变了就把正则里的 class 名同步改；③ 频繁请求会被 Bing 限频，开发阶段够用，别压测。
-
-**第 1 章**：
-- Agent 不调工具 → system prompt 没讲清楚"有工具可用"；或工具 `description` 写得太差（LLM 不知道何时调）。
-
-**第 2 章**：
-- ⚠️ **pgvector 启动报错（无 JdbcTemplate）** → [issue #6164](https://github.com/spring-projects/spring-ai/issues/6164)，必须额外加 `spring-boot-starter-jdbc`。最常踩的坑。
-- ⚠️ **入库报"无 embedding 模型"或维度错** → 没配 `spring.ai.openai.embedding.model`。DeepSeek 没 embedding API，必须配一个（OpenAI 3-small / Ollama / 兼容端点）。见 2.2.2。
-- 入库报维度不匹配 → `dimensions` 要和 embedding 模型输出一致（1536 是 OpenAI 3-small，Ollama 的 nomic 是 768）。
-- `similaritySearch` 查不到 → 库空（先 ingest）；或 `similarityThreshold` 设太高；或 query 太离谱。
-- **结果不带出处/用户无法核实** → 工具返回没带来源编号 + system prompt 没要求引用。见 2.2.5 防幻觉。
-
-**第 3 章（MCP 相关）**：
-- ⚠️ **MCP server 对外被白嫖** → 没鉴权，任何人能调你的搜索 server 烧配额。必须加鉴权（OAuth2/API key）。
-- MCP server 的 `@McpTool` 没注册 → [issue #4392](https://github.com/spring-projects/spring-ai/issues/4392)，早期版本 bug；或 starter 名/版本不对（用 `spring-ai-starter-mcp-server-webmvc`）。查[官方 MCP Server 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html)。
-- MCP client 连不上 server → server 没起/端口不对/鉴权头没带；**client 配置键按你的 starter 版本核对**——webmvc server（Streamable HTTP transport）和 webflux server（SSE transport）的 client 配置键不同（`spring.ai.mcp.client.streamable-http.connections` vs `spring.ai.mcp.client.sse.connections`），别用错。
-- ⚠️ **SSE 下工具执行时鉴权丢失** → [issue #2506](https://github.com/spring-projects/spring-ai/issues/2506)，连接时鉴权生效但工具执行阶段可能丢。生产必测。
-- ⚠️ **MCP 工具不进默认 ChatClient** → starter 把工具注册成 `ToolCallbackProvider` Bean，但默认 ChatClient 不自动包含。必须自定义 `@Bean ChatClient` 显式 `defaultTools(mcpToolProviders)`，见 3.1.3（ChatClientConfig）。
-- 删了 `WebSearchTool` 后编译报错 → `ResearchService` 构造函数引用了它，按 3.1.4（ResearchService 新构造函数）改。
-
-**第 3 章（运营事故相关）**：
-- **以为 `@Retry` 能保护 Agent 循环** → 错。Agent 的 LLM 调用是框架内部发起的，`@Retry` 够不着。Agent 场景的重试靠底层 RestClient 重试拦截器（`ClientHttpRequestInterceptor`，见 3.3）——Spring AI 的 OpenAI client 走 RestClient，重试拦截器对它生效。`@Retry` 只管你显式调的 LLM。
-- **429 重试把服务器打更挂** → 没退避立即重试，加剧过载。必须指数退避或按 `Retry-After` 头等。
-
-**第 4 章**：
-- **Plan 拆出的子任务不是合法 JSON** → LLM 偶尔在 JSON 前后加解释文字，`.entity(PTREF)` 反序列化失败。生产要在 prompt 强约束"只输出 JSON"+ try-catch 退化为单次 ReAct 兜底。
-- **Execute 直调 MCP 工具报 `UnsupportedOperationException`** → [issue #2378](https://github.com/spring-projects/spring-ai/issues/2378)，`ToolCallback.call` 带 ToolContext 时 MCP 工具抛异常。本文 Execute 复用 ReAct（让 LLM 自己调工具）避开此坑，别程序化直调。
-
-**第 5 章**：
-- ⚠️ **`flatMap` 没传第二参数（并发上限）** → 默认 256，4 个子任务瞬间打出 256 个请求并发上限被打爆、触发 429。**必传 `flatMap(fn, concurrency)`**，取 `min(子任务数, MAX)`。
-- **一个 worker 抛异常，整个调研失败** → `flatMap` 默认"一个出错取消整个流"。必须每个 worker 包 `onErrorResume` 做错误隔离（见 5.2.1）。
-- **并发后 Netty event loop 卡死** → LLM/搜索是阻塞调用，没 `subscribeOn(boundedElastic)` 切线程会占满 event loop。和第 2 章同一条纪律。
-
-**第 6 章**：
-- **审计的 `doOnError` 拿不到错误** → worker 内部的 `onErrorResume` 已把异常吞成占位，外部 `doOnError` 拿不到原始异常。把审计调用挪进 `executeOneReactive` 的 `onErrorResume` 里（见 6.2.5 推荐写法）。
-- **流式 Aggregate 的审计记不全** → `.stream()` 是逐字推，审计要完整文本得 `.reduce` 拼回再记。或只记元信息（起止时间+长度），不存全文。
-
-**第 7 章**：
-- ⚠️ **ChatMemory 没落库（重启丢）** → 只挂了 `MessageChatMemoryAdvisor` 但用的是默认 `InMemoryChatMemoryRepository`。必须配 `JdbcChatMemoryRepository` + PG dialect（见 7.2.2）。
-- **多轮不生效（Agent 仍不记得历史）** → 光挂 advisor 不够，每次调用要 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))` 传会话标识（见 7.2.4）。
-- **`PostgresChatMemoryRepositoryDialect` 找不到** → 确认加了 `spring-ai-starter-model-chat-memory-repository-jdbc`；包路径 `org.springframework.ai.chat.memory.repository.jdbc`。
-- **建表脚本报"表已存在"** → `spring.sql.init.mode: always` 每次启动执行。生产换 Flyway，或脚本加 `IF NOT EXISTS`。
-
-**第 8 章**：
-- **会话列表为空** → 新建会话只 INSERT `research_session`，没插消息——这是正常的（消息由 ChatMemory 在问答时插）。列表查 session 表，历史查消息表。
-- **查历史用 `chatMemory.get` 只返回最近 20 条** → `MessageWindowChatMemory` 默认窗口裁剪。要看全量历史直接 SQL 读 `SPRING_AI_CHAT_MEMORY`（按 timestamp 排序）。
-- **删会话后消息还在** → `delete` 要同时清 `research_session` 和 `SPRING_AI_CHAT_MEMORY` 两张表（见 9.2.2）。
-
-### A.4 演进全景图
-
-```mermaid
-flowchart TD
-    S0[第0章 固定workflow<br/>搜索→结果] -->|痛点: 固定步骤不够用| S1
-    S1[第1章 自主Agent<br/>ToolCallingAdvisor循环+流式] -->|痛点: 网页不够准| S2
-    S2[第2章 知识库RAG<br/>pgvector+双工具+输入审核] -->|痛点: 本地工具脆弱| S3
-    S3[第3章 工具升级+可靠性加固<br/>MCP server+超时/429重试/错误归宿] -->|痛点: 复杂主题漏角度| S4
-    S4[第4章 Plan-Execute<br/>先规划拆子任务串行执行] -->|痛点: 串行太慢| S5
-    S5[第5章 多Worker并发<br/>flatMap限流+错误隔离+Aggregate] -->|痛点: 过程不可追溯| S6
-    S6[第6章 审计日志<br/>按会话串联全流程落库(MyBatis-Plus)] -->|痛点: 刷新丢/不能多轮| S7
-    S7[第7章 会话持久化<br/>ChatMemory落PG+CONVERSATION_ID] -->|痛点: 没法当产品用| S8
-    S8[第8章 产品化<br/>会话CRUD+自动标题+前端对话页] -->|痛点: 单机不能多设备| S9
-    S9[第9章 分布式流式<br/>Redis Streams+Pub/Sub三层广播]
-```
-
-### A.5 调试页面（第 0-4 章单次研究版）
-
-放 `src/main/resources/static/debug.html`，浏览器打开 `http://localhost:8080/debug.html`。
-
-对接两个接口：`GET /api/research?topic=xxx`（ReAct 流式研究结果）、`POST /api/kb/ingest`（知识库入库，第2章）。**注意**：工具调用过程在后端控制台日志看，页面只显示流式结果 + 入库面板。**这是第 0-4 章阶段的调试页**（单次研究、无会话）；第 8 章产品版页面见 **A.5b**。
-
-```html
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>研究 Agent</title>
-    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
-    <style>
-        :root {
-            --bg: #f7f7f8; --surface: #fff; --border: #ececec;
-            --text: #1a1a1a; --text-2: #8e8e8e; --muted: #b0b0b0;
-            --accent: #1a1a1a; --green: #00b96b; --orange: #e67e22; --red: #e53935;
-        }
-        *, *::before, *::after { box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
-               background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
-               font-size: 15px; line-height: 1.8; margin: 0; }
-        header { background: var(--surface); border-bottom: 1px solid var(--border);
-                 padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
-        header .title { font-size: 16px; font-weight: 600; }
-        header .sub { color: var(--muted); font-size: 13px; margin-left: 8px; }
-        header .actions { display: flex; gap: 8px; }
-        header button { font-size: 13px; border: 1px solid var(--border); background: var(--surface);
-                        border-radius: 8px; padding: 5px 12px; cursor: pointer; color: var(--text-2); }
-        header button:hover { border-color: var(--text-2); }
-        header button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-
-        #content { flex: 1; overflow-y: auto; padding: 32px 0; }
-
-        #status-bar { max-width: 720px; margin: 0 auto 12px; padding: 10px 14px; border-radius: 8px;
-                      font-size: 13px; background: #f0f4ff; color: #4d6bfe; display: none; align-items: center; gap: 8px; }
-        #status-bar.show { display: flex; }
-        #status-bar .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #c5cdfa;
-                                border-top-color: #4d6bfe; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        #status-bar.error { background: #fff0f0; color: #c62828; }
-        #status-bar.done { background: #e6f7e6; color: #1b8a1b; }
-
-        .msg { max-width: 720px; margin: 0 auto; padding: 0 24px; }
-        .user { display: flex; justify-content: flex-end; margin-bottom: 16px; }
-        .user .bubble { background: var(--accent); color: #fff; padding: 10px 16px;
-                        border-radius: 12px 12px 4px 12px; max-width: 75%; word-break: break-word; }
-        .assistant { margin-bottom: 20px; }
-        .assistant .bubble { background: var(--surface); padding: 14px 18px; border: 1px solid var(--border);
-                             border-radius: 12px; word-break: break-word; min-height: 20px; line-height: 1.8; }
-
-        #ingest-panel { display: none; max-width: 720px; margin: 0 auto; padding: 16px 24px;
-                        background: var(--surface); border-radius: 12px; margin: 16px auto; }
-        #ingest-panel.active { display: block; }
-        #ingest-panel h3 { font-size: 14px; margin-bottom: 8px; }
-        #ingest-panel textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px;
-                                  padding: 8px; font-size: 14px; resize: vertical; min-height: 80px; }
-        #ingest-panel input { width:100%; border:1px solid var(--border); border-radius:8px;
-                              padding:8px; font-size:14px; margin-top:8px; }
-        #ingest-panel button { margin-top: 8px; background: var(--accent); color: #fff; border: none;
-                                padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; }
-        #ingest-result { font-size: 13px; color: var(--green); margin-top: 8px; }
-
-        #empty { text-align: center; color: #ccc; padding: 60px 20px; font-size: 14px; line-height: 2; }
-
-        #bar { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 24px; flex-shrink: 0; }
-        #input-wrap { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: center;
-                      background: var(--bg); border-radius: 22px; padding: 4px 4px 4px 18px; border: 1px solid var(--border); }
-        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 10px 0; }
-        #send { background: var(--accent); color: #fff; border: none; width: 34px; height: 34px;
-                border-radius: 50%; cursor: pointer; font-size: 16px; flex-shrink: 0; }
-        #send:disabled { background: #d0d0d0; }
-    </style>
-</head>
-<body>
-<header>
-    <div><span class="title">研究 Agent</span><span class="sub">自主研究 + 知识库</span></div>
-    <div class="actions">
-        <button id="btn-research" class="active" onclick="showResearch()">研究</button>
-        <button id="btn-ingest" onclick="showIngest()">知识库入库</button>
-    </div>
-</header>
-
-<div id="content">
-    <div id="status-bar"><span class="spinner"></span><span id="s-text">研究中…</span></div>
-    <div id="chat"></div>
-    <div id="ingest-panel">
-        <h3>知识库入库（文本 → 向量化 → 存 pgvector）</h3>
-        <textarea id="ingest-text" placeholder="粘贴要入库的文本..."></textarea>
-        <input id="ingest-source" placeholder="来源（如：产品白皮书）">
-        <button onclick="ingest()">入库</button>
-        <div id="ingest-result"></div>
-    </div>
-    <div id="empty" class="empty-state" style="text-align:center;color:#ccc;padding:60px 20px;font-size:14px;">
-        <div>输入研究主题，点击下方发送</div>
-        <div style="margin-top:8px;color:#ddd;">Agent 自主搜索 + 知识库检索，流式输出结果</div>
-    </div>
-</div>
-
-<div id="bar"><div id="input-wrap">
-    <input id="prompt" placeholder="研究主题，如：2026向量数据库对比" value="2026向量数据库对比">
-    <button id="send" onclick="send()">➤</button>
-</div></div>
-<script>
-    let sending = false, controller = null;
-
-    function showResearch() {
-        document.getElementById('btn-research').classList.add('active');
-        document.getElementById('btn-ingest').classList.remove('active');
-        document.getElementById('chat').style.display = 'block';
-        document.getElementById('ingest-panel').classList.remove('active');
-        document.getElementById('bar').style.display = 'flex';
-    }
-    function showIngest() {
-        document.getElementById('btn-research').classList.remove('active');
-        document.getElementById('btn-ingest').classList.add('active');
-        document.getElementById('chat').style.display = 'none';
-        document.getElementById('ingest-panel').classList.add('active');
-        document.getElementById('bar').style.display = 'none';
-    }
-
-    document.getElementById('prompt').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
-
-    function setStatus(mode, msg) {
-        const bar = document.getElementById('status-bar');
-        bar.className = 'show ' + mode;
-        bar.innerHTML = '';
-        if (mode === 'progress') bar.innerHTML = '<span class="spinner"></span>';
-        else if (mode === 'done') bar.innerHTML = '<span>✅</span>';
-        else if (mode === 'error') bar.innerHTML = '<span>❌</span>';
-        const span = document.createElement('span');
-        span.textContent = msg;
-        bar.appendChild(span);
-    }
-
-    async function send() {
-        if (sending) return;
-        const input = document.getElementById('prompt');
-        const topic = input.value.trim();
-        if (!topic) return;
-        input.value = '';
-        sending = true;
-        document.getElementById('send').disabled = true;
-        document.getElementById('empty').style.display = 'none';
-
-        const chat = document.getElementById('chat');
-        const u = document.createElement('div'); u.className = 'msg user';
-        u.innerHTML = '<div class="bubble"></div>';
-        u.querySelector('.bubble').textContent = topic;
-        chat.appendChild(u);
-
-        const a = document.createElement('div'); a.className = 'msg assistant';
-        a.innerHTML = '<div class="bubble"></div>';
-        chat.appendChild(a);
-
-        setStatus('progress', '🔍 正在研究「' + topic + '」…');
-        controller = new AbortController();
-        try {
-            const resp = await fetch('/api/research?topic=' + encodeURIComponent(topic), {
-                headers: { 'Accept': 'text/event-stream' }, signal: controller.signal
-            });
-            const reader = resp.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let buffer = '';
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-                let idx;
-                while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                    const frame = buffer.slice(0, idx);
-                    for (const line of frame.split('\n')) {
-                        if (line.startsWith('data:')) {
-                            a.querySelector('.bubble').textContent += line.slice(5);
-                        }
-                    }
-                    buffer = buffer.slice(idx + 2);
-                }
-                chat.scrollTop = chat.scrollHeight;
-            }
-            setStatus('done', '✅ 研究完成');
-        } catch (e) {
-            if (e.name !== 'AbortError') setStatus('error', '❌ 失败：' + e.message);
-        }
-        sending = false;
-        document.getElementById('send').disabled = false;
-    }
-
-    async function ingest() {
-        const text = document.getElementById('ingest-text').value.trim();
-        const source = document.getElementById('ingest-source').value || 'unknown';
-        if (!text) return;
-        const result = document.getElementById('ingest-result');
-        result.textContent = '⏳ 入库中...';
-        try {
-            const resp = await fetch('/api/kb/ingest', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text, source })
-            });
-            const data = await resp.json();
-            result.textContent = '✅ 入库成功：' + (data.ingested || 0) + ' 块（来源：' + source + '）';
-        } catch (e) {
-            result.textContent = '❌ 入库失败：' + e.message;
-        }
-    }
-
-    showResearch();
-</script>
-</body>
-</html>
-```
-
-> **风格**：和 33b 一致的极简风（白底/深色主色/窄列/大留白）。折叠状态条。
->
-> **两个模式**：顶部切换「研究」（输入主题→流式结果）和「知识库入库」（粘贴文本→入库 pgvector，第2章）。研究模式下 Agent 调工具的过程在后端控制台日志看（本文用日志可观测，不发事件给前端）。这是第 0-4 章阶段的调试页，**没有会话管理**——产品版（会话列表 + 多轮）见 A.5b。
-
-### A.5b 产品版页面（第 8 章：会话列表 + 对话区）
-
-第 8 章把单次研究工具升级成产品——需要"左侧会话列表 + 右侧对话区"的 ChatGPT 式布局。放 `src/main/resources/static/index.html`，浏览器打开 `http://localhost:8080/index.html`。
-
-对接接口：`/api/sessions`（CRUD，第9章）、`/api/sessions/{id}/history`（历史，第9章）、`/api/research/deep`（Plan-Execute 流式，第6章，带 sessionId）。下面是完整 HTML：
-
-```html
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>研究问答</title>
-    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
-    <style>
-        :root { --bg:#f7f7f8; --surface:#fff; --border:#ececec; --text:#1a1a1a; --accent:#1a1a1a; }
-        *,*::before,*::after { box-sizing:border-box; }
-        body { font-family:-apple-system,"PingFang SC",sans-serif; margin:0; height:100vh;
-               display:flex; color:var(--text); background:var(--bg); }
-        #sidebar { width:240px; background:var(--surface); border-right:1px solid var(--border);
-                   display:flex; flex-direction:column; flex-shrink:0; }
-        #sidebar .new-btn { margin:12px; padding:8px; border:1px solid var(--border); border-radius:8px;
-                            background:var(--surface); cursor:pointer; text-align:center; }
-        #session-list { flex:1; overflow-y:auto; padding:0 8px; }
-        .session-item { padding:10px 12px; border-radius:8px; cursor:pointer; font-size:14px;
-                        display:flex; justify-content:space-between; align-items:center; }
-        .session-item:hover { background:var(--bg); }
-        .session-item.active { background:#ececec; }
-        .session-item .del { color:#ccc; font-size:12px; }
-        #main { flex:1; display:flex; flex-direction:column; }
-        #content { flex:1; overflow-y:auto; padding:24px 0; }
-        .msg { max-width:720px; margin:0 auto 16px; padding:0 24px; }
-        .user { text-align:right; }
-        .user .bubble { display:inline-block; background:var(--accent); color:#fff;
-                        padding:10px 16px; border-radius:12px 12px 4px 12px; max-width:75%; }
-        .assistant .bubble { background:var(--surface); padding:14px 18px; border:1px solid var(--border);
-                             border-radius:12px; min-height:20px; line-height:1.8; }
-        #bar { border-top:1px solid var(--border); padding:12px 24px; }
-        #input-wrap { max-width:720px; margin:0 auto; display:flex; gap:8px;
-                      background:var(--bg); border-radius:22px; padding:4px 4px 4px 18px; border:1px solid var(--border); }
-        #prompt { flex:1; border:none; background:transparent; outline:none; font-size:15px; padding:10px 0; }
-        #send { background:var(--accent); color:#fff; border:none; width:34px; height:34px;
-                border-radius:50%; cursor:pointer; }
-        #send:disabled { background:#d0d0d0; }
-    </style>
-</head>
-<body>
-<div id="sidebar">
-    <div class="new-btn" onclick="newSession()">+ 新建会话</div>
-    <div id="session-list"></div>
-</div>
-<div id="main">
-    <div id="content"><div id="chat"></div></div>
-    <div id="bar"><div id="input-wrap">
-        <input id="prompt" placeholder="研究主题，如：2026向量数据库对比">
-        <button id="send" onclick="send()">➤</button>
-    </div></div>
-</div>
-<script>
-    let currentSessionId = null, sending = false;
-
-    async function loadSessions() {
-        const sessions = await fetch('/api/sessions').then(r => r.json());
-        const list = document.getElementById('session-list');
-        list.innerHTML = '';
-        sessions.forEach(s => {
-            const div = document.createElement('div');
-            div.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
-            div.innerHTML = `<span>${s.title || '(新会话)'}</span><span class="del" onclick="del(event,'${s.id}')">✕</span>`;
-            div.onclick = () => switchSession(s.id);
-            list.appendChild(div);
-        });
-    }
-
-    async function newSession() {
-        const { sessionId } = await fetch('/api/sessions', { method:'POST' }).then(r => r.json());
-        currentSessionId = sessionId;
-        document.getElementById('chat').innerHTML = '';
-        await loadSessions();
-    }
-
-    async function switchSession(sessionId) {
-        currentSessionId = sessionId;
-        document.getElementById('chat').innerHTML = '';
-        const history = await fetch(`/api/sessions/${sessionId}/history`).then(r => r.json());
-        history.forEach(m => appendMsg(m.type || m.role, m.content || m.text));
-        await loadSessions();
-    }
-
-    async function del(e, sessionId) {
-        e.stopPropagation();
-        await fetch(`/api/sessions/${sessionId}`, { method:'DELETE' });
-        if (currentSessionId === sessionId) { currentSessionId = null; document.getElementById('chat').innerHTML=''; }
-        await loadSessions();
-    }
-
-    function appendMsg(role, text) {
-        const chat = document.getElementById('chat');
-        const div = document.createElement('div');
-        div.className = 'msg ' + (role === 'USER' || role === 'user' ? 'user' : 'assistant');
-        div.innerHTML = `<div class="bubble"></div>`;
-        div.querySelector('.bubble').textContent = text;
-        chat.appendChild(div);
-        document.getElementById('content').scrollTop = 1e9;
-        return div.querySelector('.bubble');
-    }
-
-    async function send() {
-        if (sending || !currentSessionId) { if(!currentSessionId) alert('先新建或选择一个会话'); return; }
-        const input = document.getElementById('prompt');
-        const topic = input.value.trim();
-        if (!topic) return;
-        input.value = '';
-        sending = true;
-        document.getElementById('send').disabled = true;
-        appendMsg('USER', topic);
-        const bubble = appendMsg('ASSISTANT', '');
-        try {
-            const resp = await fetch(`/api/research/deep?topic=${encodeURIComponent(topic)}&sessionId=${currentSessionId}`,
-                { headers:{ Accept:'text/event-stream' } });
-            const reader = resp.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let buffer = '';
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream:true }).replace(/\r\n/g,'\n');
-                let idx;
-                while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                    const frame = buffer.slice(0, idx);
-                    for (const line of frame.split('\n')) {
-                        if (line.startsWith('data:')) bubble.textContent += line.slice(5);
-                    }
-                    buffer = buffer.slice(idx + 2);
-                }
-                document.getElementById('content').scrollTop = 1e9;
-            }
-        } catch(e) { bubble.textContent = '[失败] ' + e.message; }
-        sending = false;
-        document.getElementById('send').disabled = false;
-        await loadSessions();
-    }
-
-    document.getElementById('prompt').addEventListener('keydown', e => { if(e.key==='Enter') send(); });
-    loadSessions();
-</script>
-</body>
-</html>
-```
-
-> **和 A.5 调试页的区别**：A.5 是"单次研究 + 入库"两模式（无会话）；A.5b 是"会话列表 + 多轮对话"的产品形态——左侧 CRUD 会话、右侧 SSE 流式对话、切换会话加载历史。**过程可见性**（Plan/worker 执行轨迹）走第 6 章的 `/api/audit?sessionId=xxx` 接口事后查，不在前端实时展示（本文不做前端过程可见，那是 33 号文档的主题）。
-
----
-
----
-
 ## 第 9 章：多设备同步流式——分布式三层广播架构
 
 ### 9.0 场景：单机 Sinks 在分布式面前失效
@@ -5132,9 +4577,34 @@ public class RedisStreamBus {
 
 > **学习路径回顾**：9.0-9.5 学会三层广播（能跑）；9.6 学一个 Redis 命令（MAXLEN）；9.7 学 SSE 协议细节（注释行）；9.8 学 Reactor 生命周期（doFinally）；9.9 学消息可靠性（游标）。每一步只加一个新概念，最终汇成工业级终态。
 
+### 9.11 传输层辨析：SSE / WebSocket / Flux 到底用哪个
+
+> 本章全程用 SSE（`text/event-stream`），但没讲清"为什么是 SSE 而非 WebSocket""Flux 和 SSE 什么关系"——这两个问题初学者常混。这里补一层辨析。
+
+**三者不在同一层（先理清概念）**：
+
+| 概念 | 是什么 | 所在层 |
+|------|--------|--------|
+| **Flux** | Reactor 的响应式流抽象（`Flux<T>`） | 应用内部，描述"数据逐个产生"；**不是网络协议** |
+| **SSE** | HTTP 之上的单向流式协议（`text/event-stream`） | 网络传输，服务器→客户端单向 |
+| **WebSocket** | 全双工双向通道（HTTP Upgrade → ws://） | 网络传输，双向 |
+
+**关键认知**：**Flux 和 SSE 不互斥，是不同层**。Flux 是"服务端怎么把数据从 LLM 传到 HTTP 写出器"的内部管道；SSE 是"这些数据在网络上长什么样"。你用 Flux 在服务端组装数据，用 SSE 在网络上传输——**两者配合，不是二选一**。"用 Flux 还是用 SSE"是伪命题。
+
+**为什么本章用 SSE 而非 WebSocket**：
+- LLM 流式输出是**纯单向**（服务器吐 token，客户端只读）——SSE 的单向语义完美匹配。
+- SSE 是 HTTP，能过 CDN/网关/代理；浏览器原生 `EventSource`，断线**自动重连**。
+- **OpenAI/Anthropic 的官方 streaming API 用的就是 SSE**——业界事实标准。
+
+**什么时候升级到 WebSocket**：网页端要**客户端→服务器**的控制指令时（用户点"停止生成"发 `{cancel}`、边生成边追问、高频心跳）——SSE 单向发不了这些，必须 WebSocket。**ChatGPT 网页端走 WebSocket 正是这个原因**；但它的 LLM 流式那一截，内部很多仍是 SSE 风格的帧。
+
+**本章换 WebSocket 时要改什么**：只换最外层的"HTTP 写出器"（从 SSE 编码换成 WebSocket handler），内部 Flux 管道不动。**这就是"Flux 在内、协议在外"分层的价值**——换传输不换业务。
+
+> **企业级 SSE 的细节（别只会 `Flux<String>` 往外丢）**：真实生产 SSE 要用 `ServerSentEvent.builder()` 配协议级字段——`id`（事件 id，浏览器断线重连自动带 `Last-Event-ID` 头，就是 9.9 游标的协议级载体）、`event`（事件分类 token/done/error，替代 `__END__` 字符串）、`retry`（重连节奏）、注释行心跳（9.7）。本章的游标回放（9.9）本质就是 SSE `Last-Event-ID` 机制的实现。
+
 ---
 
-> **第 9 章结束。** 企业级的多设备同步 = 三层广播（持久 + 实时 + 协调）+ 四个加固（封顶 + 心跳 + 取消传播 + 游标回放）。
+> **第 9 章结束。** 企业级的多设备同步 = 三层广播（持久 + 实时 + 协调）+ 四个加固（封顶 + 心跳 + 取消传播 + 游标回放）+ 传输层边界清晰（SSE 单向流式、需要双向控制才升 WebSocket）。
 
 ---
 
@@ -5459,9 +4929,65 @@ git add -A && git commit -m "第10章：管数分离——POST触发(GET只读�
 - **trigger 的 cancel 用锁 TTL 兜底**：管理面不持有 SSE Flux，无法绑 cancel。LLM 跑完/出错自然清锁，崩溃靠 TTL。这是"触发是一次性动作"语义的必然结果——触发完就独立运行，不依赖前端连接。
 - **PG 和 Redis 各司其职**：完整历史查 PG（第 7 章已有），实时流态查 Redis（第 9 章）。管数分离让这两种"历史"的边界更清晰。
 
+### 10.6 进阶：把触发建模成 run 资源（OpenAI Assistants 式）
+
+> 本章 10.2 的 `POST` 返回 `{sessionId, status:"started"}` 是简化版。真实 AI 平台（OpenAI Assistants API）的管数分离标准更完整——把"触发"建模成一个**有生命周期的 run 资源**。这一节是 10.2 的企业级补强。
+
+**简化版的局限 → 驱动出 run 资源**：
+- 返回 `{status:"started"}` 没有独立任务 id，前端没法轮询"是否完成"。
+- 流按 sessionId——一个会话同时只能一次研究，想并发研究两个子问题做不到。
+- 没有幂等——多端同时点提交会各自触发（虽然 SETNX 兜底"只跑一次"，但前端语义混乱）。
+- 不能主动取消。
+
+**run 资源怎么补齐**（OpenAI Assistants 式）：
+
+| 能力 | 做法 |
+|------|------|
+| **触发返回资源** | `POST /runs` → `201 Created` + run 对象（`{id, status, streamUrl}`），status 是状态机：`queued→in_progress→completed/failed/cancelled` |
+| **幂等创建** | 请求带 `Idempotency-Key` 头——同 key 重复提交返回同一个 run（防多端重复触发） |
+| **状态查询** | `GET /runs/{id}` 轮询状态（前端判断"该订阅还是看历史"） |
+| **主动取消** | `POST /runs/{id}/cancel` 停掉 LLM |
+| **流式订阅** | `GET /runs/{id}/stream`（SSE，带 `Last-Event-ID` 重连） |
+
+```
+POST /api/runs?topic=X&sessionId=Y   头: Idempotency-Key: device-A-001
+  → 201 Created
+    { "runId": "run_abc", "status": "queued", "streamUrl": "/api/runs/run_abc/stream" }
+
+GET  /api/runs/run_abc               → { "status": "in_progress" } （轮询）
+GET  /api/runs/run_abc/stream        → SSE（多端只读订阅，浏览器自动带 Last-Event-ID 重连）
+POST /api/runs/run_abc/cancel        → 主动停止
+```
+
+> **这就是 OpenAI Assistants / 真实 AI 平台的管数分离标准**。相比 10.2 的简化版，它把触发建成"一等公民资源"（有 id、状态机、可查/可取消/可订阅），配幂等键防重复、协议级重连续传。**生产级管数分离应做到这个程度**——10.2 是学习起步，10.6 是企业级目标态。
+
+### 10.7 流式数据与历史记录的协调（管数分离后的关键衔接）
+
+> 管数分离把"触发/订阅"拆开后，出现一个必须协调的问题：**正在流式输出的 chunk**（Redis Streams）和**已持久化的历史**（PG chat_memory）之间怎么配合？这节讲清——是多端同步最容易翻车的地方。
+
+**认清：流和历史是"同一条回复的两个阶段"，不是两个副本**：
+
+| 数据 | 形态 | 生命周期 |
+|------|------|---------|
+| 正在流的 chunk | Redis Streams / Kafka | 24h，run 级 |
+| 持久化历史 | PG `chat_memory`（第 7 章） | 永久 |
+
+一条 assistant 回复：`LLM 吐字 → 边进 Redis Streams 边推前端 → 流完 → 整条落 PG`。**衔接点就是"流完那一刻"**。
+
+**三个衔接点**（每个防一类 bug）：
+
+1. **流完→落库（且只落一次）**：在 `trigger` 的 `doOnComplete` 里落——**借 SETNX 锁保证幂等**（只有抢锁的写者实例落一次，多端订阅不重复落）。**生产者负责持久化**。
+2. **打开会话按 run 状态分流**：用户刷新/中途打开时，这条回复可能还在流（没落库）或已流完（已落库）。**不能无脑只读 PG**——正在流的会话读库是空的。
+   - `run.status == in_progress` → 订阅 Redis Streams（看实时 + 回放已吐 chunk）
+   - `run.status == completed` → 读 PG 历史（流 24h 会过期，长期必须读库）
+   - **run 状态是分流的开关**（10.6 的 run 资源状态机在这里兑现价值）
+3. **下次多轮从库读**：上一轮的 Redis Streams 早过期了，多轮记忆的 history 必须从 PG 读，**绝不从流读**。第 7 章 `ChatMemory` 读的就是库——这点已对。
+
+> **一句话**：流服务"现在正在发生的"，库服务"已经发生完的"；衔接靠 run 状态分流，落库收敛到单一写者（锁保证幂等）。这套配合齐了，才不会出现"流完没落库 / 刷新看不到正在吐的 / 多轮失忆"三类问题。
+
 ---
 
-> **第 10 章结束。** 下一步（第 11 章）：管数分离后，触发和订阅仍共享同一个 Redis——Redis 挂了全系统瘫痪。第 11 章做 Redis 高可用（Sentinel）。
+> **第 10 章结束。** 管数分离（含 run 资源标准化 + 流库协调）就位。下一步（第 11 章）：触发和订阅仍共享同一个 Redis——Redis 挂了全系统瘫痪。第 11 章做 Redis 高可用（Sentinel）。
 
 ---
 
@@ -7763,7 +7289,7 @@ git add -A && git commit -m "第18章：JWT认证+网关验签+租户数据隔�
 
 ---
 
-> **第 18 章结束。** 多租户用户体系就位，系统可安全对外开放。下一步（第 19 章）：链路追踪 + 指标 + 日志聚合。
+> **第 18 章结束。** 多租户用户体系就位，系统可安全对外开放。有了 `tenant_id` 这个维度，**成本治理（按租户计 token/预算，第 23 章）、可观测（按租户看健康度，第 19 章）、质量保障（按租户看幻觉率，第 20 章）** 都有了归属维度——多租户是后续所有治理特性的基础。下一步（第 19 章）：链路追踪 + 指标 + 日志聚合。
 
 ---
 
@@ -9101,6 +8627,559 @@ git add -A && git commit -m "第23章：成本治理(token计量+预算上限+�
 4. **配置中心与灰度发布**：system prompt/模型参数/功能开关动态调、A/B 灰度——运维敏捷性。
 
 > **企业级架构演进（第 10-23 章）**：从"能上线的单体"到"分布式企业级终极形态"——管数分离（10）→ Redis 高可用（11）→ Kafka 升级（12）→ 微服务拆分（13-16，逐个拆订阅/触发/网关/LLM网关）→ 分布式 ChatMemory（17）→ 多租户用户体系（18）→ 可观测性（19）→ 幻觉检测与反馈闭环（20）→ DAG 工作流（21）→ 长期记忆与个性化（22）→ 成本治理（23）。每章一个痛点、一个跃迁，一步步推进，不要跳。微服务拆分尤其忌讳"一刀切全拆"——第 13-16 章一次拆一个，跑通再拆下一个；拆完再补跨服务能力、质量保障、编排能力、个性化能力、成本治理（第 17-23 章）。
+
+---
+
+## 附录：项目结构与踩坑手册
+
+### A.1 项目结构（功能演进完成时：第 0-8 章的 research-agent 单体）
+
+```
+research-agent/                         （主项目：会话化研究问答系统）
+├── pom.xml                             （webflux/openai/pgvector/jdbc/mybatis-plus/mcp-client/chat-memory-jdbc）
+├── src/main/resources/
+│   ├── application.yaml                （DeepSeek + PG + 向量库 + MCP client + sql.init 建表）
+│   └── static/index.html               （第8章前端：会话列表 + 对话区）
+└── src/main/java/com/example/research/
+    ├── Application.java
+    ├── ResearchService.java            （ReAct Agent：简单问题路径）
+    ├── ResearchController.java         （接口 + 输入审核 + /deep + 自动标题）
+    ├── config/
+    │   ├── HttpClientConfig.java       （RestClient 超时 + 重试拦截器，第3章）
+    │   ├── ChatClientConfig.java       （MCP 工具 + MessageChatMemoryAdvisor，第3/7章）
+    │   └── ChatMemoryConfig.java       （JdbcChatMemoryRepository + PG dialect，第8章）
+    ├── plan/
+    │   └── PlanExecuteService.java     （Plan + 多Worker并发Execute + Aggregate + 审计埋点，第4/5/6/7章）
+    ├── audit/
+    │   ├── ResearchAudit.java          （审计实体，第6章）
+    │   ├── ResearchAuditMapper.java    （审计 Mapper，第6章）
+    │   ├── AuditLogger.java            （结构化采集落库，第6章）
+    │   └── AuditController.java        （按会话查轨迹，第6章）
+    ├── session/
+    │   ├── ResearchSession.java        （会话实体，第8章）
+    │   ├── ResearchSessionMapper.java  （会话 Mapper，第8章）
+    │   ├── SessionService.java         （会话 CRUD + 查历史，第8章）
+    │   └── SessionController.java      （会话 REST 接口，第8章）
+    ├── tool/
+    │   └── KnowledgeBaseTool.java      （本地工具：知识库检索；网页搜索来自 MCP）
+    ├── kb/
+    │   └── IngestController.java       （知识库入库）
+    └── safety/
+        └── InputGuard.java             （输入审核）
+
+PG 表：SPRING_AI_CHAT_MEMORY（ChatMemory）· research_audit（审计）· research_session（会话）· pgvector 向量表
+```
+
+### A.2 依赖与配置演进总账
+
+**`research-agent/pom.xml` 依赖引入轨迹**（每章只引本章用到的）：
+
+| 依赖 | 引入章 | 用途 |
+|------|--------|------|
+| spring-boot-starter-webflux | 第0章 | Web 栈基础（Controller、WebClient） |
+| spring-ai-starter-model-openai | 第0章 | DeepSeek（OpenAI 兼容）+ 第2章起也提供 EmbeddingModel |
+| spring-ai-starter-vector-store-pgvector | 第2章 | 向量库 |
+| spring-boot-starter-jdbc | 第2章 | pgvector 需要（issue #6164）；ChatMemory 官方建表也走 jdbc |
+| spring-ai-starter-mcp-client | 第3章 | 接入网页搜索 MCP server |
+| mybatis-plus-spring-boot3-starter | 第6章 | 业务表 ORM（审计、会话），pgvector 仍用 JdbcTemplate |
+| spring-ai-starter-model-chat-memory-repository-jdbc | 第7章 | ChatMemory 落 PG |
+
+**`research-agent/application.yaml` 配置演进轨迹**：
+
+| 配置块 | 引入章 | 用途 |
+|--------|--------|------|
+| spring.ai.openai.chat + server + logging | 第0章 | 最小可跑 |
+| spring.datasource | 第2章 | PG 连接 |
+| spring.ai.openai.embedding | 第2章 | embedding 模型（入库向量化） |
+| spring.ai.vectorstore.pgvector | 第2章 | 向量库 |
+| mybatis-plus.configuration.log-impl | 第6章 | 开发期看 SQL（生产关掉） |
+| spring.sql.init（ChatMemory 建表脚本） | 第7章 | 启动时建 SPRING_AI_CHAT_MEMORY 表 |
+
+> **完整 application.yaml（第 8 章结束时累积态）**——各章按上面轨迹累加后的最终形态：
+>
+> ```yaml
+> spring:
+>   datasource:
+>     url: jdbc:postgresql://localhost:5432/research
+>     username: postgres
+>     password: postgres
+>   ai:
+>     openai:
+>       api-key: ${DEEPSEEK_API_KEY}
+>       base-url: https://api.deepseek.com
+>       chat:
+>         model: deepseek-chat
+>         temperature: 0.3
+>       embedding:
+>         model: text-embedding-3-small
+>         api-key: ${OPENAI_API_KEY}
+>     vectorstore:
+>       pgvector:
+>         dimensions: 1536
+>         distance-type: cosine_distance
+>         index-type: hnsw
+>         initialize-schema: true
+>     mcp:
+>       client:
+>         streamable-http:
+>           connections:
+>             web-search:
+>               url: http://localhost:8081
+>   sql:
+>     init:
+>       mode: always
+>       schema-locations: classpath:org/springframework/ai/chat/memory/repository/jdbc/schema-postgresql.sql
+> server:
+>   port: 8080
+> 
+> # ▼ 第6章：MyBatis-Plus 日志（开发期看 SQL，生产关掉）
+> mybatis-plus:
+>   configuration:
+>     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+> 
+> logging:
+>   level:
+>     org.springframework.ai: info
+> ```
+>
+> **额外建表**（手动执行，不在 `sql.init` 里）：`research_audit`（第6章审计）、`research_session`（第8章会话元信息）——这两张业务表的 SQL 在各自章节给出，需手动在 PG 执行（生产用 Flyway 管理）。
+
+### A.3 踩坑手册
+
+**第 0 章**：
+- Bing 搜索抓不到结果 → ① 确认 `WebClient`/`RestClient` 带了 `User-Agent`（不加 UA，Bing 返回的页面结构不同，正则匹配不上）；② 浏览器打开 `https://cn.bing.com/search?q=test` 看摘要的 class 是不是还是 `b_lineclamp2`——Bing 改版会换 class 名，变了就把正则里的 class 名同步改；③ 频繁请求会被 Bing 限频，开发阶段够用，别压测。
+
+**第 1 章**：
+- Agent 不调工具 → system prompt 没讲清楚"有工具可用"；或工具 `description` 写得太差（LLM 不知道何时调）。
+
+**第 2 章**：
+- ⚠️ **pgvector 启动报错（无 JdbcTemplate）** → [issue #6164](https://github.com/spring-projects/spring-ai/issues/6164)，必须额外加 `spring-boot-starter-jdbc`。最常踩的坑。
+- ⚠️ **入库报"无 embedding 模型"或维度错** → 没配 `spring.ai.openai.embedding.model`。DeepSeek 没 embedding API，必须配一个（OpenAI 3-small / Ollama / 兼容端点）。见 2.2.2。
+- 入库报维度不匹配 → `dimensions` 要和 embedding 模型输出一致（1536 是 OpenAI 3-small，Ollama 的 nomic 是 768）。
+- `similaritySearch` 查不到 → 库空（先 ingest）；或 `similarityThreshold` 设太高；或 query 太离谱。
+- **结果不带出处/用户无法核实** → 工具返回没带来源编号 + system prompt 没要求引用。见 2.2.5 防幻觉。
+
+**第 3 章（MCP 相关）**：
+- ⚠️ **MCP server 对外被白嫖** → 没鉴权，任何人能调你的搜索 server 烧配额。必须加鉴权（OAuth2/API key）。
+- MCP server 的 `@McpTool` 没注册 → [issue #4392](https://github.com/spring-projects/spring-ai/issues/4392)，早期版本 bug；或 starter 名/版本不对（用 `spring-ai-starter-mcp-server-webmvc`）。查[官方 MCP Server 文档](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot-starter-docs.html)。
+- MCP client 连不上 server → server 没起/端口不对/鉴权头没带；**client 配置键按你的 starter 版本核对**——webmvc server（Streamable HTTP transport）和 webflux server（SSE transport）的 client 配置键不同（`spring.ai.mcp.client.streamable-http.connections` vs `spring.ai.mcp.client.sse.connections`），别用错。
+- ⚠️ **SSE 下工具执行时鉴权丢失** → [issue #2506](https://github.com/spring-projects/spring-ai/issues/2506)，连接时鉴权生效但工具执行阶段可能丢。生产必测。
+- ⚠️ **MCP 工具不进默认 ChatClient** → starter 把工具注册成 `ToolCallbackProvider` Bean，但默认 ChatClient 不自动包含。必须自定义 `@Bean ChatClient` 显式 `defaultTools(mcpToolProviders)`，见 3.1.3（ChatClientConfig）。
+- 删了 `WebSearchTool` 后编译报错 → `ResearchService` 构造函数引用了它，按 3.1.4（ResearchService 新构造函数）改。
+
+**第 3 章（运营事故相关）**：
+- **以为 `@Retry` 能保护 Agent 循环** → 错。Agent 的 LLM 调用是框架内部发起的，`@Retry` 够不着。Agent 场景的重试靠底层 RestClient 重试拦截器（`ClientHttpRequestInterceptor`，见 3.3）——Spring AI 的 OpenAI client 走 RestClient，重试拦截器对它生效。`@Retry` 只管你显式调的 LLM。
+- **429 重试把服务器打更挂** → 没退避立即重试，加剧过载。必须指数退避或按 `Retry-After` 头等。
+
+**第 4 章**：
+- **Plan 拆出的子任务不是合法 JSON** → LLM 偶尔在 JSON 前后加解释文字，`.entity(PTREF)` 反序列化失败。生产要在 prompt 强约束"只输出 JSON"+ try-catch 退化为单次 ReAct 兜底。
+- **Execute 直调 MCP 工具报 `UnsupportedOperationException`** → [issue #2378](https://github.com/spring-projects/spring-ai/issues/2378)，`ToolCallback.call` 带 ToolContext 时 MCP 工具抛异常。本文 Execute 复用 ReAct（让 LLM 自己调工具）避开此坑，别程序化直调。
+
+**第 5 章**：
+- ⚠️ **`flatMap` 没传第二参数（并发上限）** → 默认 256，4 个子任务瞬间打出 256 个请求并发上限被打爆、触发 429。**必传 `flatMap(fn, concurrency)`**，取 `min(子任务数, MAX)`。
+- **一个 worker 抛异常，整个调研失败** → `flatMap` 默认"一个出错取消整个流"。必须每个 worker 包 `onErrorResume` 做错误隔离（见 5.2.1）。
+- **并发后 Netty event loop 卡死** → LLM/搜索是阻塞调用，没 `subscribeOn(boundedElastic)` 切线程会占满 event loop。和第 2 章同一条纪律。
+
+**第 6 章**：
+- **审计的 `doOnError` 拿不到错误** → worker 内部的 `onErrorResume` 已把异常吞成占位，外部 `doOnError` 拿不到原始异常。把审计调用挪进 `executeOneReactive` 的 `onErrorResume` 里（见 6.2.5 推荐写法）。
+- **流式 Aggregate 的审计记不全** → `.stream()` 是逐字推，审计要完整文本得 `.reduce` 拼回再记。或只记元信息（起止时间+长度），不存全文。
+
+**第 7 章**：
+- ⚠️ **ChatMemory 没落库（重启丢）** → 只挂了 `MessageChatMemoryAdvisor` 但用的是默认 `InMemoryChatMemoryRepository`。必须配 `JdbcChatMemoryRepository` + PG dialect（见 7.2.2）。
+- **多轮不生效（Agent 仍不记得历史）** → 光挂 advisor 不够，每次调用要 `.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))` 传会话标识（见 7.2.4）。
+- **`PostgresChatMemoryRepositoryDialect` 找不到** → 确认加了 `spring-ai-starter-model-chat-memory-repository-jdbc`；包路径 `org.springframework.ai.chat.memory.repository.jdbc`。
+- **建表脚本报"表已存在"** → `spring.sql.init.mode: always` 每次启动执行。生产换 Flyway，或脚本加 `IF NOT EXISTS`。
+
+**第 8 章**：
+- **会话列表为空** → 新建会话只 INSERT `research_session`，没插消息——这是正常的（消息由 ChatMemory 在问答时插）。列表查 session 表，历史查消息表。
+- **查历史用 `chatMemory.get` 只返回最近 20 条** → `MessageWindowChatMemory` 默认窗口裁剪。要看全量历史直接 SQL 读 `SPRING_AI_CHAT_MEMORY`（按 timestamp 排序）。
+- **删会话后消息还在** → `delete` 要同时清 `research_session` 和 `SPRING_AI_CHAT_MEMORY` 两张表（见 9.2.2）。
+
+### A.4 演进全景图
+
+```mermaid
+flowchart TD
+    S0[第0章 固定workflow<br/>搜索→结果] -->|痛点: 固定步骤不够用| S1
+    S1[第1章 自主Agent<br/>ToolCallingAdvisor循环+流式] -->|痛点: 网页不够准| S2
+    S2[第2章 知识库RAG<br/>pgvector+双工具+输入审核] -->|痛点: 本地工具脆弱| S3
+    S3[第3章 工具升级+可靠性加固<br/>MCP server+超时/429重试/错误归宿] -->|痛点: 复杂主题漏角度| S4
+    S4[第4章 Plan-Execute<br/>先规划拆子任务串行执行] -->|痛点: 串行太慢| S5
+    S5[第5章 多Worker并发<br/>flatMap限流+错误隔离+Aggregate] -->|痛点: 过程不可追溯| S6
+    S6[第6章 审计日志<br/>按会话串联全流程落库(MyBatis-Plus)] -->|痛点: 刷新丢/不能多轮| S7
+    S7[第7章 会话持久化<br/>ChatMemory落PG+CONVERSATION_ID] -->|痛点: 没法当产品用| S8
+    S8[第8章 产品化<br/>会话CRUD+自动标题+前端对话页] -->|痛点: 单机不能多设备| S9
+    S9[第9章 分布式流式<br/>Redis Streams+Pub/Sub三层广播]
+```
+
+### A.5 调试页面（第 0-4 章单次研究版）
+
+放 `src/main/resources/static/debug.html`，浏览器打开 `http://localhost:8080/debug.html`。
+
+对接两个接口：`GET /api/research?topic=xxx`（ReAct 流式研究结果）、`POST /api/kb/ingest`（知识库入库，第2章）。**注意**：工具调用过程在后端控制台日志看，页面只显示流式结果 + 入库面板。**这是第 0-4 章阶段的调试页**（单次研究、无会话）；第 8 章产品版页面见 **A.5b**。
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>研究 Agent</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+    <style>
+        :root {
+            --bg: #f7f7f8; --surface: #fff; --border: #ececec;
+            --text: #1a1a1a; --text-2: #8e8e8e; --muted: #b0b0b0;
+            --accent: #1a1a1a; --green: #00b96b; --orange: #e67e22; --red: #e53935;
+        }
+        *, *::before, *::after { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+               background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column;
+               font-size: 15px; line-height: 1.8; margin: 0; }
+        header { background: var(--surface); border-bottom: 1px solid var(--border);
+                 padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+        header .title { font-size: 16px; font-weight: 600; }
+        header .sub { color: var(--muted); font-size: 13px; margin-left: 8px; }
+        header .actions { display: flex; gap: 8px; }
+        header button { font-size: 13px; border: 1px solid var(--border); background: var(--surface);
+                        border-radius: 8px; padding: 5px 12px; cursor: pointer; color: var(--text-2); }
+        header button:hover { border-color: var(--text-2); }
+        header button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+        #content { flex: 1; overflow-y: auto; padding: 32px 0; }
+
+        #status-bar { max-width: 720px; margin: 0 auto 12px; padding: 10px 14px; border-radius: 8px;
+                      font-size: 13px; background: #f0f4ff; color: #4d6bfe; display: none; align-items: center; gap: 8px; }
+        #status-bar.show { display: flex; }
+        #status-bar .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #c5cdfa;
+                                border-top-color: #4d6bfe; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #status-bar.error { background: #fff0f0; color: #c62828; }
+        #status-bar.done { background: #e6f7e6; color: #1b8a1b; }
+
+        .msg { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+        .user { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+        .user .bubble { background: var(--accent); color: #fff; padding: 10px 16px;
+                        border-radius: 12px 12px 4px 12px; max-width: 75%; word-break: break-word; }
+        .assistant { margin-bottom: 20px; }
+        .assistant .bubble { background: var(--surface); padding: 14px 18px; border: 1px solid var(--border);
+                             border-radius: 12px; word-break: break-word; min-height: 20px; line-height: 1.8; }
+
+        #ingest-panel { display: none; max-width: 720px; margin: 0 auto; padding: 16px 24px;
+                        background: var(--surface); border-radius: 12px; margin: 16px auto; }
+        #ingest-panel.active { display: block; }
+        #ingest-panel h3 { font-size: 14px; margin-bottom: 8px; }
+        #ingest-panel textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px;
+                                  padding: 8px; font-size: 14px; resize: vertical; min-height: 80px; }
+        #ingest-panel input { width:100%; border:1px solid var(--border); border-radius:8px;
+                              padding:8px; font-size:14px; margin-top:8px; }
+        #ingest-panel button { margin-top: 8px; background: var(--accent); color: #fff; border: none;
+                                padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+        #ingest-result { font-size: 13px; color: var(--green); margin-top: 8px; }
+
+        #empty { text-align: center; color: #ccc; padding: 60px 20px; font-size: 14px; line-height: 2; }
+
+        #bar { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 24px; flex-shrink: 0; }
+        #input-wrap { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: center;
+                      background: var(--bg); border-radius: 22px; padding: 4px 4px 4px 18px; border: 1px solid var(--border); }
+        #prompt { flex: 1; border: none; background: transparent; outline: none; font-size: 15px; padding: 10px 0; }
+        #send { background: var(--accent); color: #fff; border: none; width: 34px; height: 34px;
+                border-radius: 50%; cursor: pointer; font-size: 16px; flex-shrink: 0; }
+        #send:disabled { background: #d0d0d0; }
+    </style>
+</head>
+<body>
+<header>
+    <div><span class="title">研究 Agent</span><span class="sub">自主研究 + 知识库</span></div>
+    <div class="actions">
+        <button id="btn-research" class="active" onclick="showResearch()">研究</button>
+        <button id="btn-ingest" onclick="showIngest()">知识库入库</button>
+    </div>
+</header>
+
+<div id="content">
+    <div id="status-bar"><span class="spinner"></span><span id="s-text">研究中…</span></div>
+    <div id="chat"></div>
+    <div id="ingest-panel">
+        <h3>知识库入库（文本 → 向量化 → 存 pgvector）</h3>
+        <textarea id="ingest-text" placeholder="粘贴要入库的文本..."></textarea>
+        <input id="ingest-source" placeholder="来源（如：产品白皮书）">
+        <button onclick="ingest()">入库</button>
+        <div id="ingest-result"></div>
+    </div>
+    <div id="empty" class="empty-state" style="text-align:center;color:#ccc;padding:60px 20px;font-size:14px;">
+        <div>输入研究主题，点击下方发送</div>
+        <div style="margin-top:8px;color:#ddd;">Agent 自主搜索 + 知识库检索，流式输出结果</div>
+    </div>
+</div>
+
+<div id="bar"><div id="input-wrap">
+    <input id="prompt" placeholder="研究主题，如：2026向量数据库对比" value="2026向量数据库对比">
+    <button id="send" onclick="send()">➤</button>
+</div></div>
+<script>
+    let sending = false, controller = null;
+
+    function showResearch() {
+        document.getElementById('btn-research').classList.add('active');
+        document.getElementById('btn-ingest').classList.remove('active');
+        document.getElementById('chat').style.display = 'block';
+        document.getElementById('ingest-panel').classList.remove('active');
+        document.getElementById('bar').style.display = 'flex';
+    }
+    function showIngest() {
+        document.getElementById('btn-research').classList.remove('active');
+        document.getElementById('btn-ingest').classList.add('active');
+        document.getElementById('chat').style.display = 'none';
+        document.getElementById('ingest-panel').classList.add('active');
+        document.getElementById('bar').style.display = 'none';
+    }
+
+    document.getElementById('prompt').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+
+    function setStatus(mode, msg) {
+        const bar = document.getElementById('status-bar');
+        bar.className = 'show ' + mode;
+        bar.innerHTML = '';
+        if (mode === 'progress') bar.innerHTML = '<span class="spinner"></span>';
+        else if (mode === 'done') bar.innerHTML = '<span>✅</span>';
+        else if (mode === 'error') bar.innerHTML = '<span>❌</span>';
+        const span = document.createElement('span');
+        span.textContent = msg;
+        bar.appendChild(span);
+    }
+
+    async function send() {
+        if (sending) return;
+        const input = document.getElementById('prompt');
+        const topic = input.value.trim();
+        if (!topic) return;
+        input.value = '';
+        sending = true;
+        document.getElementById('send').disabled = true;
+        document.getElementById('empty').style.display = 'none';
+
+        const chat = document.getElementById('chat');
+        const u = document.createElement('div'); u.className = 'msg user';
+        u.innerHTML = '<div class="bubble"></div>';
+        u.querySelector('.bubble').textContent = topic;
+        chat.appendChild(u);
+
+        const a = document.createElement('div'); a.className = 'msg assistant';
+        a.innerHTML = '<div class="bubble"></div>';
+        chat.appendChild(a);
+
+        setStatus('progress', '🔍 正在研究「' + topic + '」…');
+        controller = new AbortController();
+        try {
+            const resp = await fetch('/api/research?topic=' + encodeURIComponent(topic), {
+                headers: { 'Accept': 'text/event-stream' }, signal: controller.signal
+            });
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                    const frame = buffer.slice(0, idx);
+                    for (const line of frame.split('\n')) {
+                        if (line.startsWith('data:')) {
+                            a.querySelector('.bubble').textContent += line.slice(5);
+                        }
+                    }
+                    buffer = buffer.slice(idx + 2);
+                }
+                chat.scrollTop = chat.scrollHeight;
+            }
+            setStatus('done', '✅ 研究完成');
+        } catch (e) {
+            if (e.name !== 'AbortError') setStatus('error', '❌ 失败：' + e.message);
+        }
+        sending = false;
+        document.getElementById('send').disabled = false;
+    }
+
+    async function ingest() {
+        const text = document.getElementById('ingest-text').value.trim();
+        const source = document.getElementById('ingest-source').value || 'unknown';
+        if (!text) return;
+        const result = document.getElementById('ingest-result');
+        result.textContent = '⏳ 入库中...';
+        try {
+            const resp = await fetch('/api/kb/ingest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, source })
+            });
+            const data = await resp.json();
+            result.textContent = '✅ 入库成功：' + (data.ingested || 0) + ' 块（来源：' + source + '）';
+        } catch (e) {
+            result.textContent = '❌ 入库失败：' + e.message;
+        }
+    }
+
+    showResearch();
+</script>
+</body>
+</html>
+```
+
+> **风格**：和 33b 一致的极简风（白底/深色主色/窄列/大留白）。折叠状态条。
+>
+> **两个模式**：顶部切换「研究」（输入主题→流式结果）和「知识库入库」（粘贴文本→入库 pgvector，第2章）。研究模式下 Agent 调工具的过程在后端控制台日志看（本文用日志可观测，不发事件给前端）。这是第 0-4 章阶段的调试页，**没有会话管理**——产品版（会话列表 + 多轮）见 A.5b。
+
+### A.5b 产品版页面（第 8 章：会话列表 + 对话区）
+
+第 8 章把单次研究工具升级成产品——需要"左侧会话列表 + 右侧对话区"的 ChatGPT 式布局。放 `src/main/resources/static/index.html`，浏览器打开 `http://localhost:8080/index.html`。
+
+对接接口：`/api/sessions`（CRUD，第9章）、`/api/sessions/{id}/history`（历史，第9章）、`/api/research/deep`（Plan-Execute 流式，第6章，带 sessionId）。下面是完整 HTML：
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>研究问答</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+    <style>
+        :root { --bg:#f7f7f8; --surface:#fff; --border:#ececec; --text:#1a1a1a; --accent:#1a1a1a; }
+        *,*::before,*::after { box-sizing:border-box; }
+        body { font-family:-apple-system,"PingFang SC",sans-serif; margin:0; height:100vh;
+               display:flex; color:var(--text); background:var(--bg); }
+        #sidebar { width:240px; background:var(--surface); border-right:1px solid var(--border);
+                   display:flex; flex-direction:column; flex-shrink:0; }
+        #sidebar .new-btn { margin:12px; padding:8px; border:1px solid var(--border); border-radius:8px;
+                            background:var(--surface); cursor:pointer; text-align:center; }
+        #session-list { flex:1; overflow-y:auto; padding:0 8px; }
+        .session-item { padding:10px 12px; border-radius:8px; cursor:pointer; font-size:14px;
+                        display:flex; justify-content:space-between; align-items:center; }
+        .session-item:hover { background:var(--bg); }
+        .session-item.active { background:#ececec; }
+        .session-item .del { color:#ccc; font-size:12px; }
+        #main { flex:1; display:flex; flex-direction:column; }
+        #content { flex:1; overflow-y:auto; padding:24px 0; }
+        .msg { max-width:720px; margin:0 auto 16px; padding:0 24px; }
+        .user { text-align:right; }
+        .user .bubble { display:inline-block; background:var(--accent); color:#fff;
+                        padding:10px 16px; border-radius:12px 12px 4px 12px; max-width:75%; }
+        .assistant .bubble { background:var(--surface); padding:14px 18px; border:1px solid var(--border);
+                             border-radius:12px; min-height:20px; line-height:1.8; }
+        #bar { border-top:1px solid var(--border); padding:12px 24px; }
+        #input-wrap { max-width:720px; margin:0 auto; display:flex; gap:8px;
+                      background:var(--bg); border-radius:22px; padding:4px 4px 4px 18px; border:1px solid var(--border); }
+        #prompt { flex:1; border:none; background:transparent; outline:none; font-size:15px; padding:10px 0; }
+        #send { background:var(--accent); color:#fff; border:none; width:34px; height:34px;
+                border-radius:50%; cursor:pointer; }
+        #send:disabled { background:#d0d0d0; }
+    </style>
+</head>
+<body>
+<div id="sidebar">
+    <div class="new-btn" onclick="newSession()">+ 新建会话</div>
+    <div id="session-list"></div>
+</div>
+<div id="main">
+    <div id="content"><div id="chat"></div></div>
+    <div id="bar"><div id="input-wrap">
+        <input id="prompt" placeholder="研究主题，如：2026向量数据库对比">
+        <button id="send" onclick="send()">➤</button>
+    </div></div>
+</div>
+<script>
+    let currentSessionId = null, sending = false;
+
+    async function loadSessions() {
+        const sessions = await fetch('/api/sessions').then(r => r.json());
+        const list = document.getElementById('session-list');
+        list.innerHTML = '';
+        sessions.forEach(s => {
+            const div = document.createElement('div');
+            div.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+            div.innerHTML = `<span>${s.title || '(新会话)'}</span><span class="del" onclick="del(event,'${s.id}')">✕</span>`;
+            div.onclick = () => switchSession(s.id);
+            list.appendChild(div);
+        });
+    }
+
+    async function newSession() {
+        const { sessionId } = await fetch('/api/sessions', { method:'POST' }).then(r => r.json());
+        currentSessionId = sessionId;
+        document.getElementById('chat').innerHTML = '';
+        await loadSessions();
+    }
+
+    async function switchSession(sessionId) {
+        currentSessionId = sessionId;
+        document.getElementById('chat').innerHTML = '';
+        const history = await fetch(`/api/sessions/${sessionId}/history`).then(r => r.json());
+        history.forEach(m => appendMsg(m.type || m.role, m.content || m.text));
+        await loadSessions();
+    }
+
+    async function del(e, sessionId) {
+        e.stopPropagation();
+        await fetch(`/api/sessions/${sessionId}`, { method:'DELETE' });
+        if (currentSessionId === sessionId) { currentSessionId = null; document.getElementById('chat').innerHTML=''; }
+        await loadSessions();
+    }
+
+    function appendMsg(role, text) {
+        const chat = document.getElementById('chat');
+        const div = document.createElement('div');
+        div.className = 'msg ' + (role === 'USER' || role === 'user' ? 'user' : 'assistant');
+        div.innerHTML = `<div class="bubble"></div>`;
+        div.querySelector('.bubble').textContent = text;
+        chat.appendChild(div);
+        document.getElementById('content').scrollTop = 1e9;
+        return div.querySelector('.bubble');
+    }
+
+    async function send() {
+        if (sending || !currentSessionId) { if(!currentSessionId) alert('先新建或选择一个会话'); return; }
+        const input = document.getElementById('prompt');
+        const topic = input.value.trim();
+        if (!topic) return;
+        input.value = '';
+        sending = true;
+        document.getElementById('send').disabled = true;
+        appendMsg('USER', topic);
+        const bubble = appendMsg('ASSISTANT', '');
+        try {
+            const resp = await fetch(`/api/research/deep?topic=${encodeURIComponent(topic)}&sessionId=${currentSessionId}`,
+                { headers:{ Accept:'text/event-stream' } });
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream:true }).replace(/\r\n/g,'\n');
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                    const frame = buffer.slice(0, idx);
+                    for (const line of frame.split('\n')) {
+                        if (line.startsWith('data:')) bubble.textContent += line.slice(5);
+                    }
+                    buffer = buffer.slice(idx + 2);
+                }
+                document.getElementById('content').scrollTop = 1e9;
+            }
+        } catch(e) { bubble.textContent = '[失败] ' + e.message; }
+        sending = false;
+        document.getElementById('send').disabled = false;
+        await loadSessions();
+    }
+
+    document.getElementById('prompt').addEventListener('keydown', e => { if(e.key==='Enter') send(); });
+    loadSessions();
+</script>
+</body>
+</html>
+```
+
+> **和 A.5 调试页的区别**：A.5 是"单次研究 + 入库"两模式（无会话）；A.5b 是"会话列表 + 多轮对话"的产品形态——左侧 CRUD 会话、右侧 SSE 流式对话、切换会话加载历史。**过程可见性**（Plan/worker 执行轨迹）走第 6 章的 `/api/audit?sessionId=xxx` 接口事后查，不在前端实时展示（本文不做前端过程可见，那是 33 号文档的主题）。
 
 ---
 
