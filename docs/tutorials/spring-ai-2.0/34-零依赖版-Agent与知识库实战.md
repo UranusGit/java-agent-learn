@@ -652,25 +652,96 @@ git add -A && git commit -m "第0章：固定workflow + 内置Mock LLM + 静态�
 
 **Agent 和 workflow 的本质区别**：workflow 人写死步骤；Agent **LLM 自己决定下一步**（要不要再搜？搜什么？够了没？）。
 
-### 1.1 思路：手写一个最小的 ReAct 循环
+### 1.1 思路：先"让 LLM 能调工具"，再"让它循环调"
 
-零依赖版没有 Spring AI 的 `ToolCallingAdvisor` 自动循环。我们**手写一个最小循环**——这反而更能看清 Agent 循环的本质：
+零依赖版没有 Spring AI 的 `ToolCallingAdvisor` 自动循环。我们不直接写循环，而是**分两步演进**：
+1. **1.2 最小版**：先把工具"注册给 LLM"——`WebSearchTool.asTool()` 告诉 LLM 有什么工具、Mock 在 `stream()` 内模拟"命中即调"。**先验证"工具被调了、结果进了输出"**，这一步还没有循环。
+2. **1.4 引入循环骨架**：发现"开放任务可能要搜多次"的痛点，才把单次调用包进 `ToolCallingLoop`（带 `maxIterations` 防死循环）。**为真模型的 function-calling 多轮留好骨架**。
 
 ```
-循环 {
-  1. 调 LLM.stream(带工具描述)，让它"决定"调哪个工具
-  2. 如果它调了工具 → 执行工具 → 把结果喂回去 → 继续循环
-  3. 如果它没调工具（给出最终答案）→ 结束循环
+最小版：   LLM.stream(带工具) → Mock 内部"命中即调" → 单轮出结果
+演进版：   ToolCallingLoop { 调 LLM → 解析 tool_call → 执行 → 喂回 → 再调 } 直到无 tool_call
+```
+
+### 1.2 动手（最小版）：把工具注册给 LLM
+
+#### 1.2.1 WebSearchTool.asTool()：把工具描述给 LLM
+
+第 0 章 `WebSearchTool` 已有 `search(query)`。现在加一个 `asTool()`——把"工具名 + description + 调用入口"打包成 `LlmClient.LlmTool`，注册给 LLM。**这一步只让 LLM"知道有这个工具、能调"，还没有循环。**
+
+**【改已有文件，片段】** `WebSearchTool.java` 加方法（第 0 章已有 `search`/`invokeAsTool`，这里加 `asTool`）：
+
+```java
+/** 构造一个可注册给 LlmClient 的工具描述。 */
+public LlmClient.LlmTool asTool() {
+    return new LlmClient.LlmTool(
+            "web_search",
+            "在互联网上搜索给定关键词，返回网页摘要。用于查询最新、需要核实的信息。",
+            this::invokeAsTool);
 }
 ```
 
-防死循环：`maxIterations`（Spring AI 2.0 没内置，原版也要自己做）。
+> Mock LLM 在 `stream(system, user, history, tools)` 里会**按 user 内容是否命中工具 description 的关键词**，决定调不调、把结果拼进输出（见 `MockLlmClient`）。**这一步已经实现了"工具被自主调用"的表象**——但本质是单轮，因为 Mock 一次性把"调工具+拼结果"做完了。
 
-### 1.2 动手
+#### 1.2.2 ResearchService：注册工具（先不引循环）
 
-本章新建 1 文件（`ToolCallingLoop`），改 1 文件（`ResearchService`）。`WebSearchTool` 沿用，新增 `asTool()` 把它注册给 LLM。
+**【改已有文件，完整版覆盖】** `ResearchService.java`（第 1 章最小版——把工具传给 LLM，还没有 ToolCallingLoop）：
 
-#### 1.2.1 ToolCallingLoop：最小 ReAct 循环
+```java
+package com.example.research;
+
+import com.example.research.llm.LlmClient;
+import com.example.research.tool.WebSearchTool;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+
+import java.time.Duration;
+import java.util.List;
+
+/**
+ * 第 1 章最小版：把 web_search 注册给 LLM。
+ * LLM 在 stream() 内自主决定调不调工具（Mock 命中即调）。这一步还没循环。
+ */
+@Service
+public class ResearchService {
+
+    private final LlmClient llm;
+    private final WebSearchTool searchTool;
+
+    public ResearchService(LlmClient llm, WebSearchTool searchTool) {
+        this.llm = llm;
+        this.searchTool = searchTool;
+    }
+
+    public Flux<String> research(String topic) {
+        return llm.stream(
+                "你是研究助理。你可以调用 web_search 工具查资料。" +
+                "资料足够后给出结构清晰的研究结果。资料不足要明确说，绝不编造。",
+                "研究主题：" + topic,
+                List.of(),
+                List.of(searchTool.asTool()))               // ▼ 注册工具给 LLM
+                .timeout(Duration.ofSeconds(60));
+    }
+}
+```
+
+### 1.3 验证最小版
+
+```bash
+curl -N "http://localhost:8080/api/research?topic=对比vLLM和TensorRT-LLM的发展"
+```
+
+预期：Mock 命中"搜索/查询"关键词 → 调 `web_search` → 内置条目命中 → 摘要拼进结果逐字输出。
+
+### 1.4 最小版的隐患 → 引入循环骨架
+
+**隐患（驱动演进）**：最小版的"自主调工具"是**单轮假象**——Mock 一次性把"调工具+拼结果"做完。但真实 Agent 是**循环**：调一次工具看结果够不够，不够再调一次（换关键词、核实矛盾）。而且：
+- **没有循环骨架**：换真模型（function calling）时，需要"解析 tool_call → 执行 → 喂回 → 再调"，最小版没地方放这套逻辑。
+- **没有防死循环**：真模型可能无限调工具，需要 `maxIterations` 截断。
+
+**解法**：把单次 `llm.stream(...)` 包进 `ToolCallingLoop`。Mock 下它仍是单轮（因为 Mock 内部已做完），但**循环骨架（round 计数、maxIterations、history 累积）已经在**——换真模型时只补 tool_call 解析。
+
+#### 1.4.1 ToolCallingLoop：循环骨架（为真模型多轮留接口）
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/llm/ToolCallingLoop.java`：
 
@@ -684,18 +755,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 最小 ReAct 工具调用循环（零依赖版核心编排）。
+ * Agent 工具调用循环骨架。
  *
- * 循环逻辑：
- *   round 0：让 LLM 流式输出第一轮（可能内含"调用工具"的迹象）
- *   之后：Mock 的工具调用是在 stream() 内部模拟的（关键词命中即调，结果拼进输出），
- *        所以本类对 Mock 是"单轮流式 + 工具已内嵌"。
- *   对真实 LLM（function calling）：本类会解析 tool_call，执行工具，把结果作为 history 再调一轮。
+ * 循环本质：调 LLM → 解析 tool_call → 执行工具 → 把结果作为 history 喂回 → 再调 LLM
+ *          → 直到 LLM 不再请求工具（给出最终答案）。
  *
- * 为同时兼容 Mock 与真模型，本循环按"是否还有未处理的工具调用"决定是否进入下一轮。
- * Mock 默认一轮结束（工具结果已拼进文本）；真模型按 tool_calls 多轮。
+ * Mock 下：MockLlmClient.stream() 内部已把"调工具+拼结果"做完，所以本循环对 Mock 退化为单轮。
+ * 真模型下：runRound 解析 tool_calls，执行后递归 runRound(round+1)——多轮。
  *
- * maxIterations 防死循环。
+ * maxIterations 防死循环（真模型可能无限调工具）。
  */
 @Component
 public class ToolCallingLoop {
@@ -708,46 +776,33 @@ public class ToolCallingLoop {
         this.llm = llm;
     }
 
-    /**
-     * 带 Agent 循环的流式生成。
-     * @param system   系统提示
-     * @param user     用户问题
-     * @param history  历史（多轮记忆，第 7 章填）
-     * @param tools    可用工具
-     */
     public Flux<String> run(String system, String user,
                             List<LlmClient.LlmMessage> history,
                             List<LlmClient.LlmTool> tools) {
         List<LlmClient.LlmMessage> hist = history == null ? new ArrayList<>() : new ArrayList<>(history);
-        // 把本次 user 加进历史（assistant 回复会在循环结束后补，第 7 章做）
         return runRound(system, user, hist, tools, 0);
     }
 
     private Flux<String> runRound(String system, String user,
                                   List<LlmClient.LlmMessage> history,
                                   List<LlmClient.LlmTool> tools, int round) {
-        if (round >= MAX_ITERATIONS) {
+        if (round >= MAX_ITERATIONS) {                                   // ▼ 防死循环
             return Flux.just("\n[达到最大轮次 " + MAX_ITERATIONS + "，停止]");
         }
-        // Mock LLM 在 stream() 内部完成"工具调用 + 结果拼接"，单轮即出最终结果。
-        // 真模型这里会返回带 tool_calls 的中间结果，需要解析后递归 runRound(round+1)。
-        return llm.stream(system, user, history, tools)
-                // 简化：Mock 单轮结束。真实多轮解析见附录扩展点。
-                ;
+        return llm.stream(system, user, history, tools);
+        // Mock：单轮结束。真模型：解析 tool_calls → 执行 → history.add(工具结果) → runRound(round+1)
+        // 多轮扩展点见附录（真实 function-calling 解析）。
     }
 }
 ```
 
-> **为什么 Mock 看起来是"单轮"**：`MockLlmClient.stream()` 已经在内部把"工具命中 → 调用 → 结果拼进文本"做完了，所以循环对 Mock 退化为单轮流式。**这正是 Mock 的价值**——它让你能离线验证"工具被调用了、结果进了输出"，而不用等真模型。真模型时，`runRound` 会按 `tool_calls` 多轮递归（扩展点见附录）。**循环骨架（maxIterations、history 累积、round 递增）已经在这里**，换真模型只补 tool_call 解析。
+#### 1.4.2 ResearchService：改用 ToolCallingLoop
 
-#### 1.2.2 ResearchService：从固定 workflow 改成自主 Agent
-
-**【改已有文件，完整版覆盖】** `ResearchService.java`。改动：`research()` 内部从"手动提炼 + 手动调 search"改成 `ToolCallingLoop.run(带工具)`；加 `.timeout(60s)`。
+**【改已有文件，完整版覆盖】** `ResearchService.java`（把 `llm.stream` 换成 `agentLoop.run`）：
 
 ```java
 package com.example.research;
 
-import com.example.research.llm.LlmClient;
 import com.example.research.llm.ToolCallingLoop;
 import com.example.research.tool.WebSearchTool;
 import org.springframework.stereotype.Service;
@@ -757,14 +812,9 @@ import java.time.Duration;
 import java.util.List;
 
 /**
- * 第 1 章：自主 Agent（流式）。
- * LLM 通过 ToolCallingLoop 自主决定调几次搜索、搜什么。循环由 ToolCallingLoop 托管。
- *
- * 演进：
- *  第 0 章 —— 固定 workflow（手动提炼关键词 → 手动调 search → 流式生成）。
- *  第 1 章 —— ToolCallingLoop + .tools(searchTool) 交给 LLM 自主调；.timeout(60s) 兜底。
- *  第 2 章 —— 这里再加一个知识库工具。
- *  第 7 章 —— 各处传 history 接入会话记忆。
+ * 第 1 章演进版：用 ToolCallingLoop 托管工具调用。
+ * 演进：第0章固定workflow → 第1章最小版(注册工具) → 第1章演进版(循环骨架)。
+ * 后续：第2章加知识库工具；第7章传 history 接入记忆。
  */
 @Service
 public class ResearchService {
@@ -777,12 +827,11 @@ public class ResearchService {
         this.searchTool = searchTool;
     }
 
-    /** 自主 Agent（流式）。LLM 自主调工具，最终结果逐字推给前端。 */
     public Flux<String> research(String topic) {
         return agentLoop.run(
                 "你是研究助理。你可以调用 web_search 工具查资料。" +
                 "自主决定搜索几次、搜什么关键词。资料矛盾时多搜一轮核实。" +
-                "资料足够后给出结构清晰的研究结果。资料不足要明确说，绝不编造。",
+                "资料足够后给出结构清晰的研究结果。绝不编造。",
                 "研究主题：" + topic,
                 List.of(),
                 List.of(searchTool.asTool()))
@@ -791,31 +840,21 @@ public class ResearchService {
 }
 ```
 
-### 1.3 验证
-
-```bash
-curl -N "http://localhost:8080/api/research?topic=对比vLLM和TensorRT-LLM的发展"
-```
-
-预期：Mock LLM 命中"搜索/查询"关键词 → 调 `web_search` → 内置条目命中（vLLM、TensorRT-LLM）→ 把摘要拼进研究结果逐字输出。日志能看到 `[研究]` 不再出现"手动提炼"（现在是 LLM 自主）。
-
-### 1.4 checkpoint
+### 1.5 checkpoint + 复盘
 
 ```
 research-agent/src/main/java/com/example/research/llm/
-└── ToolCallingLoop.java          （新增：最小 ReAct 循环）
-research-agent/.../ResearchService.java   （改：ToolCallingLoop + .tools()）
+└── ToolCallingLoop.java          （新增：循环骨架）
+research-agent/.../ResearchService.java   （改：先注册工具 → 再用 ToolCallingLoop）
 ```
 
 ```bash
-git add -A && git commit -m "第1章：自主Agent循环（ToolCallingLoop）+ 工具注册"
+git add -A && git commit -m "第1章：自主Agent（先注册工具，再演进到循环骨架）"
 ```
 
-### 1.5 复盘
+**做了**：先 `asTool()` 把工具注册给 LLM（最小版，验证工具能被调）→ 发现"单轮假象/无防死循环"痛点 → 引入 `ToolCallingLoop` 循环骨架（为真模型多轮留接口）。
 
-**做了**：`ToolCallingLoop` 手写最小 ReAct 循环；`WebSearchTool.asTool()` 注册给 LLM；`.timeout(60s)` 兜底。Mock LLM 在 `stream()` 内模拟工具调用，循环骨架为真模型留好扩展点。
-
-**核心跃迁**：从"人写死步骤"到"LLM 自主决定下一步"。Agent 循环的本质（决定 → 执行 → 喂回 → 再决定）裸露可见，没有框架黑箱。
+**核心跃迁**：从"人写死步骤"到"LLM 自主决定下一步"。循环骨架（决定→执行→喂回→再决定）裸露可见，换真模型只补 tool_call 解析。**这是演进式：先让工具能用，再为循环留位。**
 
 ---
 
@@ -3595,7 +3634,18 @@ curl "http://localhost:8080/api/runs/run_abc123"
 
 第 10 章管数分离后，一次复盘：凌晨 Redis 所在机器 OOM 重启。结果：触发接口（抢不到锁）失败、订阅接口（读不到流）空转、正在输出的研究全中断、锁状态丢失。**Redis 是单点故障（SPOF）**——它挂 = 全系统瘫痪（会话记忆、知识库、审计、多端同步全压在它上）。
 
-### 11.1 思路：Sentinel 主从 + 自动故障转移
+### 11.1 思路：一步步消除单点（不是一上来就 Sentinel）
+
+> **演进纪律**：高可用也是一步步加的。我们沿着真实演进路径看每一步解决了什么、还差什么：
+>
+> | 阶段 | 做法 | 解决了什么 | 还差什么（下一痛点） |
+> |------|------|----------|-------------------|
+> | ① 单节点 | 一个 Redis（第 2 章起就是） | 能跑 | Master 挂 = 全瘫；重启可能丢未持久化数据 |
+> | ② + AOF 持久化 | `--appendonly yes` | 重启不丢已落盘数据 | Master 挂期间服务中断（不会自动切） |
+> | ③ + Slave（主从复制） | 加一个从节点实时复制 | 有数据副本、可分担读 | Master 挂了 Slave 不会自动顶上（要人工切） |
+> | ④ + Sentinel（哨兵） | 3 哨兵监控 + 自动故障转移 | **Master 挂自动切到 Slave，业务无感** | —（单点消除） |
+>
+> **本章直接给 ④ 终态（1主1从3哨兵）的代码**，但你要清楚它是由这四步叠加——每一步都对应一个"还差什么"的痛点。如果跟着演进，可以先给单 Redis 开 AOF，再加 Slave，最后加 Sentinel。
 
 | 角色 | 职责 | 数量 |
 |------|------|------|
