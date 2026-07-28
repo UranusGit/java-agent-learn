@@ -2061,11 +2061,20 @@ git add -A && git commit -m "第7章：会话记忆落Redis，多轮+刷新不�
 
 第 7 章有了多轮记忆，但**没有会话管理**——用户不能看"我有哪些会话"、不能新建/重命名/删除会话、没有前端对话页。这是从"研究功能"到"产品"的临门一脚。
 
-### 8.1 思路：会话 CRUD（Redis）+ 静态前端
+### 8.1 思路：一步步从"能聊天"到"产品"
+
+> **演进纪律**：产品化也是一步步加的，不是一上来就铺全套 CRUD + 完整前端。本章的演进顺序：
+>
+> 1. **最小前端**（8.2.3a）：一个输入框 + 研究按钮 + EventSource 订阅 SSE——**先让浏览器能聊天**，连会话列表都没有。
+> 2. **+ 会话列表/新建**（8.2.3b）：发现"开新会话、切换会话"的需求 → 加 SessionStore（最小：create + list）+ 前端会话列表。
+> 3. **+ 历史回看**（8.2.3c）：发现"刷新页面想看上次结果"→ 加 `GET /sessions/{id}/messages`。
+> 4. **+ 重命名/删除**：发现"会话太多要管理"→ SessionStore 补 rename/delete。
+>
+> 下面 8.2.1/8.2.2 给 SessionStore/Controller 的**终态**（含完整 CRUD），8.2.3 给前端的**逐版演进**。你可以照着 8.2.3 的 a→b→c 一步步加，每步都是一个能跑的中间态。
 
 - 会话元信息（id、标题、创建时间）存 Redis Hash `sessions`。
 - CRUD：新建会话、列出会话、重命名、删除（连带删 chat/audit）。
-- 前端：一个静态 HTML（用 EventSource 订阅 SSE），放 `resources/static/`。
+- 前端：静态 HTML（EventSource 订阅 SSE），放 `resources/static/`。
 
 ### 8.2 动手
 
@@ -2179,53 +2188,114 @@ public class SessionController {
 }
 ```
 
-#### 8.2.3 前端对话页（静态 HTML）
+#### 8.2.3 前端对话页（逐版演进）
 
-**【新建文件】** `research-agent/src/main/resources/static/index.html`（精简版，演示多端同步的核心——多个浏览器标签打开会看到同一流）：
+前端最能体现"先能用再变好"。我们分三版，每版都是能跑的中间态。
+
+##### 8.2.3a 最小版：一个输入框 + 流式输出（连会话都没有）
+
+**痛点驱动**：第 8 章第一目标——让用户能在浏览器里看到流式输出（之前只能 curl）。**先不管多会话**，固定一个 sessionId。
+
+**【新建文件】** `research-agent/src/main/resources/static/index.html`（最小版）：
 
 ```html
 <!DOCTYPE html>
 <html lang="zh">
-<head><meta charset="UTF-8"><title>研究助手（零依赖版）</title></head>
+<head><meta charset="UTF-8"><title>研究助手</title></head>
 <body>
-  <h3>会话列表</h3>
-  <div id="sessions"></div>
-  <button onclick="newSession()">新建会话</button>
-  <hr/>
-  <div>当前会话: <span id="cur"></span></div>
   <input id="topic" placeholder="输入研究主题" style="width:300px"/>
   <button onclick="send()">研究</button>
   <pre id="out" style="white-space:pre-wrap;background:#f5f5f5;padding:8px;min-height:200px"></pre>
 
   <script>
-    let curSession = null;
-    function newSession(){
-      fetch('/api/sessions?title=新会话',{method:'POST'})
-        .then(r=>r.json()).then(d=>{curSession=d.sessionId;document.getElementById('cur').textContent=curSession;loadSessions();});
-    }
-    function loadSessions(){
-      fetch('/api/sessions').then(r=>r.json()).then(arr=>{
-        document.getElementById('sessions').innerHTML=arr.map(s=>
-          `<div onclick="openSession('${JSON.parse(s).id}')">${JSON.parse(s).title}</div>`).join('');
-      });
-    }
-    function openSession(id){ curSession=id; document.getElementById('cur').textContent=id; }
+    const SID = "demo-session";   // 最小版：写死一个 sessionId
     function send(){
-      const t=document.getElementById('topic').value;
-      document.getElementById('out').textContent='';
-      // 注意：这里先 POST 触发再 GET 订阅 是第 10 章管数分离的事；
-      // 第 8 章前端先直接用 GET 流式（与研究接口一致）。
-      const es=new EventSource(`/api/research?topic=${encodeURIComponent(t)}&sessionId=${curSession}`);
-      es.onmessage=e=>{document.getElementById('out').textContent+=e.data;};
-      es.onerror=()=>es.close();
+      const t = document.getElementById('topic').value;
+      document.getElementById('out').textContent = '';
+      const es = new EventSource(`/api/research?topic=${encodeURIComponent(t)}&sessionId=${SID}`);
+      es.onmessage = e => { document.getElementById('out').textContent += e.data; };
+      es.onerror = () => es.close();
     }
-    loadSessions();
   </script>
 </body>
 </html>
 ```
 
-> **前端的多端同步伏笔**：现在两个浏览器标签打开同一 sessionId，**会各自触发一次研究**（重复触发 LLM）——这正是第 9 章多端同步、第 10 章管数分离要解决的痛点。第 8 章先让它"能用"，第 9-10 章让它"多端一致且不重复"。
+**这版能跑**：浏览器打开 `http://localhost:8080/`，输入主题，结果逐字出现。
+
+**最小版的隐患**（驱动下一版）：
+- 只有一个写死的会话——所有人共用，无法区分不同话题。
+- 刷新页面看不到上次结果（没有历史回看）。
+- 想开新话题，只能覆盖上一个。
+
+##### 8.2.3b 加会话列表：新建 + 切换会话
+
+**痛点驱动**：上面的"写死会话"撑不住真实使用——要能开新会话、在多个会话间切换。这就需要 SessionStore（8.2.1 的 create + list）。
+
+**【改 index.html，增量】** 加会话列表 + 新建按钮，`SID` 改成可切换的 `curSession`：
+
+```html
+<!-- body 里加会话区 -->
+<h3>会话列表</h3>
+<div id="sessions"></div>
+<button onclick="newSession()">新建会话</button>
+<hr/>
+<div>当前会话: <span id="cur"></span></div>
+<input id="topic" placeholder="输入研究主题" style="width:300px"/>
+<button onclick="send()">研究</button>
+<pre id="out" style="white-space:pre-wrap;background:#f5f5f5;padding:8px;min-height:200px"></pre>
+
+<script>
+  let curSession = null;
+  function newSession(){
+    fetch('/api/sessions?title=新会话',{method:'POST'})
+      .then(r=>r.json()).then(d=>{ curSession=d.sessionId; document.getElementById('cur').textContent=curSession; loadSessions(); });
+  }
+  function loadSessions(){
+    fetch('/api/sessions').then(r=>r.json()).then(arr=>{
+      document.getElementById('sessions').innerHTML = arr.map(s=>{
+        const o=JSON.parse(s);
+        return `<div onclick="openSession('${o.id}')">${o.title}</div>`;
+      }).join('');
+    });
+  }
+  function openSession(id){ curSession=id; document.getElementById('cur').textContent=id; }
+  function send(){
+    const t=document.getElementById('topic').value;
+    document.getElementById('out').textContent='';
+    const es=new EventSource(`/api/research?topic=${encodeURIComponent(t)}&sessionId=${curSession}`);
+    es.onmessage=e=>{ document.getElementById('out').textContent+=e.data; };
+    es.onerror=()=>es.close();
+  }
+  loadSessions();
+</script>
+```
+
+**这版能跑**：新建会话、切换会话、各会话独立聊天（第 7 章的记忆按 sessionId 隔离，所以切换会话历史不串）。
+
+**还差**：切换到一个旧会话，看不到它之前的输出（刷新就空了）。
+
+##### 8.2.3c 加历史回看：打开旧会话看到之前的消息
+
+**痛点驱动**：打开旧会话应该看到历史，而不是空白。加 `GET /api/sessions/{id}/messages`（8.2.2 已有），`openSession` 里调它回填。
+
+**【改 index.html，增量】** `openSession` 里加载历史：
+
+```javascript
+function openSession(id){
+  curSession=id;
+  document.getElementById('cur').textContent=id;
+  document.getElementById('out').textContent='';
+  // ▼ 8.2.3c：打开旧会话时回填历史消息
+  fetch(`/api/sessions/${id}/messages`).then(r=>r.json()).then(msgs=>{
+    document.getElementById('out').textContent = msgs.map(m=>JSON.parse(m).content).join('\n');
+  });
+}
+```
+
+**这版就是产品级的会话页了**：新建/切换/历史回看/流式输出全齐。
+
+> **前端的多端同步伏笔**：现在两个浏览器标签打开**同一 sessionId**，会各自触发一次研究（重复触发 LLM）——这正是第 9 章多端同步、第 10 章管数分离要解决的痛点。第 8 章先让它"能用"，第 9-10 章让它"多端一致且不重复"。**演进到这里，前端的"能用"做完了；"多端一致"是下一章的痛点。**
 
 ### 8.3 验证
 
