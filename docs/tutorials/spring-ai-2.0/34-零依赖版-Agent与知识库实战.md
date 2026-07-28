@@ -4041,6 +4041,114 @@ public class ChatMemoryStore {
 
 `SessionStore`、`RunStore`、`AuditLogger` 同理：实现从 Redis 改成各自的 Repository，接口不变。迁完后，Redis 里 `chat:`/`sessions`/`run:`/`audit:` 这些 key 就可以清掉了——Redis 回归"实时流态 + 锁"的职责。
 
+#### 10.5.2b 流式数据与历史记录的衔接（重点）
+
+> **这是把"流式输出（第 9 章）+ run 资源（第 10 章）+ 持久层（本章）"三者缝起来的关键一节**。很多人做多端同步，流和历史各管各的，结果出"流完了历史里没有""刷新后流和库对不上""重复落库"等毛病。本节讲清两者怎么配合。
+
+##### ① 先认清：流和历史是"同一条回复的两个阶段"，不是两个副本
+
+| 数据 | 来源 | 形态 | 生命周期 |
+|------|------|------|---------|
+| 正在流的 chunk | LLM 实时吐字 | Redis Streams / Kafka（高吞吐、多播） | 24h，run 级 |
+| 持久化历史 | 一轮对话结束后整条 assistant | 关系库 `chat_message` | 永久 |
+
+**一条 assistant 回复的生命周期**：
+```
+LLM 吐字 → 边产生边进 Redis Streams（边推前端）→ 流完 → 整条落 chat_message（永久）
+         【流式阶段：高吞吐、可多播、会过期】      【持久阶段：可查询、永久】
+```
+**两者是同一条回复的两个阶段，衔接点就是"流完那一刻"**。
+
+##### ② 衔接点一：流完 → 触发落库（且只落一次）
+
+落库必须在 `doOnComplete`（LLM 流完）时触发，把**完整拼接的 assistant** 写库。但有个坑：**多端订阅、重连补推都可能在完成时刻触发回调**，如果落库逻辑挂错地方，会落多次。
+
+**解法（方案 B：落库收敛到 SyncStreamBus 写者层，借 SETNX 锁保证幂等）**——把"流完成"和"落库"收敛到**单一写者**（第 10 章已确立）所在的层，只有抢到锁的实例才写。天然幂等：
+
+**【改已有文件，片段】** `SyncStreamBus.trigger` 的 `doOnComplete` 里追加落库（在清锁、发 `__END__` 旁边）：
+
+```java
+// SyncStreamBus.trigger 的 upstream 处理（第 10 章已有），doOnComplete 追加落库
+Disposable handle = upstream
+        .doOnNext(chunk -> writeChunk(streamKey, channel, seqKey, chunk))
+        .doOnComplete(() -> {
+            // ▼ 10.5.2b：流完才落库——把完整 assistant 拼出来写 chat_message
+            String fullAssistant = collected.toString();   // upstream 过程中收集的完整回复
+            chatMemoryStore.append(runId, sessionId, topic, fullAssistant).subscribe();
+            finishStream(streamKey, channel, lockKey, runId);   // 发 __END__、清锁、设 TTL、status=DONE
+        })
+        ...
+        .subscribe();
+```
+
+> **为什么放在 SyncStreamBus 而不是 ResearchService**：
+> - **天然幂等**：`trigger` 只在抢到 SETNX 锁的实例执行（单一写者，第 10 章）。落库挂在这里，**只有写者实例落一次**——多端订阅、重连补推的实例不抢锁、不落库。**幂等性由锁免费保证**。
+> - **内聚**："流完成"和"落库"是同一个生命周期事件（回复结束），放一起最内聚。ResearchService 只管"造 upstream"，不管"流完落库"——职责清晰。
+> - 这是企业级做法：**生产者负责持久化**（谁产生数据、谁负责把它存下来），消费者（订阅者）只读不写。
+
+> **第 7 章的落库去哪了**：第 7 章 `ResearchService.research()` 的 `upstream.doOnComplete` 里有 `memory.append(...)`——那是当时的写法（落库挂在 upstream 链上）。现在收敛到 SyncStreamBus 后，**ResearchService 不再直接落库**（删掉那处 append，改由 bus 在完成时落）。**落库点从"两个"收敛到"一个"**——这正是方案 B 相对方案 A 的改进。
+
+##### ③ 衔接点二：打开会话时——run 状态决定读流还是读库（最易出错）
+
+用户刷新页面/中途打开会话时，这条回复可能**还在流（没落库）**或**已流完（已落库）**。**不能无脑只读 chat_message**——正在流的会话读库是空的，看不到正在吐的内容。
+
+**解法：打开会话先看 run 状态分流**（第 10 章 RunStore 的状态机派上用场）：
+
+```java
+// 打开会话/某 run 的统一入口（伪代码）
+public Flux<String> open(String runId) {
+    return runStore.status(runId).flatMapMany(status -> {
+        if ("RUNNING".equals(status) || "queued".equals(status)) {
+            // ▼ 还在流：订阅 Redis Streams（回放已吐 chunk + 实时续传）
+            return bus.subscribeReadOnly(runId, lastSeq);
+        } else {
+            // ▼ 已完成：读持久历史（chat_message）
+            return chatMemoryStore.loadMessages(runId);   // 从 H2 读完整 assistant
+        }
+    });
+}
+```
+
+| run 状态 | 读哪个源 | 为什么 |
+|---------|---------|--------|
+| `queued` / `RUNNING` | **Redis Streams**（订阅） | 还在流，库还没这条记录；流里有正在吐的 chunk |
+| `DONE` / `FAILED` / `CANCELLED` | **chat_message**（库） | 已落库；Redis Streams 24h 后会过期，长期看必须读库 |
+
+> **这是"流和库协调"的核心**：**run 状态是分流的开关**。没有状态分流，就会出现"刷新后看不到正在吐的内容"（只读库）或"三天后历史没了"（只读流）。第 10 章 run 资源的状态机，在这里兑现了价值。
+
+##### ④ 衔接点三：下次多轮对话——历史从库读，绝不从流读
+
+用户第二天再问同一会话的追问。这时：
+- 上一轮的 Redis Streams **早过期了**（24h TTL）。
+- `chat_message` 里**永久有**这条历史。
+
+**所以多轮记忆的 `history` 必须从 `chat_message` 读**，不能依赖 Redis Streams 当历史源。第 7/10.5 章的 `ChatMemoryStore.load()` 读的就是库——✅ 这点已对。**只是要明确：Redis Streams 只服务"当前正在进行的 run"，历史源永远是库。**
+
+##### ⑤ 一张图总结：一条回复的完整数据流（含两个源、三个衔接点）
+
+```
+用户发问（POST /runs）
+  │
+  ▼
+SyncStreamBus.trigger（单一写者，抢 SETNX 锁）
+  │
+  ├─ 流式阶段：LLM 每 chunk → XADD Redis Streams + PUBLISH ──→ 多端 SSE 实时订阅
+  │                     （高吞吐、多播、24h）                        （读流：补强C的30%场景）
+  │
+  ├─ 衔接点① 流完（doOnComplete）→ 拼完整 assistant → 落 chat_message（库，幂等：锁保证只落一次）
+  │                                          → 发 __END__、清锁、status=DONE
+  │
+  ▼
+持久阶段：chat_message 永久存
+  │
+  ├─ 衔接点② 打开会话：run.status==DONE → 读库（chat_message）
+  │              run.status==RUNNING → 读流（Redis Streams）
+  │
+  └─ 衔接点③ 下次多轮：load() 读库（不读流，流会过期）→ 注入 LLM history
+```
+
+> **一句话记忆**：**流服务"现在正在发生的"，库服务"已经发生完的"**；衔接靠 run 状态分流，落库收敛到单一写者（锁保证幂等）。这套配合齐了，才不会出现"流完没落库 / 刷新看不到正在吐的 / 多轮失忆"三类问题。
+
 ### 10.5.3 验证
 
 ```bash
