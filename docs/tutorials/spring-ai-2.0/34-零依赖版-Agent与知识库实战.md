@@ -36,6 +36,7 @@
 - [补强 A：传输层真相——SSE / WebSocket / Flux 到底用哪个](#补强-a传输层真相sse--websocket--flux-到底用哪个)
 - [补强 B：管数分离的企业级真相——OpenAI Assistants 式的 run 资源](#补强-b管数分离的企业级真相openai-assistants-式的-run-资源)
 - [补强 C：多页面同步的端到端证明——A 输出 30% 时 B 打开要看到前 30% 且两页继续一致](#补强-c多页面同步的端到端证明a-输出-30-时-b-打开要看到前-30-且两页继续一致)
+- [第 10.5 章：管理数据持久层——引入 H2（开发期零硬件，生产一行配置切 PG）](#第-105-章管理数据持久层引入-h2开发期零硬件生产一行配置切-pg)
 - [第 11 章：Redis 高可用——消除单点](#第-11-章redis-高可用消除单点)
 - [第 12 章：消息队列升级——Redis Streams → Kafka](#第-12-章消息队列升级redis-streams--kafka)
 - [第 13 章：微服务拆分（一）——先拆订阅服务](#第-13-章微服务拆分一先拆订阅服务)
@@ -3694,6 +3695,328 @@ curl "http://localhost:8080/api/runs/run_abc123"
 **这套（run 资源 + 幂等键 + Last-Event-ID + 事件分类）就是 OpenAI Assistants 等真实 AI 平台的管数分离标准。** 不是我编的，是业界已验证的做法。
 
 > **学习要点**：管数分离的"企业级"不在于"拆了两个接口"，而在于**把触发建模成一个有生命周期的资源（run）**，配上**幂等、状态机、协议级重连、事件分类**。这些细节才是"真实企业级"和"玩具 demo"的分水岭。
+
+---
+
+
+## 第 10.5 章：管理数据持久层——引入 H2（开发期零硬件，生产一行配置切 PG）
+
+> **定位**：这一章解决全文最大的一个"妥协"——前面（第 7/8/10 章）把**用户数据**（会话历史、会话元信息、run 资源、审计）全压在 Redis 上。Redis 是内存型、TTL 会过期、故障转移会丢数据，而且**没法按条件查询**（用户搜历史、运营统计都做不到）。这些数据是**关系型数据库的活**。
+>
+> **本章引入 H2**（嵌入式文件库，零硬件、重启不丢）作为管理数据持久层。关键纪律：**用 Spring Data JPA 抽象 + 标准 DDL，代码不写任何 H2 方言**——这样生产换 PostgreSQL 时，只改 `application.yaml` 一行，代码零改动。
+>
+> **H2 的正确定位（诚实）**：H2 在企业里基本只用于开发/测试，**生产几乎没人用 H2 当主库**（多实例数据分裂、性能/功能受限）。所以 H2 是"零硬件的开发期存储 + 平滑切 PG 的垫脚石"，不是企业级生产存储。**这条边界我会写明，不藏。**
+
+### 10.5.0 痛点：用户数据不该全压 Redis
+
+盘点一下"该长期持久"的用户数据，现在的处境：
+
+| 数据 | 现在存哪 | 痛点 |
+|------|---------|------|
+| 会话历史（user/assistant 消息） | Redis List `chat:{sid}` | TTL 7 天过期就丢；故障转移丢未同步的；没法搜索 |
+| 会话元信息（标题/创建时间） | Redis Hash `sessions` | TTL 过就没了；没法按用户/时间查询 |
+| run 资源（研究任务状态） | Redis `run:{id}:status` | TTL 30min 后查不到历史任务 |
+| 审计日志 | Redis List `audit:{sid}` | TTL 7 天；法规要长期保留做不到 |
+
+**核心问题**：内存型存储不该扛"持久 + 可查询 + 关系完整"的活。**该有一张关系表。**
+
+> **实时流态（chunk）不动**：Redis Streams/Kafka 是高吞吐、24h 过期的流式数据，**不进数据库**——职责分离。本章只接管"管理面用户数据"。
+
+### 10.5.1 思路：H2 文件库 + JPA，方言可切
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 数据库 | **H2 文件库**（`jdbc:h2:file:./data/research`） | 嵌入式、零硬件、重启不丢；学习阶段无需装 PG/MySQL |
+| 访问层 | **Spring Data JPA**（标准 ORM） | 方言自动适配 H2/PG；换库代码零改 |
+| DDL | **标准 `schema.sql`**（ANSI SQL） | H2 和 PG 都能跑；比 `ddl-auto=update` 更显式可控 |
+| 哪些数据进库 | 会话历史、会话元信息、run 资源、审计 | 该持久 + 可查询的管理数据 |
+| 哪些不进 | chunk 流（Redis Streams/Kafka）、SETNX 锁（Redis） | 实时态/协调态，不是持久数据 |
+
+> **为什么能"一行配置切 PG"**：JPA 屏蔽了方言差异。H2 和 PG 都支持标准 SQL + JPA 注解定义的表结构。换库时把 `spring.datasource.url/driver` 从 H2 改成 PG，JPA 自动用 PG 方言——**业务代码（Repository/Service）一行不动**。这就是"用对抽象"的红利。
+
+### 10.5.2 动手
+
+#### 10.5.2.1 pom 加依赖
+
+**【改已有文件】** `pom.xml`，追加：
+
+```xml
+        <!-- 第 10.5 章：管理数据持久层 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <!-- H2：嵌入式文件库，开发期零硬件（生产换 postgresql 驱动） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+        </dependency>
+```
+
+> **生产切 PG 时，加 `org.postgresql:postgresql` 驱动，H2 可保留也可移除**——驱动选择由 `spring.datasource.driver-class-name` 配置决定，代码无感。
+
+#### 10.5.2.2 application.yaml：H2 数据源 + JPA
+
+**【改已有文件】** `application.yaml`，追加：
+
+```yaml
+spring:
+  datasource:
+    # ▼ H2 文件库：重启不丢。生产换 PG 时改这一段即可：
+    #   url: jdbc:postgresql://${PG_HOST:localhost}:5432/research
+    #   driver-class-name: org.postgresql.Driver
+    url: jdbc:h2:file:./data/research;AUTO_SERVER=TRUE   # AUTO_SERVER 允许多进程访问（开发期方便）
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: none                 # 用 schema.sql 显式建表，不靠 hibernate 自动生成（更可控、方言无关）
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  sql:
+    init:
+      mode: always                   # 启动时执行 schema.sql（H2/PG 通用）
+      schema-locations: classpath:schema.sql
+```
+
+> **`ddl-auto: none` + 标准 `schema.sql` 的纪律**：不靠 Hibernate 自动建表（它生成的 DDL 会带方言差异），而是手写**标准 ANSI SQL**——H2 和 PG 都能跑，是"换库零改"的关键。H2 的 `IF NOT EXISTS` 和 PG 都兼容。
+
+#### 10.5.2.3 标准 DDL（H2/PG 通用）
+
+**【新建文件】** `research-agent/src/main/resources/schema.sql`：
+
+```sql
+-- 管理/用户数据表（标准 ANSI SQL，H2 和 PostgreSQL 都能跑）
+-- 切 PG 时这份 schema.sql 原样可用（H2 的 IF NOT EXISTS / BIGINT/ TIMESTAMP PG 都支持）
+
+-- 会话元信息（替代 Redis Hash "sessions"）
+CREATE TABLE IF NOT EXISTS app_session (
+    id          VARCHAR(64)  PRIMARY KEY,
+    title       VARCHAR(256),
+    created_at  TIMESTAMP NOT NULL
+);
+
+-- 会话历史消息（替代 Redis List "chat:{sid}"）
+CREATE TABLE IF NOT EXISTS chat_message (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    session_id  VARCHAR(64) NOT NULL,
+    role        VARCHAR(16) NOT NULL,     -- user / assistant
+    content     TEXT NOT NULL,
+    created_at  TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_msg_session ON chat_message(session_id);
+
+-- run 资源（替代 Redis "run:{id}:status"）
+CREATE TABLE IF NOT EXISTS research_run (
+    id          VARCHAR(64) PRIMARY KEY,
+    session_id  VARCHAR(64) NOT NULL,
+    status      VARCHAR(16) NOT NULL,     -- queued/RUNNING/DONE/FAILED/CANCELLED
+    created_at  TIMESTAMP NOT NULL,
+    finished_at TIMESTAMP
+);
+
+-- 审计事件（替代 Redis List "audit:{sid}"）
+CREATE TABLE IF NOT EXISTS audit_event (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    session_id  VARCHAR(64) NOT NULL,
+    run_id      VARCHAR(64),
+    type        VARCHAR(32) NOT NULL,
+    detail      TEXT,
+    created_at  TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_event(session_id);
+```
+
+> **方言无关的几个要点**：①`BIGINT AUTO_INCREMENT`（H2）在 PG 是 `BIGSERIAL`——为完全通用，生产切 PG 时把这张表改成 `BIGSERIAL`，或用 JPA 的 `@GeneratedValue(strategy=IDENTITY)` 让框架处理（下面 entity 这么做）。②`TIMESTAMP` 两边都支持（不用 `TIMESTAMPTZ`，保持简单）。③`TEXT` 两边都支持。**entity 层用 JPA 注解，主键生成交给框架，DDL 层尽量用两边都有的类型**。
+
+#### 10.5.2.4 JPA Entity（让框架屏蔽方言）
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/db/entity/ChatMessageEntity.java`（示例，其余 entity 同理）：
+
+```java
+package com.example.research.db.entity;
+
+import jakarta.persistence.*;
+
+import java.time.Instant;
+
+@Entity
+@Table(name = "chat_message")
+public class ChatMessageEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)   // 主键生成交框架，H2/PG 都适配
+    private Long id;
+
+    private String sessionId;
+    private String role;
+    @Column(length = 100000) private String content;
+    private Instant createdAt;
+
+    // getters/setters 省略（实际项目用 Lombok @Data）
+    public String getSessionId() { return sessionId; }
+    public void setSessionId(String sessionId) { this.sessionId = sessionId; }
+    public String getRole() { return role; }
+    public void setRole(String role) { this.role = role; }
+    public String getContent() { return content; }
+    public void setContent(String content) { this.content = content; }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
+}
+```
+
+> **`@GeneratedValue(IDENTITY)` 的作用**：主键自增交给 JPA 框架，H2 用 `AUTO_INCREMENT`、PG 用 `SERIAL`——**代码一样，方言不同由框架处理**。这就是 entity 层屏蔽方言的关键。
+
+#### 10.5.2.5 Spring Data Repository（标准接口，零方言）
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/db/ChatMessageRepository.java`：
+
+```java
+package com.example.research.db;
+
+import com.example.research.db.entity.ChatMessageEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+
+import java.util.List;
+
+/** 会话历史 Repository（标准 Spring Data，H2/PG 通用）。 */
+public interface ChatMessageRepository extends JpaRepository<ChatMessageEntity, Long> {
+
+    // 方法名查询：框架自动生成 SQL，方言由 JPA 适配——换库零改
+    List<ChatMessageEntity> findBySessionIdOrderByCreatedAtAsc(String sessionId);
+
+    // 需要自定义时用 JPQL（不是原生 SQL，跨库通用）
+    @Query("select m from ChatMessageEntity m where m.content like %:kw%")
+    List<ChatMessageEntity> searchByContent(String kw);
+}
+```
+
+> **`run`/`session`/`audit` 的 Repository 同理建**（`ResearchRunRepository`/`SessionRepository`/`AuditEventRepository`），各自继承 `JpaRepository`。代码全是标准接口，不含任何 H2 字样。
+
+#### 10.5.2.6 把数据访问从 Redis 切到 JPA（演进式：一类一类迁）
+
+> **演进纪律**：不是一夜把所有数据都迁了。一类一类迁——先迁"用户最在意"的会话历史，验证通了再迁 run/审计。每迁一类，对应原来的 Redis 实现就退役。
+
+**【改已有文件，片段】** `ChatMemoryStore` 的实现从 Redis List 改成调 Repository（接口不变，只换实现）：
+
+```java
+// ChatMemoryStore.java（原来读写 Redis List，现在读写 JPA）
+@Component
+public class ChatMemoryStore {
+
+    private final ChatMessageRepository repo;
+    public ChatMemoryStore(ChatMessageRepository repo) { this.repo = repo; }
+
+    public Mono<List<LlmClient.LlmMessage>> load(String sessionId) {
+        return Mono.fromCallable(() -> repo.findBySessionIdOrderByCreatedAtAsc(sessionId).stream()
+                .map(e -> new LlmClient.LlmMessage(e.getRole(), e.getContent()))
+                .toList())
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());   // JDBC 阻塞→放弹性线程池
+    }
+
+    public Mono<Void> append(String sessionId, String user, String assistant) {
+        return Mono.fromRunnable(() -> {
+            Instant now = Instant.now();
+            save(repo, sessionId, "user", user, now);
+            save(repo, sessionId, "assistant", assistant, now);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    private void save(ChatMessageRepository repo, String sid, String role, String content, Instant now) {
+        ChatMessageEntity e = new ChatMessageEntity();
+        e.setSessionId(sid); e.setRole(role); e.setContent(content); e.setCreatedAt(now);
+        repo.save(e);
+    }
+}
+```
+
+> **关键点：JDBC 是阻塞的，WebFlux 是响应式的**——直接在响应式链里调 `repo.save()` 会阻塞 Netty 事件循环线程。必须用 `Mono.fromCallable(...).subscribeOn(boundedElastic())` 把阻塞调用丢到弹性线程池。**这是响应式 + 阻塞库混用的标准模式**，附录踩坑手册会强调。
+>
+> `ChatMemoryStore` 的**对外接口（load/append）没变**——所以 `ResearchService`、`ResearchController` 一行都不用改。**这就是分层抽象的红利**：存储从 Redis 换成 H2，上层无感。
+
+`SessionStore`、`RunStore`、`AuditLogger` 同理：实现从 Redis 改成各自的 Repository，接口不变。迁完后，Redis 里 `chat:`/`sessions`/`run:`/`audit:` 这些 key 就可以清掉了——Redis 回归"实时流态 + 锁"的职责。
+
+### 10.5.3 验证
+
+```bash
+mvn spring-boot:run
+# 触发一次研究（会写 chat_message 表）
+curl -i -X POST "http://localhost:8080/api/runs?topic=vLLM是什么&sessionId=db-001" -H "Idempotency-Key: db-1"
+curl -N "http://localhost:8080/api/runs/<runId>/stream"
+
+# H2 控制台查看数据（浏览器开 http://localhost:8080/h2-console，或直接看文件库）
+# JDBC URL: jdbc:h2:file:./data/research  用户名 sa  无密码
+# 能看到 app_session / chat_message / research_run / audit_event 表里有数据
+
+# 重启应用，数据还在（文件库持久）
+# 验证查询能力（Redis 做不到的）：
+curl "http://localhost:8080/api/sessions/db-001/messages"   # 历史——现在从 H2 读，TTL 不会再丢
+```
+
+### 10.5.4 一行配置切 PostgreSQL（生产）
+
+开发用 H2，上生产换 PG——**只改配置，代码零改**：
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://${PG_HOST:localhost}:5432/research
+    driver-class-name: org.postgresql.Driver
+    username: ${PG_USER:research}
+    password: ${PG_PASSWORD:research}
+  sql:
+    init:
+      mode: always            # schema.sql 同一份，PG 也能跑（AUTO_INCREMENT 改 SERIAL 见下）
+```
+
+pom 加 PG 驱动：
+
+```xml
+<dependency>
+    <groupId>org.postgresql</groupId>
+    <artifactId>postgresql</artifactId>
+</dependency>
+```
+
+> **schema.sql 的小调整**：`BIGINT AUTO_INCREMENT` 是 H2 写法，PG 用 `BIGSERIAL`。要完全通用，两选一：
+> - 简单：保留两份 schema（`schema-h2.sql` / `schema-pg.sql`），`spring.sql.init.schema-locations` 按 profile 选。
+> - 优雅：entity 用 `@GeneratedValue(IDENTITY)` + `ddl-auto=update`，让 Hibernate 按方言建表（牺牲"显式 DDL"换"零方言差异"）。
+> 生产推荐前者（显式可控），学习期用 H2 的 `AUTO_INCREMENT` 即可。
+
+### 10.5.5 checkpoint + 复盘
+
+```
+research-agent/src/main/java/com/example/research/db/
+├── entity/
+│   ├── ChatMessageEntity.java
+│   ├── AppSessionEntity.java
+│   ├── ResearchRunEntity.java
+│   └── AuditEventEntity.java
+├── ChatMessageRepository.java
+├── SessionRepository.java
+├── ResearchRunRepository.java
+└── AuditEventRepository.java
+research-agent/src/main/resources/
+└── schema.sql                     （标准 DDL，H2/PG 通用）
+```
+
+```bash
+git add -A && git commit -m "第10.5章：管理数据持久层（H2+JPA，一行配置切PG）"
+```
+
+**做了**：引入 H2 文件库 + Spring Data JPA，把用户数据（会话历史/会话元信息/run/审计）从 Redis 迁到关系库。标准 DDL + JPA 抽象保证换库零改代码。Redis 回归实时流态/锁职责。
+
+**核心跃迁**：从"管理数据全压 Redis（妥协）"到"该持久的落关系库"。**学习用 H2（零硬件），生产换 PG（改配置）**——这是企业级"数据库类型是配置项而非代码差异"的标准实践。
+
+**工程教训**：
+- **用对抽象屏蔽方言**：JPA + 标准 DDL 是"换库零改"的前提。如果代码里写死了 H2 方言，切 PG 就要改一大片。
+- **响应式 + 阻塞库要隔离线程**：JDBC 阻塞调用必须 `subscribeOn(boundedElastic)`，不能阻塞 Netty 事件循环。
+- **H2 是垫脚石不是终点**：诚实标注——开发/学习用 H2，生产换 PG。不假装 H2 能扛生产。
+- **职责分离**：持久管理数据→关系库（H2/PG）；实时流态→Redis/Kafka；协调锁→Redis。各司其职，不互相越界。
 
 ---
 
