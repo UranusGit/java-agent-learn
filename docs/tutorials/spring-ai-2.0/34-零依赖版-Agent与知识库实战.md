@@ -47,6 +47,7 @@
 - [第 18 章：多租户 + 用户体系——JWT 认证与租户隔离](#第-18-章多租户--用户体系jwt-认证与租户隔离)
 - [第 19 章：成本治理——token 计量、租户预算与分摊](#第-19-章成本治理token-计量租户预算与分摊)
 - [第 20 章：可观测性——链路追踪 + 指标 + 告警](#第-20-章可观测性链路追踪--指标--告警)
+- [第 21 章：幻觉检测与反馈闭环——质量保障](#第-21-章幻觉检测与反馈闭环质量保障)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
 ---
@@ -88,6 +89,7 @@
 | 多租户/认证 | 匿名接口越权、烧 token、无归属 → JWT + tenant_id 逻辑隔离 | 第 18 章 |
 | 成本治理 | LLM 调用无感、恶意用户烧光预算 → token 计量 + 租户预算 + 分摊 | 第 19 章 |
 | 可观测 | 六服务黑盒、出问题不知卡哪 → 结构化日志+指标+OpenTelemetry追踪 | 第 20 章 |
+| 质量保障 | LLM 幻觉、错了不自知 → 溯源标注+幻觉检测+反馈闭环 | 第 21 章 |
 
 > **架构演进（第 9 章起）**：前 8 章是"功能演进"（原型→产品）；第 9 章起进入"架构演进"——把"能上线的单体"一步步推向"分布式企业级终极形态"，**管数分离（第 10 章）是架构演进的核心**。
 >
@@ -6032,6 +6034,264 @@ git add -A && git commit -m "第20章：可观测性（结构化日志+Micromete
 - **响应式下 MDC/ThreadLocal 会丢**：WebFlux 线程切换导致传统 MDC 失效，要用响应式上下文传播器。这是响应式系统观测的坑。
 - **javaagent 自动埋点优先**：OTel agent 自动给 HTTP/Kafka/Redis 加 span，业务零改；业务关键阶段再手动 `@WithSpan`。
 - **指标要带标签维度**：`research.triggered{tenant=...}` 按租户分维度——和多租户/成本治理一脉相承，能按租户看健康度。
+
+---
+
+
+## 第 21 章：幻觉检测与反馈闭环——质量保障
+
+> **定位（质量保障阶段）**：前面 20 章把系统能跑、能管、能观测都做了。但 AI 系统有个传统软件没有的核心风险——**LLM 会幻觉**：编造不存在的资料、引用不存在的事实、把不确定的说成确定的，**而且错了不自知**。对外运营的产品，一次严重的幻觉（比如"本公司部署规范要求 XXX"，实际没有）可能造成信任崩塌。
+>
+> **本章解决两件事**：① **幻觉检测**——在结果输出前/后，自动标注"哪些是检索到的、哪些是模型生成的、哪些没核实"；② **反馈闭环**——让用户标记"这个结果不对"，反馈反过来改善 RAG 检索质量。**这是 AI 系统特有的质量保障**。
+
+### 21.0 场景：LLM 幻觉，错了不自知
+
+真实事故：
+
+| 痛点 | 现象 | 后果 |
+|------|------|------|
+| **编造资料** | LLM 说"根据知识库，本公司要求用 vLLM"——但知识库里没这条 | 误导决策、信任崩塌 |
+| **无溯源** | 结果里分不清哪些是检索到的、哪些是模型编的 | 用户无法判断可信度 |
+| **无纠错** | 用户发现错了，没有渠道反馈 | 错误反复出现，质量不提升 |
+
+**根因**：第 2 章的 RAG 把检索到的资料喂给 LLM，但**没有让 LLM 区分"引用的"和"生成的"**，也没有把"资料来源"透传给用户。而且**没有用户反馈通道**，错误无法回流改善系统。
+
+### 21.1 思路：溯源标注 + 幻觉检测 + 反馈闭环
+
+```
+LLM 生成结果
+  ├─ 21.2 溯源标注：每段结论标注来源（检索到的文档 / 模型生成 / 未核实）
+  ├─ 21.3 幻觉检测：自动核对"声称引用的"是否真在检索资料里 → 标"未核实"
+  └─ 21.4 反馈闭环：用户点"这个不对" → feedback 落库 → 反哺 RAG（调权/补文档）
+```
+
+| 能力 | 做法 | 价值 |
+|------|------|------|
+| **溯源标注** | 结果结构化：每条结论带 `source: {docId/检索片段/未核实}` | 用户知道可信度 |
+| **幻觉检测** | 核对 LLM 声称引用的事实 vs 检索资料库，不一致标"未核实" | 自动发现编造 |
+| **反馈闭环** | `feedback` 表（赞/踩 + 原因）→ 高频"踩"的查询触发 RAG 调优 | 质量持续提升 |
+
+> **诚实边界**：幻觉检测**做不到 100%**——LLM 的本质就是概率生成，没有银弹。企业级做法是"**降低风险 + 暴露不确定性**"：能检测的检测、检测不了的标"未核实"让用户警觉。**不假装零幻觉**，而是让幻觉"可见、可溯源、可纠错"。
+
+### 21.2 演进①：溯源标注——结论带来源
+
+**痛点**：现在的结果是一坨纯文本，用户分不清哪句是检索到的、哪句是 LLM 编的。
+
+**解法**：让 LLM 生成**结构化结果**——每条结论带 `source` 字段。改造 `MockLlmClient` 的输出格式，让它输出"结论 + 来源标记"。
+
+**【改已有文件，片段】** `ResearchService` 在 prompt 里要求结构化输出（真模型同理）：
+
+```java
+String system = "你是研究助理。给出研究结果时，每条关键结论必须标注来源：\n" +
+    "- [来源:docId] 引用自检索到的文档（docId 是文档 id）\n" +
+    "- [来源:生成] 这是你基于常识/推理生成的（非检索）\n" +
+    "- [来源:未核实] 你不确定、无法溯源的\n" +
+    "无法从资料确认的，宁可标 [来源:未核实]，绝不编造 [来源:docId]。";
+```
+
+**前端展示**（接第 8 章前端）：解析 `[来源:xxx]` 标记，渲染成不同颜色徽章——绿色=有文档支撑、黄色=模型生成、红色=未核实。**用户一眼看到可信度分布**。
+
+> **这版能解决什么**：结果从"黑盒一坨"变成"可溯源的结构化输出"。用户能判断哪些可信、哪些要警惕。**这是降低幻觉危害的第一道防线——让不确定性可见。**
+
+### 21.3 演进②：幻觉检测——自动核对"声称引用的"是否真实
+
+**痛点**：光让 LLM 自标来源不够——它可能**谎报**（明明是编的，却标 `[来源:doc1]`）。需要**自动核对**。
+
+**解法**：LLM 流完后，解析结果里所有 `[来源:docId]`，**去检索资料库核对**：那个 docId 的文档里，真的包含这条结论的内容吗？不一致的，降级标为 `[来源:未核实]`。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/quality/HallucinationChecker.java`：
+
+```java
+package com.example.research.quality;
+
+import com.example.research.kb.TfidfIndex;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.regex.*;
+
+/**
+ * 幻觉检测：核对 LLM 声称引用的事实是否真在检索资料里。
+ *
+ * 做法：解析结果里的 [来源:docId xxx]，去对应文档核对 xxx 是否被文档包含/支撑。
+ * 不一致的，降级为 [来源:未核实]。
+ *
+ * 简陋处：这里用"文档是否包含结论的关键片段"做近似核对。
+ * 生产可用 NLI（自然语言推理）模型判断"文档是否蕴含结论"，更准但需外部模型。
+ */
+@Component
+public class HallucinationChecker {
+
+    private static final Pattern CITATION = Pattern.compile("\\[来源:doc(\\S+)\\s+([^\\]]+)\\]");
+    private final TfidfIndex index;
+
+    public HallucinationChecker(TfidfIndex index) { this.index = index; }
+
+    /** 核对结果里的引用是否真实，返回修正后的结果（虚假引用降级为未核实）。 */
+    public Mono<String> check(String result) {
+        return Mono.fromCallable(() -> {
+            java.util.regex.Matcher m = CITATION.matcher(result);
+            StringBuffer sb = new StringBuffer();
+            while (m.find()) {
+                String docId = "doc" + m.group(1);
+                String claim = m.group(2).trim();
+                // 同步核对（简化：loadAll 后查文档是否包含 claim 的关键词）
+                boolean supported = isSupported(docId, claim);
+                String replacement = supported
+                        ? m.group()   // 属实，保留
+                        : "[来源:未核实 " + claim + "]";   // 虚假引用，降级
+                m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(replacement));
+            }
+            m.appendTail(sb);
+            return sb.toString();
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** 近似核对：docId 的文档是否包含 claim 的关键词。 */
+    private boolean isSupported(String docId, String claim) {
+        try {
+            var docs = index.loadAll().block();
+            if (docs == null) return false;
+            var doc = docs.stream().filter(d -> d.id().equals(docId)).findFirst().orElse(null);
+            if (doc == null) return false;   // 引用的文档不存在 → 虚假
+            String text = (doc.title() + " " + doc.content());
+            // 简化：claim 的关键词（≥2字）有 ≥1 个在文档里就算支撑（粗糙；生产用 NLI）
+            for (String kw : claim.split("[\\s，。、]+")) {
+                if (kw.length() >= 2 && text.contains(kw)) return true;
+            }
+            return false;
+        } catch (Exception e) { return false; }
+    }
+}
+```
+
+**【改已有文件，片段】** `SyncStreamBus.trigger` 的 `doOnComplete`（接第 19/20 章埋点旁边）——落库前先做幻觉检测：
+
+```java
+.doOnComplete(() -> {
+    String raw = collected.toString();
+    // ▼ 第21章：幻觉检测后再落库（虚假引用降级为未核实）
+    hallucinationChecker.check(raw)
+        .subscribe(checked -> {
+            chatMemoryStore.append(runId, sessionId, topic, checked).subscribe();
+            metrics.durationRecorded(tenantId, System.currentTimeMillis() - startMs);
+            finishStream(streamKey, channel, lockKey, runId);
+        });
+})
+```
+
+> **注意落库时机**：第 10.5.2b 说"流完落库"。这里在落库**前**插一道幻觉检测——**落库的是检测后的版本**（虚假引用已降级），保证历史记录也是可信的。**这是质量保障接入持久层的衔接点。**
+
+> **这版能解决什么**：自动发现 LLM 的"虚假引用"，降级为"未核实"——用户看到红色标记就知道这句要警惕。**从"靠 LLM 自觉"变成"程序核对"**，幻觉危害再降一档。
+
+### 21.4 演进③：反馈闭环——用户纠错反哺 RAG
+
+**痛点**：即使用了检测，仍有漏网之鱼（检测不出来的幻觉、检索质量差导致的不相关）。**最可靠的纠错是用户反馈**——但要有反馈通道，且反馈要能回流改善系统。
+
+**解法**：① 用户对结果"赞/踩"+原因 → `feedback` 表；② 高频被"踩"的查询/结论，触发 RAG 调优（补文档/调权重/加入"已知错误"清单）。
+
+**【追加到 schema.sql】**：
+
+```sql
+-- 用户反馈（质量数据，带 tenant_id）
+CREATE TABLE IF NOT EXISTS feedback (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id   VARCHAR(64) NOT NULL,
+    user_id     VARCHAR(64) NOT NULL,
+    run_id      VARCHAR(64),
+    session_id  VARCHAR(64) NOT NULL,
+    rating      VARCHAR(8) NOT NULL,     -- up / down
+    reason      VARCHAR(256),            -- 踩的原因：幻觉/过时/不相关/其他
+    note        TEXT,                    -- 用户补充
+    created_at  TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_session ON feedback(session_id);
+```
+
+**【新建文件，片段】** `FeedbackController`：
+
+```java
+@RestController
+@RequestMapping("/api/feedback")
+public class FeedbackController {
+    private final FeedbackRepository repo;
+    public FeedbackController(FeedbackRepository repo) { this.repo = repo; }
+
+    @PostMapping
+    public Mono<Void> submit(@RequestBody FeedbackReq req) {
+        return TenantContext.tenantId().flatMap(tid ->
+            TenantContext.userId().flatMap(uid ->
+                Mono.fromRunnable(() -> {
+                    FeedbackEntity e = new FeedbackEntity();
+                    e.setTenantId(tid); e.setUserId(uid);
+                    e.setRunId(req.runId()); e.setSessionId(req.sessionId());
+                    e.setRating(req.rating()); e.setReason(req.reason()); e.setNote(req.note());
+                    e.setCreatedAt(java.time.Instant.now());
+                    repo.save(e);
+                }).subscribeOn(Schedulers.boundedElastic()).then()));
+    }
+}
+```
+
+**反哺 RAG（闭环的关键）**——定时分析反馈，调整检索：
+
+```java
+// 定时任务（伪代码）：高频被"踩·不相关"的查询 → 说明知识库缺文档/检索召回差
+@Scheduled(cron = "0 0 3 * * ?")   // 每天凌晨3点
+public void tuneFromFeedback() {
+    // 1. 聚合近7天 rating=down & reason=不相关 的 session/查询
+    // 2. 这些查询说明知识库覆盖不足 → 提示运营补文档，或对相关文档加权
+    // 3. rating=down & reason=幻觉 的 → 标记为"高风险查询"，加强幻觉检测
+}
+```
+
+> **闭环的本质**：反馈不是"收集了就完"，而是**回流改善系统**——`反馈 → 分析 → 调整 RAG/检测 → 质量提升 → 反馈减少`。这是 AI 系统持续进化的核心机制（RLHF 的产品级简化版）。
+
+> **这版能解决什么**：用户能纠错，纠错能回流。系统从"一次性质量"变成"持续改善的质量"。**这是 AI 产品长期质量保障的根本——靠真实用户反馈驱动迭代**。
+
+### 21.5 三层质量保障怎么配合
+
+```
+LLM 生成
+  ├─ 21.2 溯源标注（生成时）：让结论自带来源标记 → 不确定性可见
+  ├─ 21.3 幻觉检测（落库前）：程序核对虚假引用 → 自动降级
+  └─ 21.4 反馈闭环（用户侧）：用户纠错 → 反哺 RAG → 持续改善
+```
+
+| 层 | 时机 | 手段 | 拦截什么 |
+|----|------|------|---------|
+| 溯源标注 | 生成时 | prompt 要求结构化 + 来源标记 | 让不确定性可见 |
+| 幻觉检测 | 落库前 | 程序核对引用真实性 | 虚假引用 |
+| 反馈闭环 | 用户侧 | 赞/踩 + 反哺 | 漏网之鱼、长期质量 |
+
+**三层叠加，把"不可控的幻觉"变成"可见、可检测、可纠错"**——这就是 AI 系统的质量保障范式（区别于传统软件的"测试通过即正确"）。
+
+### 21.6 checkpoint + 复盘
+
+```
+research-agent/src/main/java/com/example/research/quality/
+└── HallucinationChecker.java      （幻觉检测）
+research-agent/src/main/java/com/example/research/feedback/
+├── FeedbackController.java
+└──（FeedbackEntity/Repository 同第10.5章模式）
+schema.sql：feedback 表
+```
+
+```bash
+git add -A && git commit -m "第21章：幻觉检测+反馈闭环（AI质量保障）"
+```
+
+**做了**：溯源标注（结论带来源）→ 幻觉检测（落库前核对虚假引用）→ 反馈闭环（用户纠错反哺 RAG）。三层质量保障接入既有架构（检测插在落库前、反馈落库带 tenant_id）。
+
+**核心跃迁**：从"LLM 输出即正确"到"可见、可检测、可纠错的质量保障"。**承认幻觉不可消灭，但让它可见、可溯源、可改善**——这是 AI 系统区别于传统软件的质量范式。
+
+**工程教训**：
+- **幻觉无银弹**：LLM 概率生成本质决定不可能零幻觉。企业级做法是"降低风险 + 暴露不确定性"，不假装零幻觉。
+- **让不确定性可见是第一道防线**：溯源标注让用户知道可信度——比"假装全对"安全得多。
+- **程序核对优于靠模型自觉**：LLM 会谎报来源，必须程序核对（检测在落库前，保证历史也可信）。
+- **反馈要闭环不是收集**：反馈的价值在回流改善系统（调 RAG/补文档/加强检测），收集了不分析等于没有。
+- **质量保障以 tenant_id 维度**：反馈、幻觉率都可按租户看，支持按租户的质量运营。
 
 ---
 
