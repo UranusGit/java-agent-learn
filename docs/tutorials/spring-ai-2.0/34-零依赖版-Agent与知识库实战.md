@@ -49,6 +49,7 @@
 - [第 20 章：可观测性——链路追踪 + 指标 + 告警](#第-20-章可观测性链路追踪--指标--告警)
 - [第 21 章：幻觉检测与反馈闭环——质量保障](#第-21-章幻觉检测与反馈闭环质量保障)
 - [第 22 章：DAG 工作流——条件分支与多 Agent 协作](#第-22-章dag-工作流条件分支与多-agent-协作)
+- [第 23 章：长期记忆与个性化——跨会话用户画像](#第-23-章长期记忆与个性化跨会话用户画像)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
 ---
@@ -92,6 +93,7 @@
 | 可观测 | 六服务黑盒、出问题不知卡哪 → 结构化日志+指标+OpenTelemetry追踪 | 第 20 章 |
 | 质量保障 | LLM 幻觉、错了不自知 → 溯源标注+幻觉检测+反馈闭环 | 第 21 章 |
 | 编排进阶 | 线性 Plan-Execute 表达不了分支/循环/多Agent → DAG 工作流 | 第 22 章 |
+| 个性化 | 换会话 Agent 失忆、不懂用户 → 跨会话用户画像（长期记忆） | 第 23 章 |
 
 > **架构演进（第 9 章起）**：前 8 章是"功能演进"（原型→产品）；第 9 章起进入"架构演进"——把"能上线的单体"一步步推向"分布式企业级终极形态"，**管数分离（第 10 章）是架构演进的核心**。
 >
@@ -6542,6 +6544,258 @@ git add -A && git commit -m "第22章：DAG工作流（条件分支+循环+多Ag
 - **不在 DAG 里加环**：循环用"带终止条件的子图反复执行"——换可分析性，是工程务实。
 - **多 Agent 协作 = 角色化节点**：复杂 Agent 拆成多个专长 Agent + 依赖，质量更高。
 - **生产别造轮子**：学习手写引擎懂原理，生产用 Spring AI Workflow / LangGraph / Temporal。
+
+---
+
+
+## 第 23 章：长期记忆与个性化——跨会话用户画像
+
+> **定位（个性化阶段）**：第 7 章的 `ChatMemory` 是**会话内**记忆——同一 sessionId 内记得上文，刷新不丢。但**换会话就失忆**：用户在 A 会话说过"我主要做推理优化、关注 vLLM"，到 B 会话问问题时，Agent 完全不知道这个偏好。**用户每次都要重新交代背景**，体验差、不个性化。
+>
+> **本章引入跨会话的长期记忆**——按 `userId` 沉淀"用户画像"（偏好、背景、历史关注点），任何会话都能读到。数据基础是第 10.5 章的关系库 + 第 18 章的 `userId`。
+
+### 23.0 场景：换会话 Agent 失忆，不懂用户
+
+真实痛点：
+
+| 痛点 | 现象 | 后果 |
+|------|------|------|
+| **跨会话失忆** | A 会话说的偏好，B 会话不知道 | 用户反复交代背景，体验差 |
+| **无个性化** | 对新手和老用户回复一样的详细度 | 资深用户嫌啰嗦、新手嫌简略 |
+| **无沉淀** | 用户问过的有价值的结论，下次用不上 | 重复劳动、不成长 |
+
+**根因**：会话记忆（第 7 章）的维度是 `sessionId`——会话结束（或换会话）记忆就"断片"。需要一个**比会话更长生命、按用户沉淀**的记忆层。
+
+### 23.1 思路：会话记忆（短期）+ 用户画像（长期）两级
+
+```
+会话记忆 chat_message（第7章，session维度）   ← 会话内，多轮上下文
+         ▲ 读时拼接
+         │
+LLM ← 拼上"用户画像"（长期，user维度）          ← 跨会话，个性化
+         ▲
+    user_profile 表（按 userId 沉淀偏好/背景）
+```
+
+| 记忆层 | 维度 | 生命周期 | 内容 |
+|--------|------|---------|------|
+| 会话记忆 | sessionId | 会话内（第 7 章） | 本次对话的上下文 |
+| **用户画像** | **userId** | **跨会话（永久）** | 偏好、背景、关注点、历史结论摘要 |
+
+> **关键区分**：会话记忆是"这次聊到哪了"（短期上下文），用户画像是"这个用户是谁、关心什么"（长期画像）。**两者都要，不是替代**——画像让 Agent 懂用户，会话记忆让 Agent 接住本轮话茬。
+
+### 23.2 演进①：用户画像表 + 读时注入
+
+**先给最朴素的画像表**——人工/系统写入用户偏好，调用 LLM 前读出来拼进 prompt。先不做自动画像提取（22.3 再做）。
+
+**【追加到 schema.sql】**：
+
+```sql
+-- 用户画像（按 userId 沉淀，跨会话）
+CREATE TABLE IF NOT EXISTS user_profile (
+    user_id     VARCHAR(64) PRIMARY KEY,
+    tenant_id   VARCHAR(64) NOT NULL,        -- ▼ 冗余，按租户管画像
+    background  TEXT,                         -- 背景：角色、领域（如"推理优化工程师"）
+    preferences TEXT,                         -- 偏好：详细度、关注点（如"偏好简洁、关注vLLM"）
+    notes       TEXT,                         -- 其他沉淀（历史结论摘要等）
+    updated_at  TIMESTAMP NOT NULL
+);
+```
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/memory/UserProfileService.java`：
+
+```java
+package com.example.research.memory;
+
+import com.example.research.db.UserProfileRepository;
+import com.example.research.db.entity.UserProfileEntity;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+/**
+ * 用户画像服务（长期记忆，按 userId 跨会话）。
+ *
+ * 读：调 LLM 前读画像，拼进 prompt（个性化）。
+ * 写：人工/系统更新画像（22.3 加自动提取）。
+ */
+@Service
+public class UserProfileService {
+
+    private final UserProfileRepository repo;
+    public UserProfileService(UserProfileRepository repo) { this.repo = repo; }
+
+    /** 读用户画像（转成 prompt 可用的描述）。 */
+    public Mono<String> loadProfilePrompt(String userId) {
+        return Mono.fromCallable(() -> repo.findById(userId).map(this::toPrompt).orElse(""))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** 更新画像。 */
+    public Mono<Void> update(String userId, String tenantId, String background, String preferences) {
+        return Mono.fromRunnable(() -> {
+            UserProfileEntity e = repo.findById(userId).orElseGet(() -> {
+                UserProfileEntity n = new UserProfileEntity();
+                n.setUserId(userId); n.setTenantId(tenantId);
+                return n;
+            });
+            if (background != null) e.setBackground(background);
+            if (preferences != null) e.setPreferences(preferences);
+            e.setUpdatedAt(java.time.Instant.now());
+            repo.save(e);
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    private String toPrompt(UserProfileEntity e) {
+        StringBuilder sb = new StringBuilder("【用户画像】");
+        if (e.getBackground() != null) sb.append("背景：").append(e.getBackground()).append("；");
+        if (e.getPreferences() != null) sb.append("偏好：").append(e.getPreferences());
+        return sb.toString();
+    }
+}
+```
+
+**【改已有文件，片段】** `ResearchService` 调 LLM 前，把画像 + 会话记忆都拼进 prompt：
+
+```java
+public Flux<String> research(String topic, String sessionId, String runId) {
+    return Mono.zip(TenantContext.userId(), memory.load(sessionId), profile.loadProfilePrompt(/*userId*/))
+        .flatMapMany(t -> {
+            String userId = t.getT1();
+            List<LlmMessage> sessionHistory = t.getT2();   // 会话记忆（第7章）
+            String profilePrompt = t.getT3();               // 用户画像（本章）
+
+            String system = "你是研究助理。" + profilePrompt +     // ▼ 画像注入：个性化
+                    "结合历史继续研究。绝不编造。";
+            Flux<String> upstream = agentLoop.run(system, "研究主题：" + topic, sessionHistory, tools)...;
+            return bus.trigger(runId, upstream)...;
+        });
+}
+```
+
+> **注入顺序**：system prompt = 基础指令 + **用户画像**（个性化）；user/history = 本轮主题 + **会话记忆**（上下文）。**画像管"你是谁"、会话记忆管"聊到哪"**。
+
+> **这版能解决什么**：Agent 在任何会话都能读到用户画像——A 会话说的偏好，B 会话也认。**先用手动写画像验证链路**，下一步加自动提取。
+
+### 23.3 演进②：自动画像提取——从对话中沉淀
+
+**痛点**：手动维护画像不现实——用户不可能每次去填表单。应该**从对话中自动提取偏好**。
+
+**解法**：每轮对话结束后，让 LLM "总结这轮体现了用户的什么偏好"，增量更新画像。
+
+**【新建文件，片段】** `ProfileExtractor`：
+
+```java
+/**
+ * 自动画像提取：每轮结束后，让 LLM 从本轮对话提取用户偏好，增量更新画像。
+ * 简陋处：真模型用结构化输出（JSON）；Mock 用关键词命中近似。
+ */
+@Component
+public class ProfileExtractor {
+
+    private final LlmClient llm;
+    private final UserProfileService profile;
+
+    public ProfileExtractor(LlmClient llm, UserProfileService profile) {
+        this.llm = llm; this.profile = profile;
+    }
+
+    /** 从本轮对话提取偏好，更新画像（异步，不阻塞主流程）。 */
+    public void extractAndUpdate(String userId, String tenantId, String userMsg, String assistantMsg) {
+        llm.chat(
+            "分析下面的对话，提取用户的背景和偏好（如关注的技术、详细度偏好）。" +
+            "只输出提取结果，没有就输出'无'。",
+            "用户：" + userMsg + "\n助手：" + assistantMsg)
+            .subscribe(extracted -> {
+                if (!"无".equals(extracted.trim()) && !extracted.isBlank()) {
+                    // 简化：直接 append 到 preferences（生产：LLM 输出结构化，merge 进画像）
+                    profile.appendPreference(userId, tenantId, extracted).subscribe();
+                }
+            });
+    }
+}
+```
+
+**【改已有文件，片段】** `SyncStreamBus.trigger` 的 `doOnComplete`（接前面落库/计量/检测旁边）——落库后异步提取画像：
+
+```java
+.doOnComplete(() -> {
+    hallucinationChecker.check(raw).subscribe(checked -> {
+        chatMemoryStore.append(runId, sessionId, topic, checked).subscribe();
+        // ▼ 第23章：从本轮对话自动提取用户偏好，更新画像（异步）
+        profileExtractor.extractAndUpdate(userId, tenantId, topic, checked);
+        finishStream(...);
+    });
+})
+```
+
+> **异步、不阻塞**：画像提取是"锦上添花"，不能拖慢响应。放 `doOnComplete` 里 fire-and-forget（和落库/计量同模式）。提取失败不影响主流程。
+
+### 23.4 演进③：画像的可控性与隐私（企业级要点）
+
+**痛点**：自动画像有风险——① 提取错了（把用户的反问当偏好）；② 画像可能含敏感信息；③ 用户要能看/改/删自己的画像（隐私合规）。
+
+**解法**：
+- **置信度门槛**：只沉淀高频/明确的偏好（一次性的不记）。
+- **敏感信息过滤**：提取时过滤掉可能涉敏的字段。
+- **用户可控**：提供 `GET /api/profile/me`（看自己的画像）、`PUT`（改）、`DELETE`（清空）——**隐私合规的底线：用户对自己的画像有完全控制权**。
+
+```java
+@RestController
+@RequestMapping("/api/profile")
+public class ProfileController {
+    // GET /me：看自己的画像；PUT /me：改；DELETE /me：清空
+    // tenantId/userId 都从 JWT 上下文取（第18章），不信前端
+}
+```
+
+> **企业级的隐私铁律**：用户画像数据属于用户，必须**可查、可改、可删**（GDPR/个保法的"知情同意+可删除"）。不可见的黑盒画像既不合规、也会让用户不安。
+
+### 23.5 长期记忆 vs 会话记忆：怎么配合
+
+```
+LLM 调用前，拼上下文：
+  system = 基础指令 + 用户画像（长期，跨会话）       ← 个性化
+  user/history = 本轮主题 + 会话记忆（短期，会话内）  ← 接话茬
+
+LLM 回复后：
+  会话记忆 ← 本轮 user/assistant（会话内继续用）
+  用户画像 ← 自动提取的偏好（跨会话沉淀，异步、可控）
+```
+
+| 维度 | 会话记忆 | 用户画像 |
+|------|---------|---------|
+| 作用域 | 会话内 | 跨会话 |
+| 来源 | 原始消息 | 提取/沉淀的偏好 |
+| 更新时机 | 每轮 | 每轮（异步提取） |
+| 用户可见 | 历史记录 | 画像（可查改删） |
+| 表 | chat_message | user_profile |
+
+**两者互补**：画像让 Agent"懂用户"，会话记忆让 Agent"接话茬"。**缺画像→不个性化；缺会话记忆→接不住本轮上下文**。
+
+### 23.6 checkpoint + 复盘
+
+```
+research-agent/src/main/java/com/example/research/memory/
+├── UserProfileService.java      （画像读写）
+└── ProfileExtractor.java        （自动提取）
+schema.sql：user_profile 表
+```
+
+```bash
+git add -A && git commit -m "第23章：长期记忆与个性化（跨会话用户画像）"
+```
+
+**做了**：`user_profile` 表（按 userId 跨会话）+ 读时注入画像（个性化）+ 自动提取（每轮异步沉淀偏好）+ 用户可控（隐私合规）。会话记忆（短期）+ 用户画像（长期）两级配合。
+
+**核心跃迁**：从"会话内记忆"到"跨会话个性化"。Agent 从"懂这次对话"变成"懂这个用户"——这是 AI 产品从"能用"到"好用"的关键一跃。
+
+**工程教训**：
+- **会话记忆和画像不是替代是互补**：画像管"你是谁"（长期），会话记忆管"聊到哪"（短期）。两者都要。
+- **自动提取要异步**：画像提取是锦上添花，放 `doOnComplete` fire-and-forget，不拖慢响应。
+- **画像必须用户可控**：可查/可改/可删是隐私合规底线（GDPR/个保法），不可黑盒。
+- **置信度门槛**：只沉淀高频/明确偏好，避免把一次性反问当偏好（噪声）。
+- **画像以 userId/tenant_id 维度**：和第 18 章多租户一致，画像按租户管、按用户隔离。
 
 ---
 
