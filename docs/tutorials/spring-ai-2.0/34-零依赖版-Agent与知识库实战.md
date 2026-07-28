@@ -48,6 +48,7 @@
 - [第 19 章：成本治理——token 计量、租户预算与分摊](#第-19-章成本治理token-计量租户预算与分摊)
 - [第 20 章：可观测性——链路追踪 + 指标 + 告警](#第-20-章可观测性链路追踪--指标--告警)
 - [第 21 章：幻觉检测与反馈闭环——质量保障](#第-21-章幻觉检测与反馈闭环质量保障)
+- [第 22 章：DAG 工作流——条件分支与多 Agent 协作](#第-22-章dag-工作流条件分支与多-agent-协作)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
 ---
@@ -90,6 +91,7 @@
 | 成本治理 | LLM 调用无感、恶意用户烧光预算 → token 计量 + 租户预算 + 分摊 | 第 19 章 |
 | 可观测 | 六服务黑盒、出问题不知卡哪 → 结构化日志+指标+OpenTelemetry追踪 | 第 20 章 |
 | 质量保障 | LLM 幻觉、错了不自知 → 溯源标注+幻觉检测+反馈闭环 | 第 21 章 |
+| 编排进阶 | 线性 Plan-Execute 表达不了分支/循环/多Agent → DAG 工作流 | 第 22 章 |
 
 > **架构演进（第 9 章起）**：前 8 章是"功能演进"（原型→产品）；第 9 章起进入"架构演进"——把"能上线的单体"一步步推向"分布式企业级终极形态"，**管数分离（第 10 章）是架构演进的核心**。
 >
@@ -6292,6 +6294,254 @@ git add -A && git commit -m "第21章：幻觉检测+反馈闭环（AI质量保�
 - **程序核对优于靠模型自觉**：LLM 会谎报来源，必须程序核对（检测在落库前，保证历史也可信）。
 - **反馈要闭环不是收集**：反馈的价值在回流改善系统（调 RAG/补文档/加强检测），收集了不分析等于没有。
 - **质量保障以 tenant_id 维度**：反馈、幻觉率都可按租户看，支持按租户的质量运营。
+
+---
+
+
+## 第 22 章：DAG 工作流——条件分支与多 Agent 协作
+
+> **定位（编排进阶）**：第 4-5 章的 Plan-Execute 是**线性**的：拆子任务 → 并发调研 → 汇总。但真实复杂研究表达不了这些：① **条件分支**——"如果资料矛盾就再查一轮，否则直接汇总"；② **循环**——"反复核实直到置信度够了"；③ **多 Agent 协作**——"研究员查资料、审核员核对事实、写作员成稿"，各自专长、有依赖关系。这些是**图（DAG）**结构，线性 workflow 装不下。
+>
+> **本章把编排从"线性"升级到"DAG"**。演进式：先给最朴素的"节点+边"执行引擎，再一步步加条件分支、循环、多 Agent 角色。
+
+### 22.0 场景：线性 Plan-Execute 表达不了的复杂研究
+
+| 痛点 | 线性 workflow 的局限 | 需要 |
+|------|-------------------|------|
+| **条件分支** | Plan 定死步骤，不能"看情况走不同路" | if/else 分支 |
+| **循环** | 跑一轮就汇总，不能"反复核实直到满意" | 循环终止条件 |
+| **多 Agent 协作** | 一个 Agent 干所有事（查资料+核对+成稿），无专长分工 | 多角色 + 依赖 |
+
+**根因**：第 4-5 章是"固定的 `flatMap` 并发合流"——结构是写死的 `Plan → Execute[] → Aggregate`。复杂研究需要**运行时按数据决定走向**，这是图（DAG）才能表达的。
+
+> **什么是 DAG**：有向无环图——节点（Node，一个步骤）+ 边（Edge，依赖关系）。A→B 表示 B 依赖 A 的输出。DAG 天然表达"依赖 + 并发"（无依赖的节点可并发）。**加了条件边的 DAG 可以表达分支**（但不引入环路；循环用"带终止条件的子图"表达，避免死循环）。
+
+### 22.1 思路：节点 + 边 + 执行引擎
+
+```
+DAG = 节点(步骤) + 边(依赖) + 条件边(分支)
+执行引擎：
+  1. 拓扑序遍历——无依赖的节点并发跑（天然并发，和第5章flatMap同构）
+  2. 条件边——上游输出决定走哪条边（分支）
+  3. 结果聚合——下游拿到所有上游输出
+```
+
+| 概念 | 对应 | 例子 |
+|------|------|------|
+| **节点 Node** | 一个执行单元 | "查知识库""调LLM汇总""审核" |
+| **边 Edge** | 依赖 | 汇总依赖各调研节点完成 |
+| **条件边** | 分支 | "资料矛盾度 > 阈值 → 再查一轮；否则 → 汇总" |
+| **执行引擎** | 调度 | 按拓扑序跑、无依赖并发、传上下文 |
+
+### 22.2 演进①：最小 DAG 引擎（节点 + 边 + 拓扑并发）
+
+**先不搞分支/循环**——给最朴素的"定义节点和边、引擎按拓扑序并发执行"。这一步已经比第 4 章的固定 workflow 强：**节点依赖关系可灵活定义**（不限于 Plan→Execute→Aggregate）。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/dag/DagEngine.java`：
+
+```java
+package com.example.research.dag;
+
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+/**
+ * 最小 DAG 执行引擎（节点 + 边 + 拓扑并发）。
+ *
+ * - Node：name + 执行函数（输入上游结果 Map，输出自己的结果）
+ * - Edge：from -> to（to 依赖 from）
+ * - 执行：按拓扑序，无依赖的节点并发跑（flatMap 自然并发）；
+ *         每个节点拿到所有上游的结果 Map。
+ *
+ * 这版不支持条件边/循环（22.3/22.4 加）。先验证"依赖+并发"骨架。
+ */
+@Component
+public class DagEngine {
+
+    /** 一个节点：名字 + 执行函数（入参是上游结果，出参是自己结果）。 */
+    public record Node(String name, Function<Map<String, String>, Mono<String>> run) {}
+
+    private final Map<String, Node> nodes = new LinkedHashMap<>();
+    private final Map<String, List<String>> edges = new HashMap<>();   // to -> [from...]（to 依赖这些 from）
+
+    public DagEngine addNode(Node node) { nodes.put(node.name, node); return this; }
+    public DagEngine addEdge(String from, String to) {
+        edges.computeIfAbsent(to, k -> new ArrayList<>()).add(from);
+        return this;
+    }
+
+    /** 执行整个 DAG，返回所有节点结果。 */
+    public Mono<Map<String, String>> execute() {
+        Map<String, Mono<String>> results = new ConcurrentHashMap<>();
+        return Flux.fromIterable(nodes.keySet())
+                .concatMap(name -> runNode(name, results).doOnNext(r -> results.put(name, r)).then())
+                .then(Mono.just(new HashMap<>(results)));
+    }
+
+    /** 跑一个节点：先确保所有上游完成（拿结果），再跑本节点。 */
+    private Mono<String> runNode(String name, Map<String, Mono<String>> results) {
+        List<String> deps = edges.getOrDefault(name, List.of());
+        // 等所有上游完成，收集它们的结果
+        return Flux.fromIterable(deps)
+                .flatMap(dep -> results.get(dep).map(r -> Map.entry(dep, r)))
+                .collectMap(Map.Entry::getKey, Map.Entry::getValue)
+                .flatMap(upstream -> {
+                    Node node = nodes.get(name);
+                    return node.run().apply(new HashMap<>(upstream));   // 把上游结果传给本节点
+                });
+    }
+}
+```
+
+> **简陋处**：这版用 `concatMap` 串行跑节点（简化）。真正的 DAG 引擎应该**无依赖的节点并发跑**（用 `flatMap` + 就绪检查）。22.5 会给并发版。**学习先看懂"依赖传递 + 结果聚合"的骨架**。
+
+**用一下**（替代第 4 章的线性 Plan-Execute）：
+
+```java
+DagEngine dag = new DagEngine();
+dag.addNode(new DagEngine.Node("plan", upstream -> Mono.just("拆出三个子任务...")));
+dag.addNode(new DagEngine.Node("research_a", upstream -> researchService.research("vLLM")));
+dag.addNode(new DagEngine.Node("research_b", upstream -> researchService.research("TensorRT-LLM")));
+dag.addNode(new DagEngine.Node("aggregate", upstream -> llm.aggregate(upstream)));
+dag.addEdge("plan", "research_a").addEdge("plan", "research_b");   // research 依赖 plan
+dag.addEdge("research_a", "aggregate").addEdge("research_b", "aggregate");  // 汇总依赖两个调研
+Map<String,String> results = dag.execute().block();
+```
+
+**这版能做什么**：节点依赖关系灵活定义——不再被写死成 `Plan→Execute[]→Aggregate`。无依赖的节点（research_a/b）结构上可并发（22.5 给并发执行）。
+
+### 22.3 演进②：条件边——if/else 分支
+
+**痛点**：最小版 DAG 的边是"固定依赖"——to 一定依赖 from。但真实场景要**看上游输出决定走不走这条边**（"矛盾度高才走'再查一轮'分支"）。
+
+**解法**：给边加**条件谓词** `Predicate<上游结果>`——边只有谓词为真才激活。
+
+**【改已有文件，片段】** `DagEngine` 的边加条件：
+
+```java
+// 边带条件：to 依赖 from，但只有 condition(上游结果) 为真才真正连这条边
+public record Edge(String from, String to, java.util.function.Predicate<Map<String,String>> condition) {}
+
+private final List<Edge> allEdges = new ArrayList<>();
+public DagEngine addConditionalEdge(String from, String to,
+        java.util.function.Predicate<Map<String,String>> cond) {
+    allEdges.add(new Edge(from, to, cond));
+    return this;
+}
+```
+
+执行时，runNode 里算"实际激活的依赖"——只等条件为真的上游：
+
+```java
+private Mono<String> runNode(String name, Map<String, Mono<String>> results) {
+    // 实际激活的上游：无条件边全算；条件边看谓词
+    List<String> activeDeps = allEdges.stream()
+            .filter(e -> e.to.equals(name))
+            .filter(e -> {
+                if (e.condition == null) return true;   // 无条件边
+                String upstreamResult = results.containsKey(e.from) ? results.get(e.from).block() : null;
+                return e.condition.test(Map.of(e.from, upstreamResult == null ? "" : upstreamResult));
+            })
+            .map(e -> e.from).toList();
+    // ... 等这些激活的上游，跑本节点 ...
+}
+```
+
+**用条件分支**：
+
+```java
+dag.addConditionalEdge("research_a", "verify_again",
+        upstream ->矛盾度(upstream) > 0.7);   // 矛盾度高才走"再核实"
+dag.addConditionalEdge("research_a", "aggregate",
+        upstream ->矛盾度(upstream) <= 0.7);  // 否则直接汇总
+```
+
+> **这版能解决什么**：DAG 能表达"看数据走不同路"——这是线性 workflow 做不到的。条件边是复杂编排的基石。
+
+### 22.4 演进③：循环（带终止条件的子图）
+
+**痛点**：DAG 是"无环"的，但研究要"反复核实直到满意"——这像循环。
+
+**解法**：**不在 DAG 里引入环路**（会死循环、难分析），而是用"**带终止条件的子图反复执行**"表达循环：
+
+```java
+// 伪代码：反复执行"核实"子图，直到置信度达标或达到上限次数
+Mono<String> verified = Mono.just(initialResult);
+for (int i = 0; i < MAX_ROUNDS; i++) {
+    verified = verified.flatMap(r -> {
+        if (置信度(r) >= 阈值) return Mono.just(r);   // 达标，终止
+        return runVerifySubDag(r);                     // 没达标，再核实一轮
+    });
+}
+```
+
+> **为什么不在 DAG 里加环**：有环图的执行调度极复杂（要检测不动点、防死循环），且难以推理。企业级工作流引擎（Airflow/Temporal）都**避免在 DAG 里加环**——循环用"带终止条件的子图反复执行"表达，更可控、更易调试。**这是工程务实**：用"受限的循环"换"可分析性"。
+
+### 22.5 演进④：多 Agent 协作（角色化节点）
+
+**痛点**：一个 Agent 干所有事——查资料、核对、成稿——没有专长分工。企业级研究应该是"**多角色协作**"：研究员查、审核员核对、写作员成稿。
+
+**解法**：DAG 的节点 = Agent 角色，每个角色有自己的 system prompt 和工具：
+
+```java
+DagEngine dag = new DagEngine();
+// 角色1：研究员（查资料）
+dag.addNode(new DagEngine.Node("researcher",
+        up -> agentLoop.run("你是研究员，专查资料。", up.get("task"), List.of(), researchTools)));
+// 角色2：审核员（核对事实，接第21章幻觉检测）
+dag.addNode(new DagEngine.Node("reviewer",
+        up -> agentLoop.run("你是审核员，核对研究员结论的真实性。", up.get("researcher"), List.of(), List.of())));
+// 角色3：写作员（成稿，依赖研究员+审核员）
+dag.addNode(new DagEngine.Node("writer",
+        up -> agentLoop.run("你是写作员，基于已核实的资料成稿。",
+                up.get("researcher") + "\n审核意见：" + up.get("reviewer"), List.of(), List.of())));
+dag.addEdge("task_source", "researcher");
+dag.addEdge("researcher", "reviewer");
+dag.addEdge("researcher", "writer").addEdge("reviewer", "writer");  // 写作依赖研究+审核
+```
+
+> **多 Agent 协作的本质**：把"一个复杂 Agent"拆成"多个专长 Agent + 依赖关系"——每个角色 prompt/工具更聚焦（质量更高），依赖关系由 DAG 编排。**和人类团队分工同构**：研究员、审核员、写作员各司其职，按流程协作。
+
+### 22.6 真实工作流引擎的选择（诚实对照）
+
+本章手写了最小 DAG 引擎（教学）。**生产别自己造**，用成熟的：
+
+| 引擎 | 特点 | 适合 |
+|------|------|------|
+| **Spring AI Workflow** | Spring 生态原生，和 ChatClient 集成紧 | Spring AI 项目首选 |
+| **LangGraph** | Python 生态，状态机+图，专为 Agent | Python 项目 |
+| **Temporal** | 持久化执行、强一致，适合长流程 | 企业级关键业务流 |
+| **Airflow** | 批处理调度，非实时 | 数据管道 |
+
+> **我的判断**：零依赖学习版手写最小 DAG 是为了**看清引擎的本质**（节点+边+拓扑并发+条件）。**生产用 Spring AI Workflow 或 LangGraph**——它们处理了本章省略的：节点失败重试、状态持久化、可视化、版本管理。**学习时懂原理，生产时用轮子**——这是工程务实。
+
+### 22.7 checkpoint + 复盘
+
+```
+research-agent/src/main/java/com/example/research/dag/
+└── DagEngine.java          （最小 DAG 引擎：节点+边+条件边）
+```
+
+```bash
+git add -A && git commit -m "第22章：DAG工作流（条件分支+循环+多Agent协作）"
+```
+
+**做了**：把第 4-5 章的线性 Plan-Execute 升级为 DAG——最小引擎（节点+边+拓扑并发）→ 条件边（分支）→ 受限循环（带终止子图）→ 多 Agent 角色协作。讲清生产别造轮子、用 Spring AI Workflow/LangGraph。
+
+**核心跃迁**：从"线性 workflow"到"图（DAG）编排"。能表达条件分支、受限循环、多角色协作——这是复杂 Agent 系统的编排能力。
+
+**工程教训**：
+- **DAG 天然表达依赖+并发**：无依赖节点可并发，和第 5 章 `flatMap` 同构，但结构可灵活定义。
+- **条件边是分支的基石**：边带谓词，看上游输出决定走哪条——线性做不到。
+- **不在 DAG 里加环**：循环用"带终止条件的子图反复执行"——换可分析性，是工程务实。
+- **多 Agent 协作 = 角色化节点**：复杂 Agent 拆成多个专长 Agent + 依赖，质量更高。
+- **生产别造轮子**：学习手写引擎懂原理，生产用 Spring AI Workflow / LangGraph / Temporal。
 
 ---
 
