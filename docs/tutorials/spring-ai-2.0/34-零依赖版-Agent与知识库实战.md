@@ -2156,30 +2156,37 @@ Notion/Linear/飞书文档用 **CRDT 或 OT** 做协同编辑——那是"多端
 
 **我的判断（重要边界）**：LLM 研究问答**不是协同编辑**，它是"单一写者（LLM）写、多读者（设备）看"的**追加日志**模型。**不需要 CRDT/OT**——那是杀鸡用牛刀，而且引入巨大的复杂度。用"事件日志 + 多播 + seq 去重"就是正解。**这个边界判断本身就是企业级设计能力的体现**：知道什么问题该用什么工具，不被"显得高级"绑架。
 
-#### 调研结论 → 本章架构
+#### 调研结论 → 本章架构（终态长这样，但我们会一步步搭到它）
 
 ```
                        ┌── 单一写者 ──┐
-LLM 调用(唯一实例) ──写──→ Kafka/Stream 持久日志(每条带 seq) ──多播──→ 各实例各设备
+LLM 调用(唯一实例) ──写──→ Redis Stream 持久日志(每条带 seq) ──多播──→ 各实例各设备
                        │  (单一事件源，权威数据)  │
                        └──────────────────────────┘
-        客户端记录 lastSeq，断线重连带上 → 服务端从 lastSeq 之后补推
+        客户端记录最后收到的 SSE id(=seq)，断线重连浏览器自动带 Last-Event-ID → 服务端从该 seq 之后补推
         客户端按 seq 幂等去重
 ```
+
+这是**终态**。但本章**不一次搭成**——先 9.2 给最小版（只做"持久+广播"，让多端看到同一条流），再 9.6-9.9 按"一个痛点 → 一处加固"逐步补上单一写者、seq、Last-Event-ID、MAXLEN/cancel。**每节只引入一个新概念。**
 
 > **和原版的区别小结**：
 > - 显式区分 SSE/WebSocket 适用边界（不假装 SSE 万能）。
 > - 承认 SETNX 的缺陷，标注 fencing 扩展点（不假装它完美）。
-> - 用 `seq` 单调号 + 客户端去重，替代原版 `__END__` 字符串标记和手写 cursor（更直白、更通用）。
+> - 用 `seq` 单调号 + 协议级 Last-Event-ID，替代原版 `__END__` 字符串标记和手写 cursor（更直白、更通用）。
 > - 明确"不需要 CRDT"的边界判断。
+> - **回归演进式**：最小版先跑通，再逐个加固（原版 9.6-9.9 的好节奏，我之前一度丢了，现在找回来）。
 
-### 9.2 动手（能跑最小版）
+### 9.2 动手：先跑通"多端能看到同一条流"（最小版）
 
-本章加 Redis reactive（第 2 章已加，复用）、新建 `SyncStreamBus`（多端同步总线）。为聚焦，本章 chunk 总线先用 **Redis Streams**（第 12 章再升级 Kafka）。
+> **演进纪律**：本章**不**一次把 seq/游标/Last-Event-ID/单一写者全堆上。先给**最小能跑版**——只解决"多端看到同一条流"这一件事。然后 9.6-9.9 按"一个痛点 → 一处加固"的节奏逐个补：先发现"多端重复触发"→才加单一写者；先发现"晚加入漏 chunk"→才加 seq 游标；先发现"断线重连丢内容"→才加 Last-Event-ID。**每节只新增一个概念。**
 
-#### 9.2.1 SyncStreamBus：多端同步核心（带 seq + 单一写者）
+本章只引一个新文件 `SyncStreamBus`（Redis 第 2 章已连）。chunk 总线先用 **Redis Streams**（第 12 章再升级 Kafka）。
 
-**【新建文件】** `research-agent/src/main/java/com/example/research/stream/SyncStreamBus.java`：
+#### 9.2.1 最小版 SyncStreamBus：XADD 持久 + Pub/Sub 广播
+
+最小版只做两件事：① LLM 的每个 chunk **XADD 进 Streams**（持久，晚加入能读历史）；② 同步 **PUBLISH 到频道**（实时通知所有订阅者）。**先不管 seq、不管去重、不管单一写者**——那是后面发现痛点才加的。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/stream/SyncStreamBus.java`（最小版）：
 
 ```java
 package com.example.research.stream;
@@ -2187,7 +2194,6 @@ package com.example.research.stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Range;
-import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
@@ -2195,21 +2201,21 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 多端同步流总线（零依赖版核心：基于 Redis Streams + Pub/Sub + seq）。
+ * 多端同步流总线（最小版：XADD 持久 + Pub/Sub 广播）。
  *
- * 设计（按 9.1 调研结论）：
- *   1. 单一写者：SETNX 锁，全集群同 sessionId 只触发一次 LLM。
- *   2. 持久日志：每个 chunk XADD 进 Streams，带单调 seq（防漏）。
- *   3. 多播：PUBLISH 通知所有实例的 SSE 客户端。
- *   4. resume 补推：订阅者从 lastSeq 之后读 Streams（晚加入/重连不丢）。
- *   5. 幂等去重：客户端按 seq 去重（防重）。
+ * 这一版只解决一件事：多端能看到同一条流。
+ *   写：upstream 每个 chunk → XADD（持久，晚加入可读历史）+ PUBLISH（实时广播）
+ *   读：先 range 读历史（回放）+ concatWith 接 Pub/Sub（实时）
  *
- * 数据源唯一性：所有客户端（含写者自己）都从 Streams 读——保证多端内容逐字一致。
+ * ⚠️ 刻意简陋（后面 9.6-9.9 逐个补）：
+ *   - 没有单一写者：多端同时请求会各自触发一次 LLM（重复触发，烧 token）→ 9.6 补
+ *   - 没有 seq：range 和订阅之间有漏 chunk 竞态 → 9.7 补
+ *   - 没有 Last-Event-ID：断线重连丢内容 → 9.8 补
+ *   - 没有 MAXLEN：Stream 无限增长撑爆 Redis → 9.9 补
+ * 先把这版跑通、理解"持久 + 广播"怎么协作，再一节节看为什么必须加固。
  */
 @Component
 public class SyncStreamBus {
@@ -2217,10 +2223,6 @@ public class SyncStreamBus {
     private static final Logger log = LoggerFactory.getLogger(SyncStreamBus.class);
     private static final String KEY_STREAM = "sync:%s:chunks";
     private static final String CHANNEL    = "sync:%s";
-    private static final String KEY_LOCK   = "sync:%s:lock";
-    private static final String KEY_SEQ    = "sync:%s:seq";      // 单调 seq 来源（INCR）
-    private static final Duration LOCK_TTL  = Duration.ofMinutes(5);
-    private static final Duration STREAM_TTL = Duration.ofHours(24);
 
     private final ReactiveRedisTemplate<String, String> redis;
     private final ReactiveRedisMessageListenerContainer listener;
@@ -2232,102 +2234,47 @@ public class SyncStreamBus {
     }
 
     /**
-     * 订阅会话流。全局同一 sessionId 只触发一次 upstream（单一写者）。
-     * @param lastSeq 客户端最后收到的 seq（resume 补推用；首次为 0）
+     * 订阅会话流：把 upstream 的每个 chunk 写进 Redis（持久+广播），
+     * 同时返回"回放历史 + 接实时"的 Flux 给所有订阅者。
      */
-    public Mono<Flux<String>> subscribe(String sessionId, long lastSeq, Flux<String> upstream) {
+    public Flux<String> subscribe(String sessionId, Flux<String> upstream) {
         String streamKey = KEY_STREAM.formatted(sessionId);
         String channel   = CHANNEL.formatted(sessionId);
-        String lockKey   = KEY_LOCK.formatted(sessionId);
-        String seqKey    = KEY_SEQ.formatted(sessionId);
 
-        return redis.opsForValue().setIfAbsent(lockKey, "1", LOCK_TTL)
-                .flatMap(acquired -> {
-                    if (Boolean.TRUE.equals(acquired)) {
-                        log.info("[SyncBus] 获得锁(单一写者)，启动 LLM (session={})", sessionId);
-                        // 后台 fire-and-forget：LLM 每个 chunk → INCR seq → XADD(seq+chunk) → PUBLISH
-                        upstream.flatMap(chunk -> writeChunk(streamKey, channel, seqKey, sessionId, chunk))
-                                .doOnComplete(() -> finishStream(streamKey, channel, lockKey, sessionId))
-                                .doOnError(err -> { redis.delete(lockKey).subscribe();
-                                    log.error("[SyncBus] 流错误 (session={}): {}", sessionId, err.getMessage()); })
-                                .subscribe();
-                    } else {
-                        log.info("[SyncBus] 锁已被占用(已是订阅者)，仅读流 (session={})", sessionId);
-                    }
-                    return Mono.just(replayThenListen(streamKey, channel, lastSeq));
-                });
-    }
-
-    /** 写一条 chunk：INCR 拿单调 seq → XADD(seq+chunk) → PUBLISH。seq 保证客户端能去重补推。 */
-    private Mono<Void> writeChunk(String streamKey, String channel, String seqKey, String sessionId, String chunk) {
-        return redis.opsForValue().increment(seqKey)
-                .flatMap(seq -> redis.opsForStream().add(streamKey, Map.of("seq", String.valueOf(seq), "chunk", chunk))
-                        .then(redis.convertAndSend(channel, seq + "::" + chunk).then()))
-                .onErrorResume(e -> { log.error("[SyncBus] 写入失败: {}", e.getMessage()); return Mono.empty(); });
-    }
-
-    /** 流结束：发 END 标记（带最大 seq）、清锁、设 TTL。 */
-    private void finishStream(String streamKey, String channel, String lockKey, String sessionId) {
-        redis.opsForValue().get(KEY_SEQ.formatted(sessionId))
-                .doOnNext(maxSeq -> redis.convertAndSend(channel, "__END__::" + maxSeq).subscribe())
-                .then(redis.expire(streamKey, STREAM_TTL))
-                .then(redis.delete(lockKey))
-                .doOnSuccess(v -> log.info("[SyncBus] 流完成 (session={})", sessionId))
+        log.info("[SyncBus] 启动 upstream，写 Redis (session={})", sessionId);
+        // 后台 fire-and-forget：写 Redis。HTTP 响应不阻塞，直接从 Redis 读。
+        upstream.flatMap(chunk -> writeChunk(streamKey, channel, chunk))
+                .doOnComplete(() -> {
+                    redis.convertAndSend(channel, "__END__").subscribe();   // 通知订阅者流结束
+                    log.info("[SyncBus] 流完成 (session={})", sessionId);
+                })
                 .subscribe();
+
+        return replayThenListen(streamKey, channel);
     }
 
-    /**
-     * 回放 + 监听（工业级：seq 游标防漏 chunk）。
-     *
-     * 铁律：Pub/Sub 只当"通知铃"，数据永远按游标从 Streams 增量读——不漏不重。
-     *
-     * 流程：
-     *   ① history：从 lastSeq 之后读全量已有 chunk，推进游标到最大 seq。
-     *   ② live：订阅频道，每收到任意通知（含 END），就从游标之后增量读 Streams。
-     *      即便某条 PUBLISH 在订阅生效前发出（漏了通知），下一次任何通知来了，
-     *      readAfter 会从游标把积压 chunk 全读出来——补上那条。
-     *   ③ 收到 END 标记后整体完成（再读一次兜底，把最后的 chunk/END 带出）。
-     *
-     * 输出格式："seq::chunk"，Controller 再转 SSE 的 id/event/data。
-     */
-    private Flux<String> replayThenListen(String streamKey, String channel, long lastSeq) {
-        AtomicReference<Long> cursor = new AtomicReference<>(lastSeq);
+    /** 写一条 chunk：XADD（持久）+ PUBLISH（广播）。 */
+    private Mono<Void> writeChunk(String streamKey, String channel, String chunk) {
+        return redis.opsForStream().add(streamKey, Map.of("chunk", chunk))
+                .then(redis.convertAndSend(channel, chunk));
+    }
 
-        // ① 全量历史（从 lastSeq 之后），读完推进游标
-        Flux<String> history = readAfter(streamKey, cursor);
-
-        // ② 实时：Pub/Sub 通知铃——不管内容，收到就增量读
+    /** 回放历史 + 接实时：先 range 全量，再 concatWith Pub/Sub。 */
+    private Flux<String> replayThenListen(String streamKey, String channel) {
+        Flux<String> history = redis.opsForStream().range(streamKey, Range.unbounded())
+                .map(r -> (String) r.getValue().get("chunk"));
         Flux<String> live = listener.receive(ChannelTopic.of(channel))
-                .takeUntil(m -> m.startsWith("__END__"))     // END 标记结束
-                .flatMap(notify -> readAfter(streamKey, cursor));  // 通知触发"去读一次"
-
-        return history.concatWith(live)
-                .takeUntil(s -> s.endsWith("::__END__"))     // 双保险
-                .filter(s -> !s.endsWith("::__END__"));
-    }
-
-    /** 从游标位置之后增量读 Streams，推进游标到读到的最大 seq。靠游标保证不漏、不重。 */
-    private Flux<String> readAfter(String streamKey, AtomicReference<Long> cursor) {
-        return redis.opsForStream().range(streamKey, Range.unbounded())
-                .filter(r -> seqOf(r) > cursor.get())
-                .map(r -> {
-                    cursor.set(seqOf(r));   // 推进游标
-                    return seqOf(r) + "::" + r.getValue().get("chunk");
-                });
-    }
-
-    private long seqOf(MapRecord<String, String, String> r) {
-        try { return Long.parseLong(r.getValue().get("seq")); }
-        catch (Exception e) { return 0; }
+                .map(msg -> msg.getMessage())
+                .takeUntil("__END__"::equals)
+                .filter(m -> !"__END__".equals(m));
+        return history.concatWith(live);
     }
 }
 ```
 
-> **为什么用 `INCR` 生成 seq 而不是用 Streams 自带 recordId**：Streams 的 recordId 是 `时间戳-序号`，能排序但不连续、不好"按数值 lastSeq 比较"。用一个独立的 `INCR seqKey` 拿到 **1,2,3... 连续单调**的 seq，客户端去重和补推逻辑更简单（`seq > lastSeq` 一行判断）。**这是我相对原版的一个改进**——原版用 recordId 当游标，比较时要解析字符串；这里用纯数字 seq。
+#### 9.2.2 ResearchService：upstream 包进 SyncStreamBus
 
-#### 9.2.2 ResearchService：经 SyncStreamBus 包一层
-
-**【改已有文件，完整版覆盖】** `ResearchService.java`（把 LLM 调用包进 `SyncStreamBus`）：
+**【改已有文件，完整版覆盖】** `ResearchService.java`：
 
 ```java
 package com.example.research;
@@ -2354,7 +2301,7 @@ public class ResearchService {
     private final WebSearchTool searchTool;
     private final KnowledgeBaseTool knowledgeBaseTool;
     private final ChatMemoryStore memory;
-    private final SyncStreamBus bus;   // ▼ 第9章新增
+    private final SyncStreamBus bus;
 
     public ResearchService(ToolCallingLoop agentLoop, WebSearchTool searchTool,
                            KnowledgeBaseTool knowledgeBaseTool, ChatMemoryStore memory,
@@ -2366,8 +2313,7 @@ public class ResearchService {
         this.bus = bus;
     }
 
-    /** 研究接口（多端同步版）。lastSeq 用于断线重连补推。 */
-    public Flux<String> research(String topic, String sessionId, long lastSeq) {
+    public Flux<String> research(String topic, String sessionId) {
         return memory.load(sessionId)
                 .flatMapMany(history -> {
                     StringBuilder collected = new StringBuilder();
@@ -2379,16 +2325,15 @@ public class ResearchService {
                             .timeout(Duration.ofSeconds(60))
                             .doOnNext(collected::append)
                             .doOnComplete(() -> memory.append(sessionId, topic, collected.toString()).subscribe());
-                    // ▼ 第9章：upstream 包进 bus，多端共享同一条流
-                    return bus.subscribe(sessionId, lastSeq, upstream).flatMapMany(flux -> flux);
+                    return bus.subscribe(sessionId, upstream);
                 });
     }
 }
 ```
 
-#### 9.2.3 Controller：企业级 SSE（id / event / Last-Event-ID / retry / 心跳）
+#### 9.2.3 Controller：朴素 SSE（先不堆 id/event/retry）
 
-**【改已有文件，完整版覆盖】** `ResearchController.java`。这版才是真实企业级 SSE——每个事件带协议级 `id`（= resume token，浏览器断线重连自动带 `Last-Event-ID` 头）、`event` 分类（token/done/error，替代 `__END__` 字符串）、`retry`（重连节奏）、心跳注释行。**`Flux<String>` 只是内部组装数据的手段，SSE 的 id/event/retry 才是"企业级"的关键。**
+**【改已有文件，完整版覆盖】** `ResearchController.java`。最小版用最朴素的 SSE——`Flux<String>` + 心跳。**协议级的 `id`/`event`/`Last-Event-ID` 不在这版**，等 9.8（断线重连）痛点出现才加。
 
 ```java
 package com.example.research;
@@ -2401,14 +2346,8 @@ import reactor.core.publisher.Flux;
 import java.time.Duration;
 
 /**
- * 研究接口 Controller（第 9 章：企业级多端同步 SSE）。
- *
- * 协议级细节（真实企业级 SSE 必备）：
- *   - id:    每个 chunk 带单调 seq（= resume token）。浏览器 EventSource 自动记录最后 id，
- *            断线重连时自动放进 Last-Event-ID 请求头。
- *   - event: token/done/error 分类，前端 addEventListener 干净分发。
- *   - retry: 告诉浏览器断线后等多久重连（防雪崩）。
- *   - : ping 心跳注释行：保活 + 感知断连。
+ * 研究接口 Controller（第 9 章最小版：朴素 SSE + 心跳）。
+ * 后续 9.8 才把协议级 id/event/Last-Event-ID 加上。
  */
 @RestController
 @RequestMapping("/api/research")
@@ -2421,89 +2360,310 @@ public class ResearchController {
     }
 
     @GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> research(@RequestParam String topic,
-                                                  @RequestParam String sessionId,
-                                                  @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId,
-                                                  @RequestParam(required = false) Long lastSeq) {
-        // resume：优先用 SSE 协议头 Last-Event-ID（浏览器自动带），其次显式 lastSeq 参数
-        long fromSeq = lastEventId != null ? lastEventId : (lastSeq != null ? lastSeq : 0);
-
-        Flux<ServerSentEvent<String>> data = researchService.research(topic, sessionId, fromSeq)
-                .map(s -> {
-                    // s 格式 "seq::chunk"（SyncStreamBus 约定）
-                    int idx = s.indexOf("::");
-                    long seq = Long.parseLong(s.substring(0, idx));
-                    return ServerSentEvent.<String>builder()
-                            .id(String.valueOf(seq))     // ▼ 协议级 id：浏览器记录，断线自动带 Last-Event-ID
-                            .event("token")              // ▼ 事件类型分类
-                            .data(s.substring(idx + 2))
-                            .build();
-                })
-                .concatWithValues(ServerSentEvent.<String>builder().event("done").data("").build());  // ▼ 协议级结束
-
+    public Flux<ServerSentEvent<String>> research(@RequestParam String topic, @RequestParam String sessionId) {
+        Flux<ServerSentEvent<String>> data = researchService.research(topic, sessionId)
+                .map(c -> ServerSentEvent.<String>builder().data(c).build());
+        // 心跳：每 1s 一条注释行。客户端断开后，下一个心跳写失败 → cancel → 传到下游。
         Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(1))
                 .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
-
-        // retry：告诉浏览器断线后等 3s 重连
-        ServerSentEvent<String> retry = ServerSentEvent.<String>builder()
-                .retry(Duration.ofSeconds(3).toMillis()).build();
-
-        return Flux.concat(Flux.just(retry), data.mergeWith(heartbeat).takeUntilOther(data.then()));
+        return data.mergeWith(heartbeat).takeUntilOther(data.then());
     }
 }
 ```
 
-> **客户端去重逻辑（前端要配合）**：`EventSource` 收到事件时，`e.lastEventId` 是浏览器自动记录的 id（= 我们的 seq）。若 `seq <= 已显示最大 seq` 则丢弃（去重），否则追加显示。断线时浏览器**自动**重连并带 `Last-Event-ID` 头，服务端从该 seq 之后补推——不用前端手动传 token。这是 SSE 协议级的 resume，比自定义 lastSeq 参数更标准（补强 A 详解）。
-
-### 9.3 验证
+### 9.3 验证最小版
 
 ```bash
 docker run -d --name research-redis -p 6379:6379 redis:7-alpine
 mvn spring-boot:run
 
-# 终端1（首端，触发）
+# 终端1
 curl -N "http://localhost:8080/api/research?topic=2026推理框架&sessionId=sync-001"
-# 终端2（晚 5 秒，同 sessionId）——内容与终端1 一致，且先回放历史
+# 终端2（晚 5 秒，同 sessionId）——能看到前文 + 继续实时
 curl -N "http://localhost:8080/api/research?topic=2026推理框架&sessionId=sync-001"
-
-# 跨实例验证
-mvn spring-boot:run -Dspring-boot.run.arguments="--server.port=8081"
-# A(:8080) 触发，B(:8081) 订阅，内容一致
-curl -N "http://localhost:8080/api/research?topic=AI框架对比&sessionId=cross-001"
-curl -N "http://localhost:8081/api/research?topic=AI框架对比&sessionId=cross-001"
 ```
 
-预期：日志只有**一条** `[SyncBus] 获得锁(单一写者)`；所有终端内容逐字一致；晚加入的终端先快速回放历史再接实时。
+**这版能跑通什么**：终端2 先回放终端1 已输出的内容（XADD 持久），再接实时（Pub/Sub 广播）——**多端看到同一条流**的核心已经成立。
 
-### 9.4 加固点（对照原版，我的取舍）
+**但别急**：仔细看会发现两个问题——① 终端2 也带了 `topic` 参数，它**又触发了一次 LLM**（看日志有两次 upstream 启动）；② 高并发下终端2 偶尔**少几个字**（漏 chunk 竞态）。这正是 9.6、9.7 要逐个解决的。
 
-原版有 MAXLEN/心跳/cancel传播/游标 四个加固。本章最小版已内置其中关键几项（seq 补推、心跳、单一写者），其余作为**显式标注的加固扩展点**（不假装已经完美）：
+### 9.4 最小版的隐患清单（后面逐个补）
 
-| 加固项 | 本章状态 | 说明 |
-|--------|---------|------|
-| MAXLEN 封顶 | **待加固** | 最小版未限制 Stream 长度，附录给 `XTRIM` 片段 |
-| SSE 心跳 | ✅ 已做 | Controller 里 `Flux.interval` |
-| cancel 传回 upstream | **待加固** | 最小版 fire-and-forget，附录给 `Disposable + doFinally` |
-| resume 补推 | ✅ 已做（seq） | 替代原版手写 cursor |
-| 幂等去重 | ✅ 设计到位 | seq + 客户端去重 |
-| **fencing token**（防过期锁写） | **明确标注扩展点** | 原版没提；本章在附录讲清为什么需要 |
+| 隐患 | 现象 | 何时暴露 | 在哪补 |
+|------|------|---------|--------|
+| 多端重复触发 | 终端2 也带 topic，又跑一次 LLM，烧 token、结果分叉 | 本地就能复现 | 9.6（单一写者）|
+| 漏 chunk | range 读到 N、订阅生效前 N+1 被 PUBLISH，漏掉 N+1 | 高并发偶发 | 9.7（seq 游标）|
+| 断线重连丢内容 | 没有协议级 id，浏览器刷新/断线后无法从断点续传 | 刷新页面就暴露 | 9.8（Last-Event-ID）|
+| Stream 无限增长 | XADD 无上限，冷数据撑爆 Redis | 上线后长期运行 | 9.9（MAXLEN + cancel）|
 
-> **学习文档的诚实**：我没有把最小版伪装成"工业级终态"。哪些做了、哪些待加固、为什么——都写明。真正企业级可用，是把这些加固点逐个补上。
+> **演进纪律的体现**：最小版只覆盖"多端看到同一条流"。后四节每节只解决一个隐患，每节只引入一个新概念（锁 / seq / 协议级 id / MAXLEN）。**不提前搬后面才用到的代码。**
 
-### 9.5 checkpoint + 复盘
+### 9.5 checkpoint（最小版）
 
 ```
 research-agent/src/main/java/com/example/research/stream/
-└── SyncStreamBus.java          （新增：多端同步总线，seq+单一写者）
+└── SyncStreamBus.java          （新增：XADD 持久 + Pub/Sub 广播，最小版）
 ```
 
 ```bash
-git add -A && git commit -m "第9章：多端同步（Redis Streams+seq+单一写者+resume补推）"
+git add -A && git commit -m "第9章(最小版)：Redis Streams+Pub/Sub多端同步骨架"
 ```
 
-**做了**：调研企业级多端同步的 5 个维度（传输/单一写者/持久补推/去重/状态一致边界），据此落地 `SyncStreamBus`。明确 SSE vs WebSocket 边界、明确不需要 CRDT、明确 SETNX 的 fencing 缺陷。
+---
 
-**我的判断**：原版的"三层广播 + __END__ 标记"方向对但绕；我用 `seq 单调号 + 客户端去重 + resume` 更直白，且语义和 Kafka offset / SSE Last-Event-ID 同构——学一套，通三处。
+### 9.6 加固①：单一写者——多端不重复触发 LLM
+
+**痛点**：9.3 验证里，终端2 带 `topic` 又触发了一次 LLM。多端同步的**头号难题**：全集群只能有一个实例真正去调 LLM，否则重复触发、烧 token、结果分叉。
+
+**解法**：`SETNX` 锁。第一个请求抢到锁才启动 upstream；后来的请求抢不到锁，**只读流、不触发**。
+
+**【改已有文件，完整版覆盖】** `SyncStreamBus.java`（在最小版基础上，subscribe 内加 SETNX，标 `▼ 加固①`）：
+
+```java
+package com.example.research.stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Range;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.time.Duration;
+import java.util.Map;
+
+@Component
+public class SyncStreamBus {
+
+    private static final Logger log = LoggerFactory.getLogger(SyncStreamBus.class);
+    private static final String KEY_STREAM = "sync:%s:chunks";
+    private static final String CHANNEL    = "sync:%s";
+    private static final String KEY_LOCK   = "sync:%s:lock";          // ▼ 加固①：SETNX 锁
+    private static final Duration LOCK_TTL = Duration.ofMinutes(5);    // ▼ 加固①：锁 TTL，防崩溃死锁
+
+    private final ReactiveRedisTemplate<String, String> redis;
+    private final ReactiveRedisMessageListenerContainer listener;
+
+    public SyncStreamBus(ReactiveRedisTemplate<String, String> redis,
+                         ReactiveRedisMessageListenerContainer listener) {
+        this.redis = redis;
+        this.listener = listener;
+    }
+
+    public Flux<String> subscribe(String sessionId, Flux<String> upstream) {
+        String streamKey = KEY_STREAM.formatted(sessionId);
+        String channel   = CHANNEL.formatted(sessionId);
+        String lockKey   = KEY_LOCK.formatted(sessionId);
+
+        // ▼ 加固①：SETNX 抢锁。只有抢到锁的请求才启动 upstream（单一写者）。
+        return redis.opsForValue().setIfAbsent(lockKey, "1", LOCK_TTL)
+                .flatMap(acquired -> {
+                    if (Boolean.TRUE.equals(acquired)) {
+                        log.info("[SyncBus] 获得锁(单一写者)，启动 LLM (session={})", sessionId);
+                        upstream.flatMap(chunk -> writeChunk(streamKey, channel, chunk))
+                                .doOnComplete(() -> {
+                                    redis.delete(lockKey).subscribe();   // 完成 清锁
+                                    redis.convertAndSend(channel, "__END__").subscribe();
+                                    log.info("[SyncBus] 流完成 (session={})", sessionId);
+                                })
+                                .doOnError(err -> { redis.delete(lockKey).subscribe();   // 出错也清锁
+                                    log.error("[SyncBus] 流错误: {}", err.getMessage()); })
+                                .subscribe();
+                    } else {
+                        log.info("[SyncBus] 锁已被占用，只读流不触发 (session={})", sessionId);
+                    }
+                    // 无论是否抢到锁，都从 Redis 读——保证所有订阅者内容一致
+                    return Mono.just(replayThenListen(streamKey, channel));
+                })
+                .flatMapMany(flux -> flux);
+    }
+
+    private Mono<Void> writeChunk(String streamKey, String channel, String chunk) {
+        return redis.opsForStream().add(streamKey, Map.of("chunk", chunk))
+                .then(redis.convertAndSend(channel, chunk));
+    }
+
+    private Flux<String> replayThenListen(String streamKey, String channel) {
+        Flux<String> history = redis.opsForStream().range(streamKey, Range.unbounded())
+                .map(r -> (String) r.getValue().get("chunk"));
+        Flux<String> live = listener.receive(ChannelTopic.of(channel))
+                .map(msg -> msg.getMessage())
+                .takeUntil("__END__"::equals)
+                .filter(m -> !"__END__".equals(m));
+        return history.concatWith(live);
+    }
+}
+```
+
+**验证**：再跑 9.3 的两个终端，日志里**只有一次** `[SyncBus] 获得锁`——终端2 不再重复触发 LLM。
+
+> **这版简陋处（诚实）**：SETNX 有"锁过期后旧持有者继续写"的风险（fencing 问题）。本章先用最简版，附录讲 fencing token 扩展点。**不假装它完美**——学习文档的诚实比"看起来完整"重要。
+
+### 9.7 加固②：seq 游标——消除漏 chunk 竞态
+
+**痛点**：9.4 隐患清单的"漏 chunk"。`replayThenListen` 的 `range` 读到 N、`concatWith` 接 Pub/Sub——这两步之间有个微秒级窗口：N+1 被 XADD+PUBLISH，但此刻订阅还没生效 → N+1 的 PUBLISH 收不到、历史已结束不会重读 → **晚加入的设备少一个字**。本地几乎测不出，线上高并发必现。
+
+**解法**：给每个 chunk 一个单调 `seq`（`INCR`）。**Pub/Sub 只当通知铃，数据永远按游标从 Streams 增量读**。通知早到/晚到/丢了都不影响正确性——下一条通知来了，从游标读出所有积压 chunk。
+
+**【改已有文件，完整版覆盖】** `SyncStreamBus.java`（在加固①基础上，加 seq + 游标读，标 `▼ 加固②`）：
+
+```java
+package com.example.research.stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Range;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+
+@Component
+public class SyncStreamBus {
+
+    private static final Logger log = LoggerFactory.getLogger(SyncStreamBus.class);
+    private static final String KEY_STREAM = "sync:%s:chunks";
+    private static final String CHANNEL    = "sync:%s";
+    private static final String KEY_LOCK   = "sync:%s:lock";
+    private static final String KEY_SEQ    = "sync:%s:seq";            // ▼ 加固②：单调 seq 来源（INCR）
+    private static final Duration LOCK_TTL = Duration.ofMinutes(5);
+
+    private final ReactiveRedisTemplate<String, String> redis;
+    private final ReactiveRedisMessageListenerContainer listener;
+
+    public SyncStreamBus(ReactiveRedisTemplate<String, String> redis,
+                         ReactiveRedisMessageListenerContainer listener) {
+        this.redis = redis;
+        this.listener = listener;
+    }
+
+    public Flux<String> subscribe(String sessionId, Flux<String> upstream) {
+        String streamKey = KEY_STREAM.formatted(sessionId);
+        String channel   = CHANNEL.formatted(sessionId);
+        String lockKey   = KEY_LOCK.formatted(sessionId);
+        String seqKey    = KEY_SEQ.formatted(sessionId);
+
+        return redis.opsForValue().setIfAbsent(lockKey, "1", LOCK_TTL)
+                .flatMap(acquired -> {
+                    if (Boolean.TRUE.equals(acquired)) {
+                        log.info("[SyncBus] 获得锁，启动 LLM (session={})", sessionId);
+                        upstream.flatMap(chunk -> writeChunk(streamKey, channel, seqKey, chunk))
+                                .doOnComplete(() -> {
+                                    redis.delete(lockKey).subscribe();
+                                    redis.convertAndSend(channel, "__END__").subscribe();
+                                })
+                                .doOnError(err -> { redis.delete(lockKey).subscribe();
+                                    log.error("[SyncBus] 流错误: {}", err.getMessage()); })
+                                .subscribe();
+                    }
+                    // 加固②：游标从 0 开始（首次订阅）；9.8 会把它和 Last-Event-ID 接上
+                    return Mono.just(replayThenListen(streamKey, channel, 0));
+                })
+                .flatMapMany(flux -> flux);
+    }
+
+    /** ▼ 加固②：写 chunk 时带 seq。INCR → XADD(seq+chunk) → PUBLISH(通知铃，内容不直接用)。 */
+    private Mono<Void> writeChunk(String streamKey, String channel, String seqKey, String chunk) {
+        return redis.opsForValue().increment(seqKey)
+                .flatMap(seq -> redis.opsForStream().add(streamKey, Map.of("seq", String.valueOf(seq), "chunk", chunk))
+                        .then(redis.convertAndSend(channel, seq + "::" + chunk)));   // 通知带 seq，但读侧按游标读
+    }
+
+    /** ▼ 加固②：游标回放。先读历史推进游标，再 Pub/Sub 收到通知就从游标增量读——不漏不重。 */
+    private Flux<String> replayThenListen(String streamKey, String channel, long fromSeq) {
+        AtomicReference<Long> cursor = new AtomicReference<>(fromSeq);
+        Flux<String> history = readAfter(streamKey, cursor);
+        Flux<String> live = listener.receive(ChannelTopic.of(channel))
+                .takeUntil(m -> m.startsWith("__END__"))
+                .flatMap(notify -> readAfter(streamKey, cursor));   // 通知触发"去读一次"
+        return history.concatWith(live)
+                .takeUntil(s -> s.endsWith("::__END__"))
+                .filter(s -> !s.endsWith("::__END__"));
+    }
+
+    private Flux<String> readAfter(String streamKey, AtomicReference<Long> cursor) {
+        return redis.opsForStream().range(streamKey, Range.unbounded())
+                .filter(r -> seqOf(r) > cursor.get())
+                .map(r -> { cursor.set(seqOf(r)); return seqOf(r) + "::" + r.getValue().get("chunk"); });
+    }
+
+    private long seqOf(MapRecord<String, String, String> r) {
+        try { return Long.parseLong(r.getValue().get("seq")); }
+        catch (Exception e) { return 0; }
+    }
+}
+```
+
+> **为什么用 `INCR` 生成 seq 而不是 Streams 自带 recordId**：recordId 是 `时间戳-序号`，不连续、不好按数值比较。`INCR` 拿到 1,2,3... 连续单调，`seq > cursor` 一行判断即可。
+
+> **这版输出格式变成了 `seq::chunk`**——Controller 也要跟着解析（9.8 会把它映射成 SSE 的 `id`）。9.8 之前，前端可以简单 `split("::")[1]` 取内容。**这就是"逐个加固"带来的小步迭代**：seq 一加，契约微调，下一节顺势接上 Last-Event-ID。
+
+### 9.8 加固③：协议级 SSE——Last-Event-ID 断线续传
+
+**痛点**：用户刷新页面 / 网络抖动断开，再连回来想接着看——但朴素 SSE 没有 resume 机制，重连只能从头来或丢内容。
+
+**解法**：把 9.7 的 `seq` 映射成 SSE 协议原生的 `id` 字段。浏览器 `EventSource` 会自动记录最后收到的 `id`，**断线重连时自动放进 `Last-Event-ID` 请求头**——服务端读这个头，从该 seq 之后补推。顺带把 `event:` 分类（token/done）和 `retry:` 也加上，让前端能干净区分事件类型、控制重连节奏。
+
+**【改已有文件，完整版覆盖】** `ResearchController.java`（解析 `seq::chunk` → 协议级 SSE，标 `▼ 加固③`）：
+
+```java
+@GetMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> research(@RequestParam String topic, @RequestParam String sessionId,
+        @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId) {
+    // ▼ 加固③：service.research 现在接收 fromSeq（断线重连从该 seq 之后补推）
+    Flux<ServerSentEvent<String>> data = researchService.research(topic, sessionId, lastEventId != null ? lastEventId : 0)
+            .map(s -> {
+                int idx = s.indexOf("::");
+                long seq = Long.parseLong(s.substring(0, idx));
+                return ServerSentEvent.<String>builder()
+                        .id(String.valueOf(seq))     // ▼ 协议级 id：浏览器记录，断线自动带 Last-Event-ID
+                        .event("token")              // ▼ 事件分类
+                        .data(s.substring(idx + 2))
+                        .build();
+            })
+            .concatWithValues(ServerSentEvent.<String>builder().event("done").data("").build());
+
+    Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(1))
+            .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
+    ServerSentEvent<String> retry = ServerSentEvent.<String>builder()
+            .retry(Duration.ofSeconds(3).toMillis()).build();   // ▼ 断线重连节奏
+    return Flux.concat(Flux.just(retry), data.mergeWith(heartbeat).takeUntilOther(data.then()));
+}
+```
+
+`ResearchService.research` 签名加 `fromSeq`，传给 `SyncStreamBus.replayThenListen(streamKey, channel, fromSeq)`（9.7 已留好这个参数）。**这就是 9.7 预留 `fromSeq` 的用途兑现**——每步加固都为下一步留接口。
+
+### 9.9 加固④：MAXLEN 封顶 + cancel 传回——防撑爆、防烧 token
+
+**痛点①**：XADD 无上限，会话长了 Stream 无限增长，冷数据撑爆 Redis。**解法**：`XTRIM MAXLEN ~` 近似裁剪。
+
+**痛点②**：前端断开后，upstream 还在后台跑、还在烧 token。**解法**：把 upstream 的 `Disposable` 存下来，绑到返回 Flux 的 `doFinally`，前端断开（cancel）时 `dispose()` 停掉 LLM。
+
+这两个加固的完整 `SyncStreamBus` 终态代码，和第 10 章 runId 化后的版本合并给出（见 **第 10 章 10.2.1** 的 `SyncStreamBus` 终态版——它同时包含 MAXLEN、cancel、退避重试、fencing 标注）。**本章读到这，理解了"为什么需要 MAXLEN 和 cancel"即可，可照抄的终态代码在第 10 章。**
+
+> **为什么不在这重复贴一遍**：第 10 章会把流 key 从 sessionId 改成 runId（一次会话可多次研究），届时 `SyncStreamBus` 会重写一遍并包含这两个加固。**演进纪律**：避免同一个文件在 9.9 和 10.2 贴两份完整版造成"到底抄哪个"的困惑——以最后一版（第 10 章 runId 版）为准。
+
+### 9.10 checkpoint + 复盘（第 9 章全节）
+
+```bash
+git add -A && git commit -m "第9章：多端同步四步加固（单一写者+seq游标+Last-Event-ID+MAXLEN/cancel）"
+```
+
+**做了**：调研企业级多端同步（传输/单一写者/补推/去重/状态一致边界），据此**一步步**落地：最小版（持久+广播）→ 单一写者（SETNX）→ seq 游标（防漏）→ 协议级 SSE（Last-Event-ID 续传）→ MAXLEN/cancel（防撑爆/烧 token）。
+
+**核心跃迁**：从"单实例内存热流"到"Redis Streams + Pub/Sub 集中分发"。**每一步只解决一个痛点、只引入一个概念**——这是学习文档应有的节奏，不是一上来堆工业级终态。
+
+**我的判断**：原版的"三层广播 + __END__"方向对；我用 `seq + Last-Event-ID` 更直白，且语义和 Kafka offset 同构。补强 A 讲透 SSE/WebSocket/Flux 分层，补强 C 端到端证明"A 输出30%时B打开"场景。
 
 ---
 
@@ -2531,6 +2691,16 @@ git add -A && git commit -m "第9章：多端同步（Redis Streams+seq+单一�
 > **我的判断（相对原版的根本改进）**：原版/我初稿用 `POST /api/research` + `{status:"started"}`，太弱。**真实 AI 平台的管数分离标准是把触发建模成 run 资源**——有独立 id、状态机、可查询/取消/订阅，配 `Idempotency-Key` 防多端重复提交、SSE 协议级 `Last-Event-ID` 重连。补强 B 是这套设计的理论详解，下面 10.2 是可照抄的代码。
 
 ### 10.2 动手
+
+> **演进纪律**：管数分离也是一步步加的，不是一上来就铺全套 run 资源。本章的演进顺序：
+>
+> 1. **最小分离**（10.2.1）：把第 9 章的 `subscribe()` 拆成 `trigger()`（管理面，POST）+ `subscribeReadOnly()`（数据面，GET 只读）。**只解决"触发和订阅解耦"这一件事**——第二台设备只发 GET，不再重复触发。
+> 2. **runId 隔离**（10.2.1 合并）：流 key 从 sessionId 改成 runId——一次会话能发起多次研究（多个 run），互不干扰。这是"触发=创建一次研究"语义的自然结果。
+> 3. **run 资源 + 状态**（10.2.3 `RunStore`/`GET /runs/{id}`）：触发返回一个有 id、有状态机的资源，让前端能轮询"是否完成"。
+> 4. **幂等键**（10.2.3 `Idempotency-Key`）：多端同时点提交，用幂等键保证只创建一个 run。
+> 5. **取消**（10.2.3 `POST /runs/{id}/cancel`）：前端要能主动停止。
+>
+> 下面 10.2.1/10.2.3 给的是**把这些步合并后的终态代码**（可照抄），但你要清楚它是由这 5 步叠加而来。如果跟着演进敲，可以按这 5 步逐版增量改。**每步解决一个痛点，不是一蹴而就。**
 
 #### 10.2.1 SyncStreamBus：subscribe() 拆成 trigger(runId) + subscribeReadOnly(runId)
 
