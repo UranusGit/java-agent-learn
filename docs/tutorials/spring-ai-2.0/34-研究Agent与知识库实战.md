@@ -4961,6 +4961,146 @@ POST /api/runs/run_abc/cancel        → 主动停止
 
 > **这就是 OpenAI Assistants / 真实 AI 平台的管数分离标准**。相比 10.2 的简化版，它把触发建成"一等公民资源"（有 id、状态机、可查/可取消/可订阅），配幂等键防重复、协议级重连续传。**生产级管数分离应做到这个程度**——10.2 是学习起步，10.6 是企业级目标态。
 
+**落地代码（在 10.2 基础上演进）**：在原有 `research-agent/research/run/` 包下新增两个文件——`RunStore`（run 资源 + 幂等映射，落 PG）和 `RunController`（管数分离的企业级 REST）。RedisStreamBus 的 `trigger` 方法签名从 `trigger(sessionId, upstream)` 升级为 `trigger(runId, upstream)`——流 key 按 runId 而非 sessionId 隔离（一次会话可多次研究，互不干扰）。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/run/RunStore.java`：
+
+```java
+package com.example.research.run;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+
+import java.time.Instant;
+import java.util.UUID;
+
+/**
+ * Run 资源存储（管数分离的核心：触发 = 创建 run 资源）。
+ * 状态机：queued → in_progress → completed / failed / cancelled
+ * 幂等：Idempotency-Key 头 → 同 key 返回同一个 run（防多端重复提交）
+ * 存储：PG（和 chat_memory 同库；零依赖版纯内存/Redis）
+ */
+@Component
+public class RunStore {
+
+    private final JdbcTemplate db;
+
+    public RunStore(JdbcTemplate db) { this.db = db; }
+
+    /** 幂等创建 run：同 idempotencyKey 返回同一 run；否则新建。 */
+    public String create(String sessionId, String idempotencyKey) {
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            String existing = db.queryForObject(
+                "SELECT run_id FROM run_idempotent WHERE key = ?", String.class, idempotencyKey);
+            if (existing != null) return existing;
+        }
+        String runId = "run_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        db.update("INSERT INTO research_run (id, session_id, status, created_at) VALUES (?,?,?,?)",
+                runId, sessionId, "queued", Instant.now());
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            db.update("INSERT INTO run_idempotent (key, run_id) VALUES (?,?)",
+                    idempotencyKey, runId);
+        }
+        return runId;
+    }
+
+    /** 更新状态。 */
+    public void setStatus(String runId, String status) {
+        db.update("UPDATE research_run SET status = ?, finished_at = ? WHERE id = ?",
+                status, "completed".equals(status) ? Instant.now() : null, runId);
+    }
+
+    /** 查 run 状态。 */
+    public String status(String runId) {
+        return db.queryForObject("SELECT status FROM research_run WHERE id = ?", String.class, runId);
+    }
+}
+```
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/run/RunController.java`（管数分离企业级 REST）：
+
+```java
+package com.example.research.run;
+
+import com.example.research.ResearchService;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import java.net.URI;
+import java.time.Duration;
+import java.util.Map;
+
+/**
+ * 管数分离的企业级 REST（run 资源 + 幂等 + SSE）：
+ *   POST  /api/runs?topic=X&sessionId=Y + 头 Idempotency-Key → 201 + run 资源
+ *   GET   /api/runs/{runId}                                  → 查状态
+ *   GET   /api/runs/{runId}/stream                           → 只读 SSE（带心跳）
+ *   POST  /api/runs/{runId}/cancel                           → 取消
+ */
+@RestController
+@RequestMapping("/api/runs")
+public class RunController {
+
+    private final RunStore runs;
+    private final ResearchService researchService;
+
+    public RunController(RunStore runs, ResearchService researchService) {
+        this.runs = runs; this.researchService = researchService;
+    }
+
+    @PostMapping
+    public ResponseEntity<Map<String, String>> create(@RequestParam String topic,
+            @RequestParam String sessionId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idemKey) {
+        String runId = runs.create(sessionId, idemKey);
+        researchService.trigger(topic, sessionId, runId);   // 触发（runId 隔离流），异步 fire-and-forget
+        return ResponseEntity.status(HttpStatus.CREATED)    // 201
+                .location(URI.create("/api/runs/" + runId))
+                .body(Map.of("runId", runId, "sessionId", sessionId,
+                        "streamUrl", "/api/runs/" + runId + "/stream"));
+    }
+
+    @GetMapping("/{runId}")
+    public ResponseEntity<Map<String, String>> status(@PathVariable String runId) {
+        String s = runs.status(runId);
+        return s != null ? ResponseEntity.ok(Map.of("runId", runId, "status", s))
+                         : ResponseEntity.notFound().build();
+    }
+
+    @GetMapping(value = "/{runId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> stream(@PathVariable String runId) {
+        Flux<ServerSentEvent<String>> data = researchService.subscribeReadOnly(runId, 0)
+                .map(c -> ServerSentEvent.<String>builder().data(c).build());
+        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(1))
+                .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
+        return data.mergeWith(heartbeat).takeUntilOther(data.then());
+    }
+
+    @PostMapping("/{runId}/cancel")
+    public ResponseEntity<String> cancel(@PathVariable String runId) {
+        runs.setStatus(runId, "cancelled");
+        // SyncStreamBus.cancel(runId) 停 LLM（需在 SyncStreamBus 加 cancel 方法，见 10.2.1 trigger 的 Disposable 句柄）
+        return ResponseEntity.ok("{\"status\":\"cancelled\"}");
+    }
+}
+```
+
+> **和简化版（10.2.3 ResearchController）的关系**：10.2 的 `POST /api/research` + `GET /api/research/stream` 是学习起步——帮你看清"管数分离的核心就是拆两个接口"。**RunController 是对它的企业级升级**——把"触发"建成一个一等公民资源（run），配幂等键/状态机/取消。两者是演进关系：先理解 10.2 的"为什么要拆"，再用 10.6 的"怎么拆得更专业"。
+
+> **建表 DDL**（PG）：
+> ```sql
+> CREATE TABLE IF NOT EXISTS research_run (
+>     id VARCHAR(64) PRIMARY KEY, session_id VARCHAR(64) NOT NULL,
+>     status VARCHAR(16) NOT NULL, created_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ);
+> CREATE TABLE IF NOT EXISTS run_idempotent (
+>     key VARCHAR(128) PRIMARY KEY, run_id VARCHAR(64) NOT NULL);
+> ```
+> `SyncStreamBus.trigger` 签名从 `trigger(String sessionId, ...)` 改为 `trigger(String runId, ...)`，流 key 从 `stream:{sessionId}:chunks` 改为 `stream:{runId}:chunks`——run 是一等公民，一次会话多次研究互不干扰。
+
 ### 10.7 流式数据与历史记录的协调（管数分离后的关键衔接）
 
 > 管数分离把"触发/订阅"拆开后，出现一个必须协调的问题：**正在流式输出的 chunk**（Redis Streams）和**已持久化的历史**（PG chat_memory）之间怎么配合？这节讲清——是多端同步最容易翻车的地方。
