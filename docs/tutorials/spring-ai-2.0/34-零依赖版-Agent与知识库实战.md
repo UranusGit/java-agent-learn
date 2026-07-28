@@ -909,37 +909,42 @@ public class RedisConfig {
 }
 ```
 
-#### 2.2.4 知识库文档模型 + TF-IDF 索引
+#### 2.2.4 知识库文档模型 + 最朴素检索（先跑通，不讲算法）
 
-**【新建文件】** `research-agent/src/main/java/com/example/research/kb/TfidfIndex.java`：
+> **演进纪律**：知识库检索**不**一上来就 TF-IDF。先给**最朴素的"逐词包含匹配"**——能存文档、能按关键词命中返回，先让 RAG 链路跑通。然后 2.6-2.9 按"一个痛点 → 一处升级"逐步演进：先发现"高频词淹没关键词"→才加 IDF；先发现"长短文档不公平"→才加余弦归一化；先发现"中文搜不到"→才加 2-gram。**每节只引入一个概念。**
+
+先建文档模型 `KbDoc`（极简 JSON，不引 Jackson，零依赖）+ 最朴素的 `TfidfIndex`（这版其实只做"包含匹配"，名字先占着，后面才长成 TF-IDF）。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/kb/TfidfIndex.java`（最朴素版）：
 
 ```java
 package com.example.research.kb;
 
-import org.springframework.data.annotation.Id;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
-import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * TF-IDF 检索索引（纯 Java，零外部依赖）。
+ * 知识库索引（最朴素版：逐词包含匹配）。
  *
- * 文档存 Redis（Hash：kb:docs），ID 自增（kb:seq）。
- * TF-IDF 在内存计算：每次检索把文档从 Redis 拉到内存算——文档量小时完全够用。
- * （简陋处：文档量大时应把 IDF 预计算缓存。本文聚焦编排逻辑，不优化检索性能。）
+ * 这版只做：把 query 按空格拆词，统计每个文档命中了几个词，按命中数排序。
+ * 先让 RAG 链路跑通（存文档 + 按词命中检索），不讲算法。
  *
- * 中文分词：用 2-gram（每两个相邻字当一个词）兜底 + 英文按空格/标点分。
+ * ⚠️ 刻意简陋（后面 2.6-2.9 逐个补）：
+ *   - 没有 IDF："大模型/推理"这种每篇都有的高频词，命中数虚高，淹没真正关键词 → 2.6 补
+ *   - 没有归一化：长文档天然命中更多词，排名虚高 → 2.7 补（余弦）
+ *   - 中文按空格拆不开："vLLM是什么"拆不出有意义的词 → 2.8 补（2-gram）
+ *   - 没有 topK 截断和 0 命中过滤 → 2.9 补
+ * 文档存 Redis（Hash: kb:docs），ID 自增（kb:seq）。不依赖数据库。
  */
 @Component
 public class TfidfIndex {
 
-    private static final String KEY_DOCS = "kb:docs";   // Hash: docId -> JSON{title,content}
-    private static final String KEY_SEQ  = "kb:seq";    // 自增 ID
+    private static final String KEY_DOCS = "kb:docs";
+    private static final String KEY_SEQ  = "kb:seq";
 
     private final ReactiveRedisTemplate<String, String> redis;
 
@@ -947,7 +952,7 @@ public class TfidfIndex {
         this.redis = redis;
     }
 
-    /** 载入全部文档（检索前调用）。 */
+    /** 载入全部文档。 */
     public Mono<List<KbDoc>> loadAll() {
         return redis.opsForHash().values(KEY_DOCS)
                 .map(o -> KbDoc.fromJson(o.toString()))
@@ -963,113 +968,34 @@ public class TfidfIndex {
     }
 
     /**
-     * 检索：返回与 query 最相关的 topK 篇文档（按 TF-IDF 余弦相似度排序）。
+     * 检索（最朴素版）：query 按空格拆词，统计每篇文档命中几个词，按命中数降序。
      */
     public Mono<List<KbDoc>> retrieve(String query, int topK) {
-        return loadAll().map(docs -> rank(docs, query, topK));
+        return loadAll().map(docs -> {
+            List<String> terms = List.of(query == null ? new String[0] : query.split("\\s+"));
+            return docs.stream()
+                    .map(d -> Map.entry(d, countHits(d, terms)))
+                    .sorted((a, b) -> Long.compare(b.getValue(), a.getValue()))
+                    .limit(topK)
+                    .map(Map.Entry::getKey)
+                    .collect(Collectors.toList());
+        });
     }
 
-    // —— TF-IDF 核心算法（纯内存） ——
-
-    private List<KbDoc> rank(List<KbDoc> docs, String query, int topK) {
-        if (docs.isEmpty()) return List.of();
-        // 分词
-        Map<String, double[]> docVectors = new HashMap<>();
-        List<String> queryTerms = tokenize(query);
-
-        // IDF：每个词的逆文档频率
-        Map<String, Double> idf = computeIdf(docs, queryTerms);
-
-        // 文档向量（TF-IDF）
-        for (KbDoc d : docs) {
-            docVectors.put(d.id(), tfidfVector(tokenize(d.title + " " + d.content), idf));
-        }
-        double[] qVec = tfidfVector(queryTerms, idf);
-
-        // 余弦相似度排序
-        return docs.stream()
-                .map(d -> Map.entry(d, cosine(qVec, docVectors.get(d.id()))))
-                .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
-                .limit(topK)
-                .filter(e -> e.getValue() > 0)
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toList());
+    /** 命中数：文档里包含了 query 的几个词。 */
+    private long countHits(KbDoc d, List<String> terms) {
+        String text = (d.title() + " " + d.content()).toLowerCase();
+        return terms.stream().filter(t -> !t.isBlank() && text.contains(t.toLowerCase())).count();
     }
 
-    private Map<String, Double> computeIdf(List<KbDoc> docs, List<String> terms) {
-        Map<String, Double> idf = new HashMap<>();
-        Set<String> vocab = new HashSet<>(terms);
-        for (String term : vocab) {
-            long containing = docs.stream()
-                    .filter(d -> (d.title + " " + d.content).contains(term))
-                    .count();
-            // idf = log(N / (1 + df))，加 1 防 0
-            idf.put(term, Math.log((docs.size() + 1.0) / (containing + 1.0)) + 1.0);
-        }
-        return idf;
-    }
-
-    private double[] tfidfVector(List<String> terms, Map<String, Double> idf) {
-        // 词频
-        Map<String, Long> tf = terms.stream().collect(Collectors.groupingBy(t -> t, Collectors.counting()));
-        // 向量维度 = idf 的词表（与 query 向量对齐靠词名，这里简化为按 idf 的 key 顺序）
-        // 简化：直接构造稀疏 map，余弦按共同词算
-        return null; // 见 cosine 重载使用 map 版本
-    }
-
-    // 为简化，余弦相似度直接用稀疏 Map 计算（不用定长数组）
-    private double cosine(double[] ignore, double[] ignore2) { return 0; }
-
-    /** 真正的相似度：两个稀疏向量（Map<词,权重>）的余弦。 */
-    private double cosine(Map<String, Double> a, Map<String, Double> b) {
-        double dot = 0, na = 0, nb = 0;
-        for (Map.Entry<String, Double> e : a.entrySet()) {
-            na += e.getValue() * e.getValue();
-            Double bv = b.get(e.getKey());
-            if (bv != null) dot += e.getValue() * bv;
-        }
-        for (double v : b.values()) nb += v * v;
-        if (na == 0 || nb == 0) return 0;
-        return dot / (Math.sqrt(na) * Math.sqrt(nb));
-    }
-
-    private Map<String, Double> sparseTfidf(List<String> terms, Map<String, Double> idf) {
-        Map<String, Long> tf = terms.stream().collect(Collectors.groupingBy(t -> t, Collectors.counting()));
-        Map<String, Double> vec = new HashMap<>();
-        for (Map.Entry<String, Long> e : tf.entrySet()) {
-            Double w = idf.get(e.getKey());
-            if (w == null) w = 1.0;
-            vec.put(e.getKey(), e.getValue() * w);
-        }
-        return vec;
-    }
-
-    private List<String> tokenize(String text) {
-        if (text == null) return List.of();
-        List<String> tokens = new ArrayList<>();
-        // 英文/数字词
-        Matcher m = Pattern.compile("[a-zA-Z0-9_\\-]+").matcher(text);
-        while (m.find()) tokens.add(m.group().toLowerCase());
-        // 中文 2-gram
-        String cn = text.replaceAll("[^\\u4e00-\\u9fa5]", "");
-        for (int i = 0; i + 2 <= cn.length(); i++) {
-            tokens.add(cn.substring(i, i + 2));
-        }
-        return tokens;
-    }
-
-    /** 知识库文档（JSON 序列化）。 */
-    public record KbDoc(@Id String id, String title, String content) {
+    /** 知识库文档（极简 JSON 序列化，零外部依赖）。 */
+    public record KbDoc(String id, String title, String content) {
         public String toJson() {
-            // 极简 JSON 转义（避免引 JSON 库依赖；content 里换行用 \\n）
             return "{\"id\":\"" + id + "\",\"title\":\"" + esc(title)
                     + "\",\"content\":\"" + esc(content) + "\"}";
         }
         static KbDoc fromJson(String json) {
-            String id = extract(json, "id");
-            String title = extract(json, "title");
-            String content = extract(json, "content");
-            return new KbDoc(id, title, content);
+            return new KbDoc(extract(json, "id"), extract(json, "title"), extract(json, "content"));
         }
         private static String esc(String s) {
             return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
@@ -1094,10 +1020,7 @@ public class TfidfIndex {
 }
 ```
 
-> **简陋处标注**：
-> - 上面留了 `tfidfVector`/`cosine(double[])` 两个未用的占位（教学上展示"定长向量"思路），实际用稀疏 Map 版 `sparseTfidf` + `cosine(Map)`。生产代码删掉占位即可。**这是为了让学习者看到 TF-IDF 的两种实现路径**。
-> - JSON 序列化是手写极简版（不引 Jackson），为彻底零外部依赖。生产用 Jackson。
-> - IDF 每次检索重算，文档量大时应缓存。本文聚焦编排不优化检索。
+> **为什么先这么朴素**：RAG 的价值是"Agent 能查到相关文档喂给 LLM"。第一步只要"存得下、查得到"——检索质量先不追求。**先把链路打通，再迭代质量**，符合企业项目"先让它 work，再让它 better"的真实节奏。
 
 #### 2.2.5 KnowledgeBaseTool：注册给 LLM 的知识库工具
 
@@ -1115,8 +1038,7 @@ import java.util.stream.Collectors;
 
 /**
  * 知识库工具：注册给 LLM 自主调用（RAG 的工具化形态）。
- * retrieve(query) 用 TF-IDF 检索 topK 文档，拼成上下文返回。
- *
+ * retrieve(query) 检索 topK 文档，拼成上下文返回。
  * 不依赖向量库、不依赖数据库：检索算法在内存（TfidfIndex），文档存 Redis。
  */
 @Component
@@ -1161,6 +1083,7 @@ package com.example.research.kb;
 
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -1172,27 +1095,24 @@ import reactor.core.publisher.Mono;
 public class KbSeeder {
 
     private final TfidfIndex index;
-    private final reactor.core.publisher.Mono<Long> checkSeeded;
-    private final org.springframework.data.redis.core.ReactiveRedisTemplate<String, String> redis;
+    private final ReactiveRedisTemplate<String, String> redis;
 
-    public KbSeeder(TfidfIndex index,
-                    org.springframework.data.redis.core.ReactiveRedisTemplate<String, String> redis) {
+    public KbSeeder(TfidfIndex index, ReactiveRedisTemplate<String, String> redis) {
         this.index = index;
         this.redis = redis;
-        this.checkSeeded = redis.opsForValue().get("kb:seeded")
-                .flatMap(v -> Mono.just(1L)).switchIfEmpty(Mono.just(0L));
     }
 
     @EventListener(ApplicationReadyEvent.class)
     public void seed() {
-        checkSeeded.flatMap(seeded -> {
-            if (seeded > 0) return Mono.empty();
-            return index.add("vLLM 推理框架", "vLLM 是高效的大模型推理框架，核心是 PagedAttention，吞吐量行业领先。")
-                    .then(index.add("TensorRT-LLM", "TensorRT-LLM 由 NVIDIA 出品，与 GPU 深度绑定，延迟最低。"))
-                    .then(index.add("SGLang 框架", "SGLang 主打结构化生成与 RadixAttention，适合复杂工具调用。"))
-                    .then(index.add("部署规范", "本公司大模型服务部署规范：推理服务必须配置超时与重试，禁止裸 block。"))
-                    .then(redis.opsForValue().set("kb:seeded", "1").then());
-        }).subscribe();
+        redis.opsForValue().get("kb:seeded")
+                .switchIfEmpty(Mono.just("0"))
+                .flatMap(seeded -> "1".equals(seeded) ? Mono.empty() :
+                    index.add("vLLM 推理框架", "vLLM 是高效的大模型推理框架，核心是 PagedAttention，吞吐量行业领先。")
+                        .then(index.add("TensorRT-LLM", "TensorRT-LLM 由 NVIDIA 出品，与 GPU 深度绑定，延迟最低。"))
+                        .then(index.add("SGLang 框架", "SGLang 主打结构化生成与 RadixAttention，适合复杂工具调用。"))
+                        .then(index.add("部署规范", "本公司大模型服务部署规范：推理服务必须配置超时与重试，禁止裸 block。"))
+                        .then(redis.opsForValue().set("kb:seeded", "1")))
+                .subscribe();
     }
 }
 ```
@@ -1205,7 +1125,6 @@ public class KbSeeder {
 package com.example.research;
 
 import com.example.research.kb.KnowledgeBaseTool;
-import com.example.research.llm.LlmClient;
 import com.example.research.llm.ToolCallingLoop;
 import com.example.research.tool.WebSearchTool;
 import org.springframework.stereotype.Service;
@@ -1223,10 +1142,9 @@ public class ResearchService {
 
     private final ToolCallingLoop agentLoop;
     private final WebSearchTool searchTool;
-    private final KnowledgeBaseTool knowledgeBaseTool;   // ▼ 第2章新增
+    private final KnowledgeBaseTool knowledgeBaseTool;
 
-    public ResearchService(ToolCallingLoop agentLoop,
-                           WebSearchTool searchTool,
+    public ResearchService(ToolCallingLoop agentLoop, WebSearchTool searchTool,
                            KnowledgeBaseTool knowledgeBaseTool) {
         this.agentLoop = agentLoop;
         this.searchTool = searchTool;
@@ -1239,55 +1157,258 @@ public class ResearchService {
               + "自主决定调哪个、调几次。内部问题优先查 knowledge_base。资料足够后给出结构清晰的研究结果。绝不编造。",
                 "研究主题：" + topic,
                 List.of(),
-                List.of(searchTool.asTool(), knowledgeBaseTool.asTool()))   // ▼ 第2章：注册两个工具
+                List.of(searchTool.asTool(), knowledgeBaseTool.asTool()))
                 .timeout(Duration.ofSeconds(60));
     }
 }
 ```
 
-### 2.3 验证
+### 2.3 验证最朴素版
 
 ```bash
-# 起 Redis
 docker run -d --name research-redis -p 6379:6379 redis:7-alpine
-
 mvn spring-boot:run
 
-# 查内部知识（应命中 knowledge_base）
-curl -N "http://localhost:8080/api/research?topic=本公司的部署规范是什么"
-
-# 查公开信息（应命中 web_search）
-curl -N "http://localhost:8080/api/research?topic=对比vLLM和SGLang"
-
-# 验证 Redis 里有文档
+curl -N "http://localhost:8080/api/research?topic=部署规范"
+curl -N "http://localhost:8080/api/research?topic=vLLM SGLang"
 docker exec research-redis redis-cli HGETALL kb:docs
 ```
 
-预期：研究"部署规范"时结果里出现知识库文档内容；研究"vLLM/SGLang"时出现内置搜索条目。Mock LLM 按 description 关键词决定调哪个工具。
+**这版能跑通什么**：输入"部署规范"→ 命中部署规范文档；输入"vLLM SGLang"→ 命中两篇相关文档。RAG 链路打通了。
 
-### 2.4 checkpoint
+**但仔细测会发现问题**（这就是要演进的痛点）：① 输入"vLLM 推理框架"，"推理"这个词每篇文档几乎都有，命中数虚高，可能把不相关的文档也顶上来；② 输入纯中文问句"vLLM是什么"，按空格拆不开，命中数为 0 查不到。**这正是 2.6（IDF）、2.8（2-gram）要解决的。**
+
+### 2.4 最朴素检索的隐患清单（后面逐个补）
+
+| 隐患 | 现象 | 何时补 |
+|------|------|--------|
+| 高频词淹没关键词 | "推理/大模型"每篇都有，命中数虚高 | 2.6（IDF）|
+| 长短文档不公平 | 长文档天然命中更多词 | 2.7（余弦归一化）|
+| 中文拆不开 | 纯中文问句按空格拆不出词，查不到 | 2.8（2-gram 分词）|
+| 无 topK 截断/0 命中过滤 | 不相关的也返回 | 2.9（过滤）|
+
+> **演进纪律**：先让检索 work（2.2-2.3），再逐个提升质量（2.6-2.9）。**不一开始就上完整 TF-IDF。**
+
+### 2.5 checkpoint（最朴素版）
 
 ```
-research-agent/
-├── pom.xml                                  （加 data-redis-reactive）
-├── application.yaml                         （加 spring.data.redis）
-└── src/main/java/com/example/research/
-    ├── config/RedisConfig.java              （新增）
-    └── kb/
-        ├── TfidfIndex.java                  （新增：TF-IDF 检索）
-        ├── KnowledgeBaseTool.java           （新增：知识库工具）
-        └── KbSeeder.java                    （新增：种子文档）
+research-agent/src/main/java/com/example/research/
+├── config/RedisConfig.java        （新增）
+└── kb/
+    ├── TfidfIndex.java            （新增：最朴素包含匹配）
+    ├── KnowledgeBaseTool.java     （新增）
+    └── KbSeeder.java              （新增）
 ```
 
 ```bash
-git add -A && git commit -m "第2章：内存TF-IDF知识库RAG（落Redis，不依赖向量库）"
+git add -A && git commit -m "第2章(朴素版)：知识库RAG链路打通（包含匹配+落Redis）"
 ```
 
-### 2.5 复盘
+---
 
-**做了**：纯 Java TF-IDF 检索（不依赖 embedding、不依赖向量库）；文档落 Redis；`KnowledgeBaseTool` 注册给 LLM 自主调。两个工具（公开搜索 + 内部知识库）分工。
+### 2.6 升级①：IDF——压低高频词的权重
 
-**核心**：RAG 不一定要向量库——零依赖版用 TF-IDF 证明"检索能力"可以纯内存实现。**换向量检索时，只换 `TfidfIndex.retrieve()`，接口和工具注册都不动**。这就是解耦的红利。
+**痛点**：2.4 清单的"高频词淹没关键词"。"推理/大模型"这类词每篇文档都有，朴素"命中数"把它们当成强信号，导致不相关文档排名虚高。真正有区分度的词（如"PagedAttention"只出现在 vLLM 那篇）反而被淹没。
+
+**解法**：**IDF（逆文档频率）**——一个词在越多文档出现，权重越低。`idf = log(文档总数 / 包含该词的文档数)`。"推理"出现在所有 4 篇 → idf≈0；"PagedAttention"只出现在 1 篇 → idf 高。用 `词频 × idf` 替代纯命中数。
+
+**【改已有文件，完整版覆盖】** `TfidfIndex.java`（在朴素版基础上，把 `countHits` 换成 TF-IDF 打分，标 `▼ 升级①`）：
+
+```java
+package com.example.research.kb;
+
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Component
+public class TfidfIndex {
+
+    private static final String KEY_DOCS = "kb:docs";
+    private static final String KEY_SEQ  = "kb:seq";
+    private final ReactiveRedisTemplate<String, String> redis;
+
+    public TfidfIndex(ReactiveRedisTemplate<String, String> redis) { this.redis = redis; }
+
+    public Mono<List<KbDoc>> loadAll() {
+        return redis.opsForHash().values(KEY_DOCS).map(o -> KbDoc.fromJson(o.toString())).collectList();
+    }
+
+    public Mono<String> add(String title, String content) {
+        return redis.opsForValue().increment(KEY_SEQ)
+                .map(id -> new KbDoc("doc" + id, title, content))
+                .flatMap(doc -> redis.opsForHash().put(KEY_DOCS, doc.id(), doc.toJson()).thenReturn(doc.id()));
+    }
+
+    public Mono<List<KbDoc>> retrieve(String query, int topK) {
+        return loadAll().map(docs -> {
+            List<String> terms = tokenize(query);
+            // ▼ 升级①：算每个 query 词的 idf
+            Map<String, Double> idf = computeIdf(docs, terms);
+            return docs.stream()
+                    .map(d -> Map.entry(d, score(d, terms, idf)))
+                    .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
+                    .limit(topK)
+                    .map(Map.Entry::getKey)
+                    .collect(Collectors.toList());
+        });
+    }
+
+    /** ▼ 升级①：文档得分 = Σ(词频 × idf)。高频词 idf 低，压不相关文档的分数。 */
+    private double score(KbDoc d, List<String> terms, Map<String, Double> idf) {
+        String text = (d.title() + " " + d.content()).toLowerCase();
+        Map<String, Long> tf = terms.stream().filter(t -> text.contains(t))
+                .collect(Collectors.groupingBy(t -> t, Collectors.counting()));
+        double s = 0;
+        for (Map.Entry<String, Long> e : tf.entrySet()) {
+            s += e.getValue() * idf.getOrDefault(e.getKey(), 0.0);
+        }
+        return s;
+    }
+
+    /** ▼ 升级①：idf = log(N / (1 + df)) + 1。出现在越多文档的词，idf 越低。 */
+    private Map<String, Double> computeIdf(List<KbDoc> docs, List<String> terms) {
+        Map<String, Double> idf = new HashMap<>();
+        for (String term : new HashSet<>(terms)) {
+            long df = docs.stream().filter(d -> (d.title() + " " + d.content()).toLowerCase().contains(term)).count();
+            idf.put(term, Math.log((docs.size() + 1.0) / (df + 1.0)) + 1.0);
+        }
+        return idf;
+    }
+
+    /** 分词：先只按空格/标点拆（英文够用；中文 2-gram 在 2.8 补）。 */
+    private List<String> tokenize(String text) {
+        if (text == null) return List.of();
+        return Arrays.stream(text.toLowerCase().split("[\\s，。、,.]+"))
+                .filter(s -> !s.isBlank()).collect(Collectors.toList());
+    }
+
+    public record KbDoc(String id, String title, String content) {
+        public String toJson() {
+            return "{\"id\":\"" + id + "\",\"title\":\"" + esc(title) + "\",\"content\":\"" + esc(content) + "\"}";
+        }
+        static KbDoc fromJson(String json) {
+            return new KbDoc(extract(json, "id"), extract(json, "title"), extract(json, "content"));
+        }
+        private static String esc(String s) {
+            return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+        }
+        private static String extract(String json, String key) {
+            String k = "\"" + key + "\":\"";
+            int start = json.indexOf(k);
+            if (start < 0) return "";
+            start += k.length();
+            StringBuilder sb = new StringBuilder();
+            for (int i = start; i < json.length(); i++) {
+                char c = json.charAt(i);
+                if (c == '\\' && i + 1 < json.length()) { char n = json.charAt(++i); sb.append(n == 'n' ? '\n' : n); }
+                else if (c == '"') break; else sb.append(c);
+            }
+            return sb.toString();
+        }
+    }
+}
+```
+
+**验证**：再搜"vLLM 推理框架"，"推理"的 idf 低，真正区分性的词权重起来，vLLM 文档更稳地排第一。
+
+> **这版简陋处**：得分是"词频×idf 的求和"，长短文档不公平（长文档词频天然高）。→ 2.7 用余弦归一化解决。
+
+### 2.7 升级②：余弦归一化——长短文档公平比较
+
+**痛点**：2.6 的得分是裸求和，长文档天然词频高、分数虚高。应该把文档和 query 都看成"向量"，用**夹角余弦**比较方向相似度——和向量长度（文档长短）无关。
+
+**解法**：把"词→权重"的 Map 当稀疏向量，算 query 向量和文档向量的**余弦相似度** `dot / (|a|·|b|)`。这一步之后，检索质量基本够用。
+
+**【改已有文件，片段】** `TfidfIndex.retrieve` 和打分改成余弦（标 `▼ 升级②`）：
+
+```java
+public Mono<List<KbDoc>> retrieve(String query, int topK) {
+    return loadAll().map(docs -> {
+        List<String> terms = tokenize(query);
+        Map<String, Double> idf = computeIdf(docs, terms);
+        Map<String, Double> qVec = tfidfVector(terms, idf);              // ▼ 升级②：query 向量
+        return docs.stream()
+                .map(d -> Map.entry(d, cosine(qVec, tfidfVector(tokenize(d.title() + " " + d.content()), idf))))
+                .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
+                .limit(topK)
+                .filter(e -> e.getValue() > 0)                            // ▼ 顺手补：过滤 0 相似度
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+    });
+}
+
+/** ▼ 升级②：稀疏 TF-IDF 向量（词→tf×idf）。 */
+private Map<String, Double> tfidfVector(List<String> terms, Map<String, Double> idf) {
+    Map<String, Long> tf = terms.stream().collect(Collectors.groupingBy(t -> t, Collectors.counting()));
+    Map<String, Double> vec = new HashMap<>();
+    for (Map.Entry<String, Long> e : tf.entrySet()) {
+        vec.put(e.getKey(), e.getValue() * idf.getOrDefault(e.getKey(), 0.0));
+    }
+    return vec;
+}
+
+/** ▼ 升级②：两个稀疏向量的余弦相似度。和向量长度无关，长短文档公平。 */
+private double cosine(Map<String, Double> a, Map<String, Double> b) {
+    double dot = 0, na = 0, nb = 0;
+    for (Map.Entry<String, Double> e : a.entrySet()) {
+        na += e.getValue() * e.getValue();
+        Double bv = b.get(e.getKey());
+        if (bv != null) dot += e.getValue() * bv;
+    }
+    for (double v : b.values()) nb += v * v;
+    return (na == 0 || nb == 0) ? 0 : dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+```
+
+> 删掉 2.6 的 `score(...)` 方法（被余弦版取代）。这版已经接近完整 TF-IDF。**但中文还搜不到**——下一节补分词。
+
+### 2.8 升级③：中文 2-gram 分词——让纯中文问句能搜到
+
+**痛点**：2.4 清单的"中文拆不开"。纯中文问句"vLLM是什么"按空格拆不出有意义的词，命中数为 0。我们没有专业中文分词库（零依赖），怎么让中文能匹配？
+
+**解法**：**2-gram 兜底**——把连续的中文字符每两个字当一个"词"。"大模型推理"→ `[大模, 模型, 型推, 推理]`。query 和文档都这么拆，2-gram 重合就命中。粗糙但管用，不需要任何分词依赖。
+
+**【改已有文件，片段】** `tokenize` 加中文 2-gram（标 `▼ 升级③`）：
+
+```java
+private List<String> tokenize(String text) {
+    if (text == null) return List.of();
+    List<String> tokens = new ArrayList<>();
+    // 英文/数字词
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("[a-zA-Z0-9_\\-]+").matcher(text);
+    while (m.find()) tokens.add(m.group().toLowerCase());
+    // ▼ 升级③：中文 2-gram（每两个相邻字当一个词，兜底中文匹配）
+    String cn = text.replaceAll("[^\\u4e00-\\u9fa5]", "");
+    for (int i = 0; i + 2 <= cn.length(); i++) {
+        tokens.add(cn.substring(i, i + 2));
+    }
+    return tokens;
+}
+```
+
+**验证**：现在搜"vLLM是什么"、"对比推理框架"这类纯中文问句也能命中——2-gram 把它们拆成可匹配的片段。
+
+> **2-gram 的代价**：会拆出很多无意义片段（如"的框"），但 IDF 会压低这些在多文档出现的片段。对学习用 RAG 完全够用。生产换专业分词（jieba/HanLP）或直接上向量检索，接口不变。
+
+### 2.9 升级④小结：到这里就是完整 TF-IDF
+
+四步走完，`TfidfIndex` 已经是：**TF-IDF 向量 + 余弦相似度 + 中英混合分词 + topK 过滤**——一个零依赖、纯 Java、对研究问答够用的 RAG 检索器。**它不是一上来就写好的，而是 2.2 朴素版 → 2.6 IDF → 2.7 余弦 → 2.8 2-gram 一步步长出来的**，每步都对应一个真实检索痛点。
+
+> **为什么不在这再贴一遍终态完整代码**：把 2.6 + 2.7 + 2.8 的片段合并就是终态。重复贴整文件反而看不出"哪些是哪一步加的"。**演进式文档的价值，就是让你看清能力的生长路径**，而不是面对一个"为什么这么写"的成品。
+
+### 2.10 checkpoint + 复盘（第 2 章全节）
+
+```bash
+git add -A && git commit -m "第2章：TF-IDF四步演进（朴素匹配→IDF→余弦→2-gram）"
+```
+
+**做了**：知识库 RAG 链路打通 + 检索质量四步演进。文档落 Redis（不依赖数据库），检索纯内存（不依赖向量库）。两个工具（web_search + knowledge_base）分工。
+
+**核心**：RAG 不一定要向量库——零依赖版用 TF-IDF 证明"检索能力"可以纯内存一步步搭出来。**换向量检索时，只换 `TfidfIndex.retrieve()`，接口和工具注册都不动**——和第 16 章换 LLM 同构的解耦红利。
 
 ---
 
@@ -2700,7 +2821,69 @@ git add -A && git commit -m "第9章：多端同步四步加固（单一写者+s
 > 4. **幂等键**（10.2.3 `Idempotency-Key`）：多端同时点提交，用幂等键保证只创建一个 run。
 > 5. **取消**（10.2.3 `POST /runs/{id}/cancel`）：前端要能主动停止。
 >
-> 下面 10.2.1/10.2.3 给的是**把这些步合并后的终态代码**（可照抄），但你要清楚它是由这 5 步叠加而来。如果跟着演进敲，可以按这 5 步逐版增量改。**每步解决一个痛点，不是一蹴而就。**
+> 下面 10.2.0 先给**最小分离版**（只做"触发和订阅拆成两个接口"这一件事），让你先看到最朴素的管数分离长什么样、它的局限在哪。然后 10.2.1 起逐步演进到 run 资源终态。**每步解决一个痛点，不是一蹴而就。**
+
+#### 10.2.0 最小分离版：POST 触发 + GET 只读流（sessionId 维度，先不引入 run 资源）
+
+**痛点驱动**：第 9 章一个 `GET /api/research?topic=...&sessionId=...` 同时干三件事（触发+订阅+写副作用）。最小一步：把它**拆成两个接口**——POST 触发（管理面）、GET 只读流（数据面）。**只解决"解耦"这一件事**，先不管幂等/状态/取消。
+
+**【改已有文件，片段】** `SyncStreamBus`（在 9.9 基础上，把 `subscribe()` 拆成两个方法，标 `▼ 最小分离`）：
+
+```java
+// ▼ 最小分离：管理面——触发 LLM（抢锁+写 Redis），不返回流。
+public Mono<Boolean> trigger(String sessionId, Flux<String> upstream) {
+    String streamKey = "sync:" + sessionId + ":chunks";   // 这版仍用 sessionId 当 key
+    String channel   = "sync:" + sessionId;
+    String lockKey   = "sync:" + sessionId + ":lock";
+    return redis.opsForValue().setIfAbsent(lockKey, "1", Duration.ofMinutes(5))
+            .doOnNext(acquired -> {
+                if (Boolean.TRUE.equals(acquired)) {
+                    upstream.flatMap(chunk -> writeChunk(streamKey, channel, chunk))
+                            .doOnComplete(() -> { redis.delete(lockKey).subscribe();
+                                redis.convertAndSend(channel, "__END__").subscribe(); })
+                            .subscribe();
+                }
+            });
+}
+
+// ▼ 最小分离：数据面——纯只读订阅流（不触发、不抢锁、不写）。
+public Flux<String> subscribeReadOnly(String sessionId, long lastSeq) {
+    return replayThenListen("sync:" + sessionId + ":chunks", "sync:" + sessionId, lastSeq);
+}
+```
+
+**【改已有文件，片段】** `ResearchController`（POST + GET 分离，标 `▼ 最小分离`）：
+
+```java
+@PostMapping   // 管理面：触发，返回 202
+public Mono<ResponseEntity<Map<String, String>>> trigger(@RequestParam String topic, @RequestParam String sessionId) {
+    return researchService.trigger(topic, sessionId)
+            .thenReturn(ResponseEntity.accepted().body(Map.of("sessionId", sessionId, "status", "started")));
+}
+
+@GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)   // 数据面：只读 SSE
+public Flux<ServerSentEvent<String>> stream(@RequestParam String sessionId,
+        @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId) {
+    return researchService.subscribeReadOnly(sessionId, lastEventId != null ? lastEventId : 0)
+            .map(s -> ServerSentEvent.<String>builder().data(s).build());
+}
+```
+
+**验证最小分离版**：
+
+```bash
+curl -i -X POST "http://localhost:8080/api/research?topic=框架对比&sessionId=split-001"   # 202
+curl -N "http://localhost:8080/api/research/stream?sessionId=split-001"                   # 只读订阅
+# 第二台设备也只发 GET，不重复触发（日志只有一次"获得锁"）
+```
+
+**最小分离版的局限（驱动后续演进）**：
+- 返回 `202 + {status:"started"}`——前端拿不到一个能轮询的"任务状态"，不知道何时完成。
+- 流按 sessionId——一个会话同时只能有一次研究，想并发研究两个子问题做不到。
+- 没有幂等——多端同时 POST 会各自触发（虽然 SETNX 兜底了"只跑一次"，但前端语义混乱）。
+- 不能主动取消。
+
+**这些局限，正是 10.2.1-10.2.3 演进到 run 资源的动力。** 下面给终态代码（runId 隔离 + run 资源 + 幂等 + 取消），它由这些步叠加而来。
 
 #### 10.2.1 SyncStreamBus：subscribe() 拆成 trigger(runId) + subscribeReadOnly(runId)
 
