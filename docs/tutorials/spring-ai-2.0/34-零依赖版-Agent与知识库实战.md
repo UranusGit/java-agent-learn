@@ -46,6 +46,7 @@
 - [第 17 章：分布式 ChatMemory——拆服务后恢复多轮记忆](#第-17-章分布式-chatmemory拆服务后恢复多轮记忆)
 - [第 18 章：多租户 + 用户体系——JWT 认证与租户隔离](#第-18-章多租户--用户体系jwt-认证与租户隔离)
 - [第 19 章：成本治理——token 计量、租户预算与分摊](#第-19-章成本治理token-计量租户预算与分摊)
+- [第 20 章：可观测性——链路追踪 + 指标 + 告警](#第-20-章可观测性链路追踪--指标--告警)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
 ---
@@ -86,6 +87,7 @@
 | 持久层 | 管理数据全压 Redis 会丢/没法查 → H2+JPA（一行配切 PG） | 第 10.5 章 |
 | 多租户/认证 | 匿名接口越权、烧 token、无归属 → JWT + tenant_id 逻辑隔离 | 第 18 章 |
 | 成本治理 | LLM 调用无感、恶意用户烧光预算 → token 计量 + 租户预算 + 分摊 | 第 19 章 |
+| 可观测 | 六服务黑盒、出问题不知卡哪 → 结构化日志+指标+OpenTelemetry追踪 | 第 20 章 |
 
 > **架构演进（第 9 章起）**：前 8 章是"功能演进"（原型→产品）；第 9 章起进入"架构演进"——把"能上线的单体"一步步推向"分布式企业级终极形态"，**管数分离（第 10 章）是架构演进的核心**。
 >
@@ -5782,6 +5784,254 @@ git add -A && git commit -m "第19章：成本治理（token计量+租户预算+
 - **token 数优先用 LLM 返回的 usage**：估算（字符/2）只用于 Mock/学习，生产用真实 usage 最准。
 - **计价收敛在 LLM 网关**：哪个厂商什么价，网关知道；业务层只拿网关返回的 token+cost 落库。第 16 章解耦的兑现。
 - **成本治理以 tenant_id 为主键维度**：和第 18 章多租户一脉相承——计量、预算、分摊都按租户，B2B 计费自然成立。
+
+---
+
+
+## 第 20 章：可观测性——链路追踪 + 指标 + 告警
+
+> **定位（运营阶段）**：第 13-16 章拆成 6 个微服务后，系统从"单进程白盒"变成"多服务黑盒"。一次研究请求要跨：网关 → 触发 → LLM 网关 → DeepSeek → Kafka → 订阅 → 前端。**出问题时（响应慢、某个 run 卡住、LLM 偶发失败），不知道卡在哪一环**。这是微服务化的必然代价，必须靠可观测性补回来。
+>
+> **可观测性三支柱**（业界共识）：**日志（Logs）+ 指标（Metrics）+ 链路追踪（Traces）**。本章按演进式引入——先从最朴素的"打印日志 + 计数器"起步，逐步加指标、加追踪，不是一上来就上 OpenTelemetry 全家桶。
+
+### 20.0 场景：六服务黑盒，出问题不知卡哪
+
+运营中真实事故：
+
+| 痛点 | 现象 | 没有可观测性的后果 |
+|------|------|------------------|
+| **定位难** | 用户说"研究很慢"，不知是 LLM 慢、还是 Kafka 堆积、还是订阅服务卡 | 六个服务各自翻日志，靠肉眼串 runId，几小时定位不出 |
+| **无指标** | 不知道 QPS、成功率、p99 延迟、LLM 平均耗时 | 没法判断"该不该扩容"、没法设告警阈值 |
+| **无追踪** | 一个请求跨服务，各服务日志对不上时间线 | "触发到订阅之间这 8 秒到底花在哪"答不上 |
+
+**根因**：前面只有 `System.out.println`（第 0 章）和审计日志（第 6 章，按 sessionId 串业务事件）。缺**跨服务的链路追踪**和**系统级指标**。
+
+### 20.1 思路：三支柱一步步加（演进式）
+
+> **演进纪律**：可观测性不一次铺 OpenTelemetry 全家桶。三步走，每步解决一个痛点：
+> 1. **20.2 结构化日志 + traceId 串联**：先把散乱的 println 换成带 traceId 的结构化日志，能在多服务日志里 grep 串起一次请求。
+> 2. **20.3 指标（Metrics）**：加 QPS / 延迟 / 成功率计数器，能回答"系统现在健康吗"。
+> 3. **20.4 分布式追踪（Tracing）**：引入 OpenTelemetry + trace 上下文跨服务透传，能回答"一次请求的时间花在哪"。
+
+| 支柱 | 回答什么 | 本章最小实现 | 何时做 |
+|------|---------|------------|--------|
+| **日志 Logs** | 发生了什么（事实） | 结构化 JSON 日志 + traceId | 20.2 |
+| **指标 Metrics** | 系统健康吗（数字） | Micrometer 计数器/计时器 | 20.3 |
+| **追踪 Traces** | 时间花在哪（链路） | OpenTelemetry + 跨服务 trace 透传 | 20.4 |
+
+> **三者关系（重要区分）**：日志是"离散事实"、指标是"聚合数字"、追踪是"因果链路"。**三者互补不是替代**——日志告诉你"这条 run 失败了"，指标告诉你"失败率 5%"，追踪告诉你"失败发生在 LLM 网关调用那一步、耗时 30s"。少了任何一个，排障都缺一块。
+
+### 20.2 演进①：结构化日志 + traceId 串联（最小起步）
+
+**痛点**：第 0 章的 `System.out.println("[研究] ...")` 是给人看的文本，机器没法解析、没法跨服务串联。多服务下，六个服务的日志混在一起，找一次请求的轨迹全靠 grep 运气。
+
+**解法**：
+1. 每个请求分配一个 **traceId**（从网关注入，透传到所有下游服务）。
+2. 日志改成**结构化 JSON**（带 traceId/runId/tenantId 等字段），机器可解析、可聚合。
+3. 日志里每条都带 traceId——在任何服务的日志里 grep 同一个 traceId，就能串起完整轨迹。
+
+**【改已有文件，片段】** 网关注入 traceId（第 15 章网关的全局过滤器）：
+
+```java
+// research-gateway：每个进来的请求分配 traceId，放进头透传给下游
+@Bean
+public GlobalFilter traceIdFilter() {
+    return (exchange, chain) -> {
+        String traceId = exchange.getRequest().getHeaders().getFirst("X-Trace-Id");
+        if (traceId == null) {
+            traceId = java.util.UUID.randomUUID().toString().replace("-", "");
+        }
+        final String tid = traceId;
+        return chain.filter(exchange.mutate()
+                .request(exchange.getRequest().mutate().header("X-Trace-Id", tid).build())
+                .build());
+    };
+}
+```
+
+**【配置】** `application.yaml`（各服务统一）——日志输出 JSON 格式，带 MDC（traceId 存这里）：
+
+```yaml
+logging:
+  pattern:
+    # 把 X-Trace-Id 放进 MDC 后，%X{traceId} 自动带进每条日志
+    level: "%5p [%X{traceId}] %c - %m%n"
+```
+
+> **生产用 JSON 格式**（Logstash encoder），便于 ELK/Loki 采集聚合。学习期先用上面的人类可读格式（带 `[traceId]` 前缀），grep 即可串。**简陋处标注**：这里 MDC 在 WebFlux 响应式下有线程切换丢 MDC 的问题（和第 18 章 ThreadLocal 同理），生产要用响应式 MDC 传播器（如 `Hooks.enableAutomaticContextPropagation()`）。学习期先认知这个机制。
+
+> **这版能解决什么**：六个服务各自日志带同一个 traceId，`grep <traceId> *.log` 能串起一次请求的全部日志轨迹。**最小成本、最大排障收益**——这是可观测性"先 work 再 better"的第一步。
+
+### 20.3 演进②：指标（Metrics）——回答"系统健康吗"
+
+**痛点**：日志能定位单次问题，但回答不了"系统整体健康吗"——QPS 多少、成功率多少、p99 延迟多少、LLM 平均耗时多少。这些是**聚合数字**，靠翻日志数不出来。
+
+**解法**：用 **Micrometer**（Spring Boot Actuator 自带）埋指标——计数器（count）、计时器（timer）、仪表（gauge）。暴露 `/actuator/metrics`，Prometheus 采集、Grafana 展示。
+
+**【改已有文件】** `pom.xml` 加 actuator + prometheus：
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-registry-prometheus</artifactId>
+</dependency>
+```
+
+**【配置】** `application.yaml`：
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+```
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/obs/ResearchMetrics.java`（埋点）：
+
+```java
+package com.example.research.obs;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import org.springframework.stereotype.Component;
+
+/**
+ * 研究相关指标（Micrometer 埋点）。
+ * - research.triggered：触发次数（按 tenant 标签分维度）
+ * - research.duration：单次研究耗时分布
+ * - research.failed：失败次数
+ */
+@Component
+public class ResearchMetrics {
+
+    private final MeterRegistry registry;
+
+    public ResearchMetrics(MeterRegistry registry) { this.registry = registry; }
+
+    public void triggerCounted(String tenantId) {
+        registry.counter("research.triggered", "tenant", tenantId).increment();
+    }
+
+    public void durationRecorded(String tenantId, long millis) {
+        registry.timer("research.duration", "tenant", tenantId).record(java.time.Duration.ofMillis(millis));
+    }
+
+    public void failedCounted(String tenantId, String reason) {
+        registry.counter("research.failed", "tenant", tenantId, "reason", reason).increment();
+    }
+}
+```
+
+**【改已有文件，片段】** `SyncStreamBus.trigger` 埋点（接在第 19 章计量旁边）：
+
+```java
+.doOnComplete(() -> {
+    long elapsed = System.currentTimeMillis() - startMs;
+    metrics.durationRecorded(tenantId, elapsed);   // ▼ 第20章：记录耗时
+    metrics.triggerCounted(tenantId);
+    // ... 落库、计量 ...
+})
+.doOnError(err -> metrics.failedCounted(tenantId, err.getClass().getSimpleName()))
+```
+
+> **这版能解决什么**：Prometheus 采集后，Grafana 能画"QPS 曲线 / p99 延迟 / 按租户的成功率"。**有了指标才能设告警**（成功率 < 95% 触发报警）——这是"主动发现故障"的基础，而不是等用户投诉。
+
+### 20.4 演进③：分布式追踪（Tracing）——回答"时间花在哪"
+
+**痛点**：日志和指标能告诉你"这次请求慢了、整体失败率 5%"，但**回答不了"这 8 秒到底花在 LLM 网关、还是 Kafka、还是订阅服务"**。跨服务的因果链路，要靠**分布式追踪**。
+
+**解法**：**OpenTelemetry**（业界标准）——一个 trace 跨多个 span（每服务/每操作一个 span），span 间有父子关系，组成调用树。trace 上下文（traceId + spanId）随请求跨服务透传。
+
+```
+trace（一次研究）
+ ├─ span: gateway 处理 (2ms)
+ │   ├─ span: trigger 服务 (50ms)
+ │   │   ├─ span: LLM 网关调用 (30000ms) ← ▼ 慢在这
+ │   │   └─ span: 写 Kafka (5ms)
+ │   └─ span: subscribe 服务推 SSE (持续)
+```
+
+**【配置】** 引入 OpenTelemetry agent（最省事的方式——javaagent 自动埋点，业务代码零改）：
+
+```bash
+# 启动时挂 OTel agent（自动埋点 HTTP/Kafka/Redis 调用）
+java -javaagent:opentelemetry-javaagent.jar \
+     -Dotel.service.name=research-agent \
+     -Dotel.exporter.otlp.endpoint=http://localhost:4317 \
+     -jar research-agent.jar
+```
+
+> **为什么用 javaagent 而非手动埋点**：OpenTelemetry agent **自动**给 HTTP 调用、Kafka 收发、Redis 操作加 span，业务代码零改。学习/快速接入首选。需要精细追踪业务逻辑（如"Plan 阶段""Execute 阶段"）时，再手动加 `@WithSpan` 注解。
+
+**【手动埋点（可选）】** 追踪业务关键阶段（Plan/Execute/Aggregate）：
+
+```java
+import io.opentelemetry.instrumentation.annotations.WithSpan;
+
+public class PlanExecuteService {
+    @WithSpan("plan")           // ▼ 自动建一个名为 plan 的 span
+    public String plan(String topic) { ... }
+
+    @WithSpan("execute-subtask")
+    public String executeSubtask(String sub) { ... }
+}
+```
+
+**采集后端**：Jaeger / Zipkin / Tempo 展示调用树。能看到每个 span 耗时，**一眼定位"慢在哪一环"**。
+
+> **这版能解决什么**：一次请求跨六服务的完整调用树 + 每段耗时。**排障从"翻六个服务日志猜"变成"看一棵调用树"**——这是微服务可观测性的终极武器。
+
+### 20.5 三支柱怎么配合（一次故障的排障流程）
+
+把三者串起来，看一次真实排障：
+
+```
+① 告警触发（Metrics）：Grafana 显示 research.failed 计数突增，成功率掉到 80%
+      ↓
+② 定位慢点（Traces）：Jaeger 看失败请求的 trace → 发现 LLM 网关 span 普遍 30s+ 超时
+      ↓
+③ 查根因（Logs）：grep 那批 traceId 的日志 → LLM 网关日志显示 "DeepSeek 429 rate limit"
+      ↓
+结论：DeepSeek 限流 → 触发 LLM 网关的熔断降级（第16章扩展点）→ 切备用厂商
+```
+
+| 支柱 | 这次排障里的作用 |
+|------|----------------|
+| Metrics | 发现问题（成功率掉） |
+| Traces | 定位环节（LLM 网关慢） |
+| Logs | 查根因（DeepSeek 429） |
+
+**三者缺一**：只有指标→知道坏了不知哪坏；只有追踪→能看链路但不知整体影响面；只有日志→能查根因但不知哪些请求受影响。**这就是"三支柱互补"的实战价值**。
+
+### 20.6 checkpoint + 复盘
+
+```
+research-agent/src/main/java/com/example/research/obs/
+└── ResearchMetrics.java          （Micrometer 指标埋点）
+research-gateway/.../             （traceId 注入过滤器）
+配置：actuator + prometheus + opentelemetry agent
+```
+
+```bash
+git add -A && git commit -m "第20章：可观测性（结构化日志+Micrometer指标+OpenTelemetry追踪）"
+```
+
+**做了**：三支柱按演进式引入——结构化日志+traceId（串联排障）→ Micrometer 指标（健康度+告警）→ OpenTelemetry 追踪（跨服务调用树）。
+
+**核心跃迁**：从"单进程 println"到"分布式三支柱可观测"。微服务拆分的黑盒代价，靠可观测性补回来——**没有可观测性的微服务，等于蒙眼运行**。
+
+**工程教训**：
+- **三支柱互补不替代**：日志/指标/追踪各回答不同问题，少了任一都排障缺一块。
+- **演进式引入**：先日志+traceId（最小成本最大收益）→ 再指标（主动告警）→ 再追踪（精细定位）。不一上来铺 OTel 全家桶。
+- **响应式下 MDC/ThreadLocal 会丢**：WebFlux 线程切换导致传统 MDC 失效，要用响应式上下文传播器。这是响应式系统观测的坑。
+- **javaagent 自动埋点优先**：OTel agent 自动给 HTTP/Kafka/Redis 加 span，业务零改；业务关键阶段再手动 `@WithSpan`。
+- **指标要带标签维度**：`research.triggered{tenant=...}` 按租户分维度——和多租户/成本治理一脉相承，能按租户看健康度。
 
 ---
 
