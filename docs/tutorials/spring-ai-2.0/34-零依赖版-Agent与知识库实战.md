@@ -44,6 +44,7 @@
 - [第 15 章：微服务拆分（三）——加 API 网关](#第-15-章微服务拆分三加-api-网关)
 - [第 16 章：微服务拆分（四）——拆 LLM 网关](#第-16-章微服务拆分四拆-llm-网关)
 - [第 17 章：分布式 ChatMemory——拆服务后恢复多轮记忆](#第-17-章分布式-chatmemory拆服务后恢复多轮记忆)
+- [第 18 章：多租户 + 用户体系——JWT 认证与租户隔离](#第-18-章多租户--用户体系jwt-认证与租户隔离)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
 ---
@@ -81,6 +82,8 @@
 | 微服务③ | 前端记一堆端口 → API 网关 + 服务发现 | 第 15 章 |
 | 微服务④ | 换 LLM 实现要改业务代码 → 拆 LLM 网关 | 第 16 章 |
 | 分布式记忆 | 拆服务后触发服务失忆 → Redis 热缓存 + Redis 兜底 | 第 17 章 |
+| 持久层 | 管理数据全压 Redis 会丢/没法查 → H2+JPA（一行配切 PG） | 第 10.5 章 |
+| 多租户/认证 | 匿名接口越权、烧 token、无归属 → JWT + tenant_id 逻辑隔离 | 第 18 章 |
 
 > **架构演进（第 9 章起）**：前 8 章是"功能演进"（原型→产品）；第 9 章起进入"架构演进"——把"能上线的单体"一步步推向"分布式企业级终极形态"，**管数分离（第 10 章）是架构演进的核心**。
 >
@@ -3734,6 +3737,70 @@ curl "http://localhost:8080/api/runs/run_abc123"
 
 > **为什么能"一行配置切 PG"**：JPA 屏蔽了方言差异。H2 和 PG 都支持标准 SQL + JPA 注解定义的表结构。换库时把 `spring.datasource.url/driver` 从 H2 改成 PG，JPA 自动用 PG 方言——**业务代码（Repository/Service）一行不动**。这就是"用对抽象"的红利。
 
+### 10.5.1b 管理数据全景：存哪些、存哪、归属链怎么走
+
+> **这一节是整个管理数据层的"地图"**。先看清"存什么、存哪、彼此怎么归属"，后面的表设计、多会话、多租户才不会乱。
+
+#### ① 管理数据按生命周期 + 访问模式分三类
+
+| 类别 | 具体数据 | 生命周期 | 访问模式 | 存储 |
+|------|---------|---------|---------|------|
+| **租户/用户主数据** | `tenant`、`user`、`api_key` | 永久，低频写高频读 | 按主键、按租户 | **关系库 H2/PG** |
+| **业务会话数据** | `session`、`chat_message`、`run`、`audit_event` | 永久（可归档），按用户/租户查询 | 按用户/租户/时间、搜索 | **关系库 H2/PG** |
+| **知识库数据** | `kb_doc`（+ 可选 `kb_chunk`） | 永久，低频写高频检索 | 关键词/语义检索 | 关系库（TF-IDF/向量字段） |
+| ~~实时流态~~（不算管理数据） | chunk 流、SSE 会话 | 24h，高吞吐 | 多播订阅 | Redis Streams / Kafka |
+| ~~协调态~~（不算管理数据） | SETNX 锁、run 热状态 | 秒~分钟 | 低延迟 | Redis |
+
+> **三条铁律**：①该持久 + 可查询的 → 关系库；②高吞吐流式 → Redis/Kafka；③低延迟协调 → Redis。**不要让关系库扛流式，也不要让 Redis 扛持久**——职责越界是企业系统最常见的烂账源头。
+
+#### ② 归属链（设计的核心）
+
+把"多租户 / 多会话 / 历史持久化"三个维度串起来，就是一条从租户到消息的**归属链**：
+
+```
+tenant (租户)
+  └─ user (用户, 属于某 tenant)         ← 多租户隔离的边界（tenant_id）
+       └─ session (会话, 属于某 user)   ← 多会话（user_id）
+            └─ chat_message (消息)      ← 历史持久化（session_id）
+            └─ run (研究任务)            ← 属于某 session
+                 └─ audit_event (审计)  ← 属于某 session/run
+```
+
+**每个箭头对应一个外键**：`chat_message.session_id` → `session.id` → `session.user_id` → `user.id` → `user.tenant_id` → `tenant.id`。
+
+**所有业务查询都从这条链往下钻**：
+- "某用户的所有会话"：`session WHERE user_id = ?`
+- "某租户的所有消息"：`chat_message` JOIN `session` JOIN `user` 拿 `tenant_id`（或在每张业务表**冗余 tenant_id** 加速，见下）
+- "某会话的历史"：`chat_message WHERE session_id = ? ORDER BY created_at`
+
+#### ③ 企业级实践：业务表冗余 tenant_id（反范式换性能）
+
+严格按归属链，查"某租户的消息"要 JOIN 三层。企业级（数据量大时）的常见做法是**在每张业务表冗余一个 `tenant_id` 列**：
+
+```sql
+CREATE TABLE chat_message (
+    id BIGINT ...,
+    tenant_id VARCHAR(64),    -- ▼ 冗余：直接按租户过滤，不用 JOIN 到 user
+    session_id VARCHAR(64),
+    ...
+);
+```
+
+代价是写入时要同时填 `tenant_id`（从 session 带过来），但换来"按租户查询/隔离/统计都一跳到位"。**这是 B2B SaaS 的标准反范式**（OpenAI 按 `organization_id` 隔离同理）。本章的表设计就按这个来——**每张业务表都带 `tenant_id`，为第 18 章（多租户隔离）铺路**。
+
+#### ④ 三个维度的演进顺序（学习逻辑）
+
+这三个维度有**依赖顺序**，按顺序加：
+
+| 维度 | 含义 | 依赖谁 | 在哪做 |
+|------|------|--------|--------|
+| **历史持久化** | 消息落库、可回看 | —（基础） | 第 7 章 → 第 10.5 章（已做）|
+| **多会话** | 一个用户多个会话 | 历史（消息要有归属） | 第 8 章 session + 本章加 `user_id` |
+| **多租户** | 租户隔离、用户认证 | 多会话（会话要先属于用户） | **第 18 章**（对外运营阶段）|
+
+> **为什么多租户放最后**：它是"安全/治理"特性，企业级定位在"功能定型 + 架构成型之后"才做。提前做会让前面的学习被认证/隔离逻辑淹没。**但数据模型（tenant/user 表 + tenant_id 列）本章就先建好**——数据模型先行，认证后补。这是"模型就位、行为渐进"的纪律。
+
+
 ### 10.5.2 动手
 
 #### 10.5.2.1 pom 加依赖
@@ -3792,35 +3859,62 @@ spring:
 -- 管理/用户数据表（标准 ANSI SQL，H2 和 PostgreSQL 都能跑）
 -- 切 PG 时这份 schema.sql 原样可用（H2 的 IF NOT EXISTS / BIGINT/ TIMESTAMP PG 都支持）
 
+-- ============ 租户/用户主数据（多租户/认证的根基，第18章用）============
+-- 租户（企业级多租户的顶层归属）
+CREATE TABLE IF NOT EXISTS tenant (
+    id          VARCHAR(64) PRIMARY KEY,
+    name        VARCHAR(128),
+    created_at  TIMESTAMP NOT NULL
+);
+
+-- 用户（属于某 tenant；凭据字段留给第18章 JWT/认证填，本章先建表）
+CREATE TABLE IF NOT EXISTS app_user (
+    id          VARCHAR(64) PRIMARY KEY,
+    tenant_id   VARCHAR(64) NOT NULL,     -- ▼ 归属链：user → tenant
+    name        VARCHAR(128),
+    created_at  TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_user_tenant ON app_user(tenant_id);
+
+-- ============ 业务会话数据 ============
 -- 会话元信息（替代 Redis Hash "sessions"）
 CREATE TABLE IF NOT EXISTS app_session (
     id          VARCHAR(64)  PRIMARY KEY,
+    tenant_id   VARCHAR(64) NOT NULL,     -- ▼ 冗余 tenant_id：按租户过滤/隔离一跳到位
+    user_id     VARCHAR(64) NOT NULL,     -- ▼ 归属链：session → user（支撑多会话）
     title       VARCHAR(256),
     created_at  TIMESTAMP NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_session_user ON app_session(user_id);
+CREATE INDEX IF NOT EXISTS idx_session_tenant ON app_session(tenant_id);
 
 -- 会话历史消息（替代 Redis List "chat:{sid}"）
 CREATE TABLE IF NOT EXISTS chat_message (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id   VARCHAR(64) NOT NULL,     -- ▼ 冗余 tenant_id（反范式换查询性能）
     session_id  VARCHAR(64) NOT NULL,
     role        VARCHAR(16) NOT NULL,     -- user / assistant
     content     TEXT NOT NULL,
     created_at  TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_msg_session ON chat_message(session_id);
+CREATE INDEX IF NOT EXISTS idx_msg_tenant ON chat_message(tenant_id);
 
 -- run 资源（替代 Redis "run:{id}:status"）
 CREATE TABLE IF NOT EXISTS research_run (
     id          VARCHAR(64) PRIMARY KEY,
+    tenant_id   VARCHAR(64) NOT NULL,     -- ▼ 冗余 tenant_id
     session_id  VARCHAR(64) NOT NULL,
     status      VARCHAR(16) NOT NULL,     -- queued/RUNNING/DONE/FAILED/CANCELLED
     created_at  TIMESTAMP NOT NULL,
     finished_at TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_run_tenant ON research_run(tenant_id);
 
 -- 审计事件（替代 Redis List "audit:{sid}"）
 CREATE TABLE IF NOT EXISTS audit_event (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id   VARCHAR(64) NOT NULL,     -- ▼ 冗余 tenant_id（合规按租户审计）
     session_id  VARCHAR(64) NOT NULL,
     run_id      VARCHAR(64),
     type        VARCHAR(32) NOT NULL,
@@ -3828,7 +3922,14 @@ CREATE TABLE IF NOT EXISTS audit_event (
     created_at  TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_event(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_tenant ON audit_event(tenant_id);
 ```
+
+> **这套表设计的两个企业级决策**：
+> 1. **每张业务表都冗余 `tenant_id`**——第 18 章做租户隔离时，所有查询直接 `WHERE tenant_id=?`，不用 JOIN 到 user。这是 B2B SaaS 标准反范式（OpenAI 按 `organization_id` 同理）。代价是写入时要带 tenant_id，换查询/隔离/统计的巨大便利。
+> 2. **session 带 `user_id`**——支撑多会话（一个用户多个会话），`chat_message` 通过 session 间接归属 user。
+>
+> **本章只建表 + 冗余列，不实现认证**——tenant_id 写入时先用"默认租户/默认用户"占位（单租户学习阶段）。第 18 章接 JWT 后，tenant_id 从认证态取。**数据模型先行、行为渐进**。
 
 > **方言无关的几个要点**：①`BIGINT AUTO_INCREMENT`（H2）在 PG 是 `BIGSERIAL`——为完全通用，生产切 PG 时把这张表改成 `BIGSERIAL`，或用 JPA 的 `@GeneratedValue(strategy=IDENTITY)` 让框架处理（下面 entity 这么做）。②`TIMESTAMP` 两边都支持（不用 `TIMESTAMPTZ`，保持简单）。③`TEXT` 两边都支持。**entity 层用 JPA 注解，主键生成交给框架，DDL 层尽量用两边都有的类型**。
 
@@ -4881,6 +4982,346 @@ t5+ ... 31,32,... 两页逐字相同，都继续流 ✅
 > **学习要点**：多端同步的可靠性，全在"漏"和"重"两个字上。naive 实现（朴素 concatWith）会漏；没有去重会重。**seq 游标（不漏）+ 客户端 seq 去重（不重）+ 持久 Streams（前文可见）+ 单一写者（不重复触发）**，四者齐备才是企业级多端同步。少任何一个，线上都会以"偶发少字 / 偶发多字 / 重复烧 token"暴露。
 
 ---
+
+## 第 18 章：多租户 + 用户体系——JWT 认证与租户隔离
+
+> **定位（对外运营阶段）**：前面 17 章 + 补强，把"管数分离 + 多端同步 + 持久层 + 微服务"都做完了，但**所有接口是匿名的**——任何拿到 sessionId 的人都能看别人的会话（越权）、能无限触发 LLM（烧 token）。这是"内网学习项目"和"对外运营产品"的分水岭。
+>
+> **本章引入 JWT 认证 + 租户隔离**。数据模型（tenant/user 表 + 每张业务表的 tenant_id）在**第 10.5 章已经就位**，本章接上"认证态 + 查询过滤"，让那套表真正生效。**这是"模型先行、行为渐进"纪律的兑现**。
+>
+> **企业级多租户选型（按你确认的"企业级逻辑"）**：**逻辑隔离**——共享库、共享表，每张业务表带 `tenant_id`，所有查询 `WHERE tenant_id=?` 过滤。这是 B2B SaaS（OpenAI/Anthropic 按 organization_id）的主流做法。独立 schema/独立库只在金融/强合规/超大租户才用，对本项目过重。
+
+### 18.0 场景：匿名接口的三宗罪
+
+对外运营后，安全痛点集中爆发：
+
+| 痛点 | 现象 | 后果 |
+|------|------|------|
+| **越权** | 知道别人 sessionId 就能 `GET /runs/{id}/stream` 看他的研究 | 数据泄露 |
+| **匿名烧 token** | 任何人无限触发 LLM | 成本失控（原版第 23 章成本治理的前置） |
+| **无归属** | 数据不知道属于谁，没法按租户统计/隔离 | 无法 B2B 计费、无法合规 |
+
+**根因**：接口不认人——请求里没有可信的"你是谁、属于哪个租户"。
+
+### 18.1 思路：JWT 携带身份 + 网关验签 + 查询带 tenant_id
+
+```
+登录 → 颁发 JWT（含 userId/tenantId，签名防伪造）
+  ↓
+每次请求带 Authorization: Bearer <jwt>
+  ↓
+网关/Filter 验签 JWT → 解出 userId/tenantId → 放进请求上下文
+  ↓
+业务查询统一 WHERE tenant_id=?（从上下文取，不信任前端传入）
+```
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 认证方式 | **JWT**（无状态） | 服务端不存 session，微服务拆分后各服务都能自验签；扩展性好 |
+| 隔离方式 | **逻辑隔离**（共享表 + tenant_id） | 企业级主流，运维简单；tenant_id 在第 10.5 章已铺好 |
+| 验签位置 | **网关统一验签**（第 15 章网关已就位） | 集中一处，业务服务不重复做；业务服务从上下文取已验签的身份 |
+| tenant_id 来源 | **从 JWT 取，绝不从前端参数取** | 防伪造——前端传 `?tenantId=xxx` 可被篡改，JWT 里的才可信 |
+
+> **为什么 JWT 而不是 session**：第 13-16 章拆了微服务。session 方案要共享 session 存储（又一个分布式状态）；JWT 无状态、自带签名，每个服务拿公钥就能验——**微服务下 JWT 更省事**。这是架构演进到分布式后，认证方式的自然选择。
+
+### 18.2 动手
+
+> **演进纪律**：认证也是一步步加。先做"颁发 JWT + 验签 Filter"（能认人）→ 再做"查询带 tenant_id"（能隔离）→ 最后"网关统一验签"（集中化）。每步解决一个痛点。
+
+#### 18.2.1 pom 加 JWT 库
+
+**【改已有文件】** `pom.xml`，追加：
+
+```xml
+        <!-- 第 18 章：JWT 签发与验签 -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.12.5</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.12.5</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.12.5</version>
+            <scope>runtime</scope>
+        </dependency>
+```
+
+#### 18.2.2 JwtService：签发与解析
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/auth/JwtService.java`：
+
+```java
+package com.example.research.auth;
+
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Date;
+
+/**
+ * JWT 签发与解析。
+ * 密钥从配置读（生产用足够长的随机串，从环境变量注入）。
+ * Claim 里放 userId 和 tenantId——这是租户隔离的信任根。
+ */
+@Component
+public class JwtService {
+
+    private final SecretKey key;
+    private final Duration ttl = Duration.ofHours(24);
+
+    public JwtService(@Value("${app.jwt.secret}") String secret) {
+        this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** 签发：把 userId/tenantId 写进 JWT。 */
+    public String issue(String userId, String tenantId) {
+        Date now = new Date();
+        return Jwts.builder()
+                .subject(userId)
+                .claim("tenantId", tenantId)
+                .issuedAt(now)
+                .expiration(new Date(now.getTime() + ttl.toMillis()))
+                .signWith(key)
+                .compact();
+    }
+
+    /** 解析+验签。验签失败抛异常（被 Filter 捕获 → 401）。 */
+    public Claims parse(String token) {
+        return Jwts.parser().verifyWith(key).build().parseSignedClaims(token).getPayload();
+    }
+}
+```
+
+> `app.jwt.secret` 配在 `application.yaml`（开发用一个固定串，生产从环境变量注入，且要足够长满足 HS256）。
+
+#### 18.2.3 登录接口（颁发 JWT）
+
+> **简陋处**：本章用"传 userId/tenantId 直接换 JWT"的最简登录（不做密码校验）。真实登录要校验密码/对接 OAuth，这里聚焦 JWT 流程本身。
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/auth/AuthController.java`：
+
+```java
+package com.example.research.auth;
+
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
+
+    private final JwtService jwt;
+    public AuthController(JwtService jwt) { this.jwt = jwt; }
+
+    /** 登录（简化版）：传 userId/tenantId 换 JWT。生产改为校验密码。 */
+    @PostMapping("/login")
+    public Mono<Map<String, String>> login(@RequestParam String userId, @RequestParam String tenantId) {
+        return Mono.just(Map.of("token", jwt.issue(userId, tenantId)));
+    }
+}
+```
+
+#### 18.2.4 验签 Filter + 租户上下文
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/auth/AuthFilter.java`：
+
+```java
+package com.example.research.auth;
+
+import io.jsonwebtoken.Claims;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.server.WebFilter;
+import org.springframework.web.server.WebFilterChain;
+import reactor.core.publisher.Mono;
+import reactor.util.context.Context;
+
+import java.util.Map;
+
+/**
+ * JWT 验签 Filter：
+ *   1. 从 Authorization 头取 JWT → 验签 → 解出 userId/tenantId
+ *   2. 放进 Reactor Context（响应式请求上下文，全链路透传）
+ *   3. 验签失败 → 401
+ *
+ * 关键：tenantId 从 JWT 取（可信），绝不从前端参数取（可伪造）。
+ */
+@Component
+public class AuthFilter implements WebFilter {
+
+    private static final String BEARER = "Bearer ";
+    private final JwtService jwt;
+
+    public AuthFilter(JwtService jwt) { this.jwt = jwt; }
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+        String path = exchange.getRequest().getPath().value();
+        if (path.startsWith("/api/auth")) {   // 登录接口放行
+            return chain.filter(exchange);
+        }
+        String auth = exchange.getRequest().getHeaders().getFirst("Authorization");
+        if (auth == null || !auth.startsWith(BEARER)) {
+            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+            return exchange.getResponse().setComplete();
+        }
+        try {
+            Claims claims = jwt.parse(auth.substring(BEARER.length()));
+            String userId = claims.getSubject();
+            String tenantId = claims.get("tenantId", String.class);
+            // 放进 Reactor Context，业务层用 Mono.deferContextual 取
+            return chain.filter(exchange).contextWrite(Context.of(
+                    "auth", Map.of("userId", userId, "tenantId", tenantId)));
+        } catch (Exception e) {
+            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+            return exchange.getResponse().setComplete();
+        }
+    }
+}
+```
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/auth/TenantContext.java`（取上下文的工具）：
+
+```java
+package com.example.research.auth;
+
+import reactor.core.publisher.Mono;
+
+import java.util.Map;
+
+/** 从 Reactor Context 取认证态（userId/tenantId）。业务层用它拿当前租户。 */
+public final class TenantContext {
+
+    @SuppressWarnings("unchecked")
+    public static Mono<Map<String, String>> current() {
+        return Mono.deferContextual(ctx -> {
+            if (ctx.hasKey("auth")) {
+                return Mono.just((Map<String, String>) ctx.get("auth"));
+            }
+            return Mono.error(new IllegalStateException("无认证上下文"));
+        });
+    }
+
+    public static Mono<String> tenantId() {
+        return current().map(m -> m.get("tenantId"));
+    }
+
+    public static Mono<String> userId() {
+        return current().map(m -> m.get("userId"));
+    }
+}
+```
+
+> **为什么放 Reactor Context 而非 ThreadLocal**：WebFlux 是响应式、线程不固定的（一个请求可能在多个线程间切换），**ThreadLocal 在响应式下会丢**。Reactor Context 是响应式原生的请求上下文，跟着 Flux/Mono 链路透传。**这是响应式系统传认证态的标准方式，踩坑手册会强调**。
+
+#### 18.2.5 业务查询统一带 tenant_id（隔离生效）
+
+以"列出某用户的会话"为例——现在必须**带 tenant_id 过滤**，否则跨租户泄露：
+
+**【改已有文件，片段】** `SessionRepository` 加按租户查询：
+
+```java
+public interface SessionRepository extends JpaRepository<AppSessionEntity, String> {
+    // ▼ 第18章：查询都带 tenant_id（隔离）。tenantId 从 JWT 上下文取，不信前端。
+    List<AppSessionEntity> findByTenantIdAndUserIdOrderByCreatedAtDesc(String tenantId, String userId);
+}
+```
+
+**【改已有文件，片段】** `SessionController.list()` 从上下文取 tenantId/userId：
+
+```java
+@GetMapping
+public Flux<String> list() {
+    return reactor.core.publisher.Mono.zip(TenantContext.tenantId(), TenantContext.userId())
+            .flatMapMany(t -> sessions
+                    .findByTenantIdAndUserIdOrderByCreatedAtDesc(t.getT1(), t.getT2())
+                    // JPA 阻塞 → 弹性线程池
+                    .toIterable()  // 简化；实际用 Mono.fromCallable + boundedElastic
+                    .stream())
+            .map(this::toJson);
+}
+```
+
+> **隔离的铁律**：**tenant_id 永远从 `TenantContext`（JWT 上下文）取，绝不从请求参数取**。如果让前端传 `?tenantId=xxx`，攻击者改个值就能看别人的数据——这是越权漏洞的典型来源。`chat_message`/`run`/`audit` 的所有查询同理加 tenant_id 过滤。
+
+> **写入也要带 tenant_id**：新建 session/run/message 时，tenant_id 从上下文取并填进去（这就是第 10.5 章冗余 tenant_id 列的用途兑现）。
+
+#### 18.2.6 网关统一验签（集中化，可选但推荐）
+
+第 15 章已有 API 网关。把验签从每个业务服务的 `AuthFilter` 上移到网关——网关验签后，把 userId/tenantId 通过 HTTP 头传给后端服务。**业务服务不再各自验签，只从头里取已验签的身份**。
+
+```yaml
+# research-gateway：加一个 JWT 过滤器（用 Spring Cloud Gateway 的全局过滤器）
+# 伪代码：解析 JWT → 把 X-User-Id / X-Tenant-Id 头注入下游请求 → 业务服务信任这两个头
+```
+
+> **网关验签的前提**：业务服务和网关之间是**内网可信通道**（网关注入的头，业务服务直接信任）。如果业务服务也对外暴露，它们仍需各自验签（不信任外部头）。**这是"边界验签、内部信任"的标准微服务安全模式**。
+
+### 18.3 验证
+
+```bash
+# 1. 登录拿 JWT（租户A的用户）
+TOKEN_A=$(curl -s -X POST "http://localhost:8080/api/auth/login?userId=u1&tenantId=tenantA" | jq -r .token)
+
+# 2. 用租户A的 token 建会话、触发研究
+curl -X POST "http://localhost:8080/api/sessions?title=A的会话" -H "Authorization: Bearer $TOKEN_A"
+curl -X POST "http://localhost:8080/api/runs?topic=vLLM&sessionId=<sidA>" -H "Authorization: Bearer $TOKEN_A" -H "Idempotency-Key: k1"
+
+# 3. 登录租户B的用户
+TOKEN_B=$(curl -s -X POST "http://localhost:8080/api/auth/login?userId=u2&tenantId=tenantB" | jq -r .token)
+
+# 4. 用租户B的 token 列会话 → 看不到A的会话（tenant_id 隔离）
+curl "http://localhost:8080/api/sessions" -H "Authorization: Bearer $TOKEN_B"
+# 预期：空列表（租户隔离生效）
+
+# 5. 不带 token → 401
+curl -i "http://localhost:8080/api/sessions"
+# 预期：HTTP 401 Unauthorized
+```
+
+### 18.4 checkpoint + 复盘
+
+```
+research-agent/src/main/java/com/example/research/auth/
+├── JwtService.java          （签发+验签）
+├── AuthController.java      （登录颁发 JWT）
+├── AuthFilter.java          （验签，放 Reactor Context）
+└── TenantContext.java       （取 userId/tenantId）
+```
+
+```bash
+git add -A && git commit -m "第18章：多租户+JWT认证（逻辑隔离+网关验签）"
+```
+
+**做了**：JWT 签发/验签 + 登录接口 + `AuthFilter`（放 Reactor Context）+ 业务查询统一带 tenant_id（逻辑隔离）。第 10.5 章铺的 tenant_id 列在这章真正生效。
+
+**核心跃迁**：从"匿名接口"到"认证 + 租户隔离"。**多租户 = 每条数据带 tenant_id + 所有查询过滤 tenant_id + tenant_id 从可信的 JWT 取**——这三点齐备，B2B 隔离就成立。
+
+**工程教训**：
+- **逻辑隔离是 B2B SaaS 主流**：共享库 + tenant_id + 查询过滤。独立 schema/库只在强合规才用，对本项目过重。
+- **tenant_id 必须从 JWT 取，不信前端**：前端传的 tenantId 可伪造，是越权漏洞根源。
+- **响应式用 Reactor Context 传认证态**：ThreadLocal 在 WebFlux 下会丢（线程切换），Context 跟链路透传。
+- **网关边界验签、内部信任**：微服务下，网关验签后内部服务信任注入的头，避免每个服务重复验签。
+- **数据模型先行**：第 10.5 章就建好 tenant/user 表和 tenant_id 列，本章只接认证态——模型和行为分离演进。
+
+---
+
 
 ## 附录：项目结构与踩坑手册
 
