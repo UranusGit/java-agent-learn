@@ -45,6 +45,7 @@
 - [第 16 章：微服务拆分（四）——拆 LLM 网关](#第-16-章微服务拆分四拆-llm-网关)
 - [第 17 章：分布式 ChatMemory——拆服务后恢复多轮记忆](#第-17-章分布式-chatmemory拆服务后恢复多轮记忆)
 - [第 18 章：多租户 + 用户体系——JWT 认证与租户隔离](#第-18-章多租户--用户体系jwt-认证与租户隔离)
+- [第 19 章：成本治理——token 计量、租户预算与分摊](#第-19-章成本治理token-计量租户预算与分摊)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
 ---
@@ -84,6 +85,7 @@
 | 分布式记忆 | 拆服务后触发服务失忆 → Redis 热缓存 + Redis 兜底 | 第 17 章 |
 | 持久层 | 管理数据全压 Redis 会丢/没法查 → H2+JPA（一行配切 PG） | 第 10.5 章 |
 | 多租户/认证 | 匿名接口越权、烧 token、无归属 → JWT + tenant_id 逻辑隔离 | 第 18 章 |
+| 成本治理 | LLM 调用无感、恶意用户烧光预算 → token 计量 + 租户预算 + 分摊 | 第 19 章 |
 
 > **架构演进（第 9 章起）**：前 8 章是"功能演进"（原型→产品）；第 9 章起进入"架构演进"——把"能上线的单体"一步步推向"分布式企业级终极形态"，**管数分离（第 10 章）是架构演进的核心**。
 >
@@ -4094,20 +4096,90 @@ Disposable handle = upstream
 
 **解法：打开会话先看 run 状态分流**（第 10 章 RunStore 的状态机派上用场）：
 
+**【新建文件】** `research-agent/src/main/java/com/example/research/run/RunOpenService.java`（打开会话的统一入口，按 run 状态分流）：
+
 ```java
-// 打开会话/某 run 的统一入口（伪代码）
-public Flux<String> open(String runId) {
-    return runStore.status(runId).flatMapMany(status -> {
-        if ("RUNNING".equals(status) || "queued".equals(status)) {
-            // ▼ 还在流：订阅 Redis Streams（回放已吐 chunk + 实时续传）
-            return bus.subscribeReadOnly(runId, lastSeq);
-        } else {
-            // ▼ 已完成：读持久历史（chat_message）
-            return chatMemoryStore.loadMessages(runId);   // 从 H2 读完整 assistant
-        }
-    });
+package com.example.research.run;
+
+import com.example.research.session.ChatMemoryStore;
+import com.example.research.stream.SyncStreamBus;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+/**
+ * 打开某 run 的统一入口：按 run 状态分流到"流"或"库"。
+ *
+ *   queued/RUNNING  → 订阅 Redis Streams（回放已吐 chunk + 实时续传）
+ *   DONE/FAILED/..  → 读持久历史 chat_message（流会过期，长期必须读库）
+ *
+ * 这是"流和库协调"的核心：run 状态是分流的开关。
+ */
+@Service
+public class RunOpenService {
+
+    private final RunStore runs;
+    private final SyncStreamBus bus;
+    private final ChatMemoryStore memory;
+
+    public RunOpenService(RunStore runs, SyncStreamBus bus, ChatMemoryStore memory) {
+        this.runs = runs; this.bus = bus; this.memory = memory;
+    }
+
+    /**
+     * 打开 run。返回 "seq::chunk" 格式（流）或直接内容（库），统一让 Controller 转 SSE。
+     * @param lastSeq 断线重连的 resume token（仅流式分支用）
+     */
+    public Flux<String> open(String runId, long lastSeq) {
+        return runs.status(runId)
+                .switchIfEmpty(Mono.just("NONE"))
+                .flatMapMany(status -> {
+                    if ("RUNNING".equalsIgnoreCase(status) || "queued".equalsIgnoreCase(status)) {
+                        // ▼ 还在流：订阅 Redis Streams（回放已吐 + 实时续传，补强C的30%场景）
+                        return bus.subscribeReadOnly(runId, lastSeq);
+                    } else if ("DONE".equalsIgnoreCase(status)) {
+                        // ▼ 已完成：读持久历史（chat_message，从 H2）
+                        // 已落库的整条 assistant，没有 seq，统一包成 "0::内容" 让 Controller 处理
+                        return memory.loadMessages(runId).map(c -> "0::" + c);
+                    } else if ("FAILED".equalsIgnoreCase(status) || "CANCELLED".equalsIgnoreCase(status)) {
+                        return Flux.just("0::（该任务" + status + "）");
+                    } else {
+                        // NONE：run 不存在（可能 TTL 过期又没落库，或 runId 错）
+                        return Flux.just("0::（run 不存在或已过期）");
+                    }
+                });
+    }
 }
 ```
+
+**【改已有文件，片段】** `RunController.stream` 改为调 `RunOpenService`（让数据面入口统一走分流）：
+
+```java
+@GetMapping(value = "/{runId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> stream(@PathVariable String runId,
+        @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId) {
+    long lastSeq = lastEventId != null ? lastEventId : 0;
+    // ▼ 改为经 RunOpenService 分流（RUNNING→流 / DONE→库），而非无脑 subscribeReadOnly
+    Flux<ServerSentEvent<String>> data = runOpenService.open(runId, lastSeq)
+            .map(s -> {
+                int idx = s.indexOf("::");
+                long seq = Long.parseLong(s.substring(0, idx));
+                return ServerSentEvent.<String>builder()
+                        .id(String.valueOf(seq)).event("token").data(s.substring(idx + 2)).build();
+            })
+            .concatWithValues(ServerSentEvent.<String>builder().event("done").data("").build());
+    // 心跳 + retry 同第 10 章
+    Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(1))
+            .map(i -> ServerSentEvent.<String>builder().comment("ping").build());
+    return Flux.concat(Flux.just(ServerSentEvent.<String>builder()
+            .retry(Duration.ofSeconds(3).toMillis()).build()),
+            data.mergeWith(heartbeat).takeUntilOther(data.then()));
+}
+```
+
+> **为什么需要 `RunOpenService` 这一层**：原来 `stream` 直接调 `subscribeReadOnly`（只读流）。但"打开会话"可能命中已完成的 run——这时读流会空（流过期或已 trim）。引入 `RunOpenService` 后，**数据面入口统一按状态分流**，前端无论是"看正在吐的"还是"回看历史"，都打同一个 `GET /runs/{id}/stream`，后端自动选对源。**这是把"流和库协调"落到代码的关键一环。**
+>
+> **`memory.loadMessages(runId)` 的实现说明**：消息按 `session_id` 存储（第 10.5 章 schema），而 run 属于 session。所以 `loadMessages(runId)` 内部先 `runStore` 查出该 run 的 `sessionId`，再 `chat_message WHERE session_id=?` 取消息。也可以在 run 表冗余 `session_id`（第 10.5 章已加）直接读。**已完成 run 只有一条 assistant（本轮的回复），所以这里实际返回一条**——多条历史是跨多轮的，那是"会话历史回看"（第 8 章 `/sessions/{id}/messages`），和"某 run 的结果回看"是两个维度。
 
 | run 状态 | 读哪个源 | 为什么 |
 |---------|---------|--------|
@@ -5427,6 +5499,289 @@ git add -A && git commit -m "第18章：多租户+JWT认证（逻辑隔离+网�
 - **响应式用 Reactor Context 传认证态**：ThreadLocal 在 WebFlux 下会丢（线程切换），Context 跟链路透传。
 - **网关边界验签、内部信任**：微服务下，网关验签后内部服务信任注入的头，避免每个服务重复验签。
 - **数据模型先行**：第 10.5 章就建好 tenant/user 表和 tenant_id 列，本章只接认证态——模型和行为分离演进。
+
+---
+
+
+## 第 19 章：成本治理——token 计量、租户预算与分摊
+
+> **定位（对外运营阶段）**：第 18 章做了多租户/认证，但还有个痛点没解决——**匿名/恶意用户能无限触发 LLM**。LLM 调用是真金白银（按 token 计费），没有计量和预算控制，一个恶意租户就能烧光整个平台的预算。这是 B2B AI 平台的**必备治理能力**（原版第 23 章）。
+>
+> **本章三件事**：① **计量**——每次 LLM 调用记 token 数，落库；② **预算**——按租户设预算，超了拒绝/降级；③ **分摊**——按租户统计用量，支持计费。数据基础是第 10.5 章的关系库 + 第 18 章的 `tenant_id`。
+
+### 19.0 场景：LLM 调用无感，恶意用户烧光预算
+
+对外运营后：
+
+| 痛点 | 现象 | 后果 |
+|------|------|------|
+| **无计量** | 每次研究烧多少 token 没人知道 | 成本黑盒，无法优化 |
+| **无预算** | 任何租户能无限触发 | 恶意/失控租户烧光平台预算 |
+| **无分摊** | 不知道每个租户用了多少 | 无法按用量计费、无法识别大户 |
+
+**根因**：LLM 调用是"用一次扣一次钱"的资源，但没有计量的钩子、没有预算的闸门。
+
+### 19.1 思路：计量 → 预算 → 分摊
+
+```
+LLM 调用 → 计量（记 token 数，带 tenant_id 落库 usage_record）
+              ↓
+          预算检查（查租户当月累计 vs 预算）→ 超额则拒绝触发
+              ↓
+          分摊（按 tenant_id 聚合 usage_record → 计费/报表）
+```
+
+| 能力 | 落点 | 数据 |
+|------|------|------|
+| 计量 | `SyncStreamBus.trigger` 写者层（LLM 流完时记 token） | `usage_record` 表 |
+| 预算 | 触发前查租户累计，超额拒绝（第 10 章 POST /runs 入口拦截） | `tenant.quota` |
+| 分摊 | 定时/按需聚合 `usage_record GROUP BY tenant_id` | 报表接口 |
+
+> **计量为什么也放在 SyncStreamBus 写者层**：和第 10.5.2b 的"落库收敛到写者"同理——**单一写者保证只计一次**（多端订阅不会重复计量）。而且流完时拿到完整 assistant，token 数才能准确（按完整回复算）。**生产者负责计量**，和"生产者负责持久化"一脉相承。
+
+### 19.2 动手
+
+#### 19.2.1 表：usage_record + tenant 加预算字段
+
+**【改已有文件，追加到 schema.sql】**：
+
+```sql
+-- token 用量记录（每次 LLM 调用一条，带 tenant_id 支持分摊）
+CREATE TABLE IF NOT EXISTS usage_record (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id   VARCHAR(64) NOT NULL,     -- ▼ 冗余，分摊按它聚合
+    user_id     VARCHAR(64) NOT NULL,
+    run_id      VARCHAR(64),
+    input_tokens  INT NOT NULL,           -- 输入 token（system+user+history）
+    output_tokens INT NOT NULL,           -- 输出 token（assistant 回复）
+    cost_cents  INT NOT NULL DEFAULT 0,   -- 折算成本（分），按厂商价表
+    created_at  TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_tenant_time ON usage_record(tenant_id, created_at);
+```
+
+**【改已有文件】** `tenant` 表加预算字段（ALTER 或直接改建表语句）：
+
+```sql
+ALTER TABLE tenant ADD COLUMN IF NOT EXISTS monthly_budget_tokens INT;   -- 月度 token 预算
+-- 注：H2 支持 ADD COLUMN IF NOT EXISTS；PG 13+ 也支持。老版本 PG 用 DO 块判断。
+```
+
+> **成本折算 `cost_cents`**：不同厂商价表不同（DeepSeek/通义/GPT 单价不一）。第 16 章 LLM 网关已有 `LlmRouter`——**计价逻辑收敛在 LLM 网关**（哪个厂商什么价，网关知道），业务层只拿网关返回的 token+cost 落库。这是第 16 章解耦的又一兑现。
+
+#### 19.2.2 计量：在写者层记 token
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/cost/UsageRecorder.java`：
+
+```java
+package com.example.research.cost;
+
+import com.example.research.db.UsageRecordRepository;
+import com.example.research.db.entity.UsageRecordEntity;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.time.Instant;
+
+/**
+ * token 用量记录（落库）。在 SyncStreamBus.trigger 流完时调用。
+ * 单一写者保证只计一次（和落库同层、同幂等保证）。
+ */
+@Component
+public class UsageRecorder {
+
+    private final UsageRecordRepository repo;
+    public UsageRecorder(UsageRecordRepository repo) { this.repo = repo; }
+
+    public Mono<Void> record(String tenantId, String userId, String runId,
+                             int inputTokens, int outputTokens, int costCents) {
+        return Mono.fromRunnable(() -> {
+            UsageRecordEntity e = new UsageRecordEntity();
+            e.setTenantId(tenantId); e.setUserId(userId); e.setRunId(runId);
+            e.setInputTokens(inputTokens); e.setOutputTokens(outputTokens);
+            e.setCostCents(costCents); e.setCreatedAt(Instant.now());
+            repo.save(e);
+        }).subscribeOn(Schedulers.boundedElastic()).then();   // JDBC 阻塞→弹性线程池
+    }
+}
+```
+
+**【改已有文件，片段】** `SyncStreamBus.trigger` 的 `doOnComplete` 追加计量（接在第 10.5.2b 落库旁边）：
+
+```java
+.doOnComplete(() -> {
+    String fullAssistant = collected.toString();
+    // 10.5.2b：落历史
+    chatMemoryStore.append(runId, sessionId, topic, fullAssistant).subscribe();
+    // ▼ 第19章：计量——token 数 + 成本（token 估算见下，cost 从 LLM 网关返回）
+    int out = estimateTokens(fullAssistant);
+    usageRecorder.record(tenantId, userId, runId, inputTokens, out, costCents).subscribe();
+    finishStream(streamKey, channel, lockKey, runId);
+})
+```
+
+> **token 数怎么来**：
+> - **真实场景**：LLM API 的响应里带 `usage.prompt_tokens/completion_tokens`（OpenAI/Anthropic 都返回）。第 16 章 LLM 网关把它透传出来——**最准**。
+> - **学习/Mock**：Mock LLM 没有 usage，用 `estimateTokens(text) ≈ 字符数/2`（中文约 1 字≈1.5 token，英文约 4 字符≈1 token，简化取 /2）。**简陋但能让计量链路跑通**。生产换真实 usage。
+
+```java
+/** 简易 token 估算（Mock 用；生产用 LLM 返回的真实 usage）。 */
+private int estimateTokens(String text) {
+    return text == null ? 0 : (int) Math.ceil(text.length() / 2.0);
+}
+```
+
+#### 19.2.3 预算：触发前拦截
+
+**【新建文件】** `research-agent/src/main/java/com/example/research/cost/BudgetGuard.java`：
+
+```java
+package com.example.research.cost;
+
+import com.example.research.db.UsageRecordRepository;
+import com.example.research.db.TenantRepository;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+
+/**
+ * 预算守卫：触发前查租户当月累计 token，超额则拒绝。
+ * 拦截点：POST /runs（第10章触发入口）。
+ */
+@Component
+public class BudgetGuard {
+
+    private final UsageRecordRepository usageRepo;
+    private final TenantRepository tenantRepo;
+
+    public BudgetGuard(UsageRecordRepository usageRepo, TenantRepository tenantRepo) {
+        this.usageRepo = usageRepo; this.tenantRepo = tenantRepo;
+    }
+
+    /** 检查租户是否还有预算。返回 true=放行，false=超额拒绝。 */
+    public Mono<Boolean> check(String tenantId) {
+        return Mono.fromCallable(() -> {
+            Integer budget = tenantRepo.findById(tenantId)
+                    .map(t -> t.getMonthlyBudgetTokens()).orElse(null);
+            if (budget == null || budget <= 0) return true;   // 无预算限制（学习默认）
+
+            // 当月累计 token（input+output）
+            Instant monthStart = Instant.now().truncatedTo(ChronoUnit.DAYS)
+                    .minus(Instant.now().atZone(java.time.ZoneOffset.UTC).getDayOfMonth() - 1, ChronoUnit.DAYS);
+            long used = usageRepo.sumTokensByTenantSince(tenantId, monthStart);
+            return used < budget;
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+}
+```
+
+`UsageRecordRepository` 加聚合查询：
+
+```java
+public interface UsageRecordRepository extends JpaRepository<UsageRecordEntity, Long> {
+    // ▼ 按租户聚合当月 token（JPQL，跨库通用）
+    @org.springframework.data.jpa.repository.Query(
+        "select coalesce(sum(u.inputTokens + u.outputTokens), 0) from UsageRecordEntity u " +
+        "where u.tenantId = :tenantId and u.createdAt >= :since")
+    long sumTokensByTenantSince(@org.springframework.data.repository.query.Param("tenantId") String tenantId,
+                                @org.springframework.data.repository.query.Param("since") java.time.Instant since);
+}
+```
+
+**【改已有文件，片段】** `RunController.create`（第 10 章）触发前加预算检查：
+
+```java
+@PostMapping
+public Mono<ResponseEntity<String>> create(...) {
+    return TenantContext.tenantId().flatMap(tenantId ->
+        budgetGuard.check(tenantId).flatMap(ok -> {
+            if (!ok) {
+                return Mono.just(ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)   // 429 超预算
+                        .body("{\"error\":\"budget_exceeded\"}"));
+            }
+            // 预算 OK → 走原有 trigger 逻辑
+            return runs.create(sessionId, idemKey)
+                    .flatMap(runId -> researchService.trigger(topic, sessionId, runId)
+                            .thenReturn(ResponseEntity.status(HttpStatus.CREATED)...));
+        })
+    );
+}
+```
+
+> **拦截位置选 POST /runs 的意义**：在触发前拦截，**根本不启动 LLM**——这是成本控制的最早、最有效关口。等 LLM 跑完再拦，钱已经烧了。
+
+#### 19.2.4 分摊：按租户统计用量
+
+**【新建文件，片段】** `CostController`（运营/计费报表）：
+
+```java
+@RestController
+@RequestMapping("/api/cost")
+public class CostController {
+    private final UsageRecordRepository usageRepo;
+    public CostController(UsageRecordRepository usageRepo) { this.usageRepo = usageRepo; }
+
+    /** 某租户当月用量（运营/计费用）。生产加管理员鉴权。 */
+    @GetMapping("/{tenantId}/summary")
+    public Mono<String> summary(@PathVariable String tenantId) {
+        return Mono.fromCallable(() -> usageRepo.summarizeByTenant(tenantId))
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                .map(this::toJson);
+    }
+}
+```
+
+> `summarizeByTenant` 返回 `{totalTokens, totalCostCents, callCount}`——按 tenant_id 聚合 usage_record。这是 B2B 按用量计费的数据基础。
+
+### 19.3 验证
+
+```bash
+# 给租户A设小预算（比如 1000 token）
+# （学习环境：直接 UPDATE tenant SET monthly_budget_tokens=1000 WHERE id='tenantA'）
+
+TOKEN_A=$(curl -s -X POST "http://localhost:8080/api/auth/login?userId=u1&tenantId=tenantA" | jq -r .token)
+
+# 反复触发研究，直到超预算
+for i in 1 2 3 4 5; do
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST \
+    "http://localhost:8080/api/runs?topic=长文本研究$i&sessionId=s$i" \
+    -H "Authorization: Bearer $TOKEN_A" -H "Idempotency-Key: k$i"
+done
+# 预期：前几次 201，累计超 1000 token 后返回 429（budget_exceeded）
+
+# 查租户A的用量
+curl "http://localhost:8080/api/cost/tenantA/summary"
+# → {totalTokens, totalCostCents, callCount}
+```
+
+### 19.4 checkpoint + 复盘
+
+```
+research-agent/src/main/java/com/example/research/cost/
+├── UsageRecorder.java     （计量：落 usage_record）
+├── BudgetGuard.java       （预算：触发前拦截）
+└── CostController.java    （分摊：按租户报表）
+research-agent/.../db/entity/UsageRecordEntity.java + UsageRecordRepository.java
+```
+
+```bash
+git add -A && git commit -m "第19章：成本治理（token计量+租户预算+分摊）"
+```
+
+**做了**：`usage_record` 表 + 计量（写者层记 token，单一写者保证只计一次）+ 预算（触发前按 tenant_id 查累计，超额 429）+ 分摊（按租户聚合报表）。计价逻辑收敛在第 16 章 LLM 网关。
+
+**核心跃迁**：从"LLM 调用无感"到"可计量、可预算、可分摊"。LLM 是付费资源，必须有治理——**计量是基础，预算是闸门，分摊是出口**，三者都按 `tenant_id` 维度。
+
+**工程教训**：
+- **计量/落库收敛到单一写者**：和生产者负责持久化同理，**生产者负责计量**。多端订阅不重复计——由 SETNX 锁保证幂等。
+- **预算拦截在触发前**：在 POST /runs 拦，根本不启动 LLM；跑完再拦钱已烧。
+- **token 数优先用 LLM 返回的 usage**：估算（字符/2）只用于 Mock/学习，生产用真实 usage 最准。
+- **计价收敛在 LLM 网关**：哪个厂商什么价，网关知道；业务层只拿网关返回的 token+cost 落库。第 16 章解耦的兑现。
+- **成本治理以 tenant_id 为主键维度**：和第 18 章多租户一脉相承——计量、预算、分摊都按租户，B2B 计费自然成立。
 
 ---
 
