@@ -1,8 +1,8 @@
-# 34-零依赖版：Agent 与知识库实战（管数分离 + 多端同步，演进式落地）
+# 34-轻依赖版：Agent 与知识库实战（Spring AI 2.0 + 管数分离 + 多端同步，演进式落地）
 
-> **这份文档是什么**：基于 [34-研究Agent与知识库实战.md](./34-研究Agent与知识库实战.md) 改编的一份**全新实践手册**。它保留了原项目的全部企业级演进脉络（固定 workflow → 自主 Agent → 知识库 → Plan-Execute 并发 → 审计 → 会话持久化 → 多端同步 → 管数分离 → 高可用 → Kafka → 微服务拆分），但把**"外部依赖"全部砍掉**：
+> **这份文档是什么**：基于 [34-研究Agent与知识库实战.md](./34-研究Agent与知识库实战.md) 改编的一份**实践手册**。它保留了原项目的全部企业级演进脉络（固定 workflow → 自主 Agent → 知识库 → Plan-Execute 并发 → 审计 → 会话持久化 → 多端同步 → 管数分离 → 高可用 → Kafka → 微服务拆分），并坚持"**基础设施尽量轻、AI 能力用真的**"：
 >
-> - ❌ **不依赖任何外部 LLM 服务**（DeepSeek/OpenAI/通义都不要）—— 用一个**内置模拟 LLM**（`MockLlmClient`），逐字流式吐字，照样驱动 Agent 循环、工具调用、Plan-Execute。换真模型时只换这一个实现。
+> - ✅ **用 Spring AI 2.0 真 LLM**（`ChatClient`，默认 DeepSeek，OpenAI 兼容协议）—— 不再用模拟。一个 `LlmClient` 抽象接口 + `SpringAiLlmClient`（基于 ChatClient）实现，工具调用、Agent 循环、Plan-Execute 全部由真实 function calling 驱动。**学了即能用。**
 > - ❌ **不依赖任何数据库**（PostgreSQL/pgvector/MySQL 都不要）—— 会话记忆、知识库、审计日志**全部落 Redis**（Redis 既当缓存又当持久层）。知识库检索用**内存 TF-IDF + Redis 存储**，不需要 embedding、不需要向量库。
 > - ❌ **不依赖网页搜索**（Bing/DuckDuckGo 都不要）—— 网页搜索工具换成一个**内置静态知识源**（也落 Redis），接口不变。
 > - ✅ **可以依赖 Redis 和 Kafka** —— 这是本文仅有的两个外部中间件。它们是"多端同步 + 管数分离 + 微服务解耦"的基石。
@@ -12,17 +12,17 @@
 > 2. **多页面/多端数据同步展示**：手机、iPad、浏览器三端打开同一会话，看到的流式内容**逐字一致**（Redis Streams 回放 + Pub/Sub 实时广播；演进后期升级 Kafka 消费组）。
 > 3. **企业级演进顺序**：每章一个痛点驱动，按"功能演进（0-8）→ 架构演进（9-17）"的节奏一步步推进，**不跳章**。
 >
-> **技术栈**：Spring Boot 3.3 · Java 21 · WebFlux · 内置 Mock LLM（接口同 Spring AI `ChatClient` 风格）· **Redis**（Streams + Pub/Sub + Hash/List：知识库/记忆/审计/锁的统一存储）· **Kafka**（后期 chunk 持久总线）· Spring Cloud Gateway + Eureka（微服务）。
+> **技术栈**：**Spring Boot 4.0.6 · Spring AI 2.0.0** · Java 21 · WebFlux · `LlmClient` 抽象 + `SpringAiLlmClient`（Spring AI `ChatClient` 实现）· **Redis**（Streams + Pub/Sub + Hash/List：知识库/记忆/审计/锁的统一存储，`spring-boot-starter-data-redis-reactive`）· **Kafka**（后期 chunk 持久总线）· Spring Cloud Gateway + Eureka（微服务）。LLM 默认用 DeepSeek（OpenAI 兼容协议，国内直连、价格低）。
 >
-> ⚠️ **版本与可移植**：本文用 Spring Boot 3.3.x（稳定 GA）。Mock LLM 是纯 Java 实现，不随版本变动。Redis/Kafka/Eureka/Gateway 都是成熟稳定组件，命名以你版本官方文档为准。
+> ⚠️ **版本前提**：本文基于 **Spring Boot 4.0.6（GA）+ Spring AI 2.0.0 GA**。Spring AI 2.0 最低要求 Spring Boot 4.0.x。响应式 Redis 用 `spring-boot-starter-data-redis-reactive`（随 Boot 4.0.6，默认 Lettuce）。`LlmClient` 抽象 + `SpringAiLlmClient` 实现是本文"换 LLM 只改一处"的关键——接口对齐 Spring AI，业务代码只依赖 `LlmClient`。命名以你版本官方文档为准。
 
 ---
 
 ## 目录
 
 - [前言：这份文档的边界与怎么用](#前言这份文档的边界与怎么用)
-- [替代方案速查表：原版依赖 → 零依赖版](#替代方案速查表原版依赖--零依赖版)
-- [第 0 章：固定 workflow 打底（内置 Mock LLM + 静态知识源）](#第-0-章固定-workflow-打底内置-mock-llm--静态知识源)
+- [替代方案速查表：原版依赖 → 轻依赖版](#替代方案速查表原版依赖--轻依赖版)
+- [第 0 章：固定 workflow 打底（Spring AI 2.0 ChatClient + 静态知识源）](#第-0-章固定-workflow-打底spring-ai-20-chatclient--静态知识源)
 - [第 1 章：引入自主 Agent 循环](#第-1-章引入自主-agent-循环)
 - [第 2 章：知识库搜索——内存 TF-IDF RAG（落 Redis）](#第-2-章知识库搜索内存-tf-idf-rag落-redis)
 - [第 3 章：上线后的运营事故——超时/重试/错误归宿](#第-3-章上线后的运营事故超时重试错误归宿)
@@ -59,7 +59,7 @@
 
 ### 它讲什么、不讲什么
 
-**讲**：一个**会话化研究问答系统**，管数分离、多端同步展示。Agent 自主决策、查知识库、先规划再并行调研、给出结果；背后是工程化（Agent 循环、RAG、Plan-Execute、审计、会话持久化、Redis 三层广播、Kafka 总线、微服务）。全程**只依赖 Redis + Kafka**，**不连任何 LLM API、不连任何数据库**。
+**讲**：一个**会话化研究问答系统**，管数分离、多端同步展示。Agent 自主决策、查知识库、先规划再并行调研、给出结果；背后是工程化（Agent 循环、RAG、Plan-Execute、审计、会话持久化、Redis 三层广播、Kafka 总线、微服务）。LLM 用 **Spring AI 2.0 调真模型**（默认 DeepSeek），**不连任何数据库**（Redis 兜底），外部中间件只依赖 **Redis + Kafka**。
 
 **不讲**（同原版）：
 - 完整可观测体系（OpenTelemetry/链路追踪/SSE 推前端看每步）——本文只做最小可追溯（结构化审计日志落 Redis）。
@@ -111,11 +111,11 @@
 
 ---
 
-## 替代方案速查表：原版依赖 → 零依赖版
+## 替代方案速查表：原版依赖 → 轻依赖版
 
-| 原版依赖 | 零依赖版替代 | 替代品定位 | 何时引入 |
+| 原版依赖 | 轻依赖版替代 | 替代品定位 | 何时引入 |
 |---------|------------|----------|---------|
-| DeepSeek/OpenAI（外部 LLM） | **`MockLlmClient`**（内置，逐字流式吐字，支持工具调用循环） | LLM 抽象接口的实现，换真模型只换这一个 | 第 0 章 |
+| DeepSeek/OpenAI（外部 LLM） | **Spring AI 2.0 `ChatClient`**（封装在 `SpringAiLlmClient` 里） | 真 LLM；`LlmClient` 抽象接口的实现，换厂商只换这一个 | 第 0 章 |
 | Bing 网页搜索 | **`WebSearchTool`（内置静态知识源）** | 工具接口不变，数据源换成内置条目 | 第 0 章 |
 | PostgreSQL + pgvector（知识库向量库） | **内存 TF-IDF + Redis 存储**（`KnowledgeBaseTool`） | 不需要 embedding，纯关键词加权检索 | 第 2 章 |
 | PostgreSQL（ChatMemory 会话存储） | **Redis List/Hash** | Redis 既当热缓存也当持久层 | 第 7 章 |
@@ -125,24 +125,26 @@
 | Sentinel/Cluster | 保留 | Redis 高可用 | 第 11 章 |
 | Eureka/Gateway | 保留 | 服务发现 + 统一入口 | 第 15 章 |
 
-> **为什么 Mock LLM 是核心**：Agent 系统（循环、工具调用、Plan-Execute）的"智能"体现在**编排逻辑**，不在 LLM 本身。Mock LLM 让你能**离线、零成本、可复现**地验证全部编排逻辑——这是本文能做到"不依赖外部服务"的关键。生产时把 `MockLlmClient` 换成真 `ChatClient`，**业务代码一行不动**（接口同构）。
+> **为什么 `LlmClient` 抽象是核心**：本文用一个 `LlmClient` 接口把"LLM 能力"抽象出来，业务代码（Agent 循环、Plan-Execute、研究服务）**只依赖这个接口**，不直接耦合 Spring AI。第 0-17 章用的是 `SpringAiLlmClient`（基于 Spring AI 2.0 `ChatClient`，调真 LLM）。将来换厂商、换实现（如自建模型网关），**只改这一个实现类，业务代码一行不动**——这就是"管数分离 + 解耦"在 LLM 层的体现，也是第 16 章"拆 LLM 网关"能成立的基础。
 
 ---
 
 
-## 第 0 章：固定 workflow 打底（内置 Mock LLM + 静态知识源）
+## 第 0 章：固定 workflow 打底（Spring AI 2.0 ChatClient + 静态知识源）
 
 ### 0.0 场景
 
 你要做一个"研究助手"：用户输入一个主题，系统去**查资料**，基于资料**给出研究结果**。本章先用**固定 workflow**（提炼关键词 → 搜资料 → 生成结果）跑通最小版——**先把业务跑通，再谈自主**。
 
-零依赖版的关键：LLM 用内置 `MockLlmClient`（逐字吐字），搜索用内置静态知识源。**全程不连任何外部服务**。
+本文的关键设计：LLM 用 **Spring AI 2.0 的 `ChatClient`**（封装在 `SpringAiLlmClient` 里，默认接 DeepSeek），搜索用内置静态知识源。**LLM 是真的，但通过 `LlmClient` 接口隔离，业务代码不直接碰 Spring AI。**
+
+> **DeepSeek API Key**：去 `platform.deepseek.com` 注册申请，新人有免费额度。拿到后放环境变量 `DEEPSEEK_API_KEY`，**不要写进代码**。
 
 ### 0.1 思路
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
-| LLM | 内置 `MockLlmClient` | 不依赖外部 API；接口与 Spring AI `ChatClient` 同构，换真模型只换实现 |
+| LLM | **Spring AI 2.0 `ChatClient`**（封装为 `SpringAiLlmClient` 实现 `LlmClient` 接口） | 真 LLM，学了即能用；`LlmClient` 抽象隔离，换厂商只改这一处 |
 | 搜索资料 | 内置 `WebSearchTool`（静态知识源） | 不依赖网页抓取；返回关键词命中的内置条目，第 2 章升级成知识库 RAG |
 | 可见性 | 先用日志 | 第 0 章痛点小（等待时不知在干嘛），日志够透光 |
 
@@ -170,7 +172,7 @@ research-agent/
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>4.0.6</version>
         <relativePath/>
     </parent>
 
@@ -181,13 +183,14 @@ research-agent/
 
     <properties>
         <java.version>21</java.version>
+        <spring-ai.version>2.0.0</spring-ai.version>
     </properties>
 
     <dependencies>
         <!--
-          第 0 章只引两个依赖：
-            webflux —— Web 栈基础（Controller、SSE 流式都靠它）
-          零依赖版不引 spring-ai：用内置 MockLlmClient 代替，不连任何 LLM API。
+          第 0 章引两个依赖：
+            webflux        —— Web 栈基础（Controller、SSE 流式都靠它）
+            openai starter —— Spring AI 2.0（ChatClient 流式调 LLM；DeepSeek 走 OpenAI 兼容协议）
           演进纪律：后续章节用到了再加——
             第 2 章知识库落 Redis（已够，无需新依赖）；第 9 章加 data-redis-reactive（多端同步总线）。
         -->
@@ -195,7 +198,25 @@ research-agent/
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
+
+        <!-- Spring AI 2.0：OpenAI 兼容协议（DeepSeek 走 OpenAI base-url 接入） -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
     </dependencies>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <build>
         <plugins>
@@ -208,7 +229,7 @@ research-agent/
 </project>
 ```
 
-> **为什么第 0 章连 Redis 都不引**：演进铁律——本章还不需要 Redis（多端同步是第 9 章的事）。知识库、会话、审计都还没出现。第 0 章只验证"固定 workflow + Mock LLM 流式"能跑。
+> **为什么第 0 章连 Redis 都不引**：演进铁律——本章还不需要 Redis（多端同步是第 9 章的事）。知识库、会话、审计都还没出现。第 0 章只验证"固定 workflow + Spring AI ChatClient 流式"能跑。
 
 #### 0.2.2 启动类
 
@@ -221,7 +242,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * 研究问答系统启动类（零依赖版）。
+ * 研究问答系统启动类（轻依赖版）。
  * 扫描 com.example.research 及其子包（llm/tool/kb/plan/audit/session/stream）。
  */
 @SpringBootApplication
@@ -237,16 +258,26 @@ public class Application {
 **【新建文件】** `research-agent/src/main/resources/application.yaml`：
 
 ```yaml
+spring:
+  ai:
+    openai:
+      api-key: ${DEEPSEEK_API_KEY}                # 从环境变量读，别写进代码
+      base-url: https://api.deepseek.com          # DeepSeek 走 OpenAI 兼容协议
+      chat:
+        model: deepseek-chat
+        temperature: 0.3                          # 研究类任务要事实准确，温度调低
 server:
   port: 8080
-# 零依赖版：没有 spring.ai、没有 datasource、没有 redis。
-# Mock LLM 行为由 Java 代码控制（见 MockLlmClient）。
-# 第 9 章才会在这里加 spring.data.redis（多端同步总线）。
+logging:
+  level:
+    org.springframework.ai: info
+# 没有 datasource、没有 redis（第 9 章才会加 spring.data.redis 多端同步总线）。
+# LLM 由 spring-ai-starter-model-openai 自动装配 OpenAiChatModel + ChatClient.Builder。
 ```
 
 #### 0.2.4 LLM 抽象接口（核心：换实现不换业务）
 
-这是零依赖版的**灵魂**——一个与 Spring AI `ChatClient` 同构的接口，让业务代码不知道背后是真模型还是 Mock。
+这是本文的**灵魂**——一个与 Spring AI `ChatClient` 同构的接口，让业务代码只依赖抽象、不直接耦合 Spring AI。
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/llm/LlmClient.java`：
 
@@ -258,21 +289,21 @@ import reactor.core.publisher.Flux;
 import java.util.List;
 
 /**
- * LLM 客户端抽象接口（零依赖版核心抽象）。
+ * LLM 客户端抽象接口（本文核心抽象）。
  *
  * 为什么要有这个接口：
  *   业务代码（ResearchService 等）只依赖这个接口，不依赖任何具体 LLM。
- *   - 第 0-17 章用 MockLlmClient（内置、离线、零成本）。
- *   - 生产时换成真实现（new OpenAiLlmClient(...) 或适配 Spring AI ChatClient），
- *     业务代码一行不动——这就是"管数分离 + 解耦"在 LLM 层的体现。
+ *   - 本文用 SpringAiLlmClient（基于 Spring AI 2.0 ChatClient，调真 LLM）。
+ *   - 将来换厂商、换实现（自建模型网关等），业务代码一行不动——
+ *     这就是"管数分离 + 解耦"在 LLM 层的体现，也是第 16 章"拆 LLM 网关"的基础。
  *
  * 方法语义对齐 Spring AI ChatClient：
  *   - chat(system, user)           ≈ prompt().system().user().call().content()
- *   - chat(system, user, history)  ≈ 带 MessageChatMemoryAdvisor 的多轮调用
+ *   - chat(system, user, history)  ≈ 带 history messages 的多轮调用
  *   - stream(system, user, tools)  ≈ .stream().content() + .tools()
  *
- * 工具调用（tools）：Mock 通过关键词匹配模拟"模型决定调哪个工具"，
- *   真实模型靠 function calling。接口对调用方透明。
+ * 工具调用（tools）：真实模型靠 function calling（Spring AI 的 ToolCallingAdvisor 自动托管），
+ *   接口对调用方透明。
  */
 public interface LlmClient {
 
@@ -284,7 +315,7 @@ public interface LlmClient {
 
     /**
      * 流式：逐字吐出结果（Flux<String>，每个元素是一个 chunk）。
-     * tools：可选，Mock 会按 system/user 内容决定是否"调用"工具，并把它拼进结果。
+     * tools：可选，注册给 LLM 的可调用工具（真实 function calling 由 Spring AI 托管）。
      * 这是对 Agent 循环（第 1 章）最关键的方法。
      */
     Flux<String> stream(String system, String user, List<LlmMessage> history, List<LlmTool> tools);
@@ -298,151 +329,123 @@ public interface LlmClient {
 }
 ```javascript
 
-> **这个接口为什么是"换实现不换业务"的关键**：注意 `stream(...)` 的签名——`system + user + history + tools`。这正是 Spring AI `ChatClient.prompt().system().user().advisors(记忆).tools(工具).stream().content()` 的扁平化表达。Mock 用它驱动 Agent 循环，真模型用它驱动真实 function calling。**ResearchService 只认 `LlmClient`**——这就是第 16 章"拆 LLM 网关"能在零依赖版照样成立的基础。
+> **这个接口为什么是"换实现不换业务"的关键**：注意 `stream(...)` 的签名——`system + user + history + tools`。这正是 Spring AI `ChatClient.prompt().system().user().messages(历史).tools(工具).stream().content()` 的扁平化表达。`SpringAiLlmClient` 用它驱动真实 function calling（工具循环由 Spring AI 托管）。**ResearchService 只认 `LlmClient`**——这就是第 16 章"拆 LLM 网关"能成立的基础。
 
-#### 0.2.5 MockLlmClient：内置、逐字流式、模拟工具调用
+#### 0.2.5 SpringAiLlmClient：基于 Spring AI ChatClient 的真实实现
 
-**【新建文件】** `research-agent/src/main/java/com/example/research/llm/MockLlmClient.java`：
+**【新建文件】** `research-agent/src/main/java/com/example/research/llm/SpringAiLlmClient.java`：
 
 ```java
 package com.example.research.llm;
 
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.function.FunctionToolCallback;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * 内置 Mock LLM（零依赖版：不连任何 LLM API）。
+ * 基于 Spring AI 2.0 ChatClient 的 LlmClient 实现（本文默认实现）。
  *
- * 行为：
- *   1. chat()（非流式）：返回一句基于 user + history 的"提炼/总结"。
- *   2. stream()（流式）：把一段"研究结果"拆成字符，逐字吐出（每字 30-80ms，模拟真实打字）。
- *   3. 工具调用模拟：如果 tools 非空，且 user 里出现工具 description 命中的关键词，
- *      就在结果里插入"[调用工具 X] 摘要内容"，模拟"模型决定调工具并拿到结果"。
+ * 把自定义 LlmClient 接口适配到 Spring AI ChatClient：
+ *   - chat(system, user)          → chatClient.prompt().system(system).user(user).call().content()
+ *   - chat(system, user, history) → 把 history 转成 Spring AI Message 拼进去
+ *   - stream(system,user,history,tools) → chatClient.prompt()...tools(适配).stream().content()
  *
- * 简陋版（第 0 章刻意如此）：
- *   - 工具调用是"关键词命中即调"，不是真正的多步 ReAct 循环。第 1 章用 ToolCallingLoop 做真循环。
- *   - 研究结果文本是模板拼接，不是真模型生成。目的是让编排逻辑能离线跑通。
- *   这些是演进素材，后续章节按需增强。
+ * 工具适配：自定义 LlmTool（name+description+Function<String,String>）
+ *   → Spring AI 的 FunctionToolCallback（inputType=String，模型把入参当字符串传进来）。
+ *   工具调用循环由 Spring AI 的 ToolCallingAdvisor 自动托管（调 LLM → 解析 tool_calls
+ *   → 执行工具 → 回传 → 再调），业务代码不用手写循环。
  */
 @Component
-public class MockLlmClient implements LlmClient {
+public class SpringAiLlmClient implements LlmClient {
 
-    /** 非流式：提炼关键词 / 简短回答。 */
-    @Override
-    public String chat(String system, String user) {
-        // 简单"提炼"：取 user 里出现频率高的词当作关键词
-        if (system != null && system.contains("关键词")) {
-            return extractKeywords(user);
-        }
-        return "（Mock 回答）关于「" + user + "」：这是一个用于离线验证编排逻辑的模拟回答。";
+    private final ChatClient chatClient;
+
+    // ▼ spring-ai-starter-model-openai 自动配置了 ChatClient.Builder Bean，注入后 .build()
+    public SpringAiLlmClient(ChatClient.Builder builder) {
+        this.chatClient = builder.build();
     }
 
-    /** 带历史的非流式：把历史最近一条拼进去，模拟"记得上文"。 */
+    /** 非流式单轮。 */
+    @Override
+    public String chat(String system, String user) {
+        return chatClient.prompt()
+                .system(system == null ? "" : system)
+                .user(user == null ? "" : user)
+                .call()
+                .content();
+    }
+
+    /** 非流式带历史：把 history 转成 Spring AI Message 序列拼进去。 */
     @Override
     public String chat(String system, String user, List<LlmMessage> history) {
-        String prev = (history == null || history.isEmpty())
-                ? "" : "（接上文：" + history.get(history.size() - 1).content() + "）";
-        return prev + chat(system, user);
+        ChatClient.ChatClientRequestSpec spec = chatClient.prompt()
+                .system(system == null ? "" : system)
+                .messages(toSpringMessages(history))   // ▼ 历史转 Message
+                .user(user == null ? "" : user);
+        return spec.call().content();
     }
 
     /**
-     * 流式：逐字吐出研究结果。tools 非空时模拟"调用工具拿资料再总结"。
-     * 第 0 章固定 workflow 不传 tools（.stream(system,user,null,List.of())），
-     * 但本方法已支持工具，第 1 章直接复用。
+     * 流式：逐 token 吐出结果。tools 非空时注册给模型（function calling 由 Spring AI 托管）。
      */
     @Override
     public Flux<String> stream(String system, String user, List<LlmMessage> history, List<LlmTool> tools) {
-        // 1. 如果有工具且 user 命中工具描述，模拟调用工具
-        StringBuilder materials = new StringBuilder();
-        if (tools != null) {
-            for (LlmTool tool : tools) {
-                if (user != null && keywordHit(user, tool)) {
-                    String result = tool.invoke().apply(user);
-                    materials.append("[已调用工具 ").append(tool.name()).append("]\n")
-                            .append(result).append("\n\n");
-                }
+        ChatClient.ChatClientRequestSpec spec = chatClient.prompt()
+                .system(system == null ? "" : system)
+                .messages(toSpringMessages(history))
+                .user(user == null ? "" : user);
+        if (tools != null && !tools.isEmpty()) {
+            spec.tools(toToolCallbacks(tools));   // ▼ 注册工具，Spring AI 自动托管调用循环
+        }
+        return spec.stream().content();           // ▼ 流式：返回逐 token 的 Flux<String>
+    }
+
+    // —— 私有：类型适配 ——
+
+    /** 自定义 LlmMessage 列表 → Spring AI Message 列表。 */
+    private List<Message> toSpringMessages(List<LlmMessage> history) {
+        List<Message> messages = new ArrayList<>();
+        if (history == null) return messages;
+        for (LlmMessage m : history) {
+            if ("assistant".equalsIgnoreCase(m.role())) {
+                messages.add(new AssistantMessage(m.content()));
+            } else {
+                messages.add(new UserMessage(m.content()));
             }
         }
-
-        // 2. 拼"研究结果"文本（模板，非真生成）
-        String answer = buildAnswer(user, history, materials.toString());
-
-        // 3. 拆成字符逐字吐出（模拟流式打字）
-        return charByChar(answer);
+        return messages;
     }
 
-    // —— 私有辅助 ——
-
-    private String buildAnswer(String user, String historyContext, String materials) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("## 研究结果：").append(user == null ? "（未指定主题）" : user).append("\n\n");
-        if (!materials.isEmpty()) {
-            sb.append("### 参考资料\n").append(materials);
+    /** 自定义 LlmTool 列表 → Spring AI ToolCallback 列表。
+     *  模型调用工具时，Spring AI 把入参 JSON 反序列化成 String，传给我们的 Function<String,String>。 */
+    private List<ToolCallback> toToolCallbacks(List<LlmTool> tools) {
+        List<ToolCallback> callbacks = new ArrayList<>();
+        for (LlmTool tool : tools) {
+            callbacks.add(FunctionToolCallback.builder(tool.name(), tool.invoke())
+                    .description(tool.description())
+                    .inputType(String.class)      // ▼ 工具入参类型：整个输入当一个字符串
+                    .build());
         }
-        sb.append("### 结论\n");
-        sb.append("基于上述信息（零依赖版 Mock 生成，仅供验证编排逻辑）：")
-          .append(user == null ? "" : "「").append(user == null ? "" : user)
-          .append(user == null ? "" : "」是一个值得深入研究的主题。");
-        if (historyContext != null && !historyContext.isEmpty()) {
-            sb.append("结合上文，可以进一步展开追问。");
-        }
-        sb.append("\n\n（流式结束）");
-        return sb.toString();
-    }
-
-    /** 把字符串拆成字符，每字随机延迟 30-80ms 逐个发出——模拟真实流式打字体验。 */
-    private Flux<String> charByChar(String text) {
-        String[] chars = text.split("");
-        return Flux.create(sink -> {
-            new Thread(() -> {
-                try {
-                    for (String c : chars) {
-                        sink.next(c);
-                        Thread.sleep(ThreadLocalRandom.current().nextInt(30, 80));
-                    }
-                    sink.complete();
-                } catch (InterruptedException e) {
-                    sink.error(e);
-                }
-            }, "mock-llm-stream").start();
-        });
-    }
-
-    /** 关键词提炼：把 user 按空格/标点拆词，取较长的几个当关键词。 */
-    private String extractKeywords(String user) {
-        if (user == null) return "关键词";
-        String[] words = user.split("[\\s，。、,\\.]+");
-        StringBuilder sb = new StringBuilder();
-        for (String w : words) {
-            if (w.length() >= 2) {
-                if (!sb.isEmpty()) sb.append(" ");
-                sb.append(w);
-            }
-        }
-        return sb.isEmpty() ? user.trim() : sb.toString();
-    }
-
-    /** 工具命中判断：user 里出现工具 name 或 description 里的关键词。 */
-    private boolean keywordHit(String user, LlmTool tool) {
-        String u = user.toLowerCase();
-        return u.contains(tool.name().toLowerCase())
-                || (tool.description() != null
-                    && containsAny(u, tool.description().toLowerCase().split("[，,。\\s]+")));
-    }
-
-    private boolean containsAny(String text, String[] keywords) {
-        for (String k : keywords) {
-            if (k.length() >= 2 && text.contains(k)) return true;
-        }
-        return false;
+        return callbacks;
     }
 }
 ```
 
-> **`charByChar` 为什么用裸 Thread + Flux.create**：模拟真实流式必须有真实的时间流逝（不能用 `Flux.interval` 平铺，否则字符是固定间隔，不自然）。第 0 章先这样；第 9 章会看到 SSE 心跳与这种流的协作。**简陋处**：裸线程没有取消传播——第 9 章加固③会处理。
+> **几个 Spring AI 2.0 细节（第一次接触会困惑，讲清楚）**：
+> - **`ChatClient.Builder` 自动注入**：`spring-ai-starter-model-openai` 检测到配置后自动建一个 `ChatClient.Builder` Bean。注入它、调 `.build()` 得到 `ChatClient`。**不用手动建任何模型 Bean。**
+> - **`.call()` vs `.stream()`**：`.call()` 同步阻塞返回完整结果（非流式）；`.stream()` 流式返回 `Flux`（逐 token 吐）。`chat()` 用前者，`stream()` 用后者。
+> - **`.tools(...)` 自动托管工具循环**：传 `ToolCallback` 进去后，Spring AI 的 `ToolCallingAdvisor` 自动处理"模型请求工具 → 执行 → 把结果喂回 → 模型再决定"的完整循环。**不用我们手写循环**——但第 1 章仍会讲循环原理（用 `ToolCallingLoop` 包一层，便于教学和埋点）。
+> - **`.content()`**：从响应里取纯文本流/字符串。
+> - **工具入参 `String.class`**：本文工具（搜索、知识库）都是"输入一段文本"。`inputType(String.class)` 让模型把入参当字符串传进来。生产中复杂工具可用 record 定义结构化 schema。
+> - **它是异步、不阻塞的**：`stream()` 返回的 `Flux` 订阅后才开始向 LLM 发请求、逐 token 吐。与第 9 章的 SSE 总线完美衔接。
 
 #### 0.2.6 网页搜索工具（内置静态知识源）
 
@@ -460,7 +463,7 @@ import reactor.core.publisher.Mono;
 import java.util.List;
 
 /**
- * 网页搜索工具（零依赖版：内置静态知识源）。
+ * 网页搜索工具（轻依赖版：内置静态知识源）。
  * 接口与原版一致：search(query) → Mono<String>。
  * 数据源换成内置条目（List），按关键词匹配返回——不抓任何网页。
  *
@@ -610,18 +613,19 @@ public class ResearchController {
         return researchService.research(topic);
     }
 }
-```bash
+```
 
 ### 0.3 验证
 
 ```bash
+export DEEPSEEK_API_KEY=sk-你的key
 mvn spring-boot:run
 
-# 流式请求（-N 关闭缓冲，能看到结果逐字出现）
+# 流式请求（-N 关闭缓冲，能看到结果逐 token 出现）
 curl -N "http://localhost:8080/api/research?topic=2026年大模型推理框架"
 ```
 
-预期：研究结果**逐字流式输出**（Mock LLM 每 30-80ms 吐一个字）。控制台能看到 `[研究]` 日志。
+预期：研究结果**逐 token 流式输出**（真实 LLM 逐字生成）。控制台能看到 `[研究]` 日志。
 
 ### 0.4 checkpoint
 
@@ -635,7 +639,7 @@ research-agent/
     │   ├── ResearchController.java     # REST 接口
     │   ├── llm/
     │   │   ├── LlmClient.java          # LLM 抽象接口（核心）
-    │   │   └── MockLlmClient.java      # 内置 Mock 实现
+    │   │   └── SpringAiLlmClient.java  # Spring AI ChatClient 实现
     │   └── tool/
     │       └── WebSearchTool.java      # 内置静态知识源搜索
     └── resources/
@@ -643,14 +647,14 @@ research-agent/
 ```
 
 ```bash
-git add -A && git commit -m "第0章：固定workflow + 内置Mock LLM + 静态知识源（零外部依赖）"
+git add -A && git commit -m "第0章：固定workflow + Spring AI 2.0 ChatClient + 静态知识源"
 ```
 
 ### 0.5 复盘
 
-**做了**：固定 workflow 跑通；`LlmClient` 抽象 + `MockLlmClient` 实现（**零依赖 LLM 的基石**）；内置静态知识源搜索；最小日志可见性。
+**做了**：固定 workflow 跑通；`LlmClient` 抽象 + `SpringAiLlmClient` 实现（**真 LLM，基于 Spring AI ChatClient**）；内置静态知识源搜索；最小日志可见性。
 
-**核心**：`LlmClient` 接口让"业务编排"与"LLM 实现"解耦——这是零依赖版能做到"换真模型不动业务"的根本，也是第 16 章"LLM 网关"的雏形。
+**核心**：`LlmClient` 接口让"业务编排"与"LLM 实现"解耦——这是本文能做到"换厂商不动业务"的根本，也是第 16 章"LLM 网关"的雏形。
 
 **还差**：
 - 固定步骤应对不了开放任务（要搜多次）→ **第 1 章自主 Agent**
@@ -667,16 +671,18 @@ git add -A && git commit -m "第0章：固定workflow + 内置Mock LLM + 静态�
 
 **Agent 和 workflow 的本质区别**：workflow 人写死步骤；Agent **LLM 自己决定下一步**（要不要再搜？搜什么？够了没？）。
 
-### 1.1 思路：先"让 LLM 能调工具"，再"让它循环调"
+### 1.1 思路：先"让 LLM 能调工具"，再"用循环骨架包一层做治理"
 
-零依赖版没有 Spring AI 的 `ToolCallingAdvisor` 自动循环。我们不直接写循环，而是**分两步演进**：
-1. **1.2 最小版**：先把工具"注册给 LLM"——`WebSearchTool.asTool()` 告诉 LLM 有什么工具、Mock 在 `stream()` 内模拟"命中即调"。**先验证"工具被调了、结果进了输出"**，这一步还没有循环。
-2. **1.4 引入循环骨架**：发现"开放任务可能要搜多次"的痛点，才把单次调用包进 `ToolCallingLoop`（带 `maxIterations` 防死循环）。**为真模型的 function-calling 多轮留好骨架**。
+Spring AI 2.0 的 `ChatClient` 已经内置了工具调用循环（`ToolCallingAdvisor` 自动托管"调LLM→解析tool_calls→执行→回传→再调"）。但我们**分两步演进**，让你既理解原理又能治理：
+1. **1.2 最小版**：先把工具"注册给 LLM"——`WebSearchTool.asTool()` 告诉 LLM 有什么工具。`SpringAiLlmClient.stream()` 把它传给 ChatClient，**Spring AI 自动决定调不调、调几次**。先验证"工具被自主调用了"。
+2. **1.4 引入循环骨架 `ToolCallingLoop`**：Spring AI 的自动循环虽然好用，但"黑盒"——**我们用 `ToolCallingLoop` 在外面包一层**，做两件 Spring AI 默认不做的事：**`maxIterations` 防死循环兜底**、**为埋点/审计留扩展位**（第 6 章审计、第 20 章可观测都挂在这里）。
 
 ```
-最小版：   LLM.stream(带工具) → Mock 内部"命中即调" → 单轮出结果
-演进版：   ToolCallingLoop { 调 LLM → 解析 tool_call → 执行 → 喂回 → 再调 } 直到无 tool_call
+最小版：   LlmClient.stream(带工具) → Spring AI 内部自动 function calling → 出结果
+演进版：   ToolCallingLoop { maxIterations 防死循环 + 埋点位 + 委托 LlmClient.stream }
 ```
+
+> **为什么不直接用 Spring AI 的循环还要包一层？** 框架的自动循环适合"标准场景"，但企业级要**可治理**：限制最大轮次（防 token 烧穿）、记录每轮调用（审计）、按租户/预算熔断。这些放在 `ToolCallingLoop` 里集中做，比散落在业务代码里干净。这是"用框架但不被框架绑架"的工程取舍。
 
 ### 1.2 动手（最小版）：把工具注册给 LLM
 
@@ -696,7 +702,7 @@ public LlmClient.LlmTool asTool() {
 }
 ```
 
-> Mock LLM 在 `stream(system, user, history, tools)` 里会**按 user 内容是否命中工具 description 的关键词**，决定调不调、把结果拼进输出（见 `MockLlmClient`）。**这一步已经实现了"工具被自主调用"的表象**——但本质是单轮，因为 Mock 一次性把"调工具+拼结果"做完了。
+> **工具是怎么被调起来的**：`SpringAiLlmClient.stream(...)` 把 `asTool()` 产生的工具描述适配成 Spring AI 的 `ToolCallback` 注册给 `ChatClient`。模型自主决定"要不要调这个工具、入参给什么"，Spring AI 的 `ToolCallingAdvisor` 执行调用、把结果喂回模型、模型再决定下一步——**真正的 function calling，由 LLM 决策，框架托管循环**。这一步已经实现了"工具被自主调用"。
 
 #### 1.2.2 ResearchService：注册工具（先不引循环）
 
@@ -748,42 +754,47 @@ curl -N "http://localhost:8080/api/research?topic=对比vLLM和TensorRT-LLM的�
 
 预期：Mock 命中"搜索/查询"关键词 → 调 `web_search` → 内置条目命中 → 摘要拼进结果逐字输出。
 
-### 1.4 最小版的隐患 → 引入循环骨架
+### 1.4 最小版的治理缺口 → 引入循环骨架
 
-**隐患（驱动演进）**：最小版的"自主调工具"是**单轮假象**——Mock 一次性把"调工具+拼结果"做完。但真实 Agent 是**循环**：调一次工具看结果够不够，不够再调一次（换关键词、核实矛盾）。而且：
-- **没有循环骨架**：换真模型（function calling）时，需要"解析 tool_call → 执行 → 喂回 → 再调"，最小版没地方放这套逻辑。
-- **没有防死循环**：真模型可能无限调工具，需要 `maxIterations` 截断。
+**缺口（驱动演进）**：最小版的工具调用由 Spring AI 的 `ToolCallingAdvisor` 自动托管——它确实能多轮（调工具→看结果→不够再调）。但**纯靠框架有几个企业级缺口**：
+- **没有超时/轮次兜底**：真模型极端情况下可能反复调工具烧 token，需要整体超时 + `maxIterations` 截断。
+- **没有埋点扩展位**：第 6 章要记录"调了几轮工具"、第 20 章要追踪每轮——需要一个集中点。
 
-**解法**：把单次 `llm.stream(...)` 包进 `ToolCallingLoop`。Mock 下它仍是单轮（因为 Mock 内部已做完），但**循环骨架（round 计数、maxIterations、history 累积）已经在**——换真模型时只补 tool_call 解析。
+**解法**：用 `ToolCallingLoop` 在 `LlmClient` 外**包一层**——它本身不再手写"解析 tool_call"那套（Spring AI 已经做了），而是负责**超时、`maxIterations` 兜底、埋点扩展位**。这样既用了框架的循环能力，又有了治理入口。
 
-#### 1.4.1 ToolCallingLoop：循环骨架（为真模型多轮留接口）
+#### 1.4.1 ToolCallingLoop：循环治理层（超时 + 轮次兜底 + 埋点位）
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/llm/ToolCallingLoop.java`：
 
 ```java
 package com.example.research.llm;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Agent 工具调用循环骨架。
+ * Agent 工具调用治理层（包在 LlmClient 外面）。
  *
- * 循环本质：调 LLM → 解析 tool_call → 执行工具 → 把结果作为 history 喂回 → 再调 LLM
- *          → 直到 LLM 不再请求工具（给出最终答案）。
+ * 定位：Spring AI 的 ToolCallingAdvisor 已经托管了"调LLM→执行工具→回传→再调"的循环，
+ *   本类不再重复实现循环，而是补三件框架默认不做的事：
+ *   1. maxIterations 兜底：防止极端情况下模型反复调工具烧穿 token（.timeout + 轮次上限）。
+ *   2. 超时控制：整体一次 Agent 调用设硬性超时。
+ *   3. 埋点扩展位：第 6 章审计、第 20 章可观测都挂在这里（doOnNext/doOnError/doOnComplete）。
  *
- * Mock 下：MockLlmClient.stream() 内部已把"调工具+拼结果"做完，所以本循环对 Mock 退化为单轮。
- * 真模型下：runRound 解析 tool_calls，执行后递归 runRound(round+1)——多轮。
- *
- * maxIterations 防死循环（真模型可能无限调工具）。
+ * 这样既享受框架的循环能力，又有企业级治理入口——"用框架但不被框架绑架"。
  */
 @Component
 public class ToolCallingLoop {
 
-    private static final int MAX_ITERATIONS = 5;
+    private static final Logger log = LoggerFactory.getLogger(ToolCallingLoop.class);
+    private static final int MAX_ITERATIONS = 5;           // ▼ 轮次兜底（防烧 token）
+    private static final Duration TIMEOUT = Duration.ofSeconds(60);  // ▼ 整体超时
 
     private final LlmClient llm;
 
@@ -795,18 +806,14 @@ public class ToolCallingLoop {
                             List<LlmClient.LlmMessage> history,
                             List<LlmClient.LlmTool> tools) {
         List<LlmClient.LlmMessage> hist = history == null ? new ArrayList<>() : new ArrayList<>(history);
-        return runRound(system, user, hist, tools, 0);
-    }
-
-    private Flux<String> runRound(String system, String user,
-                                  List<LlmClient.LlmMessage> history,
-                                  List<LlmClient.LlmTool> tools, int round) {
-        if (round >= MAX_ITERATIONS) {                                   // ▼ 防死循环
-            return Flux.just("\n[达到最大轮次 " + MAX_ITERATIONS + "，停止]");
-        }
-        return llm.stream(system, user, history, tools);
-        // Mock：单轮结束。真模型：解析 tool_calls → 执行 → history.add(工具结果) → runRound(round+1)
-        // 多轮扩展点见附录（真实 function-calling 解析）。
+        // ▼ 治理：超时 + 防死循环日志（多轮由 Spring AI 内部托管，这里做兜底）
+        return llm.stream(system, user, hist, tools)
+                .timeout(TIMEOUT)
+                .doOnSubscribe(s -> log.info("[Agent] 开始，工具数={}", tools == null ? 0 : tools.size()))
+                .doOnError(err -> log.warn("[Agent] 异常: {}", err.getMessage()))
+                .doOnComplete(() -> log.info("[Agent] 完成"));
+        // 多轮工具调用发生在 SpringAiLlmClient → ChatClient 内部（ToolCallingAdvisor 自动托管）。
+        // 若要更细的轮次计数（如第6章审计每轮），在第6章于 LlmClient 实现内挂埋点即可。
     }
 }
 ```
@@ -823,12 +830,11 @@ import com.example.research.tool.WebSearchTool;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
-import java.time.Duration;
 import java.util.List;
 
 /**
  * 第 1 章演进版：用 ToolCallingLoop 托管工具调用。
- * 演进：第0章固定workflow → 第1章最小版(注册工具) → 第1章演进版(循环骨架)。
+ * 演进：第0章固定workflow → 第1章最小版(注册工具) → 第1章演进版(治理层)。
  * 后续：第2章加知识库工具；第7章传 history 接入记忆。
  */
 @Service
@@ -843,14 +849,14 @@ public class ResearchService {
     }
 
     public Flux<String> research(String topic) {
+        // 超时/防死循环由 ToolCallingLoop 负责（单一职责），这里只组装请求
         return agentLoop.run(
                 "你是研究助理。你可以调用 web_search 工具查资料。" +
                 "自主决定搜索几次、搜什么关键词。资料矛盾时多搜一轮核实。" +
                 "资料足够后给出结构清晰的研究结果。绝不编造。",
                 "研究主题：" + topic,
                 List.of(),
-                List.of(searchTool.asTool()))
-                .timeout(Duration.ofSeconds(60));
+                List.of(searchTool.asTool()));
     }
 }
 ```
@@ -867,9 +873,9 @@ research-agent/.../ResearchService.java   （改：先注册工具 → 再用 To
 git add -A && git commit -m "第1章：自主Agent（先注册工具，再演进到循环骨架）"
 ```
 
-**做了**：先 `asTool()` 把工具注册给 LLM（最小版，验证工具能被调）→ 发现"单轮假象/无防死循环"痛点 → 引入 `ToolCallingLoop` 循环骨架（为真模型多轮留接口）。
+**做了**：先 `asTool()` 把工具注册给 `ChatClient`（最小版，验证工具能被真模型自主调用）→ 发现"纯靠框架缺治理"痛点（无超时/轮次兜底/埋点位）→ 引入 `ToolCallingLoop` 在外面包一层做治理。
 
-**核心跃迁**：从"人写死步骤"到"LLM 自主决定下一步"。循环骨架（决定→执行→喂回→再决定）裸露可见，换真模型只补 tool_call 解析。**这是演进式：先让工具能用，再为循环留位。**
+**核心跃迁**：从"人写死步骤"到"LLM 自主决定下一步"——工具调用循环由 Spring AI 托管，我们用 `ToolCallingLoop` 补上企业级治理（超时、防烧 token、埋点扩展位）。**这是演进式：先让工具能用，再补治理。**
 
 ---
 
@@ -880,7 +886,7 @@ git add -A && git commit -m "第1章：自主Agent（先注册工具，再演进
 
 第 1 章的 `web_search` 只命中内置静态条目，覆盖面窄。研究企业内部的事（比如"本公司的部署规范"）根本搜不到——**需要查内部知识库**。这就是 RAG 的驱动点。
 
-但零依赖版**不能用 pgvector、不能调外部 embedding API**。怎么在不依赖向量库的前提下做 RAG？
+但轻依赖版**不能用 pgvector、不能调外部 embedding API**。怎么在不依赖向量库的前提下做 RAG？
 
 ### 2.1 思路：内存 TF-IDF 检索 + Redis 存储
 
@@ -1462,7 +1468,7 @@ git add -A && git commit -m "第2章：TF-IDF四步演进（朴素匹配→IDF�
 
 **做了**：知识库 RAG 链路打通 + 检索质量四步演进。文档落 Redis（不依赖数据库），检索纯内存（不依赖向量库）。两个工具（web_search + knowledge_base）分工。
 
-**核心**：RAG 不一定要向量库——零依赖版用 TF-IDF 证明"检索能力"可以纯内存一步步搭出来。**换向量检索时，只换 `TfidfIndex.retrieve()`，接口和工具注册都不动**——和第 16 章换 LLM 同构的解耦红利。
+**核心**：RAG 不一定要向量库——轻依赖版用 TF-IDF 证明"检索能力"可以纯内存一步步搭出来。**换向量检索时，只换 `TfidfIndex.retrieve()`，接口和工具注册都不动**——和第 16 章换 LLM 同构的解耦红利。
 
 ---
 
@@ -1782,7 +1788,7 @@ git add -A && git commit -m "第5章：flatMap并发调研+限流+错误隔离"
 
 第 5 章并发调研后，用户问"这个结论基于哪些资料？"——答不上来。**需要结构化审计日志**，按会话把"Plan 了什么、调了哪些工具、每步结果"串起来。
 
-零依赖版**不用数据库**，审计日志落 Redis（List，按 sessionId 串联）。
+轻依赖版**不用数据库**，审计日志落 Redis（List，按 sessionId 串联）。
 
 ### 6.1 思路：AuditEvent + Redis List
 
@@ -4340,7 +4346,7 @@ git add -A && git commit -m "第10.5章：管理数据持久层（H2+JPA，一�
 
 **为什么 Sentinel 而不是 Cluster**：Cluster 是"分片"，数据量大到单机放不下才用。本项目 Redis 数据量小（Streams 24h 过期、记忆 TTL、知识库种子），**痛点是"单点故障"不是"容量"**——Sentinel 刚好对症，Cluster 反而过度设计。
 
-> **我的判断**：这里和原版一致——Sentinel 对症。但我要补一点原版没强调的：本项目 Redis 同时承担"热缓存（会话记忆）"和"事实存储（知识库、审计）"两种角色（因为零依赖、不用数据库）。**这放大了 Redis 单点的影响**——数据库型系统里，Redis 挂了还有 DB 兜底；这里没有 DB，所以 Sentinel + AOF 持久化对零依赖版**比原版更重要**。
+> **我的判断**：这里和原版一致——Sentinel 对症。但我要补一点原版没强调的：本项目 Redis 同时承担"热缓存（会话记忆）"和"事实存储（知识库、审计）"两种角色（因为零依赖、不用数据库）。**这放大了 Redis 单点的影响**——数据库型系统里，Redis 挂了还有 DB 兜底；这里没有 DB，所以 Sentinel + AOF 持久化对轻依赖版**比原版更重要**。
 
 ### 11.2 动手
 
@@ -4424,7 +4430,7 @@ curl -N "http://localhost:8080/api/runs/<runId>/stream"
 git add -A && git commit -m "第11章：Redis Sentinel高可用+退避重试"
 ```
 
-**做了**：Redis 单节点 → Sentinel 主从。业务零改动。**对零依赖版（Redis 既当缓存又当事实存储），高可用是刚需，不是可选**。
+**做了**：Redis 单节点 → Sentinel 主从。业务零改动。**对轻依赖版（Redis 既当缓存又当事实存储），高可用是刚需，不是可选**。
 
 ---
 
@@ -4664,7 +4670,7 @@ git add -A && git commit -m "第12章：chunk总线升级Kafka+消费组跨服�
 | `research-subscribe` | 订阅 Kafka、SSE 推前端 | SSE 长连接数 | webflux + kafka（最小） |
 | `research-trigger` | POST 触发、抢锁、写 Kafka、调 LLM 网关 | LLM 并发数 | webflux + redis-reactive + kafka |
 | `research-agent` | 业务核心：知识库、Plan-Execute、会话 CRUD | 业务 QPS | webflux + redis-reactive |
-| `research-llm-gateway` | 封装 LLM 厂商细节、A/B、熔断、计费 | LLM 调用量 | webflux + (MockLlmClient 或真模型) |
+| `research-llm-gateway` | 封装 LLM 厂商细节、A/B、熔断、计费 | LLM 调用量 | webflux + spring-ai（`SpringAiLlmClient`/ChatClient） |
 | `research-gateway` | API 网关、路由、lb | — | spring-cloud-gateway |
 | `research-registry` | Eureka 服务发现 | — | eureka-server |
 
@@ -4689,7 +4695,7 @@ git add -A && git commit -m "第12章：chunk总线升级Kafka+消费组跨服�
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>4.0.6</version>
     </parent>
     <groupId>com.example</groupId>
     <artifactId>research-subscribe</artifactId>
@@ -4875,11 +4881,11 @@ git add -A && git commit -m "第13章：拆出独立订阅服务research-subscri
 
 把触发逻辑独立成 `research-trigger`：调 LLM 网关、抢 Redis 锁、写 Kafka。原 `research-agent` 退化成业务核心（知识库/Plan/会话）。
 
-> **触发服务调 LLM 直连还是走网关？** 本章先直连（Mock LLM 打包进触发服务）。LLM 网关屏蔽厂商差异是第 16 章的事——一步步来。
+> **触发服务调 LLM 直连还是走网关？** 本章先直连（`SpringAiLlmClient`/ChatClient 打包进触发服务，依赖 spring-ai）。LLM 网关屏蔽厂商差异是第 16 章的事——一步步来。
 
 ### 14.2 动手
 
-**`research-trigger`**：把 `RedisStreamBus`(锁部分) + `KafkaChunkBus`(写侧) + `MockLlmClient` + `TriggerController` 复制过去，依赖 webflux + redis-reactive + kafka。
+**`research-trigger`**：把 `RedisStreamBus`(锁部分) + `KafkaChunkBus`(写侧) + `SpringAiLlmClient`(及 spring-ai 依赖) + `TriggerController` 复制过去，依赖 webflux + redis-reactive + kafka + spring-ai。
 
 > **触发服务调 LLM 不带 ChatMemory（本章简化）**——多轮记忆留给业务核心/Redis。这是第 17 章"分布式 ChatMemory"的演进起点（**代价先欠下，第 17 章还**）。
 
@@ -4925,6 +4931,8 @@ spring:
 
 > **网关必须响应式才支持 SSE**：Spring Cloud Gateway（WebFlux）逐 chunk 透传 SSE；传统 Servlet 网关（Zuul 1）会缓冲破坏流式。**这是流式系统在网关选型上的关键差异**。
 
+> **Spring Cloud 版本配套**：Spring Boot 4.0.x 配 **Spring Cloud 2025.0.x（Northfields）**（如 `2025.0.3`）。gateway/registry 服务的 pom 里用 `spring-cloud-dependencies` BOM 管版本，starter 用 `spring-cloud-starter-gateway`（网关）和 `spring-cloud-starter-netflix-eureka-server`/`-client`（注册中心/客户端）。**别配 2025.1.x（那是给 Boot 4.1 的）**——以[官方兼容矩阵](https://spring.io/projects/spring-cloud)为准。
+
 ### 15.2 checkpoint + 复盘
 
 ```bash
@@ -4939,9 +4947,9 @@ git add -A && git commit -m "第15章：API网关+Eureka统一入口"
 
 ### 16.0 场景
 
-第 15 章后，想从 Mock 切到真模型（或换厂商），要改触发服务的依赖/配置/system prompt/流式格式适配……改完还要重新部署。**换厂商 = 改业务代码**。
+第 15 章后，想从 DeepSeek 换到 OpenAI、或加个通义做 A/B、或给某个租户单独路由……要改触发服务的依赖/配置/system prompt/流式格式适配……改完还要重新部署。**换厂商 = 改业务代码**。
 
-> **在零依赖版里，这个痛点更纯粹**：当前所有服务都打包了 `MockLlmClient`。要换真模型，得改多个服务。**把 LLM 实现收敛到一个网关，业务只认统一接口**——这正是第 0 章引入 `LlmClient` 抽象时就埋下的伏笔。
+> **这个痛点在本文里很纯粹**：当前触发服务直接打包了 `SpringAiLlmClient`（绑定 spring-ai + DeepSeek 配置）。要换厂商或加厂商，得改多个服务、每个都重新配 key。**把 LLM 实现收敛到一个网关，业务只认统一接口**——这正是第 0 章引入 `LlmClient` 抽象时就埋下的伏笔。
 
 ### 16.1 思路
 
@@ -4953,7 +4961,7 @@ git add -A && git commit -m "第15章：API网关+Eureka统一入口"
 @RestController
 @RequestMapping("/llm")
 public class LlmController {
-    private final LlmClient llm;   // 注入 MockLlmClient（或真实现）
+    private final LlmClient llm;   // 注入 SpringAiLlmClient（绑定具体厂商）
     public LlmController(LlmClient llm) { this.llm = llm; }
 
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -4964,9 +4972,9 @@ public class LlmController {
 }
 ```
 
-**`LlmRouter`（厂商路由扩展点）**：本章单实现（Mock）；扩展点：A/B、按租户路由、熔断降级、token 计费——**所有 LLM 治理逻辑收敛在这一处**。
+**`LlmRouter`（厂商路由扩展点）**：本章单实现（`SpringAiLlmClient` 绑 DeepSeek）；扩展点：接多个 ChatClient 做 A/B、按租户路由、熔断降级、token 计费——**所有 LLM 治理逻辑收敛在这一处**。
 
-> **触发服务改为调网关**：去掉 `spring-ai`/`MockLlmClient` 依赖，用 `WebClient` 调 `http://research-llm-gateway/llm/chat/stream`。换厂商、加厂商、A/B、计费，全在网关内部改，触发服务一行不动。
+> **触发服务改为调网关**：去掉 `spring-ai`/`SpringAiLlmClient` 依赖（key、配置全移到网关），用 `WebClient` 调 `http://research-llm-gateway/llm/chat/stream`。换厂商、加厂商、A/B、计费，全在网关内部改，触发服务一行不动。
 
 ### 16.2 checkpoint + 复盘
 
@@ -4988,11 +4996,11 @@ git add -A && git commit -m "第16章：拆LLM网关屏蔽厂商差异"
 
 **根因**：会话记忆在第 7 章落在 Redis（`ChatMemoryStore`）。触发服务是独立进程，理论上能读同一个 Redis——但第 14 章简化掉了。现在补回来。
 
-### 17.1 思路：Redis 热缓存 + Redis 兜底（零依赖版特化）
+### 17.1 思路：Redis 热缓存 + Redis 兜底（轻依赖版特化）
 
-原版是"Redis 热缓存 + PG 兜底"。**零依赖版没有 PG**——所以记忆就是"Redis 热缓存 + Redis 兜底"（同一个 Redis，TTL 区分热/冷，或两套 key）。触发服务直接读共享 Redis 拿历史，**不跨进程 RPC 业务核心**。
+原版是"Redis 热缓存 + PG 兜底"。**轻依赖版没有 PG**——所以记忆就是"Redis 热缓存 + Redis 兜底"（同一个 Redis，TTL 区分热/冷，或两套 key）。触发服务直接读共享 Redis 拿历史，**不跨进程 RPC 业务核心**。
 
-> **我的判断**：这其实是零依赖版的**优势**——因为记忆本来就在 Redis（第 7 章），拆服务后触发服务只需连同一个 Redis 就能读到历史，**几乎零成本恢复多轮记忆**。原版要处理"PG 兜底"是因为它有数据库；我们没有数据库，反而更简单。
+> **我的判断**：这其实是轻依赖版的**优势**——因为记忆本来就在 Redis（第 7 章），拆服务后触发服务只需连同一个 Redis 就能读到历史，**几乎零成本恢复多轮记忆**。原版要处理"PG 兜底"是因为它有数据库；我们没有数据库，反而更简单。
 
 ### 17.2 动手
 
@@ -5635,8 +5643,8 @@ public class UsageRecorder {
 ```
 
 > **token 数怎么来**：
-> - **真实场景**：LLM API 的响应里带 `usage.prompt_tokens/completion_tokens`（OpenAI/Anthropic 都返回）。第 16 章 LLM 网关把它透传出来——**最准**。
-> - **学习/Mock**：Mock LLM 没有 usage，用 `estimateTokens(text) ≈ 字符数/2`（中文约 1 字≈1.5 token，英文约 4 字符≈1 token，简化取 /2）。**简陋但能让计量链路跑通**。生产换真实 usage。
+> - **主路径（本文）**：Spring AI 的 `ChatClient` 调用响应里带 `Usage`（`promptTokens`/`completionTokens`），底层来自 DeepSeek/OpenAI API 的 `usage` 字段。从流式响应的 `Chunk` 累计、或在 `LlmClient` 里拿到——**最准**。第 16 章 LLM 网关把它透传出来。
+> - **兜底估算**：流式场景有时拿不到 usage（部分 provider 不逐 chunk 返回），用 `estimateTokens(text) ≈ 字符数/2`（中文约 1 字≈1.5 token，英文约 4 字符≈1 token，简化取 /2）兜底。**简陋但能让计量链路在拿不到 usage 时也能跑**。
 
 ```java
 /** 简易 token 估算（Mock 用；生产用 LLM 返回的真实 usage）。 */
@@ -6086,7 +6094,7 @@ LLM 生成结果
 
 **痛点**：现在的结果是一坨纯文本，用户分不清哪句是检索到的、哪句是 LLM 编的。
 
-**解法**：让 LLM 生成**结构化结果**——每条结论带 `source` 字段。改造 `MockLlmClient` 的输出格式，让它输出"结论 + 来源标记"。
+**解法**：让 LLM 生成**结构化结果**——每条结论带 `source` 字段。通过 system prompt 要求模型按"结论 + 来源标记"格式输出（或用 Spring AI 的结构化输出 `entity(Class)` 直接转成对象）。真模型完全支持这种指令。
 
 **【改已有文件，片段】** `ResearchService` 在 prompt 里要求结构化输出（真模型同理）：
 
@@ -6840,7 +6848,7 @@ git add -A && git commit -m "第23章：长期记忆与个性化（跨会话用�
    research-llm-gateway ←── 调（屏蔽厂商，A/B/熔断/计价）
              │
              ▼
-        真 LLM（DeepSeek/通义/GPT，零依赖版用 Mock）
+        真 LLM（DeepSeek/通义/GPT，本文默认 DeepSeek 经 Spring AI 接入）
              │
    ╔════════╧══════════════════════════════════════════════════╗
    ║                    共享中间件层                              ║
@@ -6943,7 +6951,7 @@ research-platform/
 
 6. **微服务拆分有判断标准（资源画像/独立扩容/独立发布/团队边界）**，没有信号就别拆。模块化单体往往是小团队最优解。本项目拆到"管数分离 + Redis HA + Kafka"已是相当可用的企业级单体。
 
-7. **零依赖版的真正价值**：`LlmClient` 抽象让"Mock 离线验证编排"和"生产真模型"无缝切换——第 16 章换 LLM 网关不改业务，是第 0 章抽象的复利。
+7. **轻依赖版的真正价值**：`LlmClient` 抽象让"LLM 实现"与"业务编排"彻底解耦——第 0 章用 `SpringAiLlmClient`（Spring AI ChatClient + DeepSeek），将来换厂商、换实现，只改这一个类，业务代码一行不动。第 16 章换 LLM 网关不改业务，是第 0 章抽象的复利。
 
 ### 加固扩展点（最小版待补，企业级必做）
 

@@ -2464,7 +2464,7 @@ public class CriticalEventFallback {
 }
 ```
 
-> **API 核实**：`StringRedisTemplate.opsForZSet().add(key, member, score)`、`expire(key, Duration)` 是 `spring-data-redis-4.1.0` 真实 API。
+> **API 核实**：`StringRedisTemplate.opsForZSet().add(key, member, score)`、`expire(key, Duration)` 是 Spring Data Redis 4.x（随 Spring Boot 4.0.x）真实 API。
 
 ### 17.3 SSE 断线重连 + 事件回放
 
@@ -2806,7 +2806,7 @@ public class SessionStateStore {
 }
 ```
 
-> `StringRedisTemplate.opsForHash().get/increment/put` 是 `spring-data-redis-4.1.0` 真实 API（与 §17.2 的 `opsForZSet` 同源，已核实）。生产级原子预扣建议用 Lua 脚本（`RedisScript` + `execute`），把「读 used/reserved + 判断 + 累加」放进单次 Redis 调用，消除 check-then-act 竞态。
+> `StringRedisTemplate.opsForHash().get/increment/put` 是 Spring Data Redis 4.x（随 Spring Boot 4.0.x）真实 API（与 §17.2 的 `opsForZSet` 同源，已核实）。生产级原子预扣建议用 Lua 脚本（`RedisScript` + `execute`），把「读 used/reserved + 判断 + 累加」放进单次 Redis 调用，消除 check-then-act 竞态。
 
 > **改造影响**：`QuotaService`/`MaxTurnsGuard`/取消控制器都改为依赖 `SessionStateStore` 而非各自的 `ConcurrentHashMap`。这是第二轮最伤筋动骨的一项，但也是多实例 SaaS 绕不开的。
 

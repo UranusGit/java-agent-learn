@@ -8,7 +8,7 @@
 >
 > **配套查参**：[33-Agent子过程实时可见性方案](./33-Agent子过程实时可见性方案.md) 是理论全本，某项设计想看完整细节时翻它。
 >
-> **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · Reactor · Maven · DeepSeek（OpenAI 兼容协议）。
+> **技术栈**：Spring Boot 4.0.6 · Spring AI 2.0.0 · Java 21 · WebFlux · Reactor · Maven · DeepSeek（OpenAI 兼容协议）。
 > **难度假设**：你会 Java、会用 IDE、会跑 Maven，但不熟 Reactor/SSE/可观测性。每个新概念第一次出现都先用大白话讲。
 >
 > **本文边界（重要）**：讲「**可观测性**」——让 Agent 的执行过程可见、可靠、可治理，以及支撑这套的工程化（事件总线、SSE、归档检索、重试降级等）。**不讲**两件事：
@@ -136,7 +136,7 @@ ai-writing-assistant/
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.0</version>
+        <version>4.0.6</version>
         <relativePath/>
     </parent>
 
@@ -5480,7 +5480,7 @@ flowchart TD
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.0</version>
+        <version>4.0.6</version>
         <relativePath/>
     </parent>
     

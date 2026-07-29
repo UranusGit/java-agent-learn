@@ -11,9 +11,9 @@
 > **项目结构**：本文围绕一个主项目——
 > - **主项目 `research-agent`**：会话化研究问答系统（本文主体，含知识库、Agent 循环、Plan-Execute 并发编排、审计日志、会话持久化）。
 >
-> **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · DeepSeek · **pgvector**（知识库向量库 + 会话存储同库）· **MCP**（工具协议）· Bing（网页搜索，零 key，国内直连）。
+> **技术栈**：Spring Boot 4.0.6 · Spring AI 2.0.0 · Java 21 · WebFlux · DeepSeek · **pgvector**（知识库向量库 + 会话存储同库）· **MCP**（工具协议）· Bing（网页搜索，零 key，国内直连）。
 >
-> ⚠️ **版本前提（重要）**：本文基于 Spring Boot 4.1.x / Spring AI 2.0.0。写作时部分 API（如 `@McpTool`、MCP starter 命名）尚在里程碑/预览阶段、随小版本变动。若你用其他版本，**少量 API 名以你版本的官方文档为准**——本文遇到易变的点会标注 issue/文档链接。
+> ⚠️ **版本前提（重要）**：本文基于 Spring Boot 4.0.6（GA）/ Spring AI 2.0.0。Spring AI 2.0 最低要求 Spring Boot 4.0.x。写作时部分 API（如 `@McpTool`、MCP starter 命名）尚在里程碑/预览阶段、随小版本变动。若你用其他版本，**少量 API 名以你版本的官方文档为准**——本文遇到易变的点会标注 issue/文档链接。
 >
 >
 > 📌 **本文不涉及多租户与多实例**：为聚焦"单租户、单实例下的会话化问答"主线，**不做**租户隔离、分布式会话同步、水平扩展。这些是企业级演进的下一站（见末尾"后续演进方向"），不在本文范围。
@@ -165,7 +165,7 @@ research-agent/
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.0</version>
+        <version>4.0.6</version>
         <relativePath/>
     </parent>
 
@@ -5695,7 +5695,7 @@ git add -A && git commit -m "第12章：chunk总线升级Kafka+消费组跨服�
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>4.0.6</version>
     </parent>
     <groupId>com.example</groupId>
     <artifactId>research-subscribe</artifactId>
@@ -6000,7 +6000,7 @@ git add -A && git commit -m "第13章：拆出独立订阅服务research-subscri
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>4.0.6</version>
     </parent>
     <groupId>com.example</groupId>
     <artifactId>research-trigger</artifactId>
@@ -6305,7 +6305,7 @@ git add -A && git commit -m "第14章：拆出独立触发服务research-trigger
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>4.0.6</version>
     </parent>
     <groupId>com.example</groupId>
     <artifactId>research-registry</artifactId>
@@ -6372,7 +6372,7 @@ eureka:
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>4.0.6</version>
     </parent>
     <groupId>com.example</groupId>
     <artifactId>research-gateway</artifactId>
@@ -6573,7 +6573,7 @@ research-trigger                      research-trigger
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>4.0.6</version>
     </parent>
     <groupId>com.example</groupId>
     <artifactId>research-llm-gateway</artifactId>
@@ -7098,7 +7098,7 @@ git add -A && git commit -m "第17章：分布式ChatMemory——Redis热缓存+
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>4.0.6</version>
     </parent>
     <groupId>com.example</groupId>
     <artifactId>research-auth</artifactId>
