@@ -525,6 +525,39 @@ BlockHound.install();   // 测试代码加
 
 流式 chunk 较小，前端拼接处理不当。见本文 §D.1 的 scan 滚动聚合模式。
 
+### I.6 "`.stream()` 报 No StreamAdvisors available to execute"
+
+**症状**：
+
+```
+java.lang.IllegalStateException: No StreamAdvisors available to execute
+    at DefaultAroundAdvisorChain.lambda$nextStream$6(DefaultAroundAdvisorChain.java:129)
+```
+
+**根因**：配置了只实现 `CallAroundAdvisor`（用于 `.call()`）的 Advisor 作为 defaultAdvisor，然后调了 `.stream()`。
+
+Spring AI 2.0.0 把 Advisor 拆成了两个接口：
+
+| 接口 | 适用于 |
+|------|--------|
+| `CallAroundAdvisor` | `chatClient.prompt()...call()` |
+| `StreamAroundAdvisor` | `chatClient.prompt()...stream()` |
+
+当调用 `.stream()` 时，`DefaultAroundAdvisorChain` 会筛选所有实现了 `StreamAroundAdvisor` 的 Advisor。如果一个都没有，直接抛 `No StreamAdvisors available to execute`。
+
+**Spring AI 2.0.0 内置 Advisor 兼容性**：
+
+| Advisor | CallAround | StreamAround |
+|---------|-----------|-------------|
+| `MessageChatMemoryAdvisor` | ✅ | ❌ |
+| `ToolCallingAdvisor` | ✅ | ✅ |
+| `SimpleLoggerAdvisor` | ✅ | ✅ |
+
+**解决**：
+
+- **方案一**：不用该 Advisor，改用手动管理。例如 `MessageChatMemoryAdvisor` 不支持 stream → 直接注入 `ChatMemory`，在 `Flux.defer()` 里手动 `memory.add()`/`memory.get()`，流结束时保存 AssistantMessage。详见 [附录：Reactor AI 流式核心模式](../../附录/Reactor-AI流式核心模式.md) 第 2 章。
+- **方案二**：改用 `.call()` 代替 `.stream()`，放弃流式输出。
+
 ---
 
 ## Part J. 实战任务

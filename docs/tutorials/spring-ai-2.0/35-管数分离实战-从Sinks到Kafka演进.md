@@ -936,12 +936,13 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 流总线（第 4 章）：Redis Stream 持久 + Pub/Sub 实时广播。
  *
  * 写：每个 chunk → XADD（持久）+ PUBLISH（实时通知）。
- * 读：先回放 Stream 历史，再监听频道接实时。
+ * 读：先回放 Stream 历史，再按需接监听频道实时。
  *
  * 简陋处（第 5 章补）：
  *   - 没有 seq 游标，回放靠"读全量再过滤已发"，重连窗口可能漏/重复 chunk。
@@ -983,27 +984,32 @@ public class StreamBus {
         return write(token, END_MARK);
     }
 
-    /** 订阅：回放历史 + 接实时。读到结束标记就完成。 */
+    /** 订阅：回放历史 + 按需接实时。读到结束标记就完成。 */
     public Flux<String> subscribe(String token) {
         String streamKey = KEY_STREAM.formatted(token);
         String channel   = CHANNEL.formatted(token);
+        AtomicBoolean ended = new AtomicBoolean(false);    // ▼ 标记历史里是否已有 END
 
-        // 1. 回放历史（XRANGE 全量）
+        // 1. 回放历史（XRANGE 全量），标记是否见到了结束标记
         Flux<String> history = redis.opsForStream().range(streamKey, Range.unbounded())
-                .map(this::chunkOf);
+                .map(this::chunkOf)
+                .doOnNext(s -> { if (END_MARK.equals(s)) ended.set(true); });
 
-        // 2. 接实时（监听频道）
-        Flux<String> live = listener.receive(ChannelTopic.of(channel))
-                .map(m -> m.getMessage());
+        // 2. 接实时——只有历史里没见到结束标记时才连 Pub/Sub
+        //    （如果生成已完成、END 在历史里，再连 live 就永远等不到 END → 请求挂起）
+        Flux<String> live = Flux.defer(() -> ended.get()
+                ? Flux.<String>empty()
+                : listener.receive(ChannelTopic.of(channel)).map(m -> m.getMessage()));
 
-        // 拼接：先吐历史，再吐实时，遇到结束标记就 takeUntil 终止。
+        // 拼接：先吐历史，再吐实时（如需要），遇到结束标记就 takeUntil 终止。
         return history.concatWith(live)
                 .takeUntil(s -> s.equals(END_MARK))     // ▼ 遇到 END 就停
                 .filter(s -> !s.equals(END_MARK));       // ▼ END 本身不输出给前端
     }
 
-    private String chunkOf(MapRecord<String, String, String> r) {
-        return r.getValue().get("chunk");
+    // ▼ Spring Data Redis 3.x：range() 返回 MapRecord<K, Object, Object>，value 需 toString()
+    private String chunkOf(MapRecord<String, Object, Object> r) {
+        return String.valueOf(r.getValue().get("chunk"));
     }
 }
 ```
@@ -1013,7 +1019,9 @@ public class StreamBus {
 > - `StreamRecords.string(Map).withStreamKey(key)` 构造一条 Stream 记录，value 是个 Map（我们只放一个 `chunk` 字段）。
 > - `redis.convertAndSend(channel, msg)` = `PUBLISH`，返回订阅者数量（我们忽略）。
 > - `listener.receive(ChannelTopic.of(channel))` 返回一个**永不结束**的 `Flux`，每收到一条频道消息就发出一个 `Message`。用 `.map(m -> m.getMessage())` 取消息体。
-> - **`history.concatWith(live)`**：先订阅 history（发完所有历史才结束），结束后才订阅 live。`concatWith` 保证这个顺序。
+> - **`AtomicBoolean` + `Flux.defer` 防挂起**：`history.concatWith(live)` 在 history 完成后会订阅 live，但如果 history 里已经有结束标记（生成已完成），live 就永远等不到 END_MARK → 请求永久挂起。用 `doOnNext` 标记是否见过 `__END__`，再用 `Flux.defer` 按条件跳过 live 订阅——见到了就返回 `Flux.empty()`，不会挂起。
+> - **Pub/Sub 永不停的特性**：`listener.receive` 返回的 Flux **不会自发结束**（它一直监听频道）。必须靠 `takeUntil`（或 `take`）来终止订阅。如果终止条件（END_MARK）在订阅前已发布，就永远收不到——这正是 `AtomicBoolean` 要防的。
+> - **`history.concatWith(live)`**：先吐完 history，再接 live。`concatWith` 保证这个顺序。
 
 #### 4.2.4 监听容器 Bean
 
@@ -1337,8 +1345,9 @@ public class StreamBus {
                 });
     }
 
-    private long seqOf(MapRecord<String, String, String> r) {
-        try { return Long.parseLong(r.getValue().get("seq")); }
+    // ▼ Spring Data Redis 3.x：range() 返回 MapRecord<K, Object, Object>
+    private long seqOf(MapRecord<String, Object, Object> r) {
+        try { return Long.parseLong(String.valueOf(r.getValue().get("seq"))); }
         catch (Exception e) { return 0; }
     }
 }
@@ -1525,38 +1534,51 @@ git add -A && git commit -m "第5章:seq游标回放+SSE Last-Event-ID续传"
 
 ---
 
-## 第 6 章：多端同时点生成，重复触发——run 资源 + 幂等键
+## 第 6 章：多端同时点生成，重复触发——run 资源 + 幂等键 + 会话级独占
 
 ### 6.0 场景
 
-第 5 章后，单实例的管数分离已经很完整。但产品提了两个需求，暴露当前设计的弱：
+第 5 章后，单实例的管数分离已经很完整。但产品提了三个需求，暴露当前设计的弱：
 
 1. **"用户手机点了生成，iPad 也点了一下"** → 创建了两个 token、跑了两次生成器。如果后面换真 LLM，这意味着**烧两次钱**，而且两份结果可能不同。
 2. **前端想知道"任务跑完了没"** → 当前只有"流结束"这一个信号，没有可轮询的状态。前端拿不到"queued/RUNNING/DONE/FAILED"这种状态机。
+3. **"用户在一个会话里，生成还没完，又点了发送问第二个问题"** → 同一会话里两个生成任务并发跑，结果错乱、资源浪费。ChatGPT 的做法是：**一个会话同一时间只允许一个生成任务，必须等它到终态（完成/失败/取消）才能发起新的**。
 
-真实 AI 平台（OpenAI Assistants、Anthropic）怎么做的？**把"触发"建模成一个有生命周期的 run 资源**——有独立 id、有状态机、可查询/取消/订阅，配幂等键防重复提交。
+真实 AI 平台（OpenAI Assistants、Anthropic）怎么做的？**把"触发"建模成一个有生命周期的 run 资源**——有独立 id、归属会话、有状态机、可查询/取消/订阅，配幂等键防重复提交，配**会话级独占**保证同一会话串行生成。
 
-### 6.1 思路：run 资源 + 状态机 + 幂等键
+> **从本章起引入 `sessionId`**：前 5 章只有 `prompt`，没有会话概念。真实产品里，用户的多轮提问属于同一个"会话"（conversation）。本章给接口加上 `sessionId`，并用它实现"会话级独占"——这是企业级聊天产品的标配语义。
+
+### 6.1 思路：run 资源 + 状态机 + 幂等键 + 会话级独占
 
 | 概念 | 设计 |
 |------|------|
-| **run 资源** | 每次触发创建一个 `run`，有 `runId`、状态（`queued → RUNNING → DONE/FAILED/CANCELLED`）、创建时间 |
+| **run 资源** | 每次触发创建一个 `run`，有 `runId`、归属 `sessionId`、状态（`queued → RUNNING → DONE/FAILED/CANCELLED`）、创建时间 |
 | **状态存储** | Redis（`run:{id}:status`） | 状态查询要低延迟、可跨实例（第 7 章），放 Redis |
 | **幂等键** | 请求头 `Idempotency-Key` → 同 key 返回同一个 runId | 多端同时提交，只有一个 run |
-| **取消** | `POST /runs/{id}/cancel` | 主动停止 |
+| **会话级独占** | Redis 标记 `session:{id}:running` → 同一会话同时只一个 run | 串行化，防并发错乱 |
+| **取消** | `POST /runs/{id}/cancel` | 主动停止（终态，释放会话锁） |
 
 REST 形态升级：
 
 ```
-POST /api/runs                 头 Idempotency-Key → 201 + run 资源
-GET  /api/runs/{runId}         → 查状态（轮询）
-POST /api/runs/{runId}/cancel  → 取消
-GET  /api/runs/{runId}/stream  → 只读 SSE（沿用第 5 章）
+POST /api/runs?sessionId=X&prompt=Y  头 Idempotency-Key → 201 + run 资源
+GET  /api/runs/{runId}               → 查状态（轮询）
+POST /api/runs/{runId}/cancel        → 取消
+GET  /api/runs/{runId}/stream        → 只读 SSE（沿用第 5 章）
 ```
 
 > **为什么是 run 资源，而不是 `202+{status:"started"}`？** 弱版只有"started"，前端没法轮询、没法取消、状态黑盒。run 资源让任务**可观测、可治理**——这是"能上生产"和"玩具 demo"的分水岭。
 
 > **幂等键的原理**：客户端为"这次提交"生成一个随机 key（如设备id+时间戳），放在 `Idempotency-Key` 头里。服务端把 `key → runId` 存进 Redis（带 TTL）。**同一个 key 再次来，直接返回已存的 runId，不重复触发。** 这样"手机和 iPad 同时点"（同一个 key）只会创建一个 run。
+
+> **会话级独占的原理（本章重点）**：给每个 `sessionId` 维护一个 Redis 标记 `session:{id}:running`（SETNX 抢、终态删）。触发时先抢这个标记——**抢到才允许生成，抢不到（说明该会话已有任务在跑）直接返回 409**。生成到终态（DONE/FAILED/CANCELLED）时删除标记，会话才能接受下一个任务。**这是最外层的并发闸门**，比幂等键、任务锁都靠前——它保证"同一会话永远不会有并发生成"。
+
+> **三道防线的层次关系（别混淆）**：
+> - **会话级独占**（本章新增，粒度=sessionId）：同一会话同时只一个任务 → **最外层闸门**。
+> - **幂等键**（粒度=idempotencyKey）：同一提交只创建一个 run。
+> - **任务级单一写者锁**（第 7 章，粒度=runId）：同一任务多实例只跑一个。
+>
+> 三者**并存**，从外到内依次生效。会话级独占挡掉绝大多数并发问题，后两个是兜底。
 
 ### 6.2 动手
 
@@ -1578,18 +1600,22 @@ import java.util.UUID;
 /**
  * Run 资源存储（落 Redis）。
  *
- * - create(idemKey)  ：幂等创建 run。同 idemKey 返回同一 runId；否则新建。
+ * - create(idemKey, sessionId) ：幂等创建 run。同 idemKey 返回同一 runId；否则新建（带 sessionId）。
  * - get(runId)       ：查 run 资源 JSON。
  * - setStatus(runId) ：改状态（queued/RUNNING/DONE/FAILED/CANCELLED）。
+ * - acquireSession(sessionId, runId) ：会话级独占——SETNX 抢 session:{id}:running。
+ * - releaseSession(sessionId)        ：释放会话独占（终态时调）。
  *
  * 状态机：queued → RUNNING → DONE / FAILED / CANCELLED
  */
 @Component
 public class RunStore {
 
-    private static final String KEY_RUN  = "run:%s:status";
-    private static final String KEY_IDEM = "idem:%s";      // idempotencyKey → runId
-    private static final Duration TTL    = Duration.ofDays(1);
+    private static final String KEY_RUN     = "run:%s:status";
+    private static final String KEY_IDEM    = "idem:%s";              // idempotencyKey → runId
+    private static final String KEY_SESSION = "session:%s:running";   // ▼ 会话级独占标记
+    private static final Duration TTL          = Duration.ofDays(1);
+    private static final Duration SESSION_LOCK = Duration.ofMinutes(10); // ▼ 会话锁 TTL（兜底，防崩溃不释放）
 
     private final ReactiveRedisTemplate<String, String> redis;
 
@@ -1597,22 +1623,33 @@ public class RunStore {
         this.redis = redis;
     }
 
-    /** 幂等创建：同 idemKey 返回同一 runId；否则新建。 */
-    public Mono<String> create(String idempotencyKey) {
+    /** 幂等创建：同 idemKey 返回同一 runId；否则新建（记录归属 sessionId）。 */
+    public Mono<String> create(String idempotencyKey, String sessionId) {
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             // 先查 idem 映射；没有才新建，并写回映射
             return redis.opsForValue().get(KEY_IDEM.formatted(idempotencyKey))
-                    .switchIfEmpty(Mono.defer(() -> newRun()
+                    .switchIfEmpty(Mono.defer(() -> newRun(sessionId)
                             .flatMap(runId -> redis.opsForValue()
                                     .set(KEY_IDEM.formatted(idempotencyKey), runId, TTL)
                                     .thenReturn(runId))));
         }
-        return newRun();
+        return newRun(sessionId);
     }
 
-    private Mono<String> newRun() {
+    /** ▼ 会话级独占：SETNX 抢 session:{id}:running。返回 true=抢到可生成；false=该会话已有任务在跑。 */
+    public Mono<Boolean> acquireSession(String sessionId, String runId) {
+        return redis.opsForValue().setIfAbsent(KEY_SESSION.formatted(sessionId), runId, SESSION_LOCK);
+    }
+
+    /** ▼ 释放会话独占（run 到终态时调，让会话能接受下一个任务）。 */
+    public Mono<Void> releaseSession(String sessionId) {
+        return redis.delete(KEY_SESSION.formatted(sessionId)).then();
+    }
+
+    private Mono<String> newRun(String sessionId) {
         String runId = "run_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-        String json = "{\"id\":\"" + runId + "\",\"status\":\"queued\",\"createdAt\":\"" + Instant.now() + "\"}";
+        String json = "{\"id\":\"" + runId + "\",\"session\":\"" + sessionId
+                + "\",\"status\":\"queued\",\"createdAt\":\"" + Instant.now() + "\"}";
         return redis.opsForValue().set(KEY_RUN.formatted(runId), json, TTL).thenReturn(runId);
     }
 
@@ -1631,6 +1668,8 @@ public class RunStore {
 ```
 
 > **`switchIfEmpty(Mono.defer(...))` 的细节**：`switchIfEmpty` 接收的 Mono 会**立即求值**（即使上游有值）。用 `Mono.defer(() -> ...)` 包一层，让它**延迟到真正需要时**才执行 `newRun()`——避免每次查询都白创建一个 run。这是 Reactor 的常见坑。
+
+> **会话锁的 TTL（10 分钟）是兜底**：正常靠 `releaseSession` 在终态释放；如果实例崩溃没释放，10 分钟后自动过期，会话不会永久锁死。比生成最长耗时（第 7 章任务锁 TTL 5 分钟）略长即可。
 
 #### 6.2.2 StreamService：接 RunStore，触发时维护状态 + 记取消句柄
 
@@ -1653,9 +1692,13 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 管数分离 + run 资源（第 6 章）。
+ * 管数分离 + run 资源 + 会话级独占（第 6 章）。
  *
- * 触发：幂等创建 run → setStatus(RUNNING) → 跑生成器写 Redis → setStatus(DONE/FAILED)。
+ * 触发顺序（最外层闸门在最前）：
+ *   ① acquireSession(sessionId)  会话级独占——同会话同时只一个任务
+ *   ② create(idemKey, sessionId) 幂等创建 run
+ *   ③ setStatus(RUNNING) → 跑生成器写 Redis → setStatus(DONE/FAILED)
+ *   ④ 任何终态（DONE/FAILED/CANCELLED）都要 releaseSession，让会话能接受下一个任务。
  * 记住 Disposable 句柄，cancel 时 dispose 掉生成流。
  */
 @Service
@@ -1668,6 +1711,8 @@ public class StreamService {
     private final RunStore runs;
     /** runId → 生成流的 Disposable（用于主动取消）。 */
     private final ConcurrentHashMap<String, Disposable> handles = new ConcurrentHashMap<>();
+    /** runId → sessionId（cancel/终态时需要用它释放会话锁）。 */
+    private final ConcurrentHashMap<String, String> runSession = new ConcurrentHashMap<>();
 
     public StreamService(TextGenerator generator, StreamBus bus, RunStore runs) {
         this.generator = generator;
@@ -1675,31 +1720,47 @@ public class StreamService {
         this.runs = runs;
     }
 
-    /** ▼ 管理面：幂等创建 run + 触发。返回 runId。 */
-    public Mono<String> trigger(String prompt, String idempotencyKey) {
-        return runs.create(idempotencyKey)
-                .flatMap(runId -> runs.setStatus(runId, "RUNNING")
-                        .then(Mono.fromRunnable(() -> startGeneration(runId, prompt)))
-                        .thenReturn(runId));
+    /** ▼ 管理面：会话级独占 + 幂等创建 run + 触发。返回 runId；会话忙时返回 409 错误。 */
+    public Mono<String> trigger(String prompt, String sessionId, String idempotencyKey) {
+        return runs.create(idempotencyKey, sessionId)
+                .flatMap(runId -> runs.acquireSession(sessionId, runId)   // ▼ ① 最外层闸门
+                        .flatMap(acquired -> {
+                            if (Boolean.FALSE.equals(acquired)) {
+                                // 该会话已有任务在跑：标记 run 为 CANCELLED（作废），返回 409
+                                runs.setStatus(runId, "CANCELLED").subscribe();
+                                return Mono.<String>error(new IllegalStateException(
+                                        "当前会话有任务正在生成，请等待完成后再提问"));
+                            }
+                            runSession.put(runId, sessionId);
+                            return runs.setStatus(runId, "RUNNING")
+                                    .then(Mono.fromRunnable(() -> startGeneration(runId, prompt)))
+                                    .thenReturn(runId);
+                        }));
     }
 
-    /** 跑生成器（fire-and-forget）。 */
+    /** 跑生成器（fire-and-forget）。三终态都要释放会话锁。 */
     private void startGeneration(String runId, String prompt) {
         Disposable handle = generator.generate(prompt)
-                .flatMap(chunk -> bus.write(runId, chunk))    // ▼ 用 runId 当流 key（一会话可多次 run）
-                .doOnComplete(() -> {
-                    bus.writeEnd(runId).subscribe();
-                    runs.setStatus(runId, "DONE").subscribe();
-                    handles.remove(runId);
-                    log.info("[run] 完成 runId={}", runId);
-                })
+                .flatMap(chunk -> bus.write(runId, chunk))    // ▼ 用 runId 当流 key
+                .doOnComplete(() -> finishRun(runId, "DONE"))
                 .doOnError(err -> {
-                    runs.setStatus(runId, "FAILED").subscribe();
-                    handles.remove(runId);
                     log.error("[run] 失败 runId={}: {}", runId, err.getMessage());
+                    finishRun(runId, "FAILED");
                 })
                 .subscribe();
         handles.put(runId, handle);   // ▼ 存句柄，供 cancel 用
+    }
+
+    /** ▼ 终态统一处理：写结束标记、改状态、释放会话锁、清理句柄。 */
+    private void finishRun(String runId, String status) {
+        bus.writeEnd(runId).subscribe();
+        runs.setStatus(runId, status).subscribe();
+        handles.remove(runId);
+        String sessionId = runSession.remove(runId);
+        if (sessionId != null) {
+            runs.releaseSession(sessionId).subscribe();   // ▼ 释放会话锁，会话回到空闲
+        }
+        log.info("[run] 终态 runId={} status={}", runId, status);
     }
 
     /** ▼ 数据面：只读订阅（按 runId）。 */
@@ -1712,22 +1773,40 @@ public class StreamService {
         return runs.get(runId);
     }
 
-    /** ▼ 管理面：取消 run。 */
+    /** ▼ 管理面：取消 run（CANCELLED 也是终态，要释放会话锁）。 */
     public Mono<Void> cancel(String runId) {
         Disposable handle = handles.remove(runId);
         if (handle != null && !handle.isDisposed()) {
             handle.dispose();   // ▼ 停掉生成流，不再继续写 chunk
         }
+        String sessionId = runSession.remove(runId);
         return runs.setStatus(runId, "CANCELLED")
-                .then(bus.writeEnd(runId));   // 通知订阅者结束
+                .then(bus.writeEnd(runId))   // 通知订阅者结束
+                .then(sessionId != null ? runs.releaseSession(sessionId) : Mono.empty()); // ▼ 释放会话锁
     }
 }
 ```
 
 > **关键改动**：
-> - 流 key 从 `token` 改成 `runId`——一次会话可以发起多次 run（多个 runId），互不干扰。
-> - 触发时维护状态机：`queued → RUNNING → DONE/FAILED`。
-> - 存 `Disposable` 句柄，`cancel()` 时 `dispose()` 停掉生成流（不再写 chunk、不再烧资源）。
+> - 接口引入 `sessionId`，触发时**先抢会话级独占**（`acquireSession`）——同一会话同时只一个任务，抢不到返回 409。
+> - 流 key 用 `runId`——一个会话**串行地**发起多次 run（前一个到终态，才能发起下一个），互不干扰。
+> - **三终态（DONE/FAILED/CANCELLED）统一走 `finishRun`/`cancel`，都释放会话锁**——这是会话能继续接受新任务的关键。漏任何一个，会话会被永久锁死。
+> - 存 `Disposable` 句柄 + `runId→sessionId` 映射，cancel 时能 dispose 生成流并找到对应会话释放锁。
+
+> **为什么 409 用 `IllegalStateException`？** Spring WebFlux 默认会把未处理的异常转成 500。生产级应在 Controller 里捕获这个异常并映射成 `409 Conflict`（见 6.2.3 的 Controller）。这里先抛异常，Controller 层做状态码映射。
+
+> **会话级独占的状态机视图**：
+> ```
+> 空闲（无 session:X:running）
+>   │ POST 触发
+>   ▼ acquireSession SETNX 成功
+> 生成中（session:X:running = runId）
+>   │ 这期间同会话再 POST？acquireSession 失败 → 409 拒绝 ❌
+>   │
+>   │ 生成到终态（DONE/FAILED/CANCELLED）
+>   ▼ releaseSession DELETE
+> 空闲（可接受下一个任务）
+> ```
 
 #### 6.2.3 RunController：企业级 REST
 
@@ -1768,15 +1847,21 @@ public class RunController {
         this.streamService = streamService;
     }
 
-    /** 管理面：幂等创建 run + 触发。201 Created + run 资源。 */
+    /** 管理面：会话级独占 + 幂等创建 run + 触发。201 Created + run 资源；会话忙时 409 Conflict。 */
     @PostMapping
-    public Mono<ResponseEntity<String>> create(@RequestParam String prompt,
+    public Mono<ResponseEntity<String>> create(@RequestParam String sessionId,
+            @RequestParam String prompt,
             @RequestHeader(value = "Idempotency-Key", required = false) String idemKey) {
-        return streamService.trigger(prompt, idemKey)
+        return streamService.trigger(prompt, sessionId, idemKey)
                 .map(runId -> ResponseEntity
                         .status(HttpStatus.CREATED)                    // ▼ 201 Created
                         .location(URI.create("/api/runs/" + runId))    // ▼ Location 头指向资源
-                        .body("{\"runId\":\"" + runId + "\",\"streamUrl\":\"/api/runs/" + runId + "/stream\"}"));
+                        .body("{\"runId\":\"" + runId + "\",\"session\":\"" + sessionId
+                                + "\",\"streamUrl\":\"/api/runs/" + runId + "/stream\"}"))
+                // ▼ 会话级独占拒绝时，StreamService 抛 IllegalStateException → 映射成 409 Conflict
+                .onErrorResume(IllegalStateException.class, e -> Mono.just(ResponseEntity
+                        .status(HttpStatus.CONFLICT)   // ▼ 409：当前会话有任务在跑
+                        .body("{\"error\":\"" + e.getMessage() + "\"}")));
     }
 
     /** 管理面：查状态（前端轮询）。 */
@@ -1823,41 +1908,52 @@ public class RunController {
 ```bash
 ./mvnw spring-boot:run
 
-# 1. 触发（带幂等键）——201 + run 资源
-curl -i -X POST "http://localhost:8080/api/runs?prompt=管数分离" -H "Idempotency-Key: deviceA-001"
+# 1. 触发（带 sessionId + 幂等键）——201 + run 资源
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=管数分离" -H "Idempotency-Key: deviceA-001"
 # HTTP/1.1 201 Created
 # Location: /api/runs/run_xxxxx
-# {"runId":"run_xxxxx","streamUrl":"/api/runs/run_xxxxx/stream"}
+# {"runId":"run_xxxxx","session":"sess-001","streamUrl":"/api/runs/run_xxxxx/stream"}
 
 # 2. 幂等验证：同一个幂等键再触发一次——返回同一个 runId，不重复触发
-curl -X POST "http://localhost:8080/api/runs?prompt=管数分离" -H "Idempotency-Key: deviceA-001"
+curl -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=管数分离" -H "Idempotency-Key: deviceA-001"
 # {"runId":"run_xxxxx",...}  ← 同一个！
 
-# 3. 查状态
-curl "http://localhost:8080/api/runs/run_xxxxx"
-# {"id":"run_xxxxx","status":"RUNNING",...}  / 生成结束后变成 DONE
+# 3. ▼ 会话级独占验证（本章重点）：run_xxxxx 还在生成时，同会话再发一个（不同幂等键）——应被拒绝
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=第二个问题" -H "Idempotency-Key: deviceA-002"
+# HTTP/1.1 409 Conflict
+# {"error":"当前会话有任务正在生成，请等待完成后再提问"}  ← 同会话串行，拒绝并发 ✅
 
-# 4. 订阅
+# 3b. 但换一个 sessionId 就能正常触发（不同会话互不影响）
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-002&prompt=另一会话的问题" -H "Idempotency-Key: deviceB-001"
+# HTTP/1.1 201 Created  ← 不同会话，正常 ✅
+
+# 4. 查状态（run 资源里现在带 session 字段）
+curl "http://localhost:8080/api/runs/run_xxxxx"
+# {"id":"run_xxxxx","session":"sess-001","status":"RUNNING",...}  / 生成结束后变成 DONE
+
+# 5. 订阅
 curl -N "http://localhost:8080/api/runs/run_xxxxx/stream"
 
-# 5. 取消（另起一个 run 先触发，再取消）
-curl -X POST "http://localhost:8080/api/runs/run_yyyyy/cancel"
-# 订阅端会立刻收到 done，生成器停止
+# 6. 取消（CANCELLED 也是终态，会释放会话锁，之后该会话能发起新任务）
+curl -X POST "http://localhost:8080/api/runs/run_xxxxx/cancel"
+# 订阅端立刻收到 done，生成器停止；session:sess-001:running 被删除，会话可接受新请求
 ```
 
 **幂等的多端场景**：手机（`Idempotency-Key: deviceA-001`）和 iPad（同一个 key）同时 POST → 后端只创建一个 run、只跑一次生成器。两台设备都 `GET stream` 订阅同一个 runId，看到一致内容。
 
+**会话级独占的多端场景**：用户在手机上 sess-001 正在生成，这时 iPad 用 sess-001 问第二个问题 → 后端 `acquireSession` 失败，返回 409，**不会并发跑第二个生成**。必须等前一个到终态（完成/失败/取消），sess-001 才能发起新任务——这就是 ChatGPT 式的"一次只回一条"语义。
+
 ### 6.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第6章:run资源+状态机+幂等键+取消"
+git add -A && git commit -m "第6章:run资源+状态机+幂等键+会话级独占+取消"
 ```
 
 ### 6.5 复盘 + 暴露问题
 
-到这里，**单实例的管数分离已经是企业级标准形态**了：run 资源、状态机、幂等、取消、断线续传、持久回放。但所有东西都在**一个进程**里——下一个真实痛点来了：
+到这里，**单实例的管数分离已经是企业级标准形态**了：run 资源、状态机、幂等、**会话级独占**、取消、断线续传、持久回放。三道并发防线（会话级独占 → 幂等键 → 任务锁）也到位了两道（任务锁第 7 章补）。但所有东西都在**一个进程**里——下一个真实痛点来了：
 
-**水平扩展成两台实例后，A 实例触发的 run，B 实例的订阅请求会落空**（因为生成流句柄 `Disposable` 只在 A 的内存里）。而且两台实例如果都收到触发请求，可能各自跑一次（虽然有幂等键和 Redis 锁兜底，但需要显式处理）。
+**水平扩展成两台实例后，A 实例触发的 run，B 实例的订阅请求会落空**（因为生成流句柄 `Disposable` 只在 A 的内存里）。而且两台实例如果都收到触发请求，可能各自跑一次（虽然有会话级独占、幂等键兜底，但任务级单一写者锁需要显式处理）。
 
 **第 7 章：跨实例广播 + 单一写者锁**，把管数分离推向真正的多实例集群。
 
@@ -2035,14 +2131,15 @@ public class StreamBus {
                 .map(r -> { long seq = seqOf(r); cursor.set(seq); return seq + "::" + r.getValue().get("chunk"); });
     }
 
-    private long seqOf(MapRecord<String, String, String> r) {
-        try { return Long.parseLong(r.getValue().get("seq")); }
+    // ▼ Spring Data Redis 3.x：range() 返回 MapRecord<K, Object, Object>
+    private long seqOf(MapRecord<String, Object, Object> r) {
+        try { return Long.parseLong(String.valueOf(r.getValue().get("seq"))); }
         catch (Exception e) { return 0; }
     }
 }
 ```
 
-#### 7.2.2 StreamService：触发抢锁 + 注册本地 run
+#### 7.2.2 StreamService：会话级独占 + 触发抢锁 + 注册本地 run
 
 **【改已有文件，完整版覆盖】** `StreamService.java`：
 
@@ -2059,8 +2156,15 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
- * 管数分离 + 多实例（第 7 章）：触发时抢分布式锁，抢到才跑；取消走 Pub/Sub。
+ * 管数分离 + 多实例（第 7 章）：会话级独占 → 幂等创建 → 抢分布式锁 → 抢到才跑；取消走 Pub/Sub。
+ *
+ * 三道防线（从外向内）：
+ *   ① 会话级独占（acquireSession）—— 同 session 同时只一个任务，拒绝 409
+ *   ② 幂等键         —— 同 key 只创建一个 run
+ *   ③ 任务级锁（acquireLock）—— 同 run 多实例只一个跑
  */
 @Service
 public class StreamService {
@@ -2070,6 +2174,8 @@ public class StreamService {
     private final TextGenerator generator;
     private final StreamBus bus;
     private final RunStore runs;
+    /** runId → sessionId（用于终态释放会话锁）。 */
+    private final ConcurrentHashMap<String, String> runSession = new ConcurrentHashMap<>();
 
     public StreamService(TextGenerator generator, StreamBus bus, RunStore runs) {
         this.generator = generator;
@@ -2077,37 +2183,55 @@ public class StreamService {
         this.runs = runs;
     }
 
-    /** ▼ 管理面：幂等创建 run → 抢锁 → 抢到才跑生成器。返回 runId。 */
-    public Mono<String> trigger(String prompt, String idempotencyKey) {
-        return runs.create(idempotencyKey)
-                .flatMap(runId -> runs.setStatus(runId, "RUNNING")
-                        .then(bus.acquireLock(runId))   // ▼ 抢锁
-                        .doOnNext(acquired -> {
-                            if (Boolean.TRUE.equals(acquired)) {
-                                startGeneration(runId, prompt);   // 只有抢到锁的实例才跑
-                            } else {
-                                log.info("[run] runId={} 已有其他实例在跑，本实例不重复触发", runId);
+    /** ▼ 管理面：① 会话独占 → ② 幂等创建 → ③ 抢任务锁 → 跑生成器。返回 runId。 */
+    public Mono<String> trigger(String prompt, String sessionId, String idempotencyKey) {
+        return runs.create(idempotencyKey, sessionId)
+                .flatMap(runId -> runs.acquireSession(sessionId, runId)
+                        .flatMap(acquired -> {
+                            if (Boolean.FALSE.equals(acquired)) {
+                                // 会话忙：标记 run 作废，返回 409
+                                runs.setStatus(runId, "CANCELLED").subscribe();
+                                return Mono.<String>error(new IllegalStateException(
+                                        "当前会话有任务正在生成，请等待完成后再提问"));
                             }
-                        })
-                        .thenReturn(runId));
+                            runSession.put(runId, sessionId);
+                            return runs.setStatus(runId, "RUNNING")
+                                    .then(bus.acquireLock(runId))
+                                    .doOnNext(taskLocked -> {
+                                        if (Boolean.TRUE.equals(taskLocked)) {
+                                            startGeneration(runId, prompt);
+                                        } else {
+                                            log.info("[run] runId={} 已有其他实例在跑", runId);
+                                        }
+                                    })
+                                    .thenReturn(runId);
+                        }));
     }
 
     private void startGeneration(String runId, String prompt) {
         Disposable handle = generator.generate(prompt)
                 .flatMap(chunk -> bus.write(runId, chunk))
-                .doOnComplete(() -> {
-                    bus.writeEnd(runId).subscribe();
-                    runs.setStatus(runId, "DONE").subscribe();
-                    bus.releaseLock(runId).subscribe();
-                    log.info("[run] 完成 runId={}", runId);
-                })
-                .doOnError(err -> {
-                    runs.setStatus(runId, "FAILED").subscribe();
-                    bus.releaseLock(runId).subscribe();
-                    log.error("[run] 失败 runId={}: {}", runId, err.getMessage());
-                })
+                .doOnComplete(() -> finishRun(runId, "DONE"))
+                .doOnError(err -> finishRun(runId, "FAILED"))
                 .subscribe();
         bus.registerLocalRun(runId, handle);   // ▼ 注册句柄 + 监听取消频道
+    }
+
+    /** ▼ 终态统一：写结束标记、改状态、释放任务锁、释放会话锁。 */
+    private void finishRun(String runId, String status) {
+        bus.writeEnd(runId).subscribe();
+        runs.setStatus(runId, status).subscribe();
+        bus.releaseLock(runId).subscribe();
+        releaseSessionFor(runId);
+        log.info("[run] 终态 runId={} status={}", runId, status);
+    }
+
+    /** 释放 run 对应的会话锁（三终态 + cancel 都要调）。 */
+    private void releaseSessionFor(String runId) {
+        String sessionId = runSession.remove(runId);
+        if (sessionId != null) {
+            runs.releaseSession(sessionId).subscribe();
+        }
     }
 
     public Flux<String> subscribe(String runId, long lastSeq) {
@@ -2118,12 +2242,33 @@ public class StreamService {
         return runs.get(runId);
     }
 
-    /** ▼ 管理面：取消（走 Pub/Sub，跨实例）。 */
+    /** ▼ 管理面：取消（走 Pub/Sub，跨实例），同时释放会话锁。 */
     public Mono<Void> cancel(String runId) {
+        releaseSessionFor(runId);          // ▼ 释放会话锁，让会话能接受新任务
         return runs.setStatus(runId, "CANCELLED").then(bus.cancel(runId));
     }
 }
 ```
+
+> **关键改动（第 7 章恢复第 6 章的会话级独占）**：
+> - `trigger` 恢复 `sessionId` 参数，先 `acquireSession`→ 幂等创建 → 抢任务锁（三道防线从外到内）。
+> - `finishRun` 统一处理终态：写结束标记 + 改状态 + 释放任务锁 + **释放会话锁**（四件事一件不能少）。
+> - `cancel` 也释放会话锁——CANCELLED 是终态，不释放会话就永久锁死。
+> - **跨实例取消的会话锁释放**：`runSession` 是本实例内存 Map，跨实例取消时该 Map 没有映射，`releaseSessionFor` 不会生效。但会话锁有 10 分钟 TTL 兜底过期——这是已知取舍，严格场景应把 run→session 映射存 Redis（留作进阶扩展点）。
+
+> **三道防线的层次**：
+> ```
+> 请求进入
+>   │
+>   ▼ ① 会话级独占（acquireSession）── 同 session 同时只一个任务 → 409
+>   │   └─ 通过 ↓
+>   ▼ ② 幂等创建（create）── 同 idemKey 返回同一 run → 201（不重复触发）
+>   │   └─ 通过 ↓
+>   ▼ ③ 任务级锁（acquireLock）── 同 run 多实例只一个跑
+>   │
+>   ▼ 跑生成器
+> ```
+> ① 是**最外层闸门**——挡掉绝大多数并发（"同一个会话狂点发送"）；②③ 是兜底。
 
 ### 7.3 验证（两个实例）
 
@@ -2135,19 +2280,20 @@ SERVER_PORT=8080 ./mvnw spring-boot:run
 SERVER_PORT=8081 ./mvnw spring-boot:run
 
 # 触发（打到任一实例）
-curl -i -X POST "http://localhost:8080/api/runs?prompt=管数分离" -H "Idempotency-Key: deviceA-001"
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=管数分离" -H "Idempotency-Key: deviceA-001"
 # 假设 runId=run_xxx
 
 # 关键验证：从另一个实例订阅！
 curl -N "http://localhost:8081/api/runs/run_xxx/stream"
 # ✅ 即使生成器跑在实例1，实例2 也能读到完整内容（数据在共享的 Redis 里）
 
-# 取消：从任意实例取消，跑生成器的那个实例会响应
+# 取消：从任意实例取消，跑生成器的那个实例会响应，且会话锁被释放
 curl -X POST "http://localhost:8081/api/runs/run_xxx/cancel"
 # 看实例1 的日志："[bus] 收到取消指令，停止生成" —— 跨实例取消成功
+# 取消后 sess-001 恢复空闲，可以发起新任务 ✅
 ```
 
-**核心收获**：因为第 4 章就把数据搬出进程落 Redis，**多实例下订阅天然可用，几乎不用改订阅逻辑**。新增的只是"单一写者锁"和"跨实例取消"。
+**核心收获**：因为第 4 章就把数据搬出进程落 Redis，**多实例下订阅天然可用，几乎不用改订阅逻辑**。新增的是"会话级独占 + 单一写者锁 + 跨实例取消"——三道防线从外到内保证并发安全。
 
 ### 7.4 checkpoint
 
@@ -2301,7 +2447,7 @@ cd research-stream/docker/redis-sentinel && docker-compose up -d
 ./mvnw spring-boot:run
 
 # 触发一个长任务（让它慢慢吐字）
-curl -i -X POST "http://localhost:8080/api/runs?prompt=管数分离测试故障转移" -H "Idempotency-Key: ft-1"
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=管数分离测试故障转移" -H "Idempotency-Key: ft-1"
 
 # 订阅，观察它在持续吐字
 curl -N "http://localhost:8080/api/runs/<runId>/stream"
@@ -2510,9 +2656,9 @@ public class KafkaConfig {
 
 > **`ConcurrentMessageListenerContainer` 是什么？** Spring Kafka 提供的消息监听容器——它内部跑一个或多个消费者线程，不断从 topic 拉消息，每条交给 `MessageListener` 回调处理。我们在这里把回调设成 `bus.dispatch(record)`，于是每条 Kafka 消息按 key 分发到对应 Sinks。**这个 Bean 一启动，消费就开始了。**
 
-#### 9.2.4 StreamService：chunk 写入委托 KafkaChunkBus
+#### 9.2.4 StreamService：会话级独占 + Kafka chunk 总线
 
-**【改已有文件，完整版覆盖】** `StreamService.java`（触发时 chunk 写 Kafka，订阅走 KafkaChunkBus；锁/状态仍走 Redis）：
+**【改已有文件，完整版覆盖】** `StreamService.java`（触发时 chunk 写 Kafka，订阅走 KafkaChunkBus；锁/状态/会话独占仍走 Redis）：
 
 ```java
 package com.example.stream.serve;
@@ -2528,12 +2674,19 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * 管数分离 + Kafka 持久总线（第 9 章）。
  *
- * 触发：抢 Redis 锁 → 生成器 chunk 写 Kafka（持久总线）→ run 状态落 Redis。
+ * 三道防线（继承第 6-7 章）：
+ *   ① 会话级独占 —— 同 session 同时只一个任务
+ *   ② 幂等创建   —— 同 key 只创建一个 run
+ *   ③ 任务级锁   —— 同 run 多实例只一个跑
+ *
+ * 触发：会话独占 → 幂等创建 → 抢 Redis 锁 → 生成器 chunk 写 Kafka（持久总线）→ run 状态落 Redis。
  * 订阅：走 KafkaChunkBus（消费组托管 offset）。
- * Redis 仍负责：锁、run 状态、跨实例取消通知。
+ * Redis 仍负责：会话锁、任务锁、run 状态、跨实例取消通知。
  */
 @Service
 public class StreamService {
@@ -2541,9 +2694,11 @@ public class StreamService {
     private static final Logger log = LoggerFactory.getLogger(StreamService.class);
 
     private final TextGenerator generator;
-    private final StreamBus bus;          // Redis：锁 + 跨实例取消
+    private final StreamBus bus;          // Redis：会话锁 + 任务锁 + 跨实例取消
     private final KafkaChunkBus chunkBus; // Kafka：chunk 持久总线
     private final RunStore runs;
+    /** runId → sessionId（用于终态释放会话锁）。 */
+    private final ConcurrentHashMap<String, String> runSession = new ConcurrentHashMap<>();
 
     public StreamService(TextGenerator generator, StreamBus bus,
                          KafkaChunkBus chunkBus, RunStore runs) {
@@ -2553,34 +2708,51 @@ public class StreamService {
         this.runs = runs;
     }
 
-    public Mono<String> trigger(String prompt, String idempotencyKey) {
-        return runs.create(idempotencyKey)
-                .flatMap(runId -> runs.setStatus(runId, "RUNNING")
-                        .then(bus.acquireLock(runId))
-                        .doOnNext(acquired -> {
-                            if (Boolean.TRUE.equals(acquired)) {
-                                startGeneration(runId, prompt);
+    /** ▼ 管理面：① 会话独占 → ② 幂等创建 → ③ 抢任务锁 → 跑生成器（chunk 写 Kafka）。 */
+    public Mono<String> trigger(String prompt, String sessionId, String idempotencyKey) {
+        return runs.create(idempotencyKey, sessionId)
+                .flatMap(runId -> runs.acquireSession(sessionId, runId)
+                        .flatMap(acquired -> {
+                            if (Boolean.FALSE.equals(acquired)) {
+                                runs.setStatus(runId, "CANCELLED").subscribe();
+                                return Mono.<String>error(new IllegalStateException(
+                                        "当前会话有任务正在生成，请等待完成后再提问"));
                             }
-                        })
-                        .thenReturn(runId));
+                            runSession.put(runId, sessionId);
+                            return runs.setStatus(runId, "RUNNING")
+                                    .then(bus.acquireLock(runId))
+                                    .doOnNext(taskLocked -> {
+                                        if (Boolean.TRUE.equals(taskLocked)) {
+                                            startGeneration(runId, prompt);
+                                        }
+                                    })
+                                    .thenReturn(runId);
+                        }));
     }
 
     private void startGeneration(String runId, String prompt) {
         Disposable handle = generator.generate(prompt)
                 .doOnNext(chunk -> chunkBus.write(runId, chunk))   // ▼ chunk 写 Kafka
-                .doOnComplete(() -> {
-                    chunkBus.write(runId, "__END__");
-                    runs.setStatus(runId, "DONE").subscribe();
-                    bus.releaseLock(runId).subscribe();
-                    log.info("[run] 完成 runId={}", runId);
-                })
-                .doOnError(err -> {
-                    runs.setStatus(runId, "FAILED").subscribe();
-                    bus.releaseLock(runId).subscribe();
-                    log.error("[run] 失败 runId={}: {}", runId, err.getMessage());
-                })
+                .doOnComplete(() -> finishRun(runId, "DONE"))
+                .doOnError(err -> finishRun(runId, "FAILED"))
                 .subscribe();
         bus.registerLocalRun(runId, handle);
+    }
+
+    /** ▼ 终态统一：写结束标记、改状态、释放任务锁、释放会话锁。 */
+    private void finishRun(String runId, String status) {
+        chunkBus.write(runId, "__END__");
+        runs.setStatus(runId, status).subscribe();
+        bus.releaseLock(runId).subscribe();
+        releaseSessionFor(runId);
+        log.info("[run] 终态 runId={} status={}", runId, status);
+    }
+
+    private void releaseSessionFor(String runId) {
+        String sessionId = runSession.remove(runId);
+        if (sessionId != null) {
+            runs.releaseSession(sessionId).subscribe();
+        }
     }
 
     /** ▼ 数据面：走 Kafka 消费组（offset 托管，earliest 可读历史）。 */
@@ -2594,13 +2766,19 @@ public class StreamService {
         return runs.get(runId);
     }
 
+    /** ▼ 管理面：取消（走 Pub/Sub，跨实例），同时释放会话锁。 */
     public Mono<Void> cancel(String runId) {
+        releaseSessionFor(runId);          // ▼ 释放会话锁
         return runs.setStatus(runId, "CANCELLED").then(bus.cancel(runId));
     }
 }
 ```
 
-> **注意 SSE 续传的简化**：Kafka 自带消费组 offset 托管——同一个消费组重连会从上次 offset 续读，不需要手写 seq 了（第 5 章的 seq 在 Kafka 下被 offset 取代）。但 SSE 协议级 `Last-Event-ID` 在 Kafka 下**不再自动生效**（因为 offset 是消费组内部状态，不和 SSE id 绑定）。这是 Kafka 方案的一个取舍：**回放靠消费组 `auto-offset-reset: earliest` + 续读，而非 SSE Last-Event-ID**。对于"晚加入看全量"够用；若要精确"从某条续"，需要把 offset 暴露给前端——留作附录扩展点。
+> **关键改动（第 9 章恢复会话级独占）**：
+> - `trigger` 恢复 `sessionId` 参数，三道防线从外到内（会话独占 → 幂等 → 任务锁）——与第 7 章一致。
+> - `finishRun` 终态统一处理：写结束标记 + 改状态 + 释放任务锁 + **释放会话锁**。Kafka 下结束标记写进 topic 而非 Redis Pub/Sub。
+> - `cancel` 也释放会话锁——CANCELLED 是终态。
+> - **Kafka 下 SSE 续传说明**：Kafka 消费组 offset 托管，不需要手写 seq（第 5 章的 seq 在 Kafka 下被 offset 取代）。但 `Last-Event-ID` 在 Kafka 下不再自动生效——回放靠 `auto-offset-reset: earliest` + 消费组续读。
 
 #### 9.2.5 Controller 订阅改调 KafkaChunkBus
 
@@ -2633,8 +2811,12 @@ docker run -d --name kafka -p 9092:9092 \
 ./mvnw spring-boot:run
 
 # 触发 + 订阅
-curl -i -X POST "http://localhost:8080/api/runs?prompt=Kafka测试" -H "Idempotency-Key: k-1"
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=Kafka测试" -H "Idempotency-Key: k-1"
 curl -N "http://localhost:8080/api/runs/<runId>/stream"
+
+# ▼ 会话独占验证：Kafka 下会话锁仍然生效，同 session 未完成时再发 → 409
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=第二个问题" -H "Idempotency-Key: k-2"
+# HTTP/1.1 409 Conflict  ← 无论 chunk 走 Redis 还是 Kafka，会话锁都在 Redis 里，始终生效 ✅
 
 # 关键：跨服务消费！模拟审计服务用另一个消费组读同一批 chunk
 docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 \
@@ -2739,7 +2921,7 @@ PROFILE=stream SERVER_PORT=8081 ./mvnw spring-boot:run
 
 ```bash
 # 触发请求打到 trigger-service（8080）
-curl -i -X POST "http://localhost:8080/api/runs?prompt=拆服务测试" -H "Idempotency-Key: split-1"
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=拆服务测试" -H "Idempotency-Key: split-1"
 # runId=run_xxx
 
 # 订阅请求打到 stream-service（8081）——不同端口、不同进程！
@@ -2903,7 +3085,7 @@ PROFILE=stream  SERVER_PORT=8081 ./mvnw -f research-stream/pom.xml spring-boot:r
 ./mvnw -f gateway/pom.xml spring-boot:run
 
 # 前端只打网关（8000）！
-curl -i -X POST "http://localhost:8000/api/runs?prompt=网关测试" -H "Idempotency-Key: gw-1"
+curl -i -X POST "http://localhost:8000/api/runs?sessionId=sess-001&prompt=网关测试" -H "Idempotency-Key: gw-1"
 # runId=run_xxx
 
 curl -N "http://localhost:8000/api/runs/run_xxx/stream"
@@ -2949,9 +3131,9 @@ git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
   │
 第5章  seq 游标 + SSE Last-Event-ID：重连不重复不漏                    ← 精确回放
   │
-第6章  run 资源 + 状态机 + 幂等键 + 取消                                ← 企业级标准形态
+第6章  run 资源 + 状态机 + 幂等键 + 取消 + 会话级独占                    ← 企业级标准形态（含并发闸门）
   │
-第7章  多实例：跨实例广播 + SETNX 单一写者 + Pub/Sub 跨实例取消        ← 水平扩展
+第7章  多实例：跨实例广播 + 会话级独占 + 单一写者 + Pub/Sub 跨实例取消  ← 水平扩展（三道防线）
   │
 第8章  Redis Sentinel 高可用 + 应用层退避重试                          ← 消除单点
   │
@@ -2972,8 +3154,8 @@ git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
 | 3 | Sinks.Many（热流广播） | 冷流导致重复触发 |
 | 4 | Redis Stream + Pub/Sub | 内存丢失、断线丢内容 |
 | 5 | seq 游标 + Last-Event-ID | 重连重复/漏 chunk |
-| 6 | run 资源 + 幂等键 | 多端重复提交、状态黑盒 |
-| 7 | 分布式锁 + 跨实例取消 | 多实例重复触发、取消跨不了实例 |
+| 6 | run 资源 + 幂等键 + 会话级独占 | 多端重复提交、同会话并发触发、状态黑盒 |
+| 7 | 会话级独占 + 分布式锁 + 跨实例取消 | 多实例重复触发、压测并发打挂服务、取消跨不了实例 |
 | 8 | Sentinel + 退避重试 | Redis 单点故障 |
 | 9 | Kafka 消费组 | 跨服务消费、长期保留 |
 | 10 | Profile 拆服务 | 资源画像冲突 |
@@ -2983,8 +3165,9 @@ git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
 
 1. **先逻辑后物理**：管数分离先在单进程内把接口拆开（第 2 章），物理拆服务是第 10 章的事。顺序不能反。
 2. **数据搬出进程，越早越好**：第 4 章就把 chunk 落 Redis，这让后面的多实例（第 7 章）、拆服务（第 10 章）几乎"免费"获得跨实例能力。
-3. **不是替换，是分工**：Redis 管锁/状态/低延迟，Kafka 管持久总线/跨服务消费。各司其职。
-4. **诚实标注局限**：SETNX 不完美（第 7 章）、Kafka 下 Last-Event-ID 失效（第 9 章）、`readAfter` 读全量（第 5 章）——都明确写出，并在合适的地方给出进阶方向。**生产级工程师知道每个方案的代价，而不是假装完美。**
+3. **并发闸门要分层**：会话级独占（最外层）→ 幂等键 → 任务锁（最内层）。三道防线各管一层，不能互相替代。"同一个 session 在输出时不允许再次调用"是生产级系统的基本功——没有这道闸门，压测一轮就能把服务打挂。
+4. **不是替换，是分工**：Redis 管锁/状态/低延迟，Kafka 管持久总线/跨服务消费。各司其职。
+5. **诚实标注局限**：SETNX 不完美（第 7 章）、Kafka 下 Last-Event-ID 失效（第 9 章）、`readAfter` 读全量（第 5 章）——都明确写出，并在合适的地方给出进阶方向。**生产级工程师知道每个方案的代价，而不是假装完美。**
 
 ### 学完之后
 

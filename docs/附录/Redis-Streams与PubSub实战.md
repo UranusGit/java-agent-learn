@@ -360,3 +360,182 @@ redis.expire("orders", Duration.ofHours(24)).subscribe();
 - **选型**：轻量用 Redis Stream，海量用 Kafka——不是越重越好，是够用就好。
 
 学完本篇，再回头看 [管数分离文档第 4-7 章](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md)，你会发现那些"为什么这么写"都豁然开朗。
+
+---
+
+## 第 8 章：Stream + Pub/Sub 协同模式实战——逐行精讲 StreamBus
+
+前 7 章把 Stream 和 Pub/Sub 各自讲清楚了。这一章把它们**组合起来**，用你在 demo04 里真实写的 `StreamBus.subscribe()` 做载体，逐行解释"为什么这么写"。
+
+### 8.1 完整代码
+
+```java
+@Component
+@Slf4j
+public class StreamBus {
+    private static final String KEY_STREAM = "gen:%s:chunks";
+    private static final String CHANNEL     = "gen:%s";
+    private static final String END_MARK    = "__END__";
+
+    @Autowired
+    private ReactiveRedisTemplate<String, String> redisTemplate;
+
+    @Autowired
+    private ReactiveRedisMessageListenerContainer listener;
+
+    // ===== 写 =====
+    public Mono<Void> write(String token, String chunk) {
+        StringRecord record = StreamRecords.string(Map.of("chunk", chunk))
+                .withStreamKey(KEY_STREAM.formatted(token));
+        return redisTemplate.opsForStream().add(record)          // XADD 持久
+                .then(redisTemplate.convertAndSend(              // PUBLISH 实时
+                        CHANNEL.formatted(token), chunk))
+                .then();
+    }
+
+    public Mono<Void> writeEnd(String token) {
+        return write(token, END_MARK);
+    }
+
+    // ===== 读 =====
+    public Flux<String> subscribe(String token) {
+        String key     = KEY_STREAM.formatted(token);
+        String channel = CHANNEL.formatted(token);
+        AtomicBoolean ended = new AtomicBoolean(false);
+
+        // ① 回放历史（Stream）
+        Flux<String> history = redisTemplate.opsForStream()
+                .range(key, Range.unbounded())
+                .map(this::chunkOf)
+                .doOnNext(chunk -> {
+                    if (END_MARK.equals(chunk)) ended.set(true);
+                });
+
+        // ② 接实时（Pub/Sub）——只有历史里没 END 时才连
+        Flux<String> live = Flux.defer(() -> ended.get()
+                ? Flux.empty()
+                : listener.receive(ChannelTopic.of(channel))
+                        .map(ReactiveSubscription.Message::getMessage));
+
+        // ③ 拼接 + 终止
+        return history.concatWith(live)
+                .takeUntil(s -> s.equals(END_MARK))
+                .filter(s -> !s.equals(END_MARK));
+    }
+
+    private String chunkOf(MapRecord<String, Object, Object> r) {
+        return String.valueOf(r.getValue().get("chunk"));
+    }
+}
+```
+
+### 8.2 逐行拆解——写（`write`）
+
+```java
+StringRecord record = StreamRecords.string(Map.of("chunk", chunk))
+        .withStreamKey(KEY_STREAM.formatted(token));
+```
+
+把一个 chunk 包装成 Redis Stream 的一条 entry（field=chunk, value=具体内容）。
+
+```java
+return redisTemplate.opsForStream().add(record)          // ①
+        .then(redisTemplate.convertAndSend(channel, chunk))  // ②
+        .then();
+```
+
+**① `opsForStream().add(record)`**：XADD，把 chunk 持久写入 Redis Stream。写入后，任何时刻都可以通过 `range()` 回放。
+
+**② `convertAndSend(channel, chunk)`**：PUBLISH，把 chunk 广播到 Pub/Sub 频道。**只有当时在线的订阅者能收到**。
+
+> **为什么两个都做**：① 保证断线重连、晚加入者能看到历史。② 保证在线的订阅者立刻收到新 chunk、不被 Stream 的"批读取"延迟所拖累。两者各司其职。
+
+### 8.3 逐行拆解——读（`subscribe`）
+
+**① 回放历史**
+
+```java
+Flux<String> history = redisTemplate.opsForStream()
+        .range(key, Range.unbounded())   // XRANGE：读取 Stream 中所有条目
+        .map(this::chunkOf)              // 从 MapRecord 里提取 chunk 文本
+        .doOnNext(chunk -> {
+            if (END_MARK.equals(chunk)) ended.set(true);  // 碰到了终止标记
+        });
+```
+
+`Range.unbounded()` = 从头读到尾，不跳过任何一条。这是"晚加入者补看"的保障。
+
+`ended.set(true)` 标记"生成已完成"。这个标记会影响下一步 `live` 的行为。
+
+**② 接实时**
+
+```java
+Flux<String> live = Flux.defer(() -> ended.get()
+        ? Flux.empty()
+        : listener.receive(ChannelTopic.of(channel))
+                .map(ReactiveSubscription.Message::getMessage));
+```
+
+分两种情况：
+
+- **`ended=true`（历史里已有 `__END__`）**：生成已完成，不需要 Pub/Sub。返回空 Flux，立即完成。
+- **`ended=false`（历史里没有 `__END__`）**：生成还在进行，连接 Pub/Sub 等待后续消息。
+
+> **为什么用 `Flux.defer`**：`ended.get()` 的判断必须发生在 `live` **被订阅**时（即 history 回放结束之后），而非 `subscribe()` 方法被调用时。`defer` 保证了这一点。
+
+> **为什么不能省略这个检查**：如果历史里已有 `__END__`（生成已完成），但 `concatWith` 仍然去连 Pub/Sub，这条 Pub/Sub 连接可能永远收不到消息（因为所有消息包括 `__END__` 早已发布过了）。虽然有 `takeUntil`，但在 `concatWith` 订阅 `live` 和 `takeUntil` 取消 `live` 之间有个微小竞态窗口，可能导致资源泄漏。
+
+**③ 拼接 + 终止**
+
+```java
+return history.concatWith(live)
+        .takeUntil(s -> s.equals(END_MARK))
+        .filter(s -> !s.equals(END_MARK));
+```
+
+- **`concatWith`**：先 `history`，`history` 完成后才启动 `live`。"先过去，后未来"。
+- **`takeUntil("__END__")`**：遇到结束标记就关闭流（complete），SSE 连接随之关闭。
+- **`filter(not __END__)`**：`__END__` 是用来关流的，不要推给前端用户。
+
+### 8.4 完整时序图
+
+```
+生产者（trigger）:
+  write("你") → XADD + PUBLISH
+  write("好") → XADD + PUBLISH
+  writeEnd()  → XADD + PUBLISH __END__
+
+消费者（subscribe）:
+  ① range() 回放: "你", "好", "__END__"
+     └─ 碰到 __END__ → ended = true
+  ② live = defer → ended=true → Flux.empty()
+  ③ takeUntil("__END__") → 触发 → complete
+  ④ filter → "你", "好" 推给前端，__END__ 过滤掉
+  → 流正常结束
+
+如果消费者在"好"和"__END__"之间连入：
+  ① range() 回放: "你", "好"（__END__ 还没写）
+     └─ 没有 __END__ → ended = false
+  ② live = defer → ended=false → 连 Pub/Sub
+  ③ 生成结束，writeEnd() → PUBLISH __END__
+  ④ Pub/Sub 收到 __END__ → takeUntil 触发 → complete
+  → 流正常结束
+```
+
+### 8.5 核心认知
+
+| 行 | 做了什么 | 为什么 |
+|----|---------|--------|
+| `range(key, Range.unbounded())` | 读全部历史 | 晚加入/断线重连能补看 |
+| `listener.receive(channel)` | 订阅 Pub/Sub | 实时推送，不等 Stream 批量拉 |
+| `ended` + `Flux.defer` | 有 END 就不连 Pub/Sub | 避免无效连接和竞态窗口 |
+| `history.concatWith(live)` | 先过去、后未来 | 严格保序 |
+| `takeUntil("__END__")` | 遇终止标记关闭流 | 唯一的关闭出口 |
+| `filter(not __END__)` | 过滤终止标记 | 内部信号，不推给前端 |
+
+### 8.6 必避的坑
+
+- **如果 `writeEnd()` 在出错时没调用** → `__END__` 永远不会写入 → `takeUntil` 永远等不到 → SSE 连接永久挂死。记住：`doOnError` 里也要调 `writeEnd()`。
+- **如果不用 `Flux.defer` 包 `ended` 检查** → 判断发生在 `subscribe()` 方法调用时（而非 `live` 真正被订阅时），时序错误。
+- **如果反过来用 `live.concatWith(history)`** → Pub/Sub 的实时消息可能在历史之前到达，顺序乱了。
+
