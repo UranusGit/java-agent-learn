@@ -209,10 +209,11 @@ public class AgentEventBus {
 
 ```java
 // ===== 缓冲策略 =====
-Sinks.many().multicast().onBackpressureBuffer(256, false);    // 缓冲，满了丢弃
-Sinks.many().multicast().onBackpressureBuffer(256, true);     // 缓冲，满了抛异常（给生产者）
-Sinks.many().multicast().onBackpressureBuffer(256, 
-    false, Duration.ofMinutes(1));   // 缓冲，1 分钟后超时
+// 第二个 boolean 是 autoCancel，不是"满了是否抛异常"！见 3.2 节解释。
+Sinks.many().multicast().onBackpressureBuffer(256, false);    // autoCancel=false：没人订阅也保持存活
+Sinks.many().multicast().onBackpressureBuffer(256, true);     // autoCancel=true：最后一个订阅者离开后自动关闭
+Sinks.many().multicast().onBackpressureBuffer(256,
+    false, Duration.ofMinutes(1));   // autoCancel=false + 每条数据缓冲 1 分钟后被回收（TTL）
 
 // ===== 其他策略 =====
 Sinks.many().multicast().onBackpressureError();      // 不缓冲，满了直接让 emit 返回错误
@@ -478,5 +479,5 @@ Sinks 保证单次 emit 的原子性（不会两个事件内容混在一起）�
 *系统学完这一篇，你应该能回答这些问题：*
 - *Sinks 解决了什么问题？*（从外面往里推数据）
 - *multicast / replay / unicast 的区别是什么？*（新订阅者能看多少历史）
-- *为什么 33b 不用 `@Retry` 注解保护 Agent 循环？*（独立 Bean + `@Retry` 才能生效）
+- *`tryEmitNext` 和 `emitNext` 怎么选？*（事件总线用非阻塞的 `tryEmitNext`，必须保证发出才用 `emitNext`）
 - *背压满时业务代码该怎么处理？*（至少 log、关键事件持久化兜底）
