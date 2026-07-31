@@ -471,8 +471,8 @@ Sinks 保证单次 emit 的原子性（不会两个事件内容混在一起）�
 ## 第 10 章：深入学习
 
 - [Project Reactor Sinks 官方文档](https://projectreactor.io/docs/core/release/reference/#sinks) —— 最权威的参考（英文）
-- [33b-Agent可观测性企业级演进实践](../tutorials/spring-ai-2.0/33b-Agent可观测性企业级演进实践.md) —— 33b 全套源码，Sinks 的企业级实战
-- [Flux方法速查](./Flux方法速查.md) —— 配套的 Reactor 操作符参考
+- [33b-Agent可观测性企业级演进实践](../../tutorials/spring-ai-2.0/33b-Agent可观测性企业级演进实践.md) —— 33b 全套源码，Sinks 的企业级实战
+- [Flux方法速查](./02-Flux方法速查.md) —— 配套的 Reactor 操作符参考
 
 ---
 

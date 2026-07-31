@@ -1,6 +1,6 @@
 # Redis 分布式锁实战（从 SETNX 到 Redisson）
 
-> **配套文档**：[35-管数分离实战](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 7 章用 `SETNX` 实现了"单一写者锁"（保证多实例集群里只有一个实例真正去跑生成器）。但 SETNX 是分布式锁的**最朴素版本**，生产级还有一堆坑要填。本篇把分布式锁从最简单讲到最严谨——为什么 SETNX 不够、Lua 脚本怎么救、Redisson 看门狗、fencing token 终极方案。
+> **配套文档**：[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 7 章用 `SETNX` 实现了"单一写者锁"（保证多实例集群里只有一个实例真正去跑生成器）。但 SETNX 是分布式锁的**最朴素版本**，生产级还有一堆坑要填。本篇把分布式锁从最简单讲到最严谨——为什么 SETNX 不够、Lua 脚本怎么救、Redisson 看门狗、fencing token 终极方案。
 >
 > **难度假设**：你写过单机锁（`synchronized`/`ReentrantLock`），但没做过分布式锁。
 
@@ -286,4 +286,4 @@ Long token = redis.opsForValue().increment("token:" + resourceKey);
 - **fencing token**：解决 GC 停顿导致的陈旧写入——强一致场景才需要。
 - **核心认知**：分布式锁保证的是"互斥"，不是"业务正确"或"不会重复执行"。后者靠业务幂等 + 存储层防护。
 
-回头看 [管数分离文档第 7 章](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的 SETNX，你就明白它为什么诚实标注"缺陷是锁过期窗口、无 fencing"，以及第 7 章把 fencing 列为进阶方向的原因了。
+回头看 [管数分离文档第 7 章](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的 SETNX，你就明白它为什么诚实标注"缺陷是锁过期窗口、无 fencing"，以及第 7 章把 fencing 列为进阶方向的原因了。

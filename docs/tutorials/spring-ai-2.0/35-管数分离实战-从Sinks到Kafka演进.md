@@ -4,7 +4,7 @@
 >
 > **它和 34 系列的关系**：[34-轻依赖版](./34-轻依赖版-Agent与知识库实战.md) 是一个"什么都讲"的大全（Agent 循环、RAG、审计、记忆、管数分离、微服务……），信息密度极高，**对初学者来说一次性吞下太难**。本文是把其中**最核心、最常被问到的一条主线——「管数分离」**单独抽出来、把步子切得更细、砍掉一切支线，做成一份**专注、可线性跟读**的实践文档。学完本文，你再回去看 34 系列的架构演进章节会非常轻松。
 >
-> **技术栈**：**Spring Boot 4.0.6 · Spring AI 2.0.0** · Java 21 · WebFlux（响应式）· Reactor Sinks · **Redis**（Streams + Pub/Sub + SETNX，`spring-boot-starter-data-redis-reactive`）· **Kafka**（chunk 持久总线）· Spring Cloud Gateway（网关）。LLM 默认用 DeepSeek（OpenAI 兼容协议，国内直连、价格低）。
+> **技术栈**：**Spring Boot 4.0.6 · Spring AI 2.0.0** · Java 21 · WebFlux（响应式）· Reactor Sinks · **PostgreSQL**（run 状态/幂等/会话持久化，`postgresql` 驱动）· **MyBatis-Flex**（PG 的 ORM 访问层，`mybatis-flex-spring-boot3-starter`）· **Redis**（Streams + Pub/Sub，`spring-boot-starter-data-redis-reactive`）· **Redisson**（分布式锁，看门狗自动续期，`redisson-spring-boot-starter`）· **Kafka**（chunk 持久总线，`spring-kafka`）· Spring Cloud Gateway（网关）。LLM 默认用 DeepSeek（OpenAI 兼容协议，国内直连、价格低）。
 >
 > **难度假设**：你会 Java、会用 IDE、会跑 Maven，但不熟 WebFlux/Reactor/Redis/Kafka。每个新概念**第一次出现都先用大白话讲**，再给代码。所有涉及的第三方 API 均为 Spring AI 2.0 / Spring Boot 4.0.6 时代真实签名（已逐一校验），照抄能编译。
 >
@@ -23,11 +23,12 @@
 - [第 4 章：服务一重启内容全没了——引入 Redis 持久化 + 断线续传](#第-4-章服务一重启内容全没了引入-redis-持久化--断线续传)
 - [第 5 章：晚加入的设备漏掉了前半段——seq 游标回放 + 客户端去重](#第-5-章晚加入的设备漏掉了前半段seq-游标回放--客户端去重)
 - [第 6 章：多端同时点生成，重复触发——run 资源 + 幂等键](#第-6-章多端同时点生成重复触发run-资源--幂等键)
-- [第 7 章：水平扩展成两台实例——跨实例广播 + 单一写者锁](#第-7-章水平扩展成两台实例跨实例广播--单一写者锁)
-- [第 8 章：Redis 挂了全瘫——Redis 高可用与退避重试](#第-8-章redis-挂了全瘫redis-高可用与退避重试)
-- [第 9 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线](#第-9-章chunk-要跨服务消费长期保留升级-kafka-持久总线)
-- [第 10 章：触发与生成资源画像冲突——拆订阅服务](#第-10-章触发与生成资源画像冲突拆订阅服务)
-- [第 11 章：前端记一堆端口——API 网关统一入口](#第-11-章前端记一堆端口api-网关统一入口)
+- [第 7 章：run 状态存 Redis 重启全清、查不动——PostgreSQL + MyBatis-Flex 持久化](#第-7-章run-状态存-redis-重启全清查不动postgresql--mybatis-flex-持久化)
+- [第 8 章：水平扩展成两台实例——跨实例广播 + 单一写者锁](#第-8-章水平扩展成两台实例跨实例广播--单一写者锁)
+- [第 9 章：Redis 挂了全瘫——Redis 高可用与退避重试](#第-9-章redis-挂了全瘫redis-高可用与退避重试)
+- [第 10 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线](#第-10-章chunk-要跨服务消费长期保留升级-kafka-持久总线)
+- [第 11 章：触发与生成资源画像冲突——拆订阅服务](#第-11-章触发与生成资源画像冲突拆订阅服务)
+- [第 12 章：前端记一堆端口——API 网关统一入口](#第-12-章前端记一堆端口api-网关统一入口)
 - [全文演进总览与后续方向](#全文演进总览与后续方向)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
@@ -79,7 +80,7 @@ GET  /runs/{id}/stream→ 纯只读地订阅这个任务的输出流
 - **触发和订阅一损俱损的耦合被解除**——订阅流出错不会连累正在跑的生成器。
 - **天然支持幂等**——多端同时点"生成"，用一个幂等键保证只触发一次。
 
-**管数分离 ≠ 微服务拆分**。本章前期**只在单进程内把接口拆开**（逻辑解耦），物理拆成独立服务是第 10 章的事。**先逻辑后物理，顺序不能反。**
+**管数分离 ≠ 微服务拆分**。本章前期**只在单进程内把接口拆开**（逻辑解耦），物理拆成独立服务是第 11 章的事。**先逻辑后物理，顺序不能反。**
 
 ### 为什么"企业级"总是绕不开它
 
@@ -119,11 +120,13 @@ GET  /runs/{id}/stream→ 纯只读地订阅这个任务的输出流
 | **管理面 / 数据面** | 管数分离的两面：管理面会改状态（触发/取消），数据面只读（订阅流）。 | 第 2 章 |
 | **run 资源** | 把一次生成建模成一个有 id、有状态机（queued/RUNNING/DONE/FAILED/CANCELLED）的异步任务。 | 第 6 章 |
 | **幂等键（Idempotency-Key）** | 同一个 key 只创建一次任务，防止多端重复触发。 | 第 6 章 |
-| **Redis Stream** | Redis 的持久追加日志结构，可从任意位置回放。本文 chunk 总线的载体。 | 第 4 章 |
+| **PostgreSQL** | 关系型数据库。本文用它持久化 run 状态、幂等映射、会话记录——结构化、可 SQL 查询、有 ACID 事务。 | 第 7 章 |
+| **MyBatis-Flex** | 轻量 ORM。比手写 JDBC 省事、比 MyBatis-Plus 更适配 Spring Boot 4/Java 21。本文访问 PG 的数据层。 | 第 7 章 |
+| **Redis Stream** | Redis 的持久追加日志结构，可从任意位置回放。本文 chunk 总线的载体（后被 Kafka 接管）。 | 第 4 章 |
 | **seq 游标** | 给每个 chunk 一个单调递增编号，客户端记录最后收到的 seq，断线重连时从该 seq 之后补推。 | 第 5 章 |
-| **Pub/Sub** | Redis 的实时消息广播，发布者发一条，所有订阅者立刻收到。不持久。 | 第 7 章 |
-| **单一写者（single-writer）** | 多实例集群里，保证全集群只有一个实例真正去跑生成器。否则会重复触发、结果分叉。 | 第 7 章 |
-| **Kafka 消费组** | Kafka 的标准消费模式，每个组各自维护消费进度（offset），互不干扰。 | 第 9 章 |
+| **Pub/Sub** | Redis 的实时消息广播，发布者发一条，所有订阅者立刻收到。不持久。 | 第 8 章 |
+| **单一写者（single-writer）** | 多实例集群里，保证全集群只有一个实例真正去跑生成器。否则会重复触发、结果分叉。 | 第 8 章 |
+| **Kafka 消费组** | Kafka 的标准消费模式，每个组各自维护消费进度（offset），互不干扰。 | 第 10 章 |
 
 > **不用现在全懂**。每个名词在它对应的章节会重新、详细地讲一遍。这张表是供你读到一半忘了回来对一眼用的。
 
@@ -194,7 +197,8 @@ research-stream/
             webflux        —— Web 栈基础（Controller、SSE 流式都靠它）
             openai starter —— Spring AI 2.0（ChatClient 流式调 LLM；DeepSeek 走 OpenAI 兼容协议）
           演进纪律：后面章节用到才加——
-            第 4 章加 data-redis-reactive；第 9 章加 spring-kafka；第 11 章加 cloud-gateway。
+            第 4 章加 data-redis-reactive；第 7 章加 postgresql + mybatis-flex；
+            第 8 章加 redisson；第 10 章加 spring-kafka；第 12 章加 cloud-gateway。
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -681,7 +685,7 @@ Reactor 提供的 **`Sinks.Many`** 正是"广播话筒"：
 
 > **为什么是 `multicast().onBackpressureBuffer()`？** `multicast` 表示"支持多个订阅者"。`onBackpressureBuffer` 表示"如果某个订阅者消费太慢来不及处理，先把数据缓存起来"——避免慢订阅者拖垮或丢数据。这是 Reactor 官方推荐的多订阅广播写法。
 >
-> 📌 **想深入"消费太慢怎么办"**：这就是响应式编程里的**背压（Backpressure）**概念——消费者反过来控制生产者速率。本章用最简写法，原理详见附录 [Reactor 背压详解](../../附录/Reactor背压详解.md)。
+> 📌 **想深入"消费太慢怎么办"**：这就是响应式编程里的**背压（Backpressure）**概念——消费者反过来控制生产者速率。本章用最简写法，原理详见附录 [Reactor 背压详解](../../附录/Reactor响应式编程/04-Reactor背压详解.md)。
 
 **本章设计**：StreamService 触发时，创建一个 `Sinks.Many`，让生成器往里面塞字；订阅时返回 `sink.asFlux()`。这样多个标签页订阅同一个 token，共享同一个 Sink，生成器只跑一次。
 
@@ -1565,7 +1569,7 @@ git add -A && git commit -m "第5章:seq游标回放+SSE Last-Event-ID续传"
 | 概念 | 设计 |
 |------|------|
 | **run 资源** | 每次触发创建一个 `run`，有 `runId`、归属 `sessionId`、状态（`queued → RUNNING → DONE/FAILED/CANCELLED`）、创建时间 |
-| **状态存储** | Redis（`run:{id}:status`） | 状态查询要低延迟、可跨实例（第 7 章），放 Redis |
+| **状态存储** | 本章先放 Redis（`run:{id}:status`）；**第 7 章迁到 PostgreSQL**（结构化数据该进关系库） | 状态查询要低延迟、可跨实例 |
 | **幂等键** | 请求头 `Idempotency-Key` → 同 key 返回同一个 runId | 多端同时提交，只有一个 run |
 | **会话级独占** | Redis 标记 `session:{id}:running` → 同一会话同时只一个 run | 串行化，防并发错乱 |
 | **取消** | `POST /runs/{id}/cancel` | 主动停止（终态，释放会话锁） |
@@ -1588,7 +1592,7 @@ GET  /api/runs/{runId}/stream        → 只读 SSE（沿用第 5 章）
 > **三道防线的层次关系（别混淆）**：
 > - **会话级独占**（本章新增，粒度=sessionId）：同一会话同时只一个任务 → **最外层闸门**。
 > - **幂等键**（粒度=idempotencyKey）：同一提交只创建一个 run。
-> - **任务级单一写者锁**（第 7 章，粒度=runId）：同一任务多实例只跑一个。
+> - **任务级单一写者锁**（第 8 章，粒度=runId）：同一任务多实例只跑一个。
 >
 > 三者**并存**，从外到内依次生效。会话级独占挡掉绝大多数并发问题，后两个是兜底。
 
@@ -1681,7 +1685,7 @@ public class RunStore {
 
 > **`switchIfEmpty(Mono.defer(...))` 的细节**：`switchIfEmpty` 接收的 Mono 会**立即求值**（即使上游有值）。用 `Mono.defer(() -> ...)` 包一层，让它**延迟到真正需要时**才执行 `newRun()`——避免每次查询都白创建一个 run。这是 Reactor 的常见坑。
 
-> **会话锁的 TTL（10 分钟）是兜底**：正常靠 `releaseSession` 在终态释放；如果实例崩溃没释放，10 分钟后自动过期，会话不会永久锁死。比生成最长耗时（第 7 章任务锁 TTL 5 分钟）略长即可。
+> **会话锁的 TTL（10 分钟）是兜底**：正常靠 `releaseSession` 在终态释放；如果实例崩溃没释放，10 分钟后自动过期，会话不会永久锁死。比生成最长耗时（第 8 章任务锁）略长即可。
 
 #### 6.2.2 StreamService：接 RunStore，触发时维护状态 + 记取消句柄
 
@@ -1959,17 +1963,379 @@ git add -A && git commit -m "第6章:run资源+状态机+幂等键+会话级独�
 
 ### 6.5 复盘 + 暴露问题
 
-到这里，**单实例的管数分离已经是企业级标准形态**了：run 资源、状态机、幂等、**会话级独占**、取消、断线续传、持久回放。三道并发防线（会话级独占 → 幂等键 → 任务锁）也到位了两道（任务锁第 7 章补）。但所有东西都在**一个进程**里——下一个真实痛点来了：
+到这里，**单实例的管数分离已经是企业级标准形态**了：run 资源、状态机、幂等、**会话级独占**、取消、断线续传、持久回放。三道并发防线（会话级独占 → 幂等键 → 任务锁）也到位了两道（任务锁第 8 章补）。但第 6 章有个**一直被刻意回避的隐患**现在藏不住了：
 
-**水平扩展成两台实例后，A 实例触发的 run，B 实例的订阅请求会落空**（因为生成流句柄 `Disposable` 只在 A 的内存里）。而且两台实例如果都收到触发请求，可能各自跑一次（虽然有会话级独占、幂等键兜底，但任务级单一写者锁需要显式处理）。
+> run 状态、幂等映射、会话独占标记**全部存在 Redis 的 KV 里**（`run:{id}:status`、`idem:{key}`、`session:{id}:running`），而且都**带 TTL（1 天 / 10 分钟）**。这意味着——**服务一重启、TTL 一到，所有 run 记录、幂等关系、会话历史全部蒸发**。你想"查上周某个 run 跑了什么"、"按会话统计生成次数"、"给幂等创建加 ACID 保证防并发"、"做审计对账"——Redis KV 全做不到。
 
-**第 7 章：跨实例广播 + 单一写者锁**，把管数分离推向真正的多实例集群。
+**run 状态是结构化的业务数据（有字段、要查询、要事务、要长期保留），它天生该住关系库，而不是 Redis 的临时 KV**。
+
+**第 7 章：PostgreSQL + MyBatis-Flex 持久化**——把 run 状态、幂等映射、会话记录从 Redis KV 迁到 PG，拿到 SQL 查询、ACID 事务、长期保留、审计能力。Redis 退回到它真正擅长的角色：锁 + 实时 Pub/Sub 通知。
 
 ---
 
-## 第 7 章：水平扩展成两台实例——跨实例广播 + 单一写者锁
+## 第 7 章：run 状态存 Redis 重启全清、查不动——PostgreSQL + MyBatis-Flex 持久化
 
 ### 7.0 场景
+
+第 6 章后，run 资源、幂等、会话独占都成型了，但全存在 Redis KV 里。真实生产里这立刻撞墙：
+
+> 运营想看"昨天 sess-001 这个用户跑了哪些生成、分别什么状态、什么时候完成的"——查不到。Redis KV 的 `run:{id}:status` 只存单个 run 的 JSON，**没有索引、没法按 session 查、没法按时间范围查、过 1 天 TTL 就没了**。幂等创建也只是"先 GET 再 SET"两步操作，**没有原子性**——并发下两个请求都 GET 到空、都 SET，幂等失效。
+
+这些都是**结构化数据放进 KV 存储**的典型水土不服。该上关系库了。
+
+### 7.1 思路：结构化数据落 PG，Redis 退居本职
+
+**关键判断：不是所有数据都该进 PG**。按数据形态分工，这和企业真实做法一致：
+
+| 数据 | 形态 | 放哪里 | 理由 |
+|------|------|--------|------|
+| **run 状态/记录** | 结构化、要查询、要长期保留、要事务 | **PostgreSQL** | 关系库主场：SQL 查询、ACID、索引、审计 |
+| **幂等映射** | 结构化、要唯一约束、要原子防并发 | **PostgreSQL** | 用 `UNIQUE(idempotency_key)` + 事务，原子防并发，比 Redis 两步操作稳 |
+| **会话记录** | 结构化、要按 session 查历史 | **PostgreSQL** | 同上 |
+| **会话独占标记** | 临时并发闸门，短命 | **Redis**（保留） | 极低延迟、TTL 自动过期兜底，KV 正合适 |
+| **chunk 流** | 高频追加、流式、按游标回放 | **Redis Stream**（第 4 章）→ 后续 Kafka（第 10 章） | 流式追加不该进关系库 |
+| **分布式锁** | 临时、低延迟 | **Redis（Redisson）** | 第 8 章用 |
+| **实时取消/结束通知** | 即时广播、不持久 | **Redis Pub/Sub** | 第 8 章用 |
+
+> **为什么 chunk 不进 PG？** chunk 是"每秒几十条、按顺序追加、按游标回放"的流式数据。PG 的关系表做高频追加 + 范围回放，性能和成本都不如 Redis Stream（第 4 章）/ Kafka（第 10 章）。**把流式数据塞进关系库是常见反模式**——流有流的家（Kafka），记录有记录的家（PG）。
+
+#### 为什么选 MyBatis-Flex 而不是 MyBatis-Plus / JPA
+
+| 方案 | 取舍 |
+|------|------|
+| **MyBatis-Flex**（本章用） | 轻量、链式 `QueryWrapper`、原生 `@Table` 注解、**对 Spring Boot 4 / Java 21 适配最积极**。国内新项目主流选择。 |
+| MyBatis-Plus | 老牌、生态广，但近年迭代慢，对高版本 Boot 的兼容偶有滞后。 |
+| Spring Data JPA | 标准、面向对象，但复杂查询要写 SQL 或 Specification，流式场景不够灵活。 |
+
+> **响应式栈的一个坑（重要）**：本文是 WebFlux 响应式栈，而 **MyBatis-Flex / JDBC 是阻塞的**。直接在 reactor 线程里调 Mapper 会卡住事件循环。**正确做法：用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` 把阻塞的 DB 调用隔离到弹性线程池**。本章 `RunStore` 的每个方法都这么包。这是响应式 + 阻塞 DB 的标准配合方式，和第 8 章 Redisson 锁的处理一致。
+
+### 7.2 动手
+
+#### 7.2.1 加 PG + MyBatis-Flex 依赖
+
+**【改已有文件，追加】** `pom.xml`：
+
+```xml
+<!-- ▼ 第7章新增：PostgreSQL 驱动（run 状态/幂等/会话持久化） -->
+<dependency>
+    <groupId>org.postgresql</groupId>
+    <artifactId>postgresql</artifactId>
+</dependency>
+
+<!-- ▼ 第7章新增：MyBatis-Flex（Spring Boot 3/4 starter，自带 HikariCP 连接池自动装配） -->
+<dependency>
+    <groupId>com.mybatis-flex</groupId>
+    <artifactId>mybatis-flex-spring-boot3-starter</artifactId>
+    <version>1.10.0</version>
+</dependency>
+```
+
+> **版本说明**：`mybatis-flex-spring-boot3-starter` 虽然名字带 `boot3`，但兼容 Spring Boot 4.x（MyBatis-Flex 1.10+ 已适配）。`postgresql` 驱动版本由 Spring Boot BOM 管理，不用手写。HikariCP 连接池由 starter 自动装配，无需额外配置。
+
+#### 7.2.2 数据源 + MyBatis-Flex 配置
+
+**【改已有文件，追加】** `application.yaml`：
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://${PG_HOST:localhost}:5432/research_stream
+    username: ${PG_USER:postgres}
+    password: ${PG_PASS:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10            # ▼ 连接池大小（按 DB 规格调）
+      connection-timeout: 30000
+
+# MyBatis-Flex（基本零配置即可用，这里只显式开启日志方便调试）
+mybatis-flex:
+  global-config:
+    print-banner: false
+  configuration:
+    map-underscore-to-camel-case: true # ▼ run_id → runId 自动驼峰映射
+```
+
+#### 7.2.3 建表（run 状态 + 幂等映射）
+
+**【新建文件】** `research-stream/src/main/resources/schema.sql`（Spring Boot 启动时若 `spring.sql.init.mode=always` 会自动执行；生产建议用 Flyway/Liquibase 管迁移）：
+
+```sql
+-- ▼ run 资源表：一次生成一行
+CREATE TABLE IF NOT EXISTS gen_run (
+    id            VARCHAR(32)  PRIMARY KEY,             -- runId
+    session_id    VARCHAR(64)  NOT NULL,                -- 归属会话
+    status        VARCHAR(16)  NOT NULL DEFAULT 'queued', -- queued/RUNNING/DONE/FAILED/CANCELLED
+    prompt        TEXT,                                -- 触发的 prompt（审计用）
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    finished_at   TIMESTAMPTZ                          -- 终态时间
+);
+CREATE INDEX IF NOT EXISTS idx_gen_run_session ON gen_run (session_id, created_at); -- ▼ 按会话查历史
+
+-- ▼ 幂等映射表：idempotencyKey → runId。UNIQUE 约束 + 事务 = 原子防并发（替代第6章 Redis 的两步 GET/SET）
+CREATE TABLE IF NOT EXISTS gen_idempotency (
+    idempotency_key VARCHAR(128) PRIMARY KEY,           -- 幂等键（客户端提供）
+    run_id          VARCHAR(32)  NOT NULL,              -- 对应的 runId
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT fk_idem_run FOREIGN KEY (run_id) REFERENCES gen_run(id) ON DELETE CASCADE
+);
+```
+
+> **幂等从"两步操作"升级为"唯一约束"**：第 6 章用 Redis 的"先 GET 再 SET"防并发，理论上两步之间有窗口。PG 用 `PRIMARY KEY(idempotency_key)` 的唯一约束——并发插入同一个 key，数据库直接拒绝第二个（抛唯一约束异常），**由数据库保证原子性**，比应用层两步操作稳得多。这是"结构化数据进关系库"的核心收益之一。
+
+#### 7.2.4 Run 实体 + Mapper（MyBatis-Flex）
+
+**【新建文件】** `research-stream/src/main/java/com/example/stream/run/RunEntity.java`：
+
+```java
+package com.example.stream.run;
+
+import com.mybatisflex.annotation.Column;
+import com.mybatisflex.annotation.Id;
+import com.mybatisflex.annotation.KeyType;
+import com.mybatisflex.annotation.Table;
+import java.time.OffsetDateTime;
+
+/** ▼ run 资源实体（对应 gen_run 表）。MyBatis-Flex 用 @Table 映射。 */
+@Table("gen_run")
+public class RunEntity {
+
+    @Id(keyType = KeyType.None)   // ▼ runId 由应用生成（非自增），KeyType.None 表示不由 DB 生成
+    private String id;
+
+    @Column("session_id")
+    private String sessionId;
+
+    private String status;
+
+    private String prompt;
+
+    @Column("created_at")
+    private OffsetDateTime createdAt;
+
+    @Column("finished_at")
+    private OffsetDateTime finishedAt;
+
+    // getters / setters 省略（实际项目用 Lombok @Data）
+}
+```
+
+**【新建文件】** `research-stream/src/main/java/com/example/stream/run/RunMapper.java`：
+
+```java
+package com.example.stream.run;
+
+import com.mybatisflex.core.BaseMapper;
+import org.apache.ibatis.annotations.Mapper;
+
+/** ▼ MyBatis-Flex Mapper：继承 BaseMapper 自动获得 insert/selectById/update 等 CRUD。 */
+@Mapper
+public interface RunMapper extends BaseMapper<RunEntity> {
+}
+```
+
+> **`BaseMapper` 免写 SQL**：继承它就免费拿到 `insert / selectById / update / selectListByQuery` 等方法。复杂查询用 `QueryWrapper` 链式构造（如 `QueryWrapper.create().where(GEN_RUN.SESSION_ID.eq(sid))`），MyBatis-Flex 会自动生成 `gen_run` 表的元数据类 `table.GenRunTableDef`（编译时生成）。本章 CRUD 够用，不展开 QueryWrapper。
+>
+> **幂等表同理**：`gen_idempotency` 表有对应的 `IdempotencyEntity` + `IdempotencyMapper`（同样 `extends BaseMapper`）+ 编译期元数据 `GEN_IDEMPOTENCY`，下面 `RunStore` 会用到。源码结构与 `RunEntity`/`RunMapper` 完全对称，不重复贴。
+
+#### 7.2.5 RunStore：从 Redis KV 改为 PG（响应式包装）
+
+**【改已有文件，完整版覆盖】** `RunStore.java`（核心：run 状态/幂等走 PG；会话独占标记**保留 Redis**——它是短命并发闸门，KV 正合适）：
+
+```java
+package com.example.stream.run;
+
+import com.mybatisflex.core.query.QueryWrapper;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.util.UUID;
+
+/**
+ * Run 资源存储（第 7 章：结构化数据落 PostgreSQL，会话独占标记保留 Redis）。
+ *
+ * - create(idemKey, sessionId) ：幂等创建 run。同 idemKey 返回同一 runId（PG 唯一约束保证原子）。
+ * - get(runId)       ：查 run 资源（从 PG）。
+ * - setStatus(runId) ：改状态（更新 PG）。
+ * - acquireSession(sessionId, runId) ：会话级独占——Redis SETNX（短命并发闸门，保留 Redis）。
+ * - releaseSession(sessionId)        ：释放会话独占。
+ *
+ * 状态机：queued → RUNNING → DONE / FAILED / CANCELLED
+ *
+ * ⚠️ MyBatis-Flex/JDBC 是阻塞的，每个 DB 调用都用 Schedulers.boundedElastic() 隔离，
+ *    不能在 reactor 线程里直接调 Mapper（会卡住事件循环）。
+ */
+@Component
+public class RunStore {
+
+    private static final String KEY_SESSION = "session:%s:running";   // ▼ 会话独占标记（保留 Redis）
+    private static final Duration SESSION_LOCK = Duration.ofMinutes(10); // ▼ 会话锁 TTL（兜底，防崩溃不释放）
+
+    private final RunMapper runMapper;
+    private final IdempotencyMapper idempotencyMapper;
+    private final ReactiveRedisTemplate<String, String> redis;
+
+    public RunStore(RunMapper runMapper, IdempotencyMapper idempotencyMapper,
+                    ReactiveRedisTemplate<String, String> redis) {
+        this.runMapper = runMapper;
+        this.idempotencyMapper = idempotencyMapper;
+        this.redis = redis;
+    }
+
+    /** 幂等创建：同 idemKey 返回同一 runId；否则新建。
+     *  ▼ 用 PG 的唯一约束做原子幂等：并发插入同一 key，第二个抛 DuplicateKeyException，
+     *    捕获后回查已存在的 runId——比第6章 Redis 的"先 GET 再 SET"两步操作更稳。 */
+    public Mono<String> create(String idempotencyKey, String sessionId) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return insertRun(idempotencyKey, sessionId);
+        }
+        // 有幂等键：先查；没有则插入，插入遇唯一约束冲突则回查
+        return findByKey(idempotencyKey)
+                .switchIfEmpty(Mono.defer(() -> insertRun(idempotencyKey, sessionId)
+                        .onErrorResume(DuplicateKeyException.class, e -> findByKey(idempotencyKey))));
+    }
+
+    /** 查 run 资源（从 PG，返回 JSON 字符串，保持与第6章 get 签名兼容）。 */
+    public Mono<String> get(String runId) {
+        return Mono.fromCallable(() -> {
+                    RunEntity r = runMapper.selectOneById(runId);
+                    return r == null ? null : toJson(r);
+                })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** 改状态（更新 PG）。终态时同时写 finished_at。 */
+    public Mono<Void> setStatus(String runId, String status) {
+        return Mono.fromRunnable(() -> {
+                    RunEntity update = new RunEntity();
+                    update.setId(runId);
+                    update.setStatus(status);
+                    if (isTerminal(status)) {
+                        update.setFinishedAt(OffsetDateTime.now());
+                    }
+                    runMapper.update(update);
+                })
+                .subscribeOn(Schedulers.boundedElastic()).then();
+    }
+
+    /** ▼ 会话级独占：Redis SETNX 抢 session:{id}:running。短命并发闸门，保留 Redis（低延迟 + TTL 兜底）。 */
+    public Mono<Boolean> acquireSession(String sessionId, String runId) {
+        return redis.opsForValue().setIfAbsent(KEY_SESSION.formatted(sessionId), runId, SESSION_LOCK);
+    }
+
+    /** ▼ 释放会话独占（run 到终态时调，让会话能接受下一个任务）。 */
+    public Mono<Void> releaseSession(String sessionId) {
+        return redis.delete(KEY_SESSION.formatted(sessionId)).then();
+    }
+
+    // —— 内部：阻塞 DB 操作 —— //
+
+    private Mono<String> insertRun(String idempotencyKey, String sessionId) {
+        return Mono.fromCallable(() -> {
+                    String runId = "run_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+                    RunEntity run = new RunEntity();
+                    run.setId(runId);
+                    run.setSessionId(sessionId);
+                    run.setStatus("queued");
+                    run.setCreatedAt(OffsetDateTime.now());
+                    runMapper.insert(run);   // ▼ 唯一约束冲突会抛 DuplicateKeyException
+                    // 幂等映射：同一个事务概念上应包住 run 插入 + 幂等插入（生产用 @Transactional）
+                    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+                        IdempotencyEntity idem = new IdempotencyEntity();
+                        idem.setIdempotencyKey(idempotencyKey);
+                        idem.setRunId(runId);
+                        idempotencyMapper.insert(idem);   // gen_idempotency 表，唯一约束保证原子幂等
+                    }
+                    return runId;
+                })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Mono<String> findByKey(String idempotencyKey) {
+        return Mono.fromCallable(() ->
+                    // ▼ 查幂等映射表。GEN_IDEMPOTENCY 是 MyBatis-Flex 编译期生成的表元数据类，
+                    //   .eq(...) 是类型安全的链式条件（避免硬编码列名）。
+                    idempotencyMapper.selectOneByQuery(
+                            QueryWrapper.create().where(GEN_IDEMPOTENCY.IDEMPOTENCY_KEY.eq(idempotencyKey))))
+                .subscribeOn(Schedulers.boundedElastic())
+                .map(IdempotencyEntity::getRunId);
+    }
+
+    private boolean isTerminal(String status) {
+        return "DONE".equals(status) || "FAILED".equals(status) || "CANCELLED".equals(status);
+    }
+
+    private String toJson(RunEntity r) {
+        return "{\"id\":\"" + r.getId() + "\",\"session\":\"" + r.getSessionId()
+                + "\",\"status\":\"" + r.getStatus() + "\",\"createdAt\":\"" + r.getCreatedAt() + "\"}";
+    }
+}
+```
+
+> **三个关键改动（对比第 6 章 Redis 版）**：
+> 1. **run 状态/幂等从 Redis KV → PG**：`get`/`setStatus`/`create` 全走 `RunMapper`，重启不丢、能 SQL 查、有唯一约束原子幂等。
+> 2. **会话独占标记保留 Redis**：`acquireSession`/`releaseSession` 没变——它是"短命并发闸门"，Redis KV 的低延迟 + TTL 兜底正合适，没必要落 PG。
+> 3. **每个 DB 调用包 `Schedulers.boundedElastic()`**：MyBatis-Flex 是阻塞的，必须隔离出 reactor 线程，否则卡事件循环。
+>
+> ⚠️ **教学简化处（诚实标注）**：为聚焦"管数分离主线"，`IdempotencyEntity`/`IdempotencyMapper`/`GEN_IDEMPOTENCY`（MyBatis-Flex 编译期生成的表元数据）只示意用法、未全部展开源码；`insertRun` 里的"run 插入 + 幂等插入"应用 `@Transactional` 包成一个事务（生产级必须，否则半失败会脏）。这些 ORM/事务细节非本文重点，详见 [数据库事务与 @Transactional 详解](../../附录/协议与数据库/02-数据库事务与Transactional详解.md) 附录。
+
+### 7.3 验证
+
+```bash
+# 起 PG（本地起一个，第 9 章会把 Redis/PG/Kafka 统一进 docker-compose）
+docker run -d --name pg -p 5432:5432 \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=research_stream postgres:16
+
+./mvnw spring-boot:run
+
+# 触发
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=管数分离持久化" -H "Idempotency-Key: deviceA-001"
+# 假设 runId=run_xxx
+
+# ▼ 关键验证1：直接用 SQL 查 run（以前在 Redis 里查不动！）
+docker exec -it pg psql -U postgres -d research_stream \
+  -c "SELECT id, session_id, status, created_at FROM gen_run WHERE session_id='sess-001';"
+# ✅ 能按 session 查历史、看状态——Redis KV 做不到的事
+
+# ▼ 关键验证2：重启服务，run 还在（以前重启 Redis TTL 内也丢）
+docker exec -it pg psql -U postgres -d research_stream -c "SELECT count(*) FROM gen_run;"
+./mvnw spring-boot:run   # 重启
+# ✅ PG 里的 run 记录不受影响（不依赖进程内存、没有 TTL 蒸发）
+
+# ▼ 关键验证3：幂等的原子性（并发同 key 只创建一个）
+for i in 1 2 3; do
+  curl -s -X POST "http://localhost:8080/api/runs?sessionId=sess-002&prompt=并发" -H "Idempotency-Key: same-key" &
+done; wait
+docker exec -it pg psql -U postgres -d research_stream \
+  -c "SELECT count(*) FROM gen_idempotency WHERE idempotency_key='same-key';"
+# ✅ 只有 1 条——PG 唯一约束挡住了并发重复，比第6章 Redis 两步操作更稳
+```
+
+### 7.4 checkpoint
+
+```bash
+git add -A && git commit -m "第7章:run状态/幂等从Redis迁PostgreSQL+MyBatis-Flex持久化"
+```
+
+### 7.5 复盘 + 暴露问题
+
+run 状态、幂等映射现在落 PG 了——能 SQL 查询、重启不丢、ACID 保证幂等原子、可审计。Redis 退回到真正擅长的角色：会话独占标记 + （后续）锁 + 实时通知。**结构化数据进关系库、流式数据进 Stream/Kafka、临时并发标记进 Redis KV——各司其职**。
+
+但所有东西还在**一个进程**里。下一个真实痛点来了：
+
+**水平扩展成两台实例后，A 实例触发的 run，B 实例的订阅请求会落空**（因为生成流句柄 `Disposable` 只在 A 的内存里）。而且两台实例如果都收到触发请求，可能各自跑一次（虽然有会话级独占、幂等键兜底，但任务级单一写者锁需要显式处理）。
+
+**第 8 章：跨实例广播 + 单一写者锁**，把管数分离推向真正的多实例集群。
+
+---
+
+## 第 8 章：水平扩展成两台实例——跨实例广播 + 单一写者锁
+
+### 8.0 场景
 
 单实例扛不住流量了，你部署了两台实例（`instance-1` 端口 8080、`instance-2` 端口 8081），前面挂个负载均衡。真实问题立刻浮现：
 
@@ -1984,33 +2350,42 @@ git add -A && git commit -m "第6章:run资源+状态机+幂等键+会话级独�
 1. **重复触发**：如果触发请求被负载均衡分给两台实例各一次（极端情况，或前端重试），两台都跑生成器。需要**单一写者**保证——全集群只有一个实例真正去跑。
 2. **取消跨实例**：用户在 instance-2 上点取消，但生成器句柄在 instance-1 的内存里。instance-2 怎么停掉 instance-1 的生成器？
 
-### 7.1 思路
+### 8.1 思路
 
-#### ① 单一写者：SETNX 分布式锁
+#### ① 单一写者：Redisson 分布式锁
 
-用 Redis 的 `SET NX EX`（不存在才设置，带过期）做分布式锁。**抢到锁的实例才跑生成器**，没抢到的直接返回"已有人在跑"。
+用分布式锁保证**抢到锁的实例才跑生成器**，没抢到的直接返回"已有人在跑"。本章直接用 **Redisson** 的 `RLock`——它是 Redis 分布式锁的**生产首选**实现，比手写 `SET NX EX` 稳得多：
 
 | 方案 | 实现 | 取舍 |
 |------|------|------|
-| **SETNX + TTL**（本章用） | 最简分布式锁 | 够用；缺陷是"锁过期后旧持有者可能继续写"（无 fencing），第 8 章附录讨论 |
-| Redis Redlock | 跨多 Redis 实例 | 更抗单点，但有著名的时钟漂移批评 |
-| lease + fencing token | 锁带租约+单调 token，存储层拒绝旧 token 写 | 业界更稳（Google Chubby 思路），复杂 |
+| **Redisson `RLock`**（本章用） | Lua 脚本安全释放 + 看门狗自动续期 | 生产首选；仍残留 GC 停顿导致的陈旧写入窗口（见下） |
+| 手写 `SET NX EX` | 最简分布式锁 | 缺陷多：误删别人锁、过期无续期、过期后旧持有者继续写 |
+| Redis Redlock | 跨多 Redis 实例 | 更抗单点，但有著名的时钟漂移批评（Martin Kleppmann） |
+| lease + fencing token | 锁带租约+单调 token，存储层拒绝旧 token 写 | 业界最稳（Google Chubby 思路），复杂 |
 
-> **诚实标注**：SETNX 不完美——如果持有锁的实例在锁过期后才完成写入，会出现"两个实例同时写"的窗口。生产级严格场景要上 fencing token。**本文用 SETNX 起步，把 fencing 作为附录扩展点**，而不是假装 SETNX 完美。
+**Redisson 解决了手写 SETNX 的三个经典坑**（详见 [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md) 附录）：
+
+1. **误删别人的锁**：手写 `releaseLock` 直接 `DEL`，不校验持有者——A 的锁过期后 B 抢到，A 此时跑完会误删 B 的锁。Redisson 释放走 Lua 脚本，**先比对 value=自己再删**。
+2. **业务没跑完锁过期**：手写锁的 TTL 是死的，生成器跑得慢（LLM 卡顿）就会在锁过期后被别人抢走。Redisson 的**看门狗**默认每 10s 把锁续期到 30s，只要实例活着，锁就不过期。
+3. **崩溃兜底**：实例宕机，看门狗随之死亡，锁 30s 后自动过期，不会永久锁死。
+
+> **诚实标注**：即使用了 Redisson，仍有一个理论缺陷——**GC 长停顿 / 进程冻结期间，看门狗也被冻结无法续期，锁过期后旧持有者恢复，会继续写入**，出现"两个实例同时写"的窗口。生产级严格场景（金融扣款等）要上 **fencing token**（锁带单调递增 token，存储层拒绝旧 token 写）。**本文用 Redisson 起步，把 fencing 作为附录扩展点**，而不是假装锁完美。多数业务场景（含本案例的流式生成）Redisson 已足够。
 
 #### ② 取消跨实例：Pub/Sub 下发取消指令
 
 `cancel` 时不再依赖本地 `Disposable`，而是 `PUBLISH` 一个取消指令到频道。**持有生成器的那台实例监听到指令，自己 dispose 掉生成流。** 这样取消天然跨实例。
 
-### 7.2 动手
+### 8.2 动手
 
-#### 7.2.1 StreamBus：加锁 + 跨实例取消监听
+#### 8.2.1 StreamBus：加锁 + 跨实例取消监听
 
 **【改已有文件，完整版覆盖】** `StreamBus.java`（核心：`trigger` 变成"抢锁才跑"，新增取消频道监听）：
 
 ```java
 package com.example.stream.bus;
 
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -2026,16 +2401,17 @@ import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import tools.jackson.databind.ObjectMapper;
 
-import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
- * 流总线（第 7 章）：分布式锁保证单一写者 + Pub/Sub 跨实例取消。
+ * 流总线（第 8 章）：Redisson 分布式锁保证单一写者 + Pub/Sub 跨实例取消。
  *
- * trigger：SETNX 抢锁，抢到才跑生成器（全集群只有一个实例跑）。
+ * trigger：Redisson 抢锁，抢到才跑生成器（全集群只有一个实例跑）。看门狗自动续期，业务没跑完锁不过期。
  * cancel：PUBLISH 取消指令，持有生成器的实例监听后自行 dispose。
  */
 @Component
@@ -2046,36 +2422,59 @@ public class StreamBus {
     private static final String KEY_STREAM = "gen:%s:chunks";
     private static final String CHANNEL    = "gen:%s";
     private static final String KEY_SEQ    = "gen:%s:seq";
-    private static final String KEY_LOCK   = "gen:%s:lock";       // ▼ 分布式锁
+    private static final String KEY_LOCK   = "gen:%s:lock";       // ▼ Redisson 锁 key
     private static final String CH_CANCEL  = "gen:%s:cancel";    // ▼ 取消频道
     private static final String END_MARK   = "__END__";
-    private static final Duration LOCK_TTL = Duration.ofMinutes(5);
 
     private final ReactiveRedisTemplate<String, String> redis;
     private final ReactiveRedisMessageListenerContainer listener;
+    private final RedissonClient redisson;   // ▼ 分布式锁客户端（独立于 ReactiveRedisTemplate）
     private final String instanceId;   // ▼ 本实例唯一标识（日志/取消归属）
     private final ObjectMapper mapper = new ObjectMapper();   // ▼ Pub/Sub 消息用 JSON 传输
 
     /** 本实例持有的"runId → 生成流句柄"（只存自己跑的那些）。 */
     private final ConcurrentHashMap<String, Disposable> localHandles = new ConcurrentHashMap<>();
 
+    /** ▼ 本实例抢到的"runId → RLock 引用"。释放时必须用同一个对象，Redisson 才能比对 owner 做安全释放。 */
+    private final ConcurrentHashMap<String, RLock> heldLocks = new ConcurrentHashMap<>();
+
     public StreamBus(ReactiveRedisTemplate<String, String> redis,
                      ReactiveRedisMessageListenerContainer listener,
+                     RedissonClient redisson,
                      @Value("${spring.application.name:inst}-${random.uuid}") String instanceId) {
         this.redis = redis;
         this.listener = listener;
+        this.redisson = redisson;
         this.instanceId = instanceId.substring(0, 12);
         // ▼ 启动时监听全局取消频道（通配）：实际按 runId 监听，见 cancel 流程
     }
 
-    /** ▼ 单一写者：抢锁才跑。返回 true=本实例抢到并启动；false=别的实例在跑。 */
+    /** ▼ 单一写者：Redisson 抢锁才跑。返回 true=本实例抢到并启动；false=别的实例在跑。
+     *  tryLock(0, -1)：0=拿不到立即返回（不阻塞 reactor 线程太久）；-1=启用看门狗自动续期（默认每 10s 续到 30s）。
+     *  ⚠️ Redisson 的 RLock 是阻塞 API，在 WebFlux 里用 Schedulers.boundedElastic() 隔离，避免卡住事件循环。 */
     public Mono<Boolean> acquireLock(String runId) {
-        return redis.opsForValue().setIfAbsent(KEY_LOCK.formatted(runId), instanceId, LOCK_TTL)
+        return Mono.fromCallable(() -> {
+                    RLock lock = redisson.getLock(KEY_LOCK.formatted(runId));
+                    boolean acquired = lock.tryLock(0, -1, TimeUnit.MILLISECONDS); // -1 触发看门狗
+                    if (acquired) {
+                        heldLocks.put(runId, lock);   // 留着 releaseLock 用同一对象安全释放
+                    }
+                    return acquired;
+                })
+                .subscribeOn(Schedulers.boundedElastic())
                 .doOnNext(ok -> log.info("[bus] acquireLock runId={} acquired={} by={}", runId, ok, instanceId));
     }
 
+    /** ▼ 释放锁。用抢锁时存下的 RLock 引用调用 unlock()——Redisson 内部走 Lua 校验 owner 后才删，不会误删别人的锁。 */
     public Mono<Boolean> releaseLock(String runId) {
-        return redis.delete(KEY_LOCK.formatted(runId)).map(c -> c > 0);
+        return Mono.fromRunnable(() -> {
+                    RLock lock = heldLocks.remove(runId);
+                    if (lock != null && lock.isHeldByCurrentThread()) {
+                        lock.unlock();
+                    }
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .thenReturn(true);
     }
 
     /** 写 chunk（同第 5 章：XADD + PUBLISH JSON）。 */
@@ -2154,7 +2553,7 @@ public class StreamBus {
 }
 ```
 
-#### 7.2.2 StreamService：会话级独占 + 触发抢锁 + 注册本地 run
+#### 8.2.2 StreamService：会话级独占 + 触发抢锁 + 注册本地 run
 
 **【改已有文件，完整版覆盖】** `StreamService.java`：
 
@@ -2174,7 +2573,7 @@ import reactor.core.publisher.Mono;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 管数分离 + 多实例（第 7 章）：会话级独占 → 幂等创建 → 抢分布式锁 → 抢到才跑；取消走 Pub/Sub。
+ * 管数分离 + 多实例（第 8 章）：会话级独占 → 幂等创建 → 抢分布式锁 → 抢到才跑；取消走 Pub/Sub。
  *
  * 三道防线（从外向内）：
  *   ① 会话级独占（acquireSession）—— 同 session 同时只一个任务，拒绝 409
@@ -2265,7 +2664,7 @@ public class StreamService {
 }
 ```
 
-> **关键改动（第 7 章恢复第 6 章的会话级独占）**：
+> **关键改动（第 8 章恢复第 6 章的会话级独占）**：
 > - `trigger` 恢复 `sessionId` 参数，先 `acquireSession`→ 幂等创建 → 抢任务锁（三道防线从外到内）。
 > - `finishRun` 统一处理终态：写结束标记 + 改状态 + 释放任务锁 + **释放会话锁**（四件事一件不能少）。
 > - `cancel` 也释放会话锁——CANCELLED 是终态，不释放会话就永久锁死。
@@ -2285,7 +2684,7 @@ public class StreamService {
 > ```
 > ① 是**最外层闸门**——挡掉绝大多数并发（"同一个会话狂点发送"）；②③ 是兜底。
 
-### 7.3 验证（两个实例）
+### 8.3 验证（两个实例）
 
 ```bash
 # 终端1：实例1
@@ -2310,31 +2709,31 @@ curl -X POST "http://localhost:8081/api/runs/run_xxx/cancel"
 
 **核心收获**：因为第 4 章就把数据搬出进程落 Redis，**多实例下订阅天然可用，几乎不用改订阅逻辑**。新增的是"会话级独占 + 单一写者锁 + 跨实例取消"——三道防线从外到内保证并发安全。
 
-### 7.4 checkpoint
+### 8.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第7章:多实例跨实例广播+SETNX单一写者+Pub/Sub跨实例取消"
+git add -A && git commit -m "第8章:多实例跨实例广播+Redisson单一写者+Pub/Sub跨实例取消"
 ```
 
-### 7.5 复盘 + 暴露问题
+### 8.5 复盘 + 暴露问题
 
-多实例同步成了。但一个隐患：**Redis 现在是全系统的命脉**——锁、状态、chunk 全在它身上。Redis 一挂，整个系统瘫。而且 SETNX 锁的过期窗口、故障转移空窗期可能丢 chunk。
+多实例同步成了。但一个隐患：**Redis 现在是全系统的命脉**——锁、会话独占、实时通知都在它身上（run 状态/幂等已在第 7 章迁到 PG，不再依赖 Redis 持久）。Redis 一挂，整个系统瘫。而且 Redisson 锁的 GC 停顿窗口、故障转移空窗期可能丢 chunk。
 
-**第 8 章：Redis 高可用**——消除这个单点。
+**第 9 章：Redis 高可用**——消除这个单点。
 
 ---
 
-## 第 8 章：Redis 挂了全瘫——Redis 高可用与退避重试
+## 第 9 章：Redis 挂了全瘫——Redis 高可用与退避重试
 
-### 8.0 场景
+### 9.0 场景
 
-第 7 章后，Redis 成了单点。运维的噩梦问题：
+第 8 章后，Redis 成了单点。运维的噩梦问题：
 
 > Redis 主节点宕机了，整个生成系统直接瘫痪——锁拿不到、状态查不到、chunk 写不进、订阅全断。
 
 任何"依赖单一 Redis 实例"的系统都有这个风险。生产级必须消除它。
 
-### 8.1 思路：一步步消除单点
+### 9.1 思路：一步步消除单点
 
 不是一上来就上 Redis Cluster（太重）。按企业真实节奏：
 
@@ -2348,9 +2747,9 @@ git add -A && git commit -m "第7章:多实例跨实例广播+SETNX单一写者+
 
 > **为什么应用层也要加重试？** Sentinel 故障转移**不是瞬时的**——通常需要几秒到几十秒（检测 + 选举 + 通知客户端切换）。这段时间内 Redis 写入会报错。如果应用直接把错误抛给用户，体验很差。**退避重试**（失败后等一下再试，指数退避）能扛过这个空窗。这是"高可用不只是中间件的事，应用也要配合"的体现。
 
-### 8.2 动手
+### 9.2 动手
 
-#### 8.2.1 本地起 Sentinel 主从（docker-compose）
+#### 9.2.1 本地起 Sentinel 主从（docker-compose）
 
 **【新建文件】** `research-stream/docker/redis-sentinel/docker-compose.yaml`：
 
@@ -2406,7 +2805,7 @@ docker-compose up -d
 # sentinel 默认端口 26379
 ```
 
-#### 8.2.2 应用连 Sentinel（而非直连 master）
+#### 9.2.2 应用连 Sentinel（而非直连 master）
 
 **【改已有文件】** `application.yaml`：
 
@@ -2414,7 +2813,7 @@ docker-compose up -d
 spring:
   data:
     redis:
-      # ▼ 第8章：从直连单点改为连 Sentinel（Sentinel 会告诉你当前 master 是谁）
+      # ▼ 第9章：从直连单点改为连 Sentinel（Sentinel 会告诉你当前 master 是谁）
       sentinel:
         master: mymaster
         nodes: localhost:26379,localhost:26380,localhost:26381   # 3 个 sentinel
@@ -2423,7 +2822,7 @@ spring:
 
 Spring Data Redis 的 Lettuce 客户端**原生支持 Sentinel**：配好 `sentinel.master` 和 `sentinel.nodes`，Lettuce 会自动连 Sentinel、获取 master 地址、并在故障转移后自动切换。**应用代码一行不改。**
 
-#### 8.2.3 应用层退避重试（覆盖故障转移空窗）
+#### 9.2.3 应用层退避重试（覆盖故障转移空窗）
 
 在写 chunk 处加退避重试，扛过 master 切换的几秒空窗。
 
@@ -2440,7 +2839,7 @@ public Mono<Void> write(String runId, String chunk) {
                         Map.of("seq", String.valueOf(seq), "chunk", chunk)).withStreamKey(streamKey);
                 return redis.opsForStream().add(record)
                         .retryWhen(reactor.util.retry.Retry
-                                .backoff(3, Duration.ofMillis(500))           // ▼ 第8章：退避重试，覆盖故障转移空窗
+                                .backoff(3, Duration.ofMillis(500))           // ▼ 第9章：退避重试，覆盖故障转移空窗
                                 .maxBackoff(Duration.ofSeconds(3)))
                         .onErrorResume(e -> {                                   // 重试用尽仍失败，降级：只记日志不阻断流
                             log.error("[bus] XADD 最终失败（可能 master 切换中）: {}", e.getMessage());
@@ -2456,7 +2855,7 @@ public Mono<Void> write(String runId, String chunk) {
 
 > **退避重试的参数**：`Retry.backoff(3, 500ms)` = 最多重试 3 次，首次等 500ms，`maxBackoff(3s)` = 单次最长等 3s，指数增长。这样总等待约 0.5+1+2 ≈ 3.5s，足够覆盖 Sentinel 的 `down-after + 选举` 空窗。**`onErrorResume` 兜底**：万一重试用尽（master 切换太久），降级为只记日志，不阻断整个生成流——比直接报错给用户体面。
 
-### 8.3 验证（故障转移）
+### 9.3 验证（故障转移）
 
 ```bash
 cd research-stream/docker/redis-sentinel && docker-compose up -d
@@ -2479,27 +2878,27 @@ docker stop redis-sentinel_redis-master_1
 
 > **这个验证最能体现"高可用"的价值**：master 硬挂，系统自动恢复，用户几乎无感。这就是企业级和玩具的分水岭。
 
-### 8.4 checkpoint
+### 9.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第8章:Redis Sentinel高可用+应用层退避重试"
+git add -A && git commit -m "第9章:Redis Sentinel高可用+应用层退避重试"
 ```
 
-### 8.5 复盘 + 暴露问题
+### 9.5 复盘 + 暴露问题
 
 Redis 单点消除了。到这里，**管数分离 + 多实例 + 高可用**的单体集群已经很稳。下一个需求驱动 Kafka：
 
 > 生成出来的 chunk 是宝贵数据，**审计/计费/分析三个服务都要消费同一批 chunk**，而且**法规要求保留 30 天**。Redis Stream 是内存型，存 30 天太贵；跨服务各自消费 Redis Streams 也不够标准。
 
-**第 9 章：chunk 总线升级 Kafka**——磁盘持久、消费组、跨服务标准化消费。
+**第 10 章：chunk 总线升级 Kafka**——磁盘持久、消费组、跨服务标准化消费。
 
 ---
 
-## 第 9 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线
+## 第 10 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线
 
-### 9.0 场景
+### 10.0 场景
 
-第 8 章后系统很稳。新需求来了：
+第 9 章后系统很稳。新需求来了：
 
 1. **审计、计费、分析三个独立服务都要消费同一批 chunk**（跨服务消费）。Redis Streams 也能多消费者读，但各自为战、没有标准的消费组进度管理。
 2. **法规要求 chunk 保留 30 天**。Redis Stream 是内存型，存 30 天成本高得离谱。
@@ -2509,13 +2908,14 @@ Redis 单点消除了。到这里，**管数分离 + 多实例 + 高可用**的�
 
 > **Redis 不下岗，是分工**：
 > - **Kafka** 接管 chunk 持久总线（磁盘原生、保留 30 天便宜、消费组标准化、跨服务消费）。
-> - **Redis** 继续做 SETNX 锁（低延迟）、run 状态查询（低延迟）、断线续传的实时 Pub/Sub 通知（低延迟）。
+> - **Redis** 继续做 Redisson 分布式锁（低延迟）、会话独占标记（低延迟）、断线续传的实时 Pub/Sub 通知（低延迟）。
+> - **PG** 管 run 状态/幂等（第 7 章已落库，与 Kafka 无关）。
 >
 > 这是企业级的常见分工——**不是"用 Kafka 替换 Redis"，而是"各司其职"**。
 
-### 9.1 思路：Redis Streams 多播 → Kafka 消费组
+### 10.1 思路：Redis Streams 多播 → Kafka 消费组
 
-| 维度 | Redis Streams（第 4-8 章） | Kafka（本章） |
+| 维度 | Redis Streams（第 4-9 章） | Kafka（本章） |
 |------|---------------------------|--------------|
 | 持久 | 内存（AOF/RDB 成本高） | 磁盘原生（保留 30 天成本低） |
 | 消费模式 | 多个消费者各自读 | **消费组**（每组进度独立、自动提交） |
@@ -2531,19 +2931,32 @@ Redis 单点消除了。到这里，**管数分离 + 多实例 + 高可用**的�
 
 > **为什么"每个实例一个消费者，N 个 SSE 连接共享"？** 如果每个 SSE 连接都建一个 Kafka 消费者，连接数一多，消费者数会爆炸（Kafka 单分区同时只能被组内一个消费者消费，消费者数 > 分区数会闲置）。正确做法：**一个实例一个消费者，把收到的消息按 key 扇出到内存 Sinks，N 个 SSE 连接共享这个 Sinks**。这是 Kafka + SSE 的标准架构。
 
-### 9.2 动手
+### 10.2 动手
 
-#### 9.2.1 加 Kafka 依赖 + 配置
+#### 10.2.1 加 Kafka 依赖 + 配置
 
 **【改已有文件，追加】** `pom.xml`：
 
 ```xml
-<!-- ▼ 第9章新增：Kafka -->
+<!-- ▼ 第10章新增：Kafka（Spring Boot 官方 starter）
+     spring-kafka 就是 Spring Boot 生态里 Kafka 的官方依赖，
+     配合 spring-boot-starter-parent 自动装配 KafkaTemplate / 消费容器 / 配置类。
+     版本由 Spring Boot BOM 管理，无需手写版本号。 -->
 <dependency>
     <groupId>org.springframework.kafka</groupId>
     <artifactId>spring-kafka</artifactId>
 </dependency>
+
+<!-- ▼ Kafka 测试支持：嵌入式 Kafka broker，单元/集成测试不依赖外部 Kafka。
+     scope=test，不打进生产包。企业级标配。 -->
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka-test</artifactId>
+    <scope>test</scope>
+</dependency>
 ```
+
+> **为什么 `spring-kafka` 就是"Spring Boot 企业版 Kafka"？** Spring Boot 官方只为 Kafka 提供这一个 starter。引了它之后，Spring Boot 自动装配会：① 根据 `spring.kafka.*` 配置创建 `ProducerFactory`/`ConsumerFactory`；② 自动注册 `KafkaTemplate` Bean（生产端注入即用）；③ 自动注册 `ConcurrentKafkaListenerContainerFactory`（让 `@KafkaListener` 注解开箱即用）；④ 暴露 Kafka 健康指标到 actuator。**不需要手动 `new KafkaTemplate`**——这正是"Spring Boot 形态"的含义。
 
 **【改已有文件，追加】** `application.yaml`：
 
@@ -2554,16 +2967,28 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
-      acks: all           # ▼ 所有副本确认才算成功（不丢消息）
-      retries: 3
+      acks: all                 # ▼ 所有副本确认才算成功（不丢消息，企业级默认）
+      retries: 3                # ▼ 发送失败重试次数
+      batch-size: 16384         # ▼ 批量发送大小（字节），吞吐与延迟的权衡
+      properties:
+        enable.idempotence: true # ▼ 幂等生产者：防重复消息（企业级开启）
     consumer:
       group-id: research-sse
       auto-offset-reset: earliest   # ▼ 新消费组从头读（晚加入能看到历史）
+      enable-auto-commit: false     # ▼ 关闭自动提交，改用手动/容器托管提交（防丢消息）
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: manual_immediate   # ▼ 每条消息处理完立即确认（配合关闭自动提交，精确控制）
+      concurrency: 3               # ▼ 消费容器线程数（≤ 分区数）
 ```
 
-#### 9.2.2 KafkaChunkBus：chunk 持久总线
+> **企业级 Kafka 配置的三个关键开关**：
+> 1. **`acks: all` + `enable.idempotence: true`**：最强不丢、不重。生产端宁可慢一点也不丢消息。
+> 2. **`enable-auto-commit: false` + `ack-mode: manual_immediate`**：关闭自动提交 offset，处理完再确认——**防止"消息没处理完就提交 offset，崩溃后丢消息"**。这是流式系统的基本盘。
+> 3. **`concurrency: 3`**：消费容器并发线程数，要 ≤ topic 分区数（否则多余线程闲置，见坑 6）。
+
+#### 10.2.2 KafkaChunkBus：chunk 持久总线
 
 **【新建文件】** `research-stream/src/main/java/com/example/stream/bus/KafkaChunkBus.java`：
 
@@ -2581,13 +3006,13 @@ import reactor.core.publisher.Sinks;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 基于 Kafka 的 chunk 持久总线（第 9 章）。
+ * 基于 Kafka 的 chunk 持久总线（第 10 章）。
  *
  * 写：produce 到 topic=gen-chunks，key=runId（同 run 进同分区，保序）。
  * 读：本实例一个消费者收所有消息，按 key(runId) 分发到对应 Sinks.Many，
  *     再由多个 SSE 连接共享这个 Sinks。
  *
- * 分工：Kafka 管 chunk 持久总线；Redis 仍管锁/状态/实时通知。
+ * 分工：Kafka 管 chunk 持久总线；PG 管 run 状态/幂等；Redis 管锁/会话独占/实时通知。
  */
 @Component
 public class KafkaChunkBus {
@@ -2634,7 +3059,7 @@ public class KafkaChunkBus {
 
 > **回顾第 3 章的 Sinks**：这里又用上了 `Sinks.many().multicast().onBackpressureBuffer()`——但这次不是从生成器直接塞，而是从 Kafka 消费者塞。**Sinks 是"把一份数据扇出给多个订阅者"的通用工具**，无论数据来自生成器还是 Kafka。
 
-#### 9.2.3 Kafka 消费容器：一个消费者按 key 分发
+#### 10.2.3 Kafka 消费容器：一个消费者按 key 分发
 
 **【新建文件】** `research-stream/src/main/java/com/example/stream/config/KafkaConfig.java`：
 
@@ -2672,7 +3097,7 @@ public class KafkaConfig {
 
 > **`ConcurrentMessageListenerContainer` 是什么？** Spring Kafka 提供的消息监听容器——它内部跑一个或多个消费者线程，不断从 topic 拉消息，每条交给 `MessageListener` 回调处理。我们在这里把回调设成 `bus.dispatch(record)`，于是每条 Kafka 消息按 key 分发到对应 Sinks。**这个 Bean 一启动，消费就开始了。**
 
-#### 9.2.4 StreamService：会话级独占 + Kafka chunk 总线
+#### 10.2.4 StreamService：会话级独占 + Kafka chunk 总线
 
 **【改已有文件，完整版覆盖】** `StreamService.java`（触发时 chunk 写 Kafka，订阅走 KafkaChunkBus；锁/状态/会话独占仍走 Redis）：
 
@@ -2693,7 +3118,7 @@ import reactor.core.publisher.Mono;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 管数分离 + Kafka 持久总线（第 9 章）。
+ * 管数分离 + Kafka 持久总线（第 10 章）。
  *
  * 三道防线（继承第 6-7 章）：
  *   ① 会话级独占 —— 同 session 同时只一个任务
@@ -2790,13 +3215,13 @@ public class StreamService {
 }
 ```
 
-> **关键改动（第 9 章恢复会话级独占）**：
-> - `trigger` 恢复 `sessionId` 参数，三道防线从外到内（会话独占 → 幂等 → 任务锁）——与第 7 章一致。
+> **关键改动（第 10 章恢复会话级独占）**：
+> - `trigger` 恢复 `sessionId` 参数，三道防线从外到内（会话独占 → 幂等 → 任务锁）——与第 8 章一致。
 > - `finishRun` 终态统一处理：写结束标记 + 改状态 + 释放任务锁 + **释放会话锁**。Kafka 下结束标记写进 topic 而非 Redis Pub/Sub。
 > - `cancel` 也释放会话锁——CANCELLED 是终态。
 > - **Kafka 下 SSE 续传说明**：Kafka 消费组 offset 托管，不需要手写 seq（第 5 章的 seq 在 Kafka 下被 offset 取代）。但 `Last-Event-ID` 在 Kafka 下不再自动生效——回放靠 `auto-offset-reset: earliest` + 消费组续读。
 
-#### 9.2.5 Controller 订阅改调 KafkaChunkBus
+#### 10.2.5 Controller 订阅改调 KafkaChunkBus
 
 **【改已有文件，stream 方法】** `RunController.java` 的 `stream` 简化（不再解析 seq）：
 
@@ -2814,7 +3239,7 @@ public Flux<ServerSentEvent<String>> stream(@PathVariable String runId) {
 
 （去掉 `Last-Event-ID` 头解析——Kafka 下续读由消费组托管。）
 
-### 9.3 验证（Kafka 跨服务消费）
+### 10.3 验证（Kafka 跨服务消费）
 
 ```bash
 # 起 Kafka（KRaft 单节点，无需 ZooKeeper）
@@ -2846,33 +3271,33 @@ docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 \
 
 **核心收获**：Kafka 让 chunk 变成**可被多服务、标准化、长期保留**的数据资产。审计/计费/分析各起一个消费组，互不干扰，各自维护进度。
 
-### 9.4 checkpoint
+### 10.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第9章:chunk总线升级Kafka+消费组跨服务消费"
+git add -A && git commit -m "第10章:chunk总线升级Kafka+消费组跨服务消费"
 ```
 
-### 9.5 复盘 + 暴露问题
+### 10.5 复盘 + 暴露问题
 
-chunk 总线升级完成。系统现在有 Redis（锁/状态/取消）+ Kafka（chunk 总线）双中间件，很稳。但架构上仍是**一个进程干所有事**。下一个痛点：
+chunk 总线升级完成。系统现在有 **PG（run 状态/幂等）+ Redis（锁/会话独占/取消通知）+ Kafka（chunk 总线）** 三套存储各司其职，很稳。但架构上仍是**一个进程干所有事**。下一个痛点：
 
-> 触发接口是**轻量 IO**（收请求、写 Kafka、写 Redis），而生成器是**CPU/长连接密集**（跑生成、维持大量 SSE 长连接）。两者资源画像冲突——SSE 长连接把进程的事件循环占满，连触发请求都进不来。
+> 触发接口是**轻量 IO**（收请求、写 Kafka、写 PG），而生成器是**CPU/长连接密集**（跑生成、维持大量 SSE 长连接）。两者资源画像冲突——SSE 长连接把进程的事件循环占满，连触发请求都进不来。
 
-**第 10 章：拆订阅服务**——把"维持 SSE 长连接"和"触发/生成"分开部署。
+**第 11 章：拆订阅服务**——把"维持 SSE 长连接"和"触发/生成"分开部署。
 
 ---
 
-## 第 10 章：触发与生成资源画像冲突——拆订阅服务
+## 第 11 章：触发与生成资源画像冲突——拆订阅服务
 
-### 10.0 场景
+### 11.0 场景
 
-第 9 章后，系统一个进程包揽所有事：收触发请求、跑生成器、维持 SSE 长连接。上量后暴露资源冲突：
+第 10 章后，系统一个进程包揽所有事：收触发请求、跑生成器、维持 SSE 长连接。上量后暴露资源冲突：
 
 > 生成器是 **CPU 密集**（占计算），SSE 订阅是**长连接密集**（占连接数、占事件循环）。两者挤在一个进程——某次流量高峰，大量 SSE 长连接把 WebFlux 事件循环占满，**连触发请求都处理不了**。生成和订阅互相拖累。
 
 而且从**职责**看：管数分离已经把"触发（管理面）"和"订阅（数据面）"在接口上拆开了，但**物理上还是同一个进程**。下一步自然是**物理拆分**——让它们各自独立扩展。
 
-### 10.1 思路：按资源画像拆服务
+### 11.1 思路：按资源画像拆服务
 
 | 服务 | 职责 | 资源画像 | 独立扩展理由 |
 |------|------|---------|------------|
@@ -2881,13 +3306,13 @@ chunk 总线升级完成。系统现在有 Redis（锁/状态/取消）+ Kafka�
 
 拆开后：生成高峰扩 trigger-service，连接高峰扩 stream-service，互不干扰。
 
-> **怎么拆（学习阶段的最简方式）**：不需要立刻上完整微服务体系。**用同一个代码库 + Spring Profile**——同一个应用，根据激活的 profile 决定暴露哪些 Controller。本地两个不同端口、不同 profile 起两个进程，就模拟出两个服务。这比一上来搞多 module + Eureka + Gateway 对初学者友好得多。**第 11 章再加网关收口。**
+> **怎么拆（学习阶段的最简方式）**：不需要立刻上完整微服务体系。**用同一个代码库 + Spring Profile**——同一个应用，根据激活的 profile 决定暴露哪些 Controller。本地两个不同端口、不同 profile 起两个进程，就模拟出两个服务。这比一上来搞多 module + Eureka + Gateway 对初学者友好得多。**第 12 章再加网关收口。**
 
-**通信方式**：两个服务**不直接调用**，而是通过 **Kafka（chunk 总线）+ Redis（锁/状态）** 间接通信。trigger-service 写 Kafka，stream-service 从 Kafka 读——天然解耦。这正是第 9 章"把数据搬出进程"的又一次回报。
+**通信方式**：两个服务**不直接调用**，而是通过 **Kafka（chunk 总线）+ Redis（锁/会话独占）+ PG（状态/幂等）** 间接通信。trigger-service 写 Kafka/PG，stream-service 从 Kafka 读——天然解耦。这正是第 4 章"把数据搬出进程"的又一次回报。
 
-### 10.2 动手（同代码库 + Profile 拆分）
+### 11.2 动手（同代码库 + Profile 拆分）
 
-#### 10.2.1 配置两个 Profile
+#### 11.2.1 配置两个 Profile
 
 **【改已有文件】** `application.yaml`（加 profile 分组）：
 
@@ -2897,7 +3322,7 @@ spring:
     active: ${PROFILE:all}   # 默认 all（单进程跑全部，向后兼容前面章节）
 ```
 
-#### 10.2.2 Controller 加 profile 条件
+#### 11.2.2 Controller 加 profile 条件
 
 **【改已有文件，加注解】** `RunController.java`：把"触发类接口"和"订阅接口"分别限定 profile。
 
@@ -2923,7 +3348,7 @@ public Flux<ServerSentEvent<String>> stream(...) { ... }
 
 > **`@Profile` 的作用**：Spring 启动时，只有激活的 profile 匹配时，这个方法/Bean 才生效。`Profile({"trigger","all"})` 表示激活 `trigger` 或 `all` 时生效。这样同一个 Controller，在 trigger 实例上只暴露管理面接口，在 stream 实例上只暴露订阅接口。**更干净的做法是拆成两个 Controller 类**（`TriggerController` + `StreamController`），这里为改动最小用方法级 `@Profile`，留作练习。
 
-#### 10.2.3 运行两个服务
+#### 11.2.3 运行两个服务
 
 ```bash
 # 终端1：触发服务（端口 8080，profile=trigger）
@@ -2933,7 +3358,7 @@ PROFILE=trigger SERVER_PORT=8080 ./mvnw spring-boot:run
 PROFILE=stream SERVER_PORT=8081 ./mvnw spring-boot:run
 ```
 
-### 10.3 验证（服务拆分）
+### 11.3 验证（服务拆分）
 
 ```bash
 # 触发请求打到 trigger-service（8080）
@@ -2947,25 +3372,25 @@ curl -N "http://localhost:8081/api/runs/run_xxx/stream"
 
 **核心收获**：两个服务**物理隔离**，只通过 Kafka/Redis 通信。trigger-service 挂了，已生成的 chunk 仍可被 stream-service 读出（Kafka 持久）；stream-service 挂了，不影响 trigger-service 继续生成。
 
-### 10.4 checkpoint
+### 11.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第10章:按Profile拆触发服务/订阅服务"
+git add -A && git commit -m "第11章:按Profile拆触发服务/订阅服务"
 ```
 
-### 10.5 复盘 + 暴露问题
+### 11.5 复盘 + 暴露问题
 
 服务拆开了，但现在前端要记两个端口（触发打 8080、订阅打 8081）。多几个服务前端就要记几个端口——不现实。
 
-**第 11 章：API 网关**——统一入口，前端只认一个地址。
+**第 12 章：API 网关**——统一入口，前端只认一个地址。
 
 ---
 
-## 第 11 章：前端记一堆端口——API 网关统一入口
+## 第 12 章：前端记一堆端口——API 网关统一入口
 
-### 11.0 场景
+### 12.0 场景
 
-第 10 章后有两个服务、两个端口。前端代码写死 `POST localhost:8080`、`GET localhost:8081`。问题：
+第 11 章后有两个服务、两个端口。前端代码写死 `POST localhost:8080`、`GET localhost:8081`。问题：
 
 1. **前端记一堆端口**——服务一多就乱。
 2. **扩容/迁移要改前端**——后端换地址，前端跟着改。
@@ -2973,7 +3398,7 @@ git add -A && git commit -m "第10章:按Profile拆触发服务/订阅服务"
 
 企业级标准答案：**API 网关**。所有请求先到网关，网关按路径路由到后端服务。前端永远只认网关地址。
 
-### 11.1 思路：Spring Cloud Gateway
+### 12.1 思路：Spring Cloud Gateway
 
 **Spring Cloud Gateway** 是 Spring 生态的响应式网关。它做三件事：
 
@@ -2983,9 +3408,9 @@ git add -A && git commit -m "第10章:按Profile拆触发服务/订阅服务"
 
 > **SSE 长连接经过网关的坑**：网关默认可能缓冲响应或断开长连接。Spring Cloud Gateway 是响应式的（基于 WebFlux），**原生支持流式透传**——这是我们选它而非阻塞式网关的原因。学习阶段先做**固定路由版**，Eureka 服务发现作为进阶方向标注，不在这章强加。
 
-### 11.2 动手（最小版：固定路由，先不引 Eureka）
+### 12.2 动手（最小版：固定路由，先不引 Eureka）
 
-#### 11.2.1 新建网关项目
+#### 12.2.1 新建网关项目
 
 ```
 gateway/
@@ -3066,7 +3491,7 @@ public class GatewayApplication {
 }
 ```
 
-#### 11.2.2 网关路由配置
+#### 12.2.2 网关路由配置
 
 **【新建文件】** `gateway/src/main/resources/application.yaml`：
 
@@ -3092,7 +3517,7 @@ spring:
 
 > **路由匹配顺序**：Gateway 按配置顺序匹配。`/api/runs/*/stream` 更具体，放前面；`/api/runs/**` 兜底放后面。**Spring Cloud Gateway 默认支持 SSE 流式透传**——长连接不会被缓冲截断，无需额外配置。
 
-### 11.3 验证（统一入口）
+### 12.3 验证（统一入口）
 
 ```bash
 # 起三个进程：trigger(8080)、stream(8081)、gateway(8000)
@@ -3110,13 +3535,13 @@ curl -N "http://localhost:8000/api/runs/run_xxx/stream"
 
 **核心收获**：前端只认 `localhost:8000` 一个地址。后端 trigger/stream 怎么扩容、怎么迁移，前端代码一行不改——**网关屏蔽了后端的物理拓扑**。
 
-### 11.4 checkpoint
+### 12.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
+git add -A && git commit -m "第12章:Spring Cloud Gateway统一入口"
 ```
 
-### 11.5 复盘 + 后续进阶方向
+### 12.5 复盘 + 后续进阶方向
 
 到这里，你已经从"一个 `Flux<String>` 接口"演进到了**网关 + 触发服务 + 订阅服务 + Redis（锁/状态/HA）+ Kafka（chunk 总线）**的完整分布式管数分离系统。
 
@@ -3124,8 +3549,8 @@ git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
 
 1. **服务发现（Eureka）**：把固定路由换成动态发现，trigger/stream 自动注册，网关自动路由。扩容真正零配置。
 2. **网关鉴权/限流**：JWT 认证、租户隔离、按租户限流——横切关注点收口到网关。
-3. **Kafka 精确续传**：把消费组 offset 暴露给前端，实现 Kafka 方案下的"从某条精确续读"（弥补第 9 章的取舍）。
-4. **fencing token**：替换 SETNX，消除"锁过期后旧持有者继续写"的窗口（第 7 章遗留的严格性问题）。
+3. **Kafka 精确续传**：把消费组 offset 暴露给前端，实现 Kafka 方案下的"从某条精确续读"（弥补第 10 章的取舍）。
+4. **fencing token**：在 Redisson 锁之上叠加单调递增 token，消除"GC 停顿导致看门狗冻结、旧持有者恢复后继续写"的窗口（第 8 章遗留的严格性问题）。
 5. **可观测性**：OpenTelemetry 链路追踪、指标、告警——分布式系统出问题时能定位到哪个服务。
 
 ---
@@ -3147,17 +3572,19 @@ git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
   │
 第5章  seq 游标 + SSE Last-Event-ID：重连不重复不漏                    ← 精确回放
   │
-第6章  run 资源 + 状态机 + 幂等键 + 取消 + 会话级独占                    ← 企业级标准形态（含并发闸门）
+第6章  run 资源 + 状态机 + 幂等键 + 取消 + 会话级独占（状态存 Redis KV）← 企业级标准形态（含并发闸门）
   │
-第7章  多实例：跨实例广播 + 会话级独占 + 单一写者 + Pub/Sub 跨实例取消  ← 水平扩展（三道防线）
+第7章  PostgreSQL + MyBatis-Flex：run 状态/幂等落关系库                ← 结构化数据持久化、SQL 查询、ACID 幂等
   │
-第8章  Redis Sentinel 高可用 + 应用层退避重试                          ← 消除单点
+第8章  多实例：跨实例广播 + 会话级独占 + Redisson 单一写者 + Pub/Sub   ← 水平扩展（三道防线）
   │
-第9章  chunk 总线升级 Kafka：消费组、跨服务消费、长期保留               ← 持久总线
+第9章  Redis Sentinel 高可用 + 应用层退避重试                          ← 消除单点
   │
-第10章 按 Profile 拆触发服务/订阅服务                                  ← 物理拆分
+第10章 chunk 总线升级 Kafka：消费组、跨服务消费、长期保留              ← 持久总线
   │
-第11章 Spring Cloud Gateway 统一入口                                    ← 网关收口
+第11章 按 Profile 拆触发服务/订阅服务                                  ← 物理拆分
+  │
+第12章 Spring Cloud Gateway 统一入口                                    ← 网关收口
 ```
 
 ### 每章引入的核心概念回顾
@@ -3171,19 +3598,21 @@ git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
 | 4 | Redis Stream + Pub/Sub | 内存丢失、断线丢内容 |
 | 5 | seq 游标 + Last-Event-ID | 重连重复/漏 chunk |
 | 6 | run 资源 + 幂等键 + 会话级独占 | 多端重复提交、同会话并发触发、状态黑盒 |
-| 7 | 会话级独占 + 分布式锁 + 跨实例取消 | 多实例重复触发、压测并发打挂服务、取消跨不了实例 |
-| 8 | Sentinel + 退避重试 | Redis 单点故障 |
-| 9 | Kafka 消费组 | 跨服务消费、长期保留 |
-| 10 | Profile 拆服务 | 资源画像冲突 |
-| 11 | API 网关 | 前端记一堆端口 |
+| 7 | PostgreSQL + MyBatis-Flex | run 状态存 Redis 重启全清、查不动、幂等无原子保证 |
+| 8 | Redisson 分布式锁 + 跨实例取消 | 多实例重复触发、压测并发打挂服务、取消跨不了实例 |
+| 9 | Sentinel + 退避重试 | Redis 单点故障 |
+| 10 | Kafka 消费组 | 跨服务消费、长期保留 |
+| 11 | Profile 拆服务 | 资源画像冲突 |
+| 12 | API 网关 | 前端记一堆端口 |
 
 ### 这套设计的几个关键判断（值得记住）
 
-1. **先逻辑后物理**：管数分离先在单进程内把接口拆开（第 2 章），物理拆服务是第 10 章的事。顺序不能反。
-2. **数据搬出进程，越早越好**：第 4 章就把 chunk 落 Redis，这让后面的多实例（第 7 章）、拆服务（第 10 章）几乎"免费"获得跨实例能力。
-3. **并发闸门要分层**：会话级独占（最外层）→ 幂等键 → 任务锁（最内层）。三道防线各管一层，不能互相替代。"同一个 session 在输出时不允许再次调用"是生产级系统的基本功——没有这道闸门，压测一轮就能把服务打挂。
-4. **不是替换，是分工**：Redis 管锁/状态/低延迟，Kafka 管持久总线/跨服务消费。各司其职。
-5. **诚实标注局限**：SETNX 不完美（第 7 章）、Kafka 下 Last-Event-ID 失效（第 9 章）、`readAfter` 读全量（第 5 章）——都明确写出，并在合适的地方给出进阶方向。**生产级工程师知道每个方案的代价，而不是假装完美。**
+1. **先逻辑后物理**：管数分离先在单进程内把接口拆开（第 2 章），物理拆服务是第 11 章的事。顺序不能反。
+2. **数据搬出进程，越早越好**：第 4 章就把 chunk 落 Redis，这让后面的多实例（第 8 章）、拆服务（第 11 章）几乎"免费"获得跨实例能力。
+3. **结构化数据进关系库，流式数据进流总线**：run 状态/幂等这种结构化数据落 PG（第 7 章），chunk 这种流式数据落 Kafka（第 10 章），临时并发标记留 Redis KV——各按数据形态选家，不混用。
+4. **并发闸门要分层**：会话级独占（最外层）→ 幂等键 → 任务锁（最内层）。三道防线各管一层，不能互相替代。"同一个 session 在输出时不允许再次调用"是生产级系统的基本功——没有这道闸门，压测一轮就能把服务打挂。
+5. **不是替换，是分工**：PG 管结构化状态，Redis 管锁/会话独占/低延迟通知，Kafka 管持久总线/跨服务消费。各司其职。
+6. **诚实标注局限**：Redisson 锁仍有 GC 停顿导致的陈旧写入窗口（第 8 章）、Kafka 下 Last-Event-ID 失效（第 10 章）、`readAfter` 读全量（第 5 章）——都明确写出，并在合适的地方给出进阶方向。**生产级工程师知道每个方案的代价，而不是假装完美。**
 
 ### 学完之后
 
@@ -3209,15 +3638,18 @@ research-stream/                    # 主应用（trigger/stream 双 profile）
     │   ├── generator/
     │   │   └── TextGenerator.java         # 数据源（换真 LLM 只改这里）
     │   ├── bus/
-    │   │   ├── StreamBus.java             # Redis：锁 + Pub/Sub 跨实例取消
+    │   │   ├── StreamBus.java             # Redis：Redisson 锁 + Pub/Sub 跨实例取消
     │   │   └── KafkaChunkBus.java         # Kafka：chunk 持久总线
     │   ├── serve/
     │   │   └── StreamService.java         # 编排：触发/订阅/状态/取消
     │   └── run/
-    │       ├── RunStore.java              # run 资源 + 幂等（Redis）
+    │       ├── RunEntity.java             # ▼ MyBatis-Flex 实体（gen_run 表）
+    │       ├── RunMapper.java             # ▼ MyBatis-Flex Mapper
+    │       ├── RunStore.java              # run 状态/幂等（PG）+ 会话独占（Redis）
     │       └── RunController.java         # 企业级 REST
     └── resources/
-        └── application.yaml
+        ├── application.yaml
+        └── schema.sql                     # ▼ PG 建表（gen_run / gen_idempotency）
 
 gateway/                            # API 网关
 └── src/main/
@@ -3225,7 +3657,8 @@ gateway/                            # API 网关
     └── resources/application.yaml
 
 docker/
-└── redis-sentinel/docker-compose.yaml     # Redis 高可用
+├── redis-sentinel/docker-compose.yaml     # Redis 高可用（第 9 章）
+└── pg/docker-compose.yaml                 # ▼ PostgreSQL（第 7 章）
 ```
 
 ### A.2 常见踩坑
@@ -3266,11 +3699,11 @@ docker/
 **原因**：Kafka 一个分区同时只能被消费组内一个消费者消费。消费者数 > 分区数时，多的消费者闲置。
 **解决**：topic 分区数 ≥ 消费者数。生产按预期并发量规划分区数（如 `gen-chunks` 建时指定 6/12 分区）。
 
-#### 坑 7：SETNX 锁过期后旧持有者继续写
+#### 坑 7：Redisson 锁在 GC 停顿后陈旧写入
 
-**现象**：极端情况下两个实例同时写同一 run（结果分叉）。
-**原因**：SETNX 无 fencing——锁过期了，旧持有者不知道，继续写。
-**解决**：严格场景上 fencing token（锁带单调递增 token，存储层拒绝旧 token 写）。本文作为进阶扩展点。
+**现象**：极端情况下（JVM 长 GC / 进程冻结）两个实例同时写同一 run（结果分叉）。
+**原因**：Redisson 看门狗虽然能续期，但**GC 停顿期间看门狗线程也被冻结无法续期**，锁过期被别人抢走；旧持有者 GC 恢复后不知道锁已丢，继续写。这是 Redis 分布式锁的固有理论缺陷（Martin Kleppmann 的批评）。
+**解决**：严格场景上 fencing token（锁带单调递增 token，存储层拒绝旧 token 写）。本文作为进阶扩展点，详见 [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md)。
 
 #### 坑 8：`switchIfEmpty` 立即求值导致误创建
 
@@ -3281,10 +3714,14 @@ docker/
 ### A.3 外部依赖一键起
 
 ```bash
-# Redis Sentinel（第 8 章）
+# PostgreSQL（第 7 章）
+docker run -d --name pg -p 5432:5432 \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=research_stream postgres:16
+
+# Redis Sentinel（第 9 章）
 cd research-stream/docker/redis-sentinel && docker-compose up -d
 
-# Kafka KRaft 单节点（第 9 章）
+# Kafka KRaft 单节点（第 10 章）
 docker run -d --name kafka -p 9092:9092 \
   -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
   -e KAFKA_LISTENERS=PLAINTEXT://:9092 -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
@@ -3298,15 +3735,24 @@ docker run -d --name kafka -p 9092:9092 \
 
 | 你想深入的点 | 对应附录 | 对应本文章节 |
 |------------|---------|------------|
-| `Flux`/`Mono` 的各种操作符（map/flatMap/concatWith...） | [Flux 方法速查](../../附录/Flux方法速查.md) | 全文 |
-| `Sinks.Many` 是什么、怎么用 | [Reactor Sinks 入门](../../附录/Reactor%20Sinks入门.md) | 第 3、9 章 |
-| "消费太慢怎么办"——背压（Backpressure） | [Reactor 背压详解](../../附录/Reactor背压详解.md) | 第 3 章 `onBackpressureBuffer` |
-| Redis Stream（XADD/XRANGE/消费组）与 Pub/Sub | [Redis Streams 与 Pub/Sub 实战](../../附录/Redis-Streams与PubSub实战.md) | 第 4、7 章 |
-| 分布式锁（SETNX/Lua/Redisson/fencing token） | [Redis 分布式锁实战](../../附录/Redis分布式锁实战.md) | 第 7 章单一写者 |
-| Kafka（topic/partition/offset/消费组）与 Spring Boot | [Kafka 核心概念与 Spring Boot 实战](../../附录/Kafka核心概念与SpringBoot实战.md) | 第 9 章 |
-| SSE 协议（id/event/Last-Event-ID/心跳/代理穿透） | [SSE 协议详解](../../附录/SSE协议详解.md) | 第 1、5 章 |
+| `Flux`/`Mono` 的各种操作符（map/flatMap/concatWith...） | [Flux 方法速查](../../附录/Reactor响应式编程/02-Flux方法速查.md) | 全文 |
+| `Sinks.Many` 是什么、怎么用 | [Reactor Sinks 入门](../../附录/Reactor响应式编程/03-Reactor-Sinks入门.md) | 第 3、10 章 |
+| "消费太慢怎么办"——背压（Backpressure） | [Reactor 背压详解](../../附录/Reactor响应式编程/04-Reactor背压详解.md) | 第 3 章 `onBackpressureBuffer` |
+| Redis Stream（XADD/XRANGE/消费组）与 Pub/Sub | [Redis Streams 与 Pub/Sub 实战](../../附录/Redis专题/01-Redis-Streams与PubSub实战.md) | 第 4、8 章 |
+| PostgreSQL + MyBatis-Flex（ORM/事务/连接池） | [数据库事务与 @Transactional 详解](../../附录/协议与数据库/02-数据库事务与Transactional详解.md) | 第 7 章持久化 |
+| 分布式锁（SETNX/Lua/Redisson/fencing token） | [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md) | 第 8 章单一写者 |
+| Kafka（topic/partition/offset/消费组）与 Spring Boot | [Kafka 核心概念与 Spring Boot 实战](../../附录/Kafka专题/01-Kafka核心概念与SpringBoot实战.md) | 第 10 章 |
+| Spring Cloud Stream（消息中间件抽象，第 10 章手写 Kafka 的架构升级） | [Spring Cloud Stream 从入门到架构师](../../附录/Spring-Cloud-Stream专题/01-Spring-Cloud-Stream从入门到架构师.md) | 第 10 章扩展 |
+| Spring Cloud Stream 进阶（Kafka 基础、Kafka Streams、事件驱动架构） | [Spring Cloud Stream 进阶实战](../../附录/Spring-Cloud-Stream专题/02-Spring-Cloud-Stream进阶实战.md) | 第 10 章扩展 |
+| 事件驱动微服务端到端实战（Saga、幂等、多服务落地） | [事件驱动微服务端到端实战](../../附录/Spring-Cloud-Stream专题/03-事件驱动微服务端到端实战.md) | 第 10 章扩展 |
+| 生产级进阶（Outbox 模式、Schema Registry、分区调优） | [生产级进阶：Outbox 与 Schema 与分区调优](../../附录/Spring-Cloud-Stream专题/04-生产级进阶-Outbox与Schema与分区调优.md) | 第 10 章扩展 |
+| Spring Cloud Stream 全知识点实践（每个 API 都有可跑代码） | [Spring Cloud Stream 全知识点实践项目](../../附录/Spring-Cloud-Stream专题/05-全知识点实践项目.md) | 第 10 章扩展 |
+| 事件溯源与 CQRS（用事件当数据源、读写分离） | [事件溯源与 CQRS 专题](../../附录/事件溯源与CQRS专题/README.md) | 第 10 章扩展 |
+| Kafka Streams 流处理（窗口、JOIN、状态查询） | [Kafka Streams 流处理专题](../../附录/Kafka-Streams流处理专题/README.md) | 第 10 章扩展 |
+| Debezium CDC（变更数据捕获、Outbox 投递落地） | [Debezium CDC 实战专题](../../附录/Debezium-CDC实战/README.md) | 第 10 章扩展 |
+| SSE 协议（id/event/Last-Event-ID/心跳/代理穿透） | [SSE 协议详解](../../附录/协议与数据库/01-SSE协议详解.md) | 第 1、5 章 |
 
-> **建议学习顺序**：先跟完本文 0→11 章（主线），遇到卡点再翻对应附录。附录之间相互独立，可按需挑读。
+> **建议学习顺序**：先跟完本文 0→12 章（主线），遇到卡点再翻对应附录。附录之间相互独立，可按需挑读。
 
 ---
 

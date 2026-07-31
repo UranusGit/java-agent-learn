@@ -555,7 +555,7 @@ Spring AI 2.0.0 把 Advisor 拆成了两个接口：
 
 **解决**：
 
-- **方案一**：不用该 Advisor，改用手动管理。例如 `MessageChatMemoryAdvisor` 不支持 stream → 直接注入 `ChatMemory`，在 `Flux.defer()` 里手动 `memory.add()`/`memory.get()`，流结束时保存 AssistantMessage。详见 [附录：Reactor AI 流式核心模式](../../附录/Reactor-AI流式核心模式.md) 第 2 章。
+- **方案一**：不用该 Advisor，改用手动管理。例如 `MessageChatMemoryAdvisor` 不支持 stream → 直接注入 `ChatMemory`，在 `Flux.defer()` 里手动 `memory.add()`/`memory.get()`，流结束时保存 AssistantMessage。详见 [附录：Reactor AI 流式核心模式](../../附录/Reactor响应式编程/05-Reactor-AI流式核心模式.md) 第 2 章。
 - **方案二**：改用 `.call()` 代替 `.stream()`，放弃流式输出。
 
 ---

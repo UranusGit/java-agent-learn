@@ -1,6 +1,6 @@
 # Kafka 核心概念与 Spring Boot 实战
 
-> **配套文档**：[35-管数分离实战](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 9 章把 chunk 总线从 Redis Streams 升级到了 Kafka，用到了消费组、分区、offset。但主线聚焦管数分离，没系统讲 Kafka 本身。本篇从零讲透 Kafka——它是什么、核心概念、Spring Boot 怎么用、和 Redis Stream 怎么选。
+> **配套文档**：[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 9 章把 chunk 总线从 Redis Streams 升级到了 Kafka，用到了消费组、分区、offset。但主线聚焦管数分离，没系统讲 Kafka 本身。本篇从零讲透 Kafka——它是什么、核心概念、Spring Boot 怎么用、和 Redis Stream 怎么选。
 >
 > **难度假设**：你听过 Kafka 但没真正用过，不清楚 topic/partition/consumer group 这些词到底什么意思。
 
@@ -324,4 +324,4 @@ docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 \
 - **可靠性**：`acks: all` + 手动提交 offset + 消费者幂等 = at-least-once。
 - **选型**：轻量用 Redis Stream，海量用 Kafka。
 
-学完本篇，[管数分离文档第 9 章](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的"为什么 key=runId"、"为什么一个消费者 N 个 SSE 共享"、"消费组怎么跨服务消费"就全通了。
+学完本篇，[管数分离文档第 9 章](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的"为什么 key=runId"、"为什么一个消费者 N 个 SSE 共享"、"消费组怎么跨服务消费"就全通了。

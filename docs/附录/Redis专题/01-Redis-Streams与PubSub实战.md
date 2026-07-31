@@ -1,6 +1,6 @@
 # Redis Streams 与 Pub/Sub 实战（Spring Boot 响应式）
 
-> **配套文档**：[35-管数分离实战](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 4、7 章大量使用了 Redis Streams（持久）+ Pub/Sub（实时），但主线聚焦"管数分离"，没展开讲这两个数据结构本身。本篇把它们单独拎出来，从零讲透——是什么、怎么用、和 Kafka 比怎么选。
+> **配套文档**：[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 4、7 章大量使用了 Redis Streams（持久）+ Pub/Sub（实时），但主线聚焦"管数分离"，没展开讲这两个数据结构本身。本篇把它们单独拎出来，从零讲透——是什么、怎么用、和 Kafka 比怎么选。
 >
 > **难度假设**：你会基本的 Spring Boot，听过 Redis，但不熟 Streams/Pub/Sub。所有代码基于 Spring Boot 4.0.6 + `spring-boot-starter-data-redis-reactive`（默认 Lettuce 客户端），照抄能跑。Redis Streams/Pub/Sub 的 API 从 Spring Data Redis 2.x 到 4.x 一直稳定。
 
@@ -359,7 +359,7 @@ redis.expire("orders", Duration.ofHours(24)).subscribe();
 - **MAXLEN/TTL**：防 Stream 撑爆。
 - **选型**：轻量用 Redis Stream，海量用 Kafka——不是越重越好，是够用就好。
 
-学完本篇，再回头看 [管数分离文档第 4-7 章](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md)，你会发现那些"为什么这么写"都豁然开朗。
+学完本篇，再回头看 [管数分离文档第 4-7 章](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md)，你会发现那些"为什么这么写"都豁然开朗。
 
 ---
 

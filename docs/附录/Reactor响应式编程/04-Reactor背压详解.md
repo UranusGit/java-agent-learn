@@ -1,6 +1,6 @@
 # Reactor 背压（Backpressure）详解
 
-> **配套文档**：[35-管数分离实战](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 3 章用了 `Sinks.many().multicast().onBackpressureBuffer()`，现有附录 [Reactor Sinks入门](./Reactor%20Sinks入门.md) 也反复提到"背压"。但"背压"到底是什么、为什么需要、Reactor 怎么处理，一直没系统讲。本篇补上这个认知缺口。
+> **配套文档**：[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 3 章用了 `Sinks.many().multicast().onBackpressureBuffer()`，现有附录 [Reactor Sinks入门](./03-Reactor-Sinks入门.md) 也反复提到"背压"。但"背压"到底是什么、为什么需要、Reactor 怎么处理，一直没系统讲。本篇补上这个认知缺口。
 >
 > **难度假设**：你用过 `Flux`/`Mono`，能写 `.map().flatMap()`，但不清楚"背压""下游需求""onBackpressureBuffer"这些词的确切含义。
 
@@ -226,4 +226,4 @@ flux.onBackpressureLatest();
 - **实战策略**：限并发（`flatMap(fn,n)`）、缓冲、丢弃、只留最新。
 - **Sinks**：`onBackpressureBuffer` 给慢订阅者缓冲；检查 `tryEmitNext` 返回值的 `FAIL_OVERFLOW`。
 
-学完本篇，回头看 [管数分离文档第 3 章](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的 `onBackpressureBuffer` 和 [Reactor Sinks入门](./Reactor%20Sinks入门.md) 里的"背压"讨论，就真正理解了。
+学完本篇，回头看 [管数分离文档第 3 章](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的 `onBackpressureBuffer` 和 [Reactor Sinks入门](./03-Reactor-Sinks入门.md) 里的"背压"讨论，就真正理解了。

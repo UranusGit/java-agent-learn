@@ -1,6 +1,6 @@
 # Reactor AI 流式核心模式——从"为什么"到逐行精讲
 
-> **这篇文档解决什么问题**：你已经读过 [Reactor 响应式入门](./Reactor响应式入门.md)、[Flux 方法速查](./Flux方法速查.md)、[Redis Streams/PubSub 实战](./Redis-Streams与PubSub实战.md)，单篇都懂，但把它们拼起来写一个真实 AI 流式架构时，反复卡在几个固定模式上——`Flux.defer` 到底什么时候用、`concatWith` 为什么不能反过来、`takeUntil` 怎么当流终结器、出错时为什么连接会挂死。
+> **这篇文档解决什么问题**：你已经读过 [Reactor 响应式入门](./01-Reactor响应式入门.md)、[Flux 方法速查](./02-Flux方法速查.md)、[Redis Streams/PubSub 实战](../Redis专题/01-Redis-Streams与PubSub实战.md)，单篇都懂，但把它们拼起来写一个真实 AI 流式架构时，反复卡在几个固定模式上——`Flux.defer` 到底什么时候用、`concatWith` 为什么不能反过来、`takeUntil` 怎么当流终结器、出错时为什么连接会挂死。
 >
 > **本文把 5 个核心模式用真实代码串起来讲，不讲语法，讲因果链。**
 
@@ -227,7 +227,7 @@ GET /stream → bus.subscribe(token)
 
 ## 参考
 
-- [Reactor 响应式入门](./Reactor响应式入门.md) —— Reactor 基础心智
-- [Flux 方法速查](./Flux方法速查.md) —— defer / concatWith / takeUntil / doFinally 语法
-- [Redis Streams 与 Pub/Sub 实战](./Redis-Streams与PubSub实战.md) —— Stream + Pub/Sub 原理
-- [管数分离实战](../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) —— 完整架构演进
+- [Reactor 响应式入门](./01-Reactor响应式入门.md) —— Reactor 基础心智
+- [Flux 方法速查](./02-Flux方法速查.md) —— defer / concatWith / takeUntil / doFinally 语法
+- [Redis Streams 与 Pub/Sub 实战](../Redis专题/01-Redis-Streams与PubSub实战.md) —— Stream + Pub/Sub 原理
+- [管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) —— 完整架构演进

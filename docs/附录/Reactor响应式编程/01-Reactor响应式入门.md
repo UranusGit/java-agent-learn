@@ -1,6 +1,6 @@
 # Reactor 响应式编程入门（从"为什么"到心智模型）
 
-> **配套文档**：本系列教程大量使用 Reactor（`Mono`/`Flux`/`Sinks`），但附录里的 [Flux方法速查](./Flux方法速查.md)、[Reactor Sinks入门](./Reactor%20Sinks入门.md)、[Reactor背压详解](./Reactor背压详解.md) 都是从"具体操作符"讲起，**缺一篇回答根本问题的入门**——为什么用响应式？跟传统写法到底差在哪？`Mono`/`Flux` 是个什么东西？本篇就是那个"地基"，建议**最先读这一篇**，再去看那三篇。
+> **配套文档**：本系列教程大量使用 Reactor（`Mono`/`Flux`/`Sinks`），但附录里的 [Flux方法速查](./02-Flux方法速查.md)、[Reactor Sinks入门](./03-Reactor-Sinks入门.md)、[Reactor背压详解](./04-Reactor背压详解.md) 都是从"具体操作符"讲起，**缺一篇回答根本问题的入门**——为什么用响应式？跟传统写法到底差在哪？`Mono`/`Flux` 是个什么东西？本篇就是那个"地基"，建议**最先读这一篇**，再去看那三篇。
 >
 > **难度假设**：你会写传统 Spring MVC（`@RestController` + `return 对象`），但第一次接触 WebFlux、`Mono`、`Flux`，觉得"这玩意到底在干嘛"。
 
@@ -177,7 +177,7 @@ orderDao.findById(id)
 - 里面写的是 `x -> 值` → 用 `map`
 - 里面写的是 `x -> 某个异步操作（返回 Mono/Flux）` → 用 `flatMap`
 
-> 更多操作符（filter、doOnNext、onErrorResume……）见 [Flux方法速查](./Flux方法速查.md)，那篇有 73 个方法的逐个示例。
+> 更多操作符（filter、doOnNext、onErrorResume……）见 [Flux方法速查](./02-Flux方法速查.md)，那篇有 73 个方法的逐个示例。
 
 ---
 
@@ -245,7 +245,7 @@ notificationService.notify(userId).subscribe(
 );
 ```
 
-> 详见 [Reactor Sinks入门](./Reactor%20Sinks入门.md)——事件总线正是"自己 subscribe、多消费者共享"的典型场景。
+> 详见 [Reactor Sinks入门](./03-Reactor-Sinks入门.md)——事件总线正是"自己 subscribe、多消费者共享"的典型场景。
 
 ---
 
@@ -289,7 +289,7 @@ Reactor 在 Future 基础上，把"异步 + 流式 + 背压 + 可组合"做完�
 
 - `Mono`/`Flux` 是**可组合的数据流**（比 Future 强在支持多值、背压）。
 - 操作符极其丰富（map/flatMap/filter/merge/zip……几百个），像 Java Stream 一样链式组合。
-- 支持**背压**（消费者控制生产者速率，防 OOM）——见 [Reactor背压详解](./Reactor背压详解.md)。
+- 支持**背压**（消费者控制生产者速率，防 OOM）——见 [Reactor背压详解](./04-Reactor背压详解.md)。
 
 ### 5.4 一句话定位
 
@@ -330,7 +330,7 @@ m.subscribe();   // 查一次库 + 发一次邮件
 m.subscribe();   // 又查一次库 + 又发一次邮件！
 ```
 
-`Mono`/`Flux` 是**冷的**——每 subscribe 一次就重新执行一遍（除非用 `cache()`/`Sinks` 这种热的）。**解决**：搞清冷流热流——见 [Reactor Sinks入门](./Reactor%20Sinks入门.md) 第 1.3 节。
+`Mono`/`Flux` 是**冷的**——每 subscribe 一次就重新执行一遍（除非用 `cache()`/`Sinks` 这种热的）。**解决**：搞清冷流热流——见 [Reactor Sinks入门](./03-Reactor-Sinks入门.md) 第 1.3 节。
 
 ### 坑 6：异常偷偷冒到顶层，请求 500
 
@@ -352,9 +352,9 @@ return userDao.findByIdReactive(id)
 ## 第 7 章：学习路线建议
 
 1. **先吃透本篇**——建立"Mono/Flux 是菜谱不是结果""永不 block""subscribe 才执行"三个心智。
-2. **再读 [Flux方法速查](./Flux方法速查.md)**——熟悉常用操作符，重点 map/flatMap/filter/do系列/onError系列。
-3. **要做事件总线/广播** → [Reactor Sinks入门](./Reactor%20Sinks入门.md)——从外部塞数据进响应式世界。
-4. **遇到快生产慢消费/OOM** → [Reactor背压详解](./Reactor背压详解.md)。
+2. **再读 [Flux方法速查](./02-Flux方法速查.md)**——熟悉常用操作符，重点 map/flatMap/filter/do系列/onError系列。
+3. **要做事件总线/广播** → [Reactor Sinks入门](./03-Reactor-Sinks入门.md)——从外部塞数据进响应式世界。
+4. **遇到快生产慢消费/OOM** → [Reactor背压详解](./04-Reactor背压详解.md)。
 5. **遇到具体问题** → 回来查操作符速查表。
 
 ---
