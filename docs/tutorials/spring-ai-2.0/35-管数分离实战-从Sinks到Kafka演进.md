@@ -25,10 +25,9 @@
 - [第 6 章：多端同时点生成，重复触发——run 资源 + 幂等键](#第-6-章多端同时点生成重复触发run-资源--幂等键)
 - [第 7 章：run 状态存 Redis 重启全清、查不动——PostgreSQL + MyBatis-Flex 持久化](#第-7-章run-状态存-redis-重启全清查不动postgresql--mybatis-flex-持久化)
 - [第 8 章：水平扩展成两台实例——跨实例广播 + 单一写者锁](#第-8-章水平扩展成两台实例跨实例广播--单一写者锁)
-- [第 9 章：Redis 挂了全瘫——Redis 高可用与退避重试](#第-9-章redis-挂了全瘫redis-高可用与退避重试)
-- [第 10 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线](#第-10-章chunk-要跨服务消费长期保留升级-kafka-持久总线)
-- [第 11 章：触发与生成资源画像冲突——拆订阅服务](#第-11-章触发与生成资源画像冲突拆订阅服务)
-- [第 12 章：前端记一堆端口——API 网关统一入口](#第-12-章前端记一堆端口api-网关统一入口)
+- [第 9 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线](#第-9-章chunk-要跨服务消费长期保留升级-kafka-持久总线)
+- [第 10 章：触发与生成资源画像冲突——拆订阅服务](#第-10-章触发与生成资源画像冲突拆订阅服务)
+- [第 11 章：前端记一堆端口——API 网关统一入口](#第-11-章前端记一堆端口api-网关统一入口)
 - [全文演进总览与后续方向](#全文演进总览与后续方向)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
@@ -80,7 +79,7 @@ GET  /runs/{id}/stream→ 纯只读地订阅这个任务的输出流
 - **触发和订阅一损俱损的耦合被解除**——订阅流出错不会连累正在跑的生成器。
 - **天然支持幂等**——多端同时点"生成"，用一个幂等键保证只触发一次。
 
-**管数分离 ≠ 微服务拆分**。本章前期**只在单进程内把接口拆开**（逻辑解耦），物理拆成独立服务是第 11 章的事。**先逻辑后物理，顺序不能反。**
+**管数分离 ≠ 微服务拆分**。本章前期**只在单进程内把接口拆开**（逻辑解耦），物理拆成独立服务是第 10 章的事。**先逻辑后物理，顺序不能反。**
 
 ### 为什么"企业级"总是绕不开它
 
@@ -126,7 +125,7 @@ GET  /runs/{id}/stream→ 纯只读地订阅这个任务的输出流
 | **seq 游标** | 给每个 chunk 一个单调递增编号，客户端记录最后收到的 seq，断线重连时从该 seq 之后补推。 | 第 5 章 |
 | **Pub/Sub** | Redis 的实时消息广播，发布者发一条，所有订阅者立刻收到。不持久。 | 第 8 章 |
 | **单一写者（single-writer）** | 多实例集群里，保证全集群只有一个实例真正去跑生成器。否则会重复触发、结果分叉。 | 第 8 章 |
-| **Kafka 消费组** | Kafka 的标准消费模式，每个组各自维护消费进度（offset），互不干扰。 | 第 10 章 |
+| **Kafka 消费组** | Kafka 的标准消费模式，每个组各自维护消费进度（offset），互不干扰。 | 第 9 章 |
 
 > **不用现在全懂**。每个名词在它对应的章节会重新、详细地讲一遍。这张表是供你读到一半忘了回来对一眼用的。
 
@@ -198,7 +197,7 @@ research-stream/
             openai starter —— Spring AI 2.0（ChatClient 流式调 LLM；DeepSeek 走 OpenAI 兼容协议）
           演进纪律：后面章节用到才加——
             第 4 章加 data-redis-reactive；第 7 章加 postgresql + mybatis-flex；
-            第 8 章加 redisson；第 10 章加 spring-kafka；第 12 章加 cloud-gateway。
+            第 8 章加 redisson；第 9 章加 spring-kafka；第 11 章加 cloud-gateway。
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -1993,11 +1992,11 @@ git add -A && git commit -m "第6章:run资源+状态机+幂等键+会话级独�
 | **幂等映射** | 结构化、要唯一约束、要原子防并发 | **PostgreSQL** | 用 `UNIQUE(idempotency_key)` + 事务，原子防并发，比 Redis 两步操作稳 |
 | **会话记录** | 结构化、要按 session 查历史 | **PostgreSQL** | 同上 |
 | **会话独占标记** | 临时并发闸门，短命 | **Redis**（保留） | 极低延迟、TTL 自动过期兜底，KV 正合适 |
-| **chunk 流** | 高频追加、流式、按游标回放 | **Redis Stream**（第 4 章）→ 后续 Kafka（第 10 章） | 流式追加不该进关系库 |
+| **chunk 流** | 高频追加、流式、按游标回放 | **Redis Stream**（第 4 章）→ 后续 Kafka（第 9 章） | 流式追加不该进关系库 |
 | **分布式锁** | 临时、低延迟 | **Redis（Redisson）** | 第 8 章用 |
 | **实时取消/结束通知** | 即时广播、不持久 | **Redis Pub/Sub** | 第 8 章用 |
 
-> **为什么 chunk 不进 PG？** chunk 是"每秒几十条、按顺序追加、按游标回放"的流式数据。PG 的关系表做高频追加 + 范围回放，性能和成本都不如 Redis Stream（第 4 章）/ Kafka（第 10 章）。**把流式数据塞进关系库是常见反模式**——流有流的家（Kafka），记录有记录的家（PG）。
+> **为什么 chunk 不进 PG？** chunk 是"每秒几十条、按顺序追加、按游标回放"的流式数据。PG 的关系表做高频追加 + 范围回放，性能和成本都不如 Redis Stream（第 4 章）/ Kafka（第 9 章）。**把流式数据塞进关系库是常见反模式**——流有流的家（Kafka），记录有记录的家（PG）。
 
 #### 为什么选 MyBatis-Flex 而不是 MyBatis-Plus / JPA
 
@@ -2286,7 +2285,7 @@ public class RunStore {
 ### 7.3 验证
 
 ```bash
-# 起 PG（本地起一个，第 9 章会把 Redis/PG/Kafka 统一进 docker-compose）
+# 起 PG（本地起一个，第 9 章起 Kafka，PG/Kafka 也可统一进 docker-compose）
 docker run -d --name pg -p 5432:5432 \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=research_stream postgres:16
 
@@ -2717,188 +2716,19 @@ git add -A && git commit -m "第8章:多实例跨实例广播+Redisson单一写�
 
 ### 8.5 复盘 + 暴露问题
 
-多实例同步成了。但一个隐患：**Redis 现在是全系统的命脉**——锁、会话独占、实时通知都在它身上（run 状态/幂等已在第 7 章迁到 PG，不再依赖 Redis 持久）。Redis 一挂，整个系统瘫。而且 Redisson 锁的 GC 停顿窗口、故障转移空窗期可能丢 chunk。
-
-**第 9 章：Redis 高可用**——消除这个单点。
-
----
-
-## 第 9 章：Redis 挂了全瘫——Redis 高可用与退避重试
-
-### 9.0 场景
-
-第 8 章后，Redis 成了单点。运维的噩梦问题：
-
-> Redis 主节点宕机了，整个生成系统直接瘫痪——锁拿不到、状态查不到、chunk 写不进、订阅全断。
-
-任何"依赖单一 Redis 实例"的系统都有这个风险。生产级必须消除它。
-
-### 9.1 思路：一步步消除单点
-
-不是一上来就上 Redis Cluster（太重）。按企业真实节奏：
-
-| 阶段 | 方案 | 解决什么 |
-|------|------|---------|
-| ① 主从复制 | 一个 master + 多个 replica | 读分担、数据有副本 |
-| ② Sentinel 哨兵 | Sentinel 监控 master，挂了自动选 replica 提升为 master | master 自动故障转移 |
-| ③ Cluster | 数据分片到多个节点 | 超大规模；本文不到这步 |
-
-**本章用 Sentinel**（最适合"消除 master 单点"且不引入分片复杂度）。同时，**应用层加退避重试**——覆盖故障转移那几秒空窗期（master 挂了到 Sentinel 选出新 master 之间，写入会失败，重试能扛过去）。
-
-> **为什么应用层也要加重试？** Sentinel 故障转移**不是瞬时的**——通常需要几秒到几十秒（检测 + 选举 + 通知客户端切换）。这段时间内 Redis 写入会报错。如果应用直接把错误抛给用户，体验很差。**退避重试**（失败后等一下再试，指数退避）能扛过这个空窗。这是"高可用不只是中间件的事，应用也要配合"的体现。
-
-### 9.2 动手
-
-#### 9.2.1 本地起 Sentinel 主从（docker-compose）
-
-**【新建文件】** `research-stream/docker/redis-sentinel/docker-compose.yaml`：
-
-```yaml
-# Redis Sentinel 高可用：1 master + 1 replica + 3 sentinel（奇数个 sentinel 才能选举）
-version: "3"
-services:
-  redis-master:
-    image: redis:7
-    command: redis-server
-    ports: ["6379:6379"]
-
-  redis-replica:
-    image: redis:7
-    command: redis-server --replicaof redis-master 6379
-    depends_on: [redis-master]
-
-  sentinel-1:
-    image: redis:7
-    command: >
-      sh -c "echo 'sentinel monitor mymaster redis-master 6379 1' > /tmp/s.conf &&
-             echo 'sentinel down-after-milliseconds mymaster 3000' >> /tmp/s.conf &&
-             echo 'sentinel failover-timeout mymaster 10000' >> /tmp/s.conf &&
-             redis-server /tmp/s.conf --sentinel"
-    ports: ["26379:26379"]        # ▼ 必须暴露到宿主机，应用才能连
-    depends_on: [redis-master]
-  sentinel-2:
-    image: redis:7
-    command: >
-      sh -c "echo 'sentinel monitor mymaster redis-master 6379 1' > /tmp/s.conf &&
-             echo 'sentinel down-after-milliseconds mymaster 3000' >> /tmp/s.conf &&
-             redis-server /tmp/s.conf --sentinel"
-    ports: ["26380:26379"]        # ▼ 宿主机 26380 → 容器 26379
-    depends_on: [redis-master]
-  sentinel-3:
-    image: redis:7
-    command: >
-      sh -c "echo 'sentinel monitor mymaster redis-master 6379 1' > /tmp/s.conf &&
-             echo 'sentinel down-after-milliseconds mymaster 3000' >> /tmp/s.conf &&
-             redis-server /tmp/s.conf --sentinel"
-    ports: ["26381:26379"]        # ▼ 宿主机 26381 → 容器 26379
-    depends_on: [redis-master]
-```
-
-> **Sentinel 参数说明**：
-> - `sentinel monitor mymaster redis-master 6379 1`：监控名为 `mymaster` 的主节点，地址 `redis-master:6379`，末尾 `1` 是**仲裁数**（quorum）——多少个 Sentinel 同意"master 挂了"才算真挂。生产通常 ≥ 2，学习用 1 简化。
-> - `down-after-milliseconds`：3000ms 无响应判定下线。
-> - **3 个 Sentinel**：故障转移需要 Sentinel 之间投票，奇数个避免脑裂。
-
-```bash
-cd research-stream/docker/redis-sentinel
-docker-compose up -d
-# sentinel 默认端口 26379
-```
-
-#### 9.2.2 应用连 Sentinel（而非直连 master）
-
-**【改已有文件】** `application.yaml`：
-
-```yaml
-spring:
-  data:
-    redis:
-      # ▼ 第9章：从直连单点改为连 Sentinel（Sentinel 会告诉你当前 master 是谁）
-      sentinel:
-        master: mymaster
-        nodes: localhost:26379,localhost:26380,localhost:26381   # 3 个 sentinel
-      # host/port 注释掉——由 sentinel 动态发现 master
-```
-
-Spring Data Redis 的 Lettuce 客户端**原生支持 Sentinel**：配好 `sentinel.master` 和 `sentinel.nodes`，Lettuce 会自动连 Sentinel、获取 master 地址、并在故障转移后自动切换。**应用代码一行不改。**
-
-#### 9.2.3 应用层退避重试（覆盖故障转移空窗）
-
-在写 chunk 处加退避重试，扛过 master 切换的几秒空窗。
-
-**【改已有文件，修改 write 方法】** `StreamBus.java` 的 `write` 方法加 `.retryWhen`：
-
-```java
-public Mono<Void> write(String runId, String chunk) {
-    String streamKey = KEY_STREAM.formatted(runId);
-    String channel   = CHANNEL.formatted(runId);
-    String seqKey    = KEY_SEQ.formatted(runId);
-    return redis.opsForValue().increment(seqKey)
-            .flatMap(seq -> {
-                StringRecord record = StreamRecords.string(
-                        Map.of("seq", String.valueOf(seq), "chunk", chunk)).withStreamKey(streamKey);
-                return redis.opsForStream().add(record)
-                        .retryWhen(reactor.util.retry.Retry
-                                .backoff(3, Duration.ofMillis(500))           // ▼ 第9章：退避重试，覆盖故障转移空窗
-                                .maxBackoff(Duration.ofSeconds(3)))
-                        .onErrorResume(e -> {                                   // 重试用尽仍失败，降级：只记日志不阻断流
-                            log.error("[bus] XADD 最终失败（可能 master 切换中）: {}", e.getMessage());
-                            return Mono.empty();
-                        })
-                        .then(redis.convertAndSend(channel,
-                                mapper.writeValueAsString(new ChunkEntity(seq, chunk))));
-            }).then();
-}
-```
-
-（记得加 import：`import reactor.util.retry.Retry;`）
-
-> **退避重试的参数**：`Retry.backoff(3, 500ms)` = 最多重试 3 次，首次等 500ms，`maxBackoff(3s)` = 单次最长等 3s，指数增长。这样总等待约 0.5+1+2 ≈ 3.5s，足够覆盖 Sentinel 的 `down-after + 选举` 空窗。**`onErrorResume` 兜底**：万一重试用尽（master 切换太久），降级为只记日志，不阻断整个生成流——比直接报错给用户体面。
-
-### 9.3 验证（故障转移）
-
-```bash
-cd research-stream/docker/redis-sentinel && docker-compose up -d
-./mvnw spring-boot:run
-
-# 触发一个长任务（让它慢慢吐字）
-curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess-001&prompt=管数分离测试故障转移" -H "Idempotency-Key: ft-1"
-
-# 订阅，观察它在持续吐字
-curl -N "http://localhost:8080/api/runs/<runId>/stream"
-
-# 关键：模拟 master 挂掉！
-docker stop redis-sentinel_redis-master_1
-
-# 观察：
-#   - 应用日志出现几次 "XADD 失败...重试"（故障转移空窗）
-#   - 几秒后 Sentinel 选出 replica 当新 master，应用自动连上，继续吐字
-#   - 订阅端几乎无感知（退避重试扛过了空窗）
-```
-
-> **这个验证最能体现"高可用"的价值**：master 硬挂，系统自动恢复，用户几乎无感。这就是企业级和玩具的分水岭。
-
-### 9.4 checkpoint
-
-```bash
-git add -A && git commit -m "第9章:Redis Sentinel高可用+应用层退避重试"
-```
-
-### 9.5 复盘 + 暴露问题
-
-Redis 单点消除了。到这里，**管数分离 + 多实例 + 高可用**的单体集群已经很稳。下一个需求驱动 Kafka：
+多实例同步成了。到这里，**管数分离 + 多实例**的单体集群已经很稳。下一个需求驱动 Kafka：
 
 > 生成出来的 chunk 是宝贵数据，**审计/计费/分析三个服务都要消费同一批 chunk**，而且**法规要求保留 30 天**。Redis Stream 是内存型，存 30 天太贵；跨服务各自消费 Redis Streams 也不够标准。
 
-**第 10 章：chunk 总线升级 Kafka**——磁盘持久、消费组、跨服务标准化消费。
+**第 9 章：chunk 总线升级 Kafka**——磁盘持久、消费组、跨服务标准化消费。
 
 ---
 
-## 第 10 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线
+## 第 9 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线
 
-### 10.0 场景
+### 9.0 场景
 
-第 9 章后系统很稳。新需求来了：
+第 8 章后，多实例集群已就绪。新需求来了：
 
 1. **审计、计费、分析三个独立服务都要消费同一批 chunk**（跨服务消费）。Redis Streams 也能多消费者读，但各自为战、没有标准的消费组进度管理。
 2. **法规要求 chunk 保留 30 天**。Redis Stream 是内存型，存 30 天成本高得离谱。
@@ -2913,9 +2743,9 @@ Redis 单点消除了。到这里，**管数分离 + 多实例 + 高可用**的�
 >
 > 这是企业级的常见分工——**不是"用 Kafka 替换 Redis"，而是"各司其职"**。
 
-### 10.1 思路：Redis Streams 多播 → Kafka 消费组
+### 9.1 思路：Redis Streams 多播 → Kafka 消费组
 
-| 维度 | Redis Streams（第 4-9 章） | Kafka（本章） |
+| 维度 | Redis Streams（第 4-8 章） | Kafka（本章） |
 |------|---------------------------|--------------|
 | 持久 | 内存（AOF/RDB 成本高） | 磁盘原生（保留 30 天成本低） |
 | 消费模式 | 多个消费者各自读 | **消费组**（每组进度独立、自动提交） |
@@ -2931,14 +2761,14 @@ Redis 单点消除了。到这里，**管数分离 + 多实例 + 高可用**的�
 
 > **为什么"每个实例一个消费者，N 个 SSE 连接共享"？** 如果每个 SSE 连接都建一个 Kafka 消费者，连接数一多，消费者数会爆炸（Kafka 单分区同时只能被组内一个消费者消费，消费者数 > 分区数会闲置）。正确做法：**一个实例一个消费者，把收到的消息按 key 扇出到内存 Sinks，N 个 SSE 连接共享这个 Sinks**。这是 Kafka + SSE 的标准架构。
 
-### 10.2 动手
+### 9.2 动手
 
-#### 10.2.1 加 Kafka 依赖 + 配置
+#### 9.2.1 加 Kafka 依赖 + 配置
 
 **【改已有文件，追加】** `pom.xml`：
 
 ```xml
-<!-- ▼ 第10章新增：Kafka（Spring Boot 官方 starter）
+<!-- ▼ 第9章新增：Kafka（Spring Boot 官方 starter）
      spring-kafka 就是 Spring Boot 生态里 Kafka 的官方依赖，
      配合 spring-boot-starter-parent 自动装配 KafkaTemplate / 消费容器 / 配置类。
      版本由 Spring Boot BOM 管理，无需手写版本号。 -->
@@ -2988,7 +2818,7 @@ spring:
 > 2. **`enable-auto-commit: false` + `ack-mode: manual_immediate`**：关闭自动提交 offset，处理完再确认——**防止"消息没处理完就提交 offset，崩溃后丢消息"**。这是流式系统的基本盘。
 > 3. **`concurrency: 3`**：消费容器并发线程数，要 ≤ topic 分区数（否则多余线程闲置，见坑 6）。
 
-#### 10.2.2 KafkaChunkBus：chunk 持久总线
+#### 9.2.2 KafkaChunkBus：chunk 持久总线
 
 **【新建文件】** `research-stream/src/main/java/com/example/stream/bus/KafkaChunkBus.java`：
 
@@ -3006,7 +2836,7 @@ import reactor.core.publisher.Sinks;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 基于 Kafka 的 chunk 持久总线（第 10 章）。
+ * 基于 Kafka 的 chunk 持久总线（第 9 章）。
  *
  * 写：produce 到 topic=gen-chunks，key=runId（同 run 进同分区，保序）。
  * 读：本实例一个消费者收所有消息，按 key(runId) 分发到对应 Sinks.Many，
@@ -3059,7 +2889,7 @@ public class KafkaChunkBus {
 
 > **回顾第 3 章的 Sinks**：这里又用上了 `Sinks.many().multicast().onBackpressureBuffer()`——但这次不是从生成器直接塞，而是从 Kafka 消费者塞。**Sinks 是"把一份数据扇出给多个订阅者"的通用工具**，无论数据来自生成器还是 Kafka。
 
-#### 10.2.3 Kafka 消费容器：一个消费者按 key 分发
+#### 9.2.3 Kafka 消费容器：一个消费者按 key 分发
 
 **【新建文件】** `research-stream/src/main/java/com/example/stream/config/KafkaConfig.java`：
 
@@ -3097,7 +2927,7 @@ public class KafkaConfig {
 
 > **`ConcurrentMessageListenerContainer` 是什么？** Spring Kafka 提供的消息监听容器——它内部跑一个或多个消费者线程，不断从 topic 拉消息，每条交给 `MessageListener` 回调处理。我们在这里把回调设成 `bus.dispatch(record)`，于是每条 Kafka 消息按 key 分发到对应 Sinks。**这个 Bean 一启动，消费就开始了。**
 
-#### 10.2.4 StreamService：会话级独占 + Kafka chunk 总线
+#### 9.2.4 StreamService：会话级独占 + Kafka chunk 总线
 
 **【改已有文件，完整版覆盖】** `StreamService.java`（触发时 chunk 写 Kafka，订阅走 KafkaChunkBus；锁/状态/会话独占仍走 Redis）：
 
@@ -3118,7 +2948,7 @@ import reactor.core.publisher.Mono;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 管数分离 + Kafka 持久总线（第 10 章）。
+ * 管数分离 + Kafka 持久总线（第 9 章）。
  *
  * 三道防线（继承第 6-7 章）：
  *   ① 会话级独占 —— 同 session 同时只一个任务
@@ -3215,13 +3045,13 @@ public class StreamService {
 }
 ```
 
-> **关键改动（第 10 章恢复会话级独占）**：
+> **关键改动（第 9 章恢复会话级独占）**：
 > - `trigger` 恢复 `sessionId` 参数，三道防线从外到内（会话独占 → 幂等 → 任务锁）——与第 8 章一致。
 > - `finishRun` 终态统一处理：写结束标记 + 改状态 + 释放任务锁 + **释放会话锁**。Kafka 下结束标记写进 topic 而非 Redis Pub/Sub。
 > - `cancel` 也释放会话锁——CANCELLED 是终态。
 > - **Kafka 下 SSE 续传说明**：Kafka 消费组 offset 托管，不需要手写 seq（第 5 章的 seq 在 Kafka 下被 offset 取代）。但 `Last-Event-ID` 在 Kafka 下不再自动生效——回放靠 `auto-offset-reset: earliest` + 消费组续读。
 
-#### 10.2.5 Controller 订阅改调 KafkaChunkBus
+#### 9.2.5 Controller 订阅改调 KafkaChunkBus
 
 **【改已有文件，stream 方法】** `RunController.java` 的 `stream` 简化（不再解析 seq）：
 
@@ -3239,7 +3069,7 @@ public Flux<ServerSentEvent<String>> stream(@PathVariable String runId) {
 
 （去掉 `Last-Event-ID` 头解析——Kafka 下续读由消费组托管。）
 
-### 10.3 验证（Kafka 跨服务消费）
+### 9.3 验证（Kafka 跨服务消费）
 
 ```bash
 # 起 Kafka（KRaft 单节点，无需 ZooKeeper）
@@ -3271,33 +3101,33 @@ docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 \
 
 **核心收获**：Kafka 让 chunk 变成**可被多服务、标准化、长期保留**的数据资产。审计/计费/分析各起一个消费组，互不干扰，各自维护进度。
 
-### 10.4 checkpoint
+### 9.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第10章:chunk总线升级Kafka+消费组跨服务消费"
+git add -A && git commit -m "第9章:chunk总线升级Kafka+消费组跨服务消费"
 ```
 
-### 10.5 复盘 + 暴露问题
+### 9.5 复盘 + 暴露问题
 
 chunk 总线升级完成。系统现在有 **PG（run 状态/幂等）+ Redis（锁/会话独占/取消通知）+ Kafka（chunk 总线）** 三套存储各司其职，很稳。但架构上仍是**一个进程干所有事**。下一个痛点：
 
 > 触发接口是**轻量 IO**（收请求、写 Kafka、写 PG），而生成器是**CPU/长连接密集**（跑生成、维持大量 SSE 长连接）。两者资源画像冲突——SSE 长连接把进程的事件循环占满，连触发请求都进不来。
 
-**第 11 章：拆订阅服务**——把"维持 SSE 长连接"和"触发/生成"分开部署。
+**第 10 章：拆订阅服务**——把"维持 SSE 长连接"和"触发/生成"分开部署。
 
 ---
 
-## 第 11 章：触发与生成资源画像冲突——拆订阅服务
+## 第 10 章：触发与生成资源画像冲突——拆订阅服务
 
-### 11.0 场景
+### 10.0 场景
 
-第 10 章后，系统一个进程包揽所有事：收触发请求、跑生成器、维持 SSE 长连接。上量后暴露资源冲突：
+第 9 章后，系统一个进程包揽所有事：收触发请求、跑生成器、维持 SSE 长连接。上量后暴露资源冲突：
 
 > 生成器是 **CPU 密集**（占计算），SSE 订阅是**长连接密集**（占连接数、占事件循环）。两者挤在一个进程——某次流量高峰，大量 SSE 长连接把 WebFlux 事件循环占满，**连触发请求都处理不了**。生成和订阅互相拖累。
 
 而且从**职责**看：管数分离已经把"触发（管理面）"和"订阅（数据面）"在接口上拆开了，但**物理上还是同一个进程**。下一步自然是**物理拆分**——让它们各自独立扩展。
 
-### 11.1 思路：按资源画像拆服务
+### 10.1 思路：按资源画像拆服务
 
 | 服务 | 职责 | 资源画像 | 独立扩展理由 |
 |------|------|---------|------------|
@@ -3306,13 +3136,13 @@ chunk 总线升级完成。系统现在有 **PG（run 状态/幂等）+ Redis（
 
 拆开后：生成高峰扩 trigger-service，连接高峰扩 stream-service，互不干扰。
 
-> **怎么拆（学习阶段的最简方式）**：不需要立刻上完整微服务体系。**用同一个代码库 + Spring Profile**——同一个应用，根据激活的 profile 决定暴露哪些 Controller。本地两个不同端口、不同 profile 起两个进程，就模拟出两个服务。这比一上来搞多 module + Eureka + Gateway 对初学者友好得多。**第 12 章再加网关收口。**
+> **怎么拆（学习阶段的最简方式）**：不需要立刻上完整微服务体系。**用同一个代码库 + Spring Profile**——同一个应用，根据激活的 profile 决定暴露哪些 Controller。本地两个不同端口、不同 profile 起两个进程，就模拟出两个服务。这比一上来搞多 module + Eureka + Gateway 对初学者友好得多。**第 11 章再加网关收口。**
 
 **通信方式**：两个服务**不直接调用**，而是通过 **Kafka（chunk 总线）+ Redis（锁/会话独占）+ PG（状态/幂等）** 间接通信。trigger-service 写 Kafka/PG，stream-service 从 Kafka 读——天然解耦。这正是第 4 章"把数据搬出进程"的又一次回报。
 
-### 11.2 动手（同代码库 + Profile 拆分）
+### 10.2 动手（同代码库 + Profile 拆分）
 
-#### 11.2.1 配置两个 Profile
+#### 10.2.1 配置两个 Profile
 
 **【改已有文件】** `application.yaml`（加 profile 分组）：
 
@@ -3322,7 +3152,7 @@ spring:
     active: ${PROFILE:all}   # 默认 all（单进程跑全部，向后兼容前面章节）
 ```
 
-#### 11.2.2 Controller 加 profile 条件
+#### 10.2.2 Controller 加 profile 条件
 
 **【改已有文件，加注解】** `RunController.java`：把"触发类接口"和"订阅接口"分别限定 profile。
 
@@ -3348,7 +3178,7 @@ public Flux<ServerSentEvent<String>> stream(...) { ... }
 
 > **`@Profile` 的作用**：Spring 启动时，只有激活的 profile 匹配时，这个方法/Bean 才生效。`Profile({"trigger","all"})` 表示激活 `trigger` 或 `all` 时生效。这样同一个 Controller，在 trigger 实例上只暴露管理面接口，在 stream 实例上只暴露订阅接口。**更干净的做法是拆成两个 Controller 类**（`TriggerController` + `StreamController`），这里为改动最小用方法级 `@Profile`，留作练习。
 
-#### 11.2.3 运行两个服务
+#### 10.2.3 运行两个服务
 
 ```bash
 # 终端1：触发服务（端口 8080，profile=trigger）
@@ -3358,7 +3188,7 @@ PROFILE=trigger SERVER_PORT=8080 ./mvnw spring-boot:run
 PROFILE=stream SERVER_PORT=8081 ./mvnw spring-boot:run
 ```
 
-### 11.3 验证（服务拆分）
+### 10.3 验证（服务拆分）
 
 ```bash
 # 触发请求打到 trigger-service（8080）
@@ -3372,25 +3202,25 @@ curl -N "http://localhost:8081/api/runs/run_xxx/stream"
 
 **核心收获**：两个服务**物理隔离**，只通过 Kafka/Redis 通信。trigger-service 挂了，已生成的 chunk 仍可被 stream-service 读出（Kafka 持久）；stream-service 挂了，不影响 trigger-service 继续生成。
 
-### 11.4 checkpoint
+### 10.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第11章:按Profile拆触发服务/订阅服务"
+git add -A && git commit -m "第10章:按Profile拆触发服务/订阅服务"
 ```
 
-### 11.5 复盘 + 暴露问题
+### 10.5 复盘 + 暴露问题
 
 服务拆开了，但现在前端要记两个端口（触发打 8080、订阅打 8081）。多几个服务前端就要记几个端口——不现实。
 
-**第 12 章：API 网关**——统一入口，前端只认一个地址。
+**第 11 章：API 网关**——统一入口，前端只认一个地址。
 
 ---
 
-## 第 12 章：前端记一堆端口——API 网关统一入口
+## 第 11 章：前端记一堆端口——API 网关统一入口
 
-### 12.0 场景
+### 11.0 场景
 
-第 11 章后有两个服务、两个端口。前端代码写死 `POST localhost:8080`、`GET localhost:8081`。问题：
+第 10 章后有两个服务、两个端口。前端代码写死 `POST localhost:8080`、`GET localhost:8081`。问题：
 
 1. **前端记一堆端口**——服务一多就乱。
 2. **扩容/迁移要改前端**——后端换地址，前端跟着改。
@@ -3398,7 +3228,7 @@ git add -A && git commit -m "第11章:按Profile拆触发服务/订阅服务"
 
 企业级标准答案：**API 网关**。所有请求先到网关，网关按路径路由到后端服务。前端永远只认网关地址。
 
-### 12.1 思路：Spring Cloud Gateway
+### 11.1 思路：Spring Cloud Gateway
 
 **Spring Cloud Gateway** 是 Spring 生态的响应式网关。它做三件事：
 
@@ -3408,9 +3238,9 @@ git add -A && git commit -m "第11章:按Profile拆触发服务/订阅服务"
 
 > **SSE 长连接经过网关的坑**：网关默认可能缓冲响应或断开长连接。Spring Cloud Gateway 是响应式的（基于 WebFlux），**原生支持流式透传**——这是我们选它而非阻塞式网关的原因。学习阶段先做**固定路由版**，Eureka 服务发现作为进阶方向标注，不在这章强加。
 
-### 12.2 动手（最小版：固定路由，先不引 Eureka）
+### 11.2 动手（最小版：固定路由，先不引 Eureka）
 
-#### 12.2.1 新建网关项目
+#### 11.2.1 新建网关项目
 
 ```
 gateway/
@@ -3491,7 +3321,7 @@ public class GatewayApplication {
 }
 ```
 
-#### 12.2.2 网关路由配置
+#### 11.2.2 网关路由配置
 
 **【新建文件】** `gateway/src/main/resources/application.yaml`：
 
@@ -3517,7 +3347,7 @@ spring:
 
 > **路由匹配顺序**：Gateway 按配置顺序匹配。`/api/runs/*/stream` 更具体，放前面；`/api/runs/**` 兜底放后面。**Spring Cloud Gateway 默认支持 SSE 流式透传**——长连接不会被缓冲截断，无需额外配置。
 
-### 12.3 验证（统一入口）
+### 11.3 验证（统一入口）
 
 ```bash
 # 起三个进程：trigger(8080)、stream(8081)、gateway(8000)
@@ -3535,21 +3365,21 @@ curl -N "http://localhost:8000/api/runs/run_xxx/stream"
 
 **核心收获**：前端只认 `localhost:8000` 一个地址。后端 trigger/stream 怎么扩容、怎么迁移，前端代码一行不改——**网关屏蔽了后端的物理拓扑**。
 
-### 12.4 checkpoint
+### 11.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第12章:Spring Cloud Gateway统一入口"
+git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
 ```
 
-### 12.5 复盘 + 后续进阶方向
+### 11.5 复盘 + 后续进阶方向
 
-到这里，你已经从"一个 `Flux<String>` 接口"演进到了**网关 + 触发服务 + 订阅服务 + Redis（锁/状态/HA）+ Kafka（chunk 总线）**的完整分布式管数分离系统。
+到这里，你已经从"一个 `Flux<String>` 接口"演进到了**网关 + 触发服务 + 订阅服务 + Redis（锁/会话独占/通知）+ Kafka（chunk 总线）**的完整分布式管数分离系统。
 
 **进阶方向（不在本文范围，列出供你继续）**：
 
 1. **服务发现（Eureka）**：把固定路由换成动态发现，trigger/stream 自动注册，网关自动路由。扩容真正零配置。
 2. **网关鉴权/限流**：JWT 认证、租户隔离、按租户限流——横切关注点收口到网关。
-3. **Kafka 精确续传**：把消费组 offset 暴露给前端，实现 Kafka 方案下的"从某条精确续读"（弥补第 10 章的取舍）。
+3. **Kafka 精确续传**：把消费组 offset 暴露给前端，实现 Kafka 方案下的"从某条精确续读"（弥补第 9 章的取舍）。
 4. **fencing token**：在 Redisson 锁之上叠加单调递增 token，消除"GC 停顿导致看门狗冻结、旧持有者恢复后继续写"的窗口（第 8 章遗留的严格性问题）。
 5. **可观测性**：OpenTelemetry 链路追踪、指标、告警——分布式系统出问题时能定位到哪个服务。
 
@@ -3578,13 +3408,11 @@ git add -A && git commit -m "第12章:Spring Cloud Gateway统一入口"
   │
 第8章  多实例：跨实例广播 + 会话级独占 + Redisson 单一写者 + Pub/Sub   ← 水平扩展（三道防线）
   │
-第9章  Redis Sentinel 高可用 + 应用层退避重试                          ← 消除单点
+第9章  chunk 总线升级 Kafka：消费组、跨服务消费、长期保留              ← 持久总线
   │
-第10章 chunk 总线升级 Kafka：消费组、跨服务消费、长期保留              ← 持久总线
+第10章 按 Profile 拆触发服务/订阅服务                                  ← 物理拆分
   │
-第11章 按 Profile 拆触发服务/订阅服务                                  ← 物理拆分
-  │
-第12章 Spring Cloud Gateway 统一入口                                    ← 网关收口
+第11章 Spring Cloud Gateway 统一入口                                    ← 网关收口
 ```
 
 ### 每章引入的核心概念回顾
@@ -3600,19 +3428,18 @@ git add -A && git commit -m "第12章:Spring Cloud Gateway统一入口"
 | 6 | run 资源 + 幂等键 + 会话级独占 | 多端重复提交、同会话并发触发、状态黑盒 |
 | 7 | PostgreSQL + MyBatis-Flex | run 状态存 Redis 重启全清、查不动、幂等无原子保证 |
 | 8 | Redisson 分布式锁 + 跨实例取消 | 多实例重复触发、压测并发打挂服务、取消跨不了实例 |
-| 9 | Sentinel + 退避重试 | Redis 单点故障 |
-| 10 | Kafka 消费组 | 跨服务消费、长期保留 |
-| 11 | Profile 拆服务 | 资源画像冲突 |
-| 12 | API 网关 | 前端记一堆端口 |
+| 9 | Kafka 消费组 | 跨服务消费、长期保留 |
+| 10 | Profile 拆服务 | 资源画像冲突 |
+| 11 | API 网关 | 前端记一堆端口 |
 
 ### 这套设计的几个关键判断（值得记住）
 
-1. **先逻辑后物理**：管数分离先在单进程内把接口拆开（第 2 章），物理拆服务是第 11 章的事。顺序不能反。
-2. **数据搬出进程，越早越好**：第 4 章就把 chunk 落 Redis，这让后面的多实例（第 8 章）、拆服务（第 11 章）几乎"免费"获得跨实例能力。
-3. **结构化数据进关系库，流式数据进流总线**：run 状态/幂等这种结构化数据落 PG（第 7 章），chunk 这种流式数据落 Kafka（第 10 章），临时并发标记留 Redis KV——各按数据形态选家，不混用。
+1. **先逻辑后物理**：管数分离先在单进程内把接口拆开（第 2 章），物理拆服务是第 10 章的事。顺序不能反。
+2. **数据搬出进程，越早越好**：第 4 章就把 chunk 落 Redis，这让后面的多实例（第 8 章）、拆服务（第 10 章）几乎"免费"获得跨实例能力。
+3. **结构化数据进关系库，流式数据进流总线**：run 状态/幂等这种结构化数据落 PG（第 7 章），chunk 这种流式数据落 Kafka（第 9 章），临时并发标记留 Redis KV——各按数据形态选家，不混用。
 4. **并发闸门要分层**：会话级独占（最外层）→ 幂等键 → 任务锁（最内层）。三道防线各管一层，不能互相替代。"同一个 session 在输出时不允许再次调用"是生产级系统的基本功——没有这道闸门，压测一轮就能把服务打挂。
 5. **不是替换，是分工**：PG 管结构化状态，Redis 管锁/会话独占/低延迟通知，Kafka 管持久总线/跨服务消费。各司其职。
-6. **诚实标注局限**：Redisson 锁仍有 GC 停顿导致的陈旧写入窗口（第 8 章）、Kafka 下 Last-Event-ID 失效（第 10 章）、`readAfter` 读全量（第 5 章）——都明确写出，并在合适的地方给出进阶方向。**生产级工程师知道每个方案的代价，而不是假装完美。**
+6. **诚实标注局限**：Redisson 锁仍有 GC 停顿导致的陈旧写入窗口（第 8 章）、Kafka 下 Last-Event-ID 失效（第 9 章）、`readAfter` 读全量（第 5 章）——都明确写出，并在合适的地方给出进阶方向。**生产级工程师知道每个方案的代价，而不是假装完美。**
 
 ### 学完之后
 
@@ -3657,7 +3484,6 @@ gateway/                            # API 网关
     └── resources/application.yaml
 
 docker/
-├── redis-sentinel/docker-compose.yaml     # Redis 高可用（第 9 章）
 └── pg/docker-compose.yaml                 # ▼ PostgreSQL（第 7 章）
 ```
 
@@ -3718,10 +3544,7 @@ docker/
 docker run -d --name pg -p 5432:5432 \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=research_stream postgres:16
 
-# Redis Sentinel（第 9 章）
-cd research-stream/docker/redis-sentinel && docker-compose up -d
-
-# Kafka KRaft 单节点（第 10 章）
+# Kafka KRaft 单节点（第 9 章）
 docker run -d --name kafka -p 9092:9092 \
   -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
   -e KAFKA_LISTENERS=PLAINTEXT://:9092 -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
@@ -3741,18 +3564,18 @@ docker run -d --name kafka -p 9092:9092 \
 | Redis Stream（XADD/XRANGE/消费组）与 Pub/Sub | [Redis Streams 与 Pub/Sub 实战](../../附录/Redis专题/01-Redis-Streams与PubSub实战.md) | 第 4、8 章 |
 | PostgreSQL + MyBatis-Flex（ORM/事务/连接池） | [数据库事务与 @Transactional 详解](../../附录/协议与数据库/02-数据库事务与Transactional详解.md) | 第 7 章持久化 |
 | 分布式锁（SETNX/Lua/Redisson/fencing token） | [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md) | 第 8 章单一写者 |
-| Kafka（topic/partition/offset/消费组）与 Spring Boot | [Kafka 核心概念与 Spring Boot 实战](../../附录/Kafka专题/01-Kafka核心概念与SpringBoot实战.md) | 第 10 章 |
-| Spring Cloud Stream（消息中间件抽象，第 10 章手写 Kafka 的架构升级） | [Spring Cloud Stream 从入门到架构师](../../附录/Spring-Cloud-Stream专题/01-Spring-Cloud-Stream从入门到架构师.md) | 第 10 章扩展 |
-| Spring Cloud Stream 进阶（Kafka 基础、Kafka Streams、事件驱动架构） | [Spring Cloud Stream 进阶实战](../../附录/Spring-Cloud-Stream专题/02-Spring-Cloud-Stream进阶实战.md) | 第 10 章扩展 |
-| 事件驱动微服务端到端实战（Saga、幂等、多服务落地） | [事件驱动微服务端到端实战](../../附录/Spring-Cloud-Stream专题/03-事件驱动微服务端到端实战.md) | 第 10 章扩展 |
-| 生产级进阶（Outbox 模式、Schema Registry、分区调优） | [生产级进阶：Outbox 与 Schema 与分区调优](../../附录/Spring-Cloud-Stream专题/04-生产级进阶-Outbox与Schema与分区调优.md) | 第 10 章扩展 |
-| Spring Cloud Stream 全知识点实践（每个 API 都有可跑代码） | [Spring Cloud Stream 全知识点实践项目](../../附录/Spring-Cloud-Stream专题/05-全知识点实践项目.md) | 第 10 章扩展 |
-| 事件溯源与 CQRS（用事件当数据源、读写分离） | [事件溯源与 CQRS 专题](../../附录/事件溯源与CQRS专题/README.md) | 第 10 章扩展 |
-| Kafka Streams 流处理（窗口、JOIN、状态查询） | [Kafka Streams 流处理专题](../../附录/Kafka-Streams流处理专题/README.md) | 第 10 章扩展 |
-| Debezium CDC（变更数据捕获、Outbox 投递落地） | [Debezium CDC 实战专题](../../附录/Debezium-CDC实战/README.md) | 第 10 章扩展 |
+| Kafka（topic/partition/offset/消费组）与 Spring Boot | [Kafka 核心概念与 Spring Boot 实战](../../附录/Kafka专题/01-Kafka核心概念与SpringBoot实战.md) | 第 9 章 |
+| Spring Cloud Stream（消息中间件抽象，第 9 章手写 Kafka 的架构升级） | [Spring Cloud Stream 从入门到架构师](../../附录/Spring-Cloud-Stream专题/01-Spring-Cloud-Stream从入门到架构师.md) | 第 9 章扩展 |
+| Spring Cloud Stream 进阶（Kafka 基础、Kafka Streams、事件驱动架构） | [Spring Cloud Stream 进阶实战](../../附录/Spring-Cloud-Stream专题/02-Spring-Cloud-Stream进阶实战.md) | 第 9 章扩展 |
+| 事件驱动微服务端到端实战（Saga、幂等、多服务落地） | [事件驱动微服务端到端实战](../../附录/Spring-Cloud-Stream专题/03-事件驱动微服务端到端实战.md) | 第 9 章扩展 |
+| 生产级进阶（Outbox 模式、Schema Registry、分区调优） | [生产级进阶：Outbox 与 Schema 与分区调优](../../附录/Spring-Cloud-Stream专题/04-生产级进阶-Outbox与Schema与分区调优.md) | 第 9 章扩展 |
+| Spring Cloud Stream 全知识点实践（每个 API 都有可跑代码） | [Spring Cloud Stream 全知识点实践项目](../../附录/Spring-Cloud-Stream专题/05-全知识点实践项目.md) | 第 9 章扩展 |
+| 事件溯源与 CQRS（用事件当数据源、读写分离） | [事件溯源与 CQRS 专题](../../附录/事件溯源与CQRS专题/README.md) | 第 9 章扩展 |
+| Kafka Streams 流处理（窗口、JOIN、状态查询） | [Kafka Streams 流处理专题](../../附录/Kafka-Streams流处理专题/README.md) | 第 9 章扩展 |
+| Debezium CDC（变更数据捕获、Outbox 投递落地） | [Debezium CDC 实战专题](../../附录/Debezium-CDC实战/README.md) | 第 9 章扩展 |
 | SSE 协议（id/event/Last-Event-ID/心跳/代理穿透） | [SSE 协议详解](../../附录/协议与数据库/01-SSE协议详解.md) | 第 1、5 章 |
 
-> **建议学习顺序**：先跟完本文 0→12 章（主线），遇到卡点再翻对应附录。附录之间相互独立，可按需挑读。
+> **建议学习顺序**：先跟完本文 0→11 章（主线），遇到卡点再翻对应附录。附录之间相互独立，可按需挑读。
 
 ---
 
