@@ -1251,23 +1251,30 @@ import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.connection.stream.StringRecord;
+import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 流总线（第 5 章）：seq 单调号 + 游标回放，解决"重连重复/漏 chunk"。
+ * 流总线（第 5 章）：seq 单调号 + 回放续传，解决"重连重复/漏 chunk"。
  *
- * 写：INCR 得到 seq → XADD（带 seq 和 chunk）→ PUBLISH（带 seq::chunk）。
- * 读：传入 lastSeq，只回放 seq>lastSeq 的历史，再接实时（实时也带 seq，靠游标推进防漏）。
+ * 写：INCR 得到 seq → XADD（带 seq 和 chunk）→ PUBLISH（ChunkEntity 的 JSON）。
+ * 读：history 只回放 seq>lastSeq 的历史；live 直接消费 Pub/Sub 的 JSON，反序列化成 ChunkEntity。
  *
- * 输出格式："seq::chunk"（用 :: 分隔，Controller 解析后把 seq 放进 SSE id）。
+ * 设计取舍（重点）：history 和 live 分工——
+ *   - 持久层（Stream）负责"正确性"：所有 chunk 全量落盘，刷新/重连从 lastSeq 回放，一定不丢。
+ *   - 实时层（Pub/Sub）负责"实时性"：新 chunk 立刻推给在线订阅者；它只做加速，不做唯一来源。
+ *   因此 live 不必再"收到通知就重读 Stream"，避免了每条 chunk 都 XRANGE 全量的 O(N²) 性能问题。
+ *
+ * 输出格式：`ChunkEntity(seq, chunk)` 值对象（history 从 Stream 字段构造，live 从 Pub/Sub 的 JSON 反序列化，
+ * 两条路径输出统一类型；Controller 直接取 `entity.seq()` / `entity.chunk()`，无需解析字符串协议）。
  */
 @Component
 public class StreamBus {
@@ -1277,10 +1284,11 @@ public class StreamBus {
     private static final String KEY_STREAM = "gen:%s:chunks";
     private static final String CHANNEL    = "gen:%s";
     private static final String KEY_SEQ    = "gen:%s:seq";        // ▼ seq 计数器
-    private static final String END_MARK   = "__END__";           // 结束标记（带末尾 seq）
+    private static final String END_MARK   = "__END__";           // 结束标记（放进 chunk 字段）
 
     private final ReactiveRedisTemplate<String, String> redis;
     private final ReactiveRedisMessageListenerContainer listener;
+    private final ObjectMapper mapper = new ObjectMapper();      // ▼ Pub/Sub 消息用 JSON 传输
 
     public StreamBus(ReactiveRedisTemplate<String, String> redis,
                      ReactiveRedisMessageListenerContainer listener) {
@@ -1288,7 +1296,7 @@ public class StreamBus {
         this.listener = listener;
     }
 
-    /** 写 chunk：INCR seq → XADD(seq,chunk) → PUBLISH(seq::chunk)。 */
+    /** 写 chunk：INCR seq → XADD(seq,chunk) → PUBLISH(ChunkEntity 的 JSON)。 */
     public Mono<Void> write(String token, String chunk) {
         String streamKey = KEY_STREAM.formatted(token);
         String channel   = CHANNEL.formatted(token);
@@ -1300,49 +1308,51 @@ public class StreamBus {
                             Map.of("seq", String.valueOf(seq), "chunk", chunk))
                             .withStreamKey(streamKey);
                     return redis.opsForStream().add(record)            // ▼ XADD（带 seq）
-                            .then(redis.convertAndSend(channel, seq + "::" + chunk));  // ▼ PUBLISH（带 seq）
+                            .then(redis.convertAndSend(channel,
+                                    mapper.writeValueAsString(new ChunkEntity(seq, chunk))));  // ▼ PUBLISH（JSON）
                 })
                 .then();
     }
 
-    /** 写结束标记（带末尾 seq）。 */
+    /** 写结束标记（chunk 字段放 END_MARK，带末尾 seq）。 */
     public Mono<Void> writeEnd(String token) {
         return redis.opsForValue().get(KEY_SEQ.formatted(token))
                 .defaultIfEmpty("0")
-                .flatMap(maxSeq -> write(token, END_MARK + "::" + maxSeq));
+                .flatMap(maxSeq -> write(token, END_MARK));
     }
 
     /**
-     * 订阅：从 lastSeq 之后回放 + 接实时。
-     * 输出 "seq::chunk"，遇到 END_MARK 结束。
+     * 订阅：history 从 lastSeq 之后回放 + live 直接消费 Pub/Sub 实时消息。
+     * 输出 ChunkEntity，遇到 chunk == END_MARK 结束。
+     *
+     * 为什么 live 直接读 Pub/Sub，而不是"收到通知就重读 Stream"：
+     *   chunk 写入时 XADD（落 Stream）与 PUBLISH（发通知）几乎连续，漏 chunk 的窗口极小；
+     *   即使偶尔漏掉，数据全量持久在 Stream 里，客户端一刷新就从 lastSeq 重新回放——
+     *   正确性由持久层兜底，实时层只负责"快"，允许偶发漏窗。这样避免了每条 chunk
+     *   都 XRANGE 全量的 O(N²) 性能问题（长文本会明显变慢）。
      */
-    public Flux<String> subscribe(String token, long lastSeq) {
+    public Flux<ChunkEntity> subscribe(String token, long lastSeq) {
         String streamKey = KEY_STREAM.formatted(token);
         String channel   = CHANNEL.formatted(token);
-        AtomicReference<Long> cursor = new AtomicReference<>(lastSeq);   // ▼ 游标：已发出的最大 seq
 
-        // 1. 回放历史：只取 seq > lastSeq 的
-        Flux<String> history = readAfter(streamKey, cursor);
+        // 1. 回放历史：只取 seq > lastSeq 的（断线续传：重连不会重复已看过的）
+        Flux<ChunkEntity> history = readAfter(streamKey, lastSeq);
 
-        // 2. 接实时：每收到一条频道通知，就读"游标之后"的新数据
-        //    （这样即使回放期间有新写入，游标会推进，不会漏）
-        Flux<String> live = listener.receive(ChannelTopic.of(channel))
-                .flatMap(notify -> readAfter(streamKey, cursor));
+        // 2. 接实时：直接消费频道里的 JSON，反序列化成 ChunkEntity（PUBLISH 发的就是这个格式）
+        Flux<ChunkEntity> live = listener.receive(ChannelTopic.of(channel))
+                .map(ReactiveSubscription.Message::getMessage)
+                .map(json -> mapper.readValue(json, ChunkEntity.class));
 
         return history.concatWith(live)
-                .takeUntil(s -> s.startsWith(END_MARK))    // ▼ 遇到 END 结束
-                .filter(s -> !s.startsWith(END_MARK));
+                .takeUntil(e -> END_MARK.equals(e.chunk()))   // ▼ 遇到 END 结束
+                .filter(e -> !END_MARK.equals(e.chunk()));
     }
 
-    /** 读 streamKey 中 seq > cursor 的所有记录，并推进 cursor。 */
-    private Flux<String> readAfter(String streamKey, AtomicReference<Long> cursor) {
+    /** 读 streamKey 中 seq > lastSeq 的所有历史记录（只用于回放，不推进任何游标）。 */
+    private Flux<ChunkEntity> readAfter(String streamKey, long lastSeq) {
         return redis.opsForStream().range(streamKey, Range.unbounded())
-                .filter(r -> seqOf(r) > cursor.get())        // ▼ 只取游标之后的
-                .map(r -> {
-                    long seq = seqOf(r);
-                    cursor.set(seq);                          // ▼ 推进游标
-                    return seq + "::" + r.getValue().get("chunk");
-                });
+                .filter(r -> seqOf(r) > lastSeq)            // ▼ 只取 lastSeq 之后的
+                .map(r -> new ChunkEntity(seqOf(r), String.valueOf(r.getValue().get("chunk"))));
     }
 
     // ▼ Spring Data Redis 3.x：range() 返回 MapRecord<K, Object, Object>
@@ -1350,14 +1360,21 @@ public class StreamBus {
         try { return Long.parseLong(String.valueOf(r.getValue().get("seq"))); }
         catch (Exception e) { return 0; }
     }
+
+    /** chunk 消息的值对象：seq（续传/排序用） + chunk（文本片段）。history 从 Stream 字段构造，
+     *  live 从 Pub/Sub 的 JSON 反序列化，两条路径输出统一类型，消费方无需关心传输格式。 */
+    public record ChunkEntity(Long seq, String chunk) {
+    }
 }
 ```
 
-> **游标防漏的原理（重点理解）**：
-> - `history` 把当前 Stream 里所有 `seq > lastSeq` 的读出来，并**把 cursor 推进到最大 seq**。
-> - `live` 每收到一条频道通知（说明有新数据），就调 `readAfter`——它用**同一个 cursor**，所以只会读出"上次读到之后"的新数据。
-> - 这样即使"history 读完"和"live 开始监听"之间有新写入，那条数据在某个 `live` 通知触发时也会被 `readAfter` 读出（因为它的 seq > cursor）。
-> - **关键：history 和 live 共享同一个 `cursor` 引用**，这是防漏的核心。
+> **持久层兜底 + 实时层直读的设计（重点理解）**：
+> - `history` 把当前 Stream 里所有 `seq > lastSeq` 的读出来，封装成 `ChunkEntity`——断线续传时**不重复**已看过的字。
+> - `live` **直接消费** Pub/Sub 频道里的 JSON，反序列化成 `ChunkEntity`——新 chunk 写入时 PUBLISH 出去，在线订阅者立刻收到。
+> - **两条路径输出同一类型 `ChunkEntity`**：history 从 Stream 字段构造，live 从 JSON 反序列化。消费方（Controller）只认 `entity.seq()` / `entity.chunk()`，不用关心底层是 Stream 字段还是 JSON 字符串——这是用值对象替代 `"seq::chunk"` 字符串协议的好处（类型安全、不泄漏传输格式、易扩展）。
+> - **为什么 live 不再"收到通知就重读 Stream"？** 上一版的写法是 `live.flatMap(notify -> readAfter(...))`，每来一条通知就 `XRANGE` 读全量再过滤——对长文本是 **O(N²)**（第 N 条通知读 N 条，总读取量平方级增长）。改成直读 Pub/Sub 后变成 **O(N)**。
+> - **漏 chunk 怎么办？** 写入时 `XADD`（落 Stream）与 `PUBLISH`（发通知）几乎连续，漏窗极小；即便偶尔漏掉，数据**全量持久在 Stream 里**，客户端一刷新就从 `lastSeq` 重新回放——**正确性由持久层兜底，实时层只负责"快"，允许偶发漏窗**。这是"at-least-once、数据以持久存储为准"的工程取舍：不为了一个不可观测的极端场景，牺牲可观测的性能。
+> - **`seq` 的作用没变**：它仍用于① history 按 `lastSeq` 过滤（不重复），② Controller 把 `entity.seq()` 放进 SSE `id`，浏览器记录后重连自动带 `Last-Event-ID`。
 
 #### 5.2.2 StreamService 透传 lastSeq
 
@@ -1398,8 +1415,8 @@ public class StreamService {
         return token;
     }
 
-    /** ▼ 数据面：带 lastSeq 的只读订阅（断线续传用）。 */
-    public Flux<String> subscribe(String token, long lastSeq) {
+    /** ▼ 数据面：带 lastSeq 的只读订阅（断线续传用），返回 ChunkEntity 流。 */
+    public Flux<StreamBus.ChunkEntity> subscribe(String token, long lastSeq) {
         return bus.subscribe(token, lastSeq);
     }
 }
@@ -1455,16 +1472,11 @@ public class GenerateController {
         long fromSeq = lastEventId != null ? lastEventId : 0;
 
         Flux<ServerSentEvent<String>> data = streamService.subscribe(token, fromSeq)
-                .map(s -> {
-                    int idx = s.indexOf("::");
-                    long seq = Long.parseLong(s.substring(0, idx));
-                    String chunk = s.substring(idx + 2);
-                    return ServerSentEvent.<String>builder()
-                            .id(String.valueOf(seq))     // ▼ 浏览器记录此 id，重连自动带
-                            .event("token")
-                            .data(chunk)
-                            .build();
-                })
+                .map(e -> ServerSentEvent.<String>builder()
+                        .id(String.valueOf(e.seq()))    // ▼ 浏览器记录此 id，重连自动带
+                        .event("token")
+                        .data(e.chunk())
+                        .build())
                 // ▼ 正常结束发一个 done 事件，前端据此知道"结束"
                 .concatWithValues(ServerSentEvent.<String>builder().event("done").data("").build());
 
@@ -1528,7 +1540,7 @@ git add -A && git commit -m "第5章:seq游标回放+SSE Last-Event-ID续传"
 
 1. **`202 + token` 仍是弱状态**：前端不知道任务在跑还是已结束、能否取消。**第 6 章：run 资源 + 状态机。**
 2. **多端同时 POST 触发**：手机和 iPad 同时点生成，会创建两个 token、跑两次生成器。**第 6 章：幂等键。**
-3. **`readAfter` 每次读全量再过滤**：对超长任务性能差（读全部历史只为取游标后的几条）。这是已知简陋处，生产可用 `XREAD` 从指定 id 读——本文聚焦管数分离主线，性能优化留作附录扩展点。
+3. **长文本性能已优化**：上一版 `live` 每收到一条通知就 `XRANGE` 读全量再过滤，是 O(N²)；本章已改为 `live` 直接消费 Pub/Sub 消息（O(N)），正确性由 Stream 持久层兜底。若未来要求"实时通道也 100% 不漏"（chunk 不持久、不能刷新等严苛场景），可升级为 `XREAD` 从指定 id 读 + 游标——本文聚焦管数分离主线，留作附录扩展点。
 
 下一章把"触发"升级成企业级的 run 资源，补上状态机和幂等。
 
@@ -1764,7 +1776,7 @@ public class StreamService {
     }
 
     /** ▼ 数据面：只读订阅（按 runId）。 */
-    public Flux<String> subscribe(String runId, long lastSeq) {
+    public Flux<StreamBus.ChunkEntity> subscribe(String runId, long lastSeq) {
         return bus.subscribe(runId, lastSeq);
     }
 
@@ -1885,12 +1897,8 @@ public class RunController {
         long fromSeq = lastEventId != null ? lastEventId : 0;
 
         Flux<ServerSentEvent<String>> data = streamService.subscribe(runId, fromSeq)
-                .map(s -> {
-                    int idx = s.indexOf("::");
-                    long seq = Long.parseLong(s.substring(0, idx));
-                    return ServerSentEvent.<String>builder()
-                            .id(String.valueOf(seq)).event("token").data(s.substring(idx + 2)).build();
-                })
+                .map(e -> ServerSentEvent.<String>builder()
+                        .id(String.valueOf(e.seq())).event("token").data(e.chunk()).build())
                 .concatWithValues(ServerSentEvent.<String>builder().event("done").data("").build());
 
         Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(1))
@@ -2010,6 +2018,7 @@ import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.connection.stream.StringRecord;
+import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
@@ -2017,11 +2026,11 @@ import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 流总线（第 7 章）：分布式锁保证单一写者 + Pub/Sub 跨实例取消。
@@ -2045,6 +2054,7 @@ public class StreamBus {
     private final ReactiveRedisTemplate<String, String> redis;
     private final ReactiveRedisMessageListenerContainer listener;
     private final String instanceId;   // ▼ 本实例唯一标识（日志/取消归属）
+    private final ObjectMapper mapper = new ObjectMapper();   // ▼ Pub/Sub 消息用 JSON 传输
 
     /** 本实例持有的"runId → 生成流句柄"（只存自己跑的那些）。 */
     private final ConcurrentHashMap<String, Disposable> localHandles = new ConcurrentHashMap<>();
@@ -2068,7 +2078,7 @@ public class StreamBus {
         return redis.delete(KEY_LOCK.formatted(runId)).map(c -> c > 0);
     }
 
-    /** 写 chunk（同第 5 章）。 */
+    /** 写 chunk（同第 5 章：XADD + PUBLISH JSON）。 */
     public Mono<Void> write(String runId, String chunk) {
         String streamKey = KEY_STREAM.formatted(runId);
         String channel   = CHANNEL.formatted(runId);
@@ -2078,25 +2088,26 @@ public class StreamBus {
                     StringRecord record = StreamRecords.string(
                             Map.of("seq", String.valueOf(seq), "chunk", chunk)).withStreamKey(streamKey);
                     return redis.opsForStream().add(record)
-                            .then(redis.convertAndSend(channel, seq + "::" + chunk));
+                            .then(redis.convertAndSend(channel,
+                                    mapper.writeValueAsString(new ChunkEntity(seq, chunk))));
                 }).then();
     }
 
     public Mono<Void> writeEnd(String runId) {
         return redis.opsForValue().get(KEY_SEQ.formatted(runId))
                 .defaultIfEmpty("0")
-                .flatMap(maxSeq -> write(runId, END_MARK + "::" + maxSeq));
+                .flatMap(maxSeq -> write(runId, END_MARK));
     }
 
-    /** 订阅（同第 5 章）。 */
-    public Flux<String> subscribe(String runId, long lastSeq) {
-        AtomicReference<Long> cursor = new AtomicReference<>(lastSeq);
-        Flux<String> history = readAfter(KEY_STREAM.formatted(runId), cursor);
-        Flux<String> live = listener.receive(ChannelTopic.of(CHANNEL.formatted(runId)))
-                .flatMap(notify -> readAfter(KEY_STREAM.formatted(runId), cursor));
+    /** 订阅（同第 5 章：history 按 lastSeq 回放 + live 直读 Pub/Sub 的 JSON）。 */
+    public Flux<ChunkEntity> subscribe(String runId, long lastSeq) {
+        Flux<ChunkEntity> history = readAfter(KEY_STREAM.formatted(runId), lastSeq);
+        Flux<ChunkEntity> live = listener.receive(ChannelTopic.of(CHANNEL.formatted(runId)))
+                .map(ReactiveSubscription.Message::getMessage)
+                .map(json -> mapper.readValue(json, ChunkEntity.class));
         return history.concatWith(live)
-                .takeUntil(s -> s.startsWith(END_MARK))
-                .filter(s -> !s.startsWith(END_MARK));
+                .takeUntil(e -> END_MARK.equals(e.chunk()))
+                .filter(e -> !END_MARK.equals(e.chunk()));
     }
 
     // —— 跨实例取消：本实例持有句柄的 run，监听取消频道后自行 dispose —— //
@@ -2125,16 +2136,20 @@ public class StreamBus {
                 .then(releaseLock(runId));
     }
 
-    private Flux<String> readAfter(String streamKey, AtomicReference<Long> cursor) {
+    private Flux<ChunkEntity> readAfter(String streamKey, long lastSeq) {
         return redis.opsForStream().range(streamKey, Range.unbounded())
-                .filter(r -> seqOf(r) > cursor.get())
-                .map(r -> { long seq = seqOf(r); cursor.set(seq); return seq + "::" + r.getValue().get("chunk"); });
+                .filter(r -> seqOf(r) > lastSeq)
+                .map(r -> new ChunkEntity(seqOf(r), String.valueOf(r.getValue().get("chunk"))));
     }
 
     // ▼ Spring Data Redis 3.x：range() 返回 MapRecord<K, Object, Object>
     private long seqOf(MapRecord<String, Object, Object> r) {
         try { return Long.parseLong(String.valueOf(r.getValue().get("seq"))); }
         catch (Exception e) { return 0; }
+    }
+
+    /** chunk 消息的值对象（同第 5 章）。 */
+    public record ChunkEntity(Long seq, String chunk) {
     }
 }
 ```
@@ -2234,7 +2249,7 @@ public class StreamService {
         }
     }
 
-    public Flux<String> subscribe(String runId, long lastSeq) {
+    public Flux<StreamBus.ChunkEntity> subscribe(String runId, long lastSeq) {
         return bus.subscribe(runId, lastSeq);
     }
 
@@ -2431,7 +2446,8 @@ public Mono<Void> write(String runId, String chunk) {
                             log.error("[bus] XADD 最终失败（可能 master 切换中）: {}", e.getMessage());
                             return Mono.empty();
                         })
-                        .then(redis.convertAndSend(channel, seq + "::" + chunk));
+                        .then(redis.convertAndSend(channel,
+                                mapper.writeValueAsString(new ChunkEntity(seq, chunk))));
             }).then();
 }
 ```
