@@ -2939,7 +2939,7 @@ git add -A && git commit -m "第9章：多端同步四步加固（单一写者+s
 
 > **管数分离 ≠ 微服务拆分**：本章只在单进程内把接口拆开（逻辑解耦），物理拆成独立服务是第 13 章的事。**先逻辑后物理，顺序不能反。**
 
-> **我的判断（相对原版的根本改进）**：原版/我初稿用 `POST /api/research` + `{status:"started"}`，太弱。**真实 AI 平台的管数分离标准是把触发建模成 run 资源**——有独立 id、状态机、可查询/取消/订阅，配 `Idempotency-Key` 防多端重复提交、SSE 协议级 `Last-Event-ID` 重连。补强 B 是这套设计的理论详解，下面 10.2 是可照抄的代码。
+> **我的判断（相对原版的根本改进）**：原版/我初稿用 `POST /api/research` + `{status:"started"}`，太弱。**真实 AI 平台的管数分离标准是把触发建模成 run 资源**——有独立 id、状态机、可查询/取消/订阅，配 `Idempotency-Key` 防同客户端重试重复提交、SSE 协议级 `Last-Event-ID` 重连。补强 B 是这套设计的理论详解，下面 10.2 是可照抄的代码。
 
 ### 10.2 动手
 
@@ -2948,7 +2948,7 @@ git add -A && git commit -m "第9章：多端同步四步加固（单一写者+s
 > 1. **最小分离**（10.2.1）：把第 9 章的 `subscribe()` 拆成 `trigger()`（管理面，POST）+ `subscribeReadOnly()`（数据面，GET 只读）。**只解决"触发和订阅解耦"这一件事**——第二台设备只发 GET，不再重复触发。
 > 2. **runId 隔离**（10.2.1 合并）：流 key 从 sessionId 改成 runId——一次会话能发起多次研究（多个 run），互不干扰。这是"触发=创建一次研究"语义的自然结果。
 > 3. **run 资源 + 状态**（10.2.3 `RunStore`/`GET /runs/{id}`）：触发返回一个有 id、有状态机的资源，让前端能轮询"是否完成"。
-> 4. **幂等键**（10.2.3 `Idempotency-Key`）：多端同时点提交，用幂等键保证只创建一个 run。
+> 4. **幂等键**（10.2.3 `Idempotency-Key`）：同一客户端重试提交，用幂等键保证不重复创建 run（多端靠 sessionId + 会话锁，不是靠 key）。
 > 5. **取消**（10.2.3 `POST /runs/{id}/cancel`）：前端要能主动停止。
 >
 > 下面 10.2.0 先给**最小分离版**（只做"触发和订阅拆成两个接口"这一件事），让你先看到最朴素的管数分离长什么样、它的局限在哪。然后 10.2.1 起逐步演进到 run 资源终态。**每步解决一个痛点，不是一蹴而就。**
@@ -3010,7 +3010,7 @@ curl -N "http://localhost:8080/api/research/stream?sessionId=split-001"         
 **最小分离版的局限（驱动后续演进）**：
 - 返回 `202 + {status:"started"}`——前端拿不到一个能轮询的"任务状态"，不知道何时完成。
 - 流按 sessionId——一个会话同时只能有一次研究，想并发研究两个子问题做不到。
-- 没有幂等——多端同时 POST 会各自触发（虽然 SETNX 兜底了"只跑一次"，但前端语义混乱）。
+- 没有会话级独占——多端同时 POST 会各自触发（虽然有 SETNX/会话锁兜底"只跑一次"，但前端语义混乱）。
 - 不能主动取消。
 
 **这些局限，正是 10.2.1-10.2.3 演进到 run 资源的动力。** 下面给终态代码（runId 隔离 + run 资源 + 幂等 + 取消），它由这些步叠加而来。
@@ -3259,7 +3259,7 @@ public class ResearchService {
 
 #### 10.2.3 RunController：管数分离的企业级 REST（run 资源 + 幂等 + 协议级 SSE）
 
-> **这一节是管数分离的最终版**——把"触发"建模成一个有生命周期的 **run 资源**（OpenAI Assistants 式），配 **Idempotency-Key 幂等键**（防多端重复提交）+ **SSE 协议级 `id/Last-Event-ID`**（断线重连自动补推）+ **`event: token/done` 分类**。原版/我初稿的 `202+{status}` 太弱；这一版才是真实 AI 平台的标准。补强 B 是这版的详解，本节是可照抄的代码。
+> **这一节是管数分离的最终版**——把"触发"建模成一个有生命周期的 **run 资源**（OpenAI Assistants 式），配 **Idempotency-Key 幂等键**（防同一客户端重试重复提交）+ **SSE 协议级 `id/Last-Event-ID`**（断线重连自动补推）+ **`event: token/done` 分类**。原版/我初稿的 `202+{status}` 太弱；这一版才是真实 AI 平台的标准。补强 B 是这版的详解，本节是可照抄的代码。
 
 **【新建文件】** `research-agent/src/main/java/com/example/research/run/RunStore.java`（run 资源 + 幂等映射，落 Redis）：
 
@@ -3277,7 +3277,7 @@ import java.util.UUID;
 /**
  * Run 资源存储：每次研究是一个有 id、有状态机的异步任务。
  * 状态机：queued → RUNNING → DONE / FAILED / CANCELLED
- * 幂等：Idempotency-Key 头 → 同 key 返回同一个 runId（防多端重复提交）。
+ * 幂等：Idempotency-Key 头 → 同 key 返回同一个 runId（防同一客户端重试重复提交）。
  */
 @Component
 public class RunStore {
@@ -3424,7 +3424,7 @@ public class RunController {
 > 4. 设备 B：`new EventSource(streamUrl)` 订阅——**先从 Stream 回放前文（前 30% 立刻可见），再接实时**。断线时浏览器**自动**带 `Last-Event-ID` 重连续传。
 > 5. 点"停止"：`POST /api/runs/{runId}/cancel`。
 >
-> **这正是"多端同步不重复触发 + 切换设备看到前文"的最终解**：幂等键保证唯一 run、单一写者保证唯一 LLM 调用、Stream+游标保证前文可见且不漏、SSE id 保证断线续传。
+> **这正是"多端同步不重复触发 + 切换设备看到前文"的最终解**：会话级独占/单一写者保证多端只跑一个、幂等键保证单端重试不重复、Stream+游标保证前文可见且不漏、SSE id 保证断线续传。
 
 ### 10.3 验证
 
@@ -3651,7 +3651,7 @@ OpenAI Assistants API 是管数分离的教科书级实现，它的 run 模型�
 - **触发 = 创建一个"run 资源"**（不是 `202` 含糊的"已接受"，而是 `201` 明确创建了一个有 id、有状态的任务对象）。
 - **run 是一等公民**：它有独立 id、生命周期（queued→running→completed/failed）、可查询、可取消、可订阅。
 - **单一执行者**：后端 worker 队列只让一个 worker 真正跑这个 run（分布式锁/lease）。
-- **幂等创建**：`Idempotency-Key` 头保证"多端同时点提交"只创建一个 run。
+- **幂等创建**：`Idempotency-Key` 头保证"同一客户端重试提交"不重复创建 run（多端并发靠会话级独占）。
 - **读写分离**：创建/查状态是管理面（写/读元数据），订阅 stream 是数据面（只读输出）。
 
 ### B.2 为什么是 run 资源，而不是 `{status:"started"}`
@@ -3659,12 +3659,12 @@ OpenAI Assistants API 是管数分离的教科书级实现，它的 run 模型�
 `202 + {status:"started"}`（我之前第 10 章的写法）的问题：
 - 没有独立的 run id（只有 sessionId），无法精确表达"这个会话的第 N 次研究"。
 - 没有状态机（queued/running/completed/failed），前端只能猜。
-- 没有幂等，多端同时提交会重复创建。
+- 没有幂等，同一客户端重试会重复创建（多端并发由会话级独占挡）。
 
 **run 资源解决了全部**：
 - run id 精确标识"某次研究"（一个会话可以有多次 run）。
 - 状态机让前端能正确轮询、知道何时去订阅、何时该看历史。
-- 幂等键防多端重复触发（这正是管数分离要解决的"切换设备重复触发"痛点的协议级解法）。
+- 幂等键防**同一客户端**重试重复触发；"切换设备不重复"靠 **sessionId + 会话锁**（不是靠 key——各设备无法共享 key）。
 
 ### B.3 落地代码在哪里
 
@@ -3708,7 +3708,7 @@ curl "http://localhost:8080/api/runs/run_abc123"
 | 维度 | 省事版（原第10章） | 企业级版（补强B） |
 |------|------------------|-----------------|
 | 触发返回 | `202 + {status:started}` | `201 + run 资源`（有独立 id、状态机、streamUrl） |
-| 幂等 | 无 | `Idempotency-Key` 头 → 多端重复提交只创建一个 run |
+| 幂等 | 无 | `Idempotency-Key` 头 → 同客户端重试提交不重复创建 run |
 | 流隔离 | 按 sessionId（一会话只能一次研究） | 按 runId（一会话可多次研究，互不干扰） |
 | 状态查询 | 无 | `GET /runs/{id}` 轮询状态机 |
 | 重连续传 | 自定义 lastSeq 参数 | SSE 协议级 `Last-Event-ID` 头（浏览器自动带） |

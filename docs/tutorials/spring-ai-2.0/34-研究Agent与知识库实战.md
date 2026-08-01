@@ -4936,7 +4936,7 @@ git add -A && git commit -m "第10章：管数分离——POST触发(GET只读�
 **简化版的局限 → 驱动出 run 资源**：
 - 返回 `{status:"started"}` 没有独立任务 id，前端没法轮询"是否完成"。
 - 流按 sessionId——一个会话同时只能一次研究，想并发研究两个子问题做不到。
-- 没有幂等——多端同时点提交会各自触发（虽然 SETNX 兜底"只跑一次"，但前端语义混乱）。
+- 没有会话级独占——多端同时点提交会各自触发（虽然有 SETNX/会话锁兜底"只跑一次"，但前端语义混乱）。
 - 不能主动取消。
 
 **run 资源怎么补齐**（OpenAI Assistants 式）：
@@ -4944,7 +4944,7 @@ git add -A && git commit -m "第10章：管数分离——POST触发(GET只读�
 | 能力 | 做法 |
 |------|------|
 | **触发返回资源** | `POST /runs` → `201 Created` + run 对象（`{id, status, streamUrl}`），status 是状态机：`queued→in_progress→completed/failed/cancelled` |
-| **幂等创建** | 请求带 `Idempotency-Key` 头——同 key 重复提交返回同一个 run（防多端重复触发） |
+| **幂等创建** | 请求带 `Idempotency-Key` 头——同 key 重复提交返回同一个 run（防**同一客户端**重试重复；多端靠 sessionId + 会话锁） |
 | **状态查询** | `GET /runs/{id}` 轮询状态（前端判断"该订阅还是看历史"） |
 | **主动取消** | `POST /runs/{id}/cancel` 停掉 LLM |
 | **流式订阅** | `GET /runs/{id}/stream`（SSE，带 `Last-Event-ID` 重连） |
@@ -4977,7 +4977,7 @@ import java.util.UUID;
 /**
  * Run 资源存储（管数分离的核心：触发 = 创建 run 资源）。
  * 状态机：queued → in_progress → completed / failed / cancelled
- * 幂等：Idempotency-Key 头 → 同 key 返回同一个 run（防多端重复提交）
+ * 幂等：Idempotency-Key 头 → 同 key 返回同一个 run（防同一客户端重试重复）
  * 存储：PG（和 chat_memory 同库；零依赖版纯内存/Redis）
  */
 @Component
