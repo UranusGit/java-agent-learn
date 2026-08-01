@@ -4393,7 +4393,11 @@ docker run -d --name kafka -p 9092:9092 \
 | `Flux`/`Mono` 的各种操作符（map/flatMap/concatWith...） | [Flux 方法速查](../../附录/Reactor响应式编程/02-Flux方法速查.md) | 全文 |
 | `Sinks.Many` 是什么、怎么用 | [Reactor Sinks 入门](../../附录/Reactor响应式编程/03-Reactor-Sinks入门.md) | 第 3、11 章 |
 | "消费太慢怎么办"——背压（Backpressure） | [Reactor 背压详解](../../附录/Reactor响应式编程/04-Reactor背压详解.md) | 第 3 章 `onBackpressureBuffer` |
+| 到底在哪个线程跑——subscribeOn/publishOn、阻塞隔离 | [Reactor 调度器与线程模型](../../附录/Reactor响应式编程/06-Reactor调度器与线程模型.md) | 第 8 章 `boundedElastic` 隔离 |
+| 流式错误怎么处理——onErrorResume/retry/doOnError | [Reactor 错误处理详解](../../附录/Reactor响应式编程/07-Reactor错误处理详解.md) | 第 2-6 章 流式错误 |
+| Redis 基础数据结构 + Spring Boot 响应式收发 | [Redis 基础 + Spring Boot 使用](../../附录/Redis专题/00-Redis基础与SpringBoot使用.md) | 第 4 章 |
 | Redis Stream（XADD/XRANGE/消费组）与 Pub/Sub | [Redis Streams 与 Pub/Sub 实战](../../附录/Redis专题/01-Redis-Streams与PubSub实战.md) | 第 4、9 章 |
+| 缓存怎么用对——Cache-Aside、穿透/击穿/雪崩 | [Redis 缓存实战](../../附录/Redis专题/03-Redis缓存实战.md) | 第 6 章 run 状态缓存 |
 | PostgreSQL + MyBatis-Flex（ORM/事务/连接池） | [数据库事务与 @Transactional 详解](../../附录/协议与数据库/02-数据库事务与Transactional详解.md) | 第 7、8 章持久化 |
 | 分布式锁（SETNX/Lua/Redisson/fencing token） | [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md) | 第 6 章会话锁 / 第 9 章单一写者 |
 | Kafka 消息队列（topic/分区/offset/消费组）与 Spring Boot 实战 | [Kafka 消息队列从入门到架构师](../../附录/Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md) | 第 10 章 |
