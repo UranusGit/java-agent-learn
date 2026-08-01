@@ -6,4 +6,4 @@
 |:---:|------|---------|
 | **01** | [Docker 与 Docker-Compose 入门](./01-Docker与Docker-Compose入门.md) | 用 Docker 起 Redis/Kafka/PG 等中间件——跑通教程的环境基础 |
 
-> **何时读**：教程里遇到 `docker run ...` / `docker-compose up` 看不懂时，回来补这一篇。配合 [Kafka 专题](../Kafka专题/01-Kafka核心概念与SpringBoot实战.md) 第 5 章的 docker 命令一起看。
+> **何时读**：教程里遇到 `docker run ...` / `docker-compose up` 看不懂时，回来补这一篇。配合 [Kafka 专题](../Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md) 第 5 章的 docker 命令一起看。

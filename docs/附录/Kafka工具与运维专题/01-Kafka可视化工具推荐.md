@@ -2377,8 +2377,8 @@ listener.name.sasl_plaintext.plain.sasl.jaas.config=org.apache.kafka.common.secu
 
 ```xml
 <dependency>
-    <groupId>org.springframework.kafka</groupId>
-    <artifactId>spring-kafka</artifactId>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-kafka</artifactId>
     <version>3.2.x</version>
 </dependency>
 ```
@@ -2846,8 +2846,8 @@ w.WriteMessages(context.Background(), kafka.Message{Value: []byte("hello")})
 
 ```xml
 <dependency>
-    <groupId>org.springframework.kafka</groupId>
-    <artifactId>spring-kafka</artifactId>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-kafka</artifactId>
     <version>3.2.5</version>
 </dependency>
 <dependency>
@@ -3529,8 +3529,8 @@ payment-events (分区=6, 副本=3)
 
 ```xml
 <dependency>
-    <groupId>org.springframework.kafka</groupId>
-    <artifactId>spring-kafka</artifactId>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-kafka</artifactId>
     <version>3.2.5</version>
 </dependency>
 <dependency>

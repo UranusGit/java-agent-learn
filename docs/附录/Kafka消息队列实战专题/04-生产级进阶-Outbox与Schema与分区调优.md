@@ -1,6 +1,6 @@
 # 生产级进阶：Outbox 模式、Schema Registry、分区深度调优
 
-> **这份文档是什么**：[Spring Cloud Stream 专题](./README.md) 的第 04 篇，**生产级进阶**。前三篇你学会了"收发消息、懂原理、搭系统"。这一篇补上**事件驱动系统真正上线后会撞上的三个硬骨头**——都是 [03 实战](./03-事件驱动微服务端到端实战.md) 里我明确标注为"演进方向"、但当时没展开的。
+> **这份文档是什么**：[Kafka 消息队列实战专题](./README.md) 的第 04 篇，**生产级进阶**。前三篇你学会了"收发消息、懂原理、搭系统"。这一篇补上**事件驱动系统真正上线后会撞上的三个硬骨头**——都是 [03 实战](./03-事件驱动微服务端到端实战.md) 里我明确标注为"演进方向"、但当时没展开的。
 >
 > **写给谁**：读完 01-03 的人。你已能搭一个事件驱动系统,但这篇让你把它做成**生产可用**。
 >
@@ -9,7 +9,7 @@
 > - **方向 B：Schema Registry**——事件结构怎么改而不崩消费者（02 的 5.3 只讲概念,这里落地）。
 > - **方向 C：分区深度调优**——并发、顺序、热分区,把吞吐做到生产级。
 >
-> **版本前提（已校验）**：Spring Cloud Stream 4.2.x + Spring Boot 3.4.x + Kafka。所有 API、配置项已对照官方文档校验。
+> **版本前提（已校验）**：Spring Boot 4.1.0 + `spring-boot-starter-kafka` + Kafka。所有 API、配置项已对照官方文档校验。本专题一律用 **`KafkaTemplate` 发、`@KafkaListener` 收**（详见 [README](./README.md) 的说明，本专题前身是 Spring Cloud Stream，已统一改为直接 Kafka，Stream 专属内容不在本专题出现）。
 
 ---
 
@@ -26,11 +26,11 @@
 
 ### A.1 问题：回顾 03 实战埋的坑
 
-[03 实战第 3 章](./03-事件驱动微服务端到端实战.md) 的订单服务,创建订单时做了两件事:
+[03 实战第 3 章](./03-事件驱动微服务端到端实战.md) 的订单服务,创建订单时做了两件事（这里用本专题的直接 Kafka 表述改写 03 的代码）:
 
 ```java
-repo.save(order);                          // ① 写数据库
-bridge.send("orderCreated-out-0", event);  // ② 发事件到 Kafka
+repo.save(order);                                        // ① 写数据库
+kafkaTemplate.send("order-created", orderId, eventJson); // ② 发事件到 Kafka
 ```
 
 **这两步不是原子的**。三种出错场景:
@@ -57,6 +57,8 @@ bridge.send("orderCreated-out-0", event);  // ② 发事件到 Kafka
 
 **关键洞察**:把"发事件"降级成"写一行记录",就能用成熟的数据库事务保证原子性。事件记录暂时"困"在 outbox 表里,再由投递器搬到 Kafka。
 
+> **能不能用 Kafka 事务直接搞定？** Spring Kafka 确实提供**事务性生产者**（配 `spring.kafka.producer.transaction-id-prefix` + `KafkaTransactionManager`,让 `KafkaTemplate` 走事务),再用 `ChainedTransactionManager` 把"DB 事务 + Kafka 事务"绑进同一个 `@Transactional`,也能做到"写库 + 发消息"原子。但这是**跨系统分布式事务**:协调开销大、失败难排查;而且 Kafka 事务只保证"消息要么发、要么没发",一旦 DB 回滚而 Kafka 已提交,下游**仍然要靠幂等兜底**。**生产上 Outbox 仍是首选**:它把原子性收敛到**本地 DB 事务**,Kafka 只是异步投递的目标,不参与事务协调。
+
 ### A.3 解法一：轮询投递（Polling Publisher）——最简单,推荐新手
 
 #### A.3.1 建 outbox 表
@@ -66,7 +68,7 @@ CREATE TABLE outbox (
     id            BIGSERIAL PRIMARY KEY,         -- 自增 id,投递器按顺序扫
     aggregate_id  VARCHAR(64)  NOT NULL,         -- 关联的业务 id（如 orderId）
     event_type    VARCHAR(64)  NOT NULL,         -- 事件类型（如 "OrderCreated"）
-    payload       JSONB        NOT NULL,         -- 事件的完整内容（JSON）
+    payload       JSONB        NOT NULL,         -- 事件的完整内容（JSON 字符串）
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
     processed     BOOLEAN      NOT NULL DEFAULT false,  -- 是否已投递
     processed_at  TIMESTAMPTZ                            -- 投递时间
@@ -77,6 +79,9 @@ CREATE INDEX idx_outbox_unprocessed ON outbox (id) WHERE processed = false;  -- 
 #### A.3.2 业务逻辑：在同一事务里写 orders + outbox
 
 ```java
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 @Service
 public class OrderService {
 
@@ -96,11 +101,11 @@ public class OrderService {
         // ... 设置其他字段
         orderRepo.save(order);                    // ① 业务数据
 
-        // ② 事件记录（同一个事务！不再直接 bridge.send）
+        // ② 事件记录（同一个事务！不再直接 kafkaTemplate.send）
         OutboxEvent event = new OutboxEvent();
         event.setAggregateId(order.getOrderId());
         event.setEventType("OrderCreated");
-        event.setPayload(/* order 的 JSON */);
+        event.setPayload(/* order 的 JSON 字符串 */);
         outboxRepo.save(event);                   // ② 事件入库,不直接发 Kafka
 
         return order.getOrderId();
@@ -109,23 +114,27 @@ public class OrderService {
 }
 ```
 
-**注意**:这里**没有 `bridge.send`**!发事件的动作被"往 outbox 插一行"替代了。事务提交前,Kafka 完全没被触碰——所以 Kafka 不可用也不影响数据一致性。
+**注意**:这里**没有 `kafkaTemplate.send`**!发事件的动作被"往 outbox 插一行"替代了。事务提交前,Kafka 完全没被触碰——所以 Kafka 不可用也不影响数据一致性。
 
 #### A.3.3 投递器：定时扫 outbox → 发 Kafka → 标记已处理
 
 ```java
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.cloud.stream.function.StreamBridge;
+import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 @Component
 public class OutboxPublisher {
 
     private final OutboxRepository outboxRepo;
-    private final StreamBridge bridge;
+    private final KafkaTemplate<String, String> kafkaTemplate;
 
-    public OutboxPublisher(OutboxRepository outboxRepo, StreamBridge bridge) {
-        this.outboxRepo = outboxRepo; this.bridge = bridge;
+    public OutboxPublisher(OutboxRepository outboxRepo, KafkaTemplate<String, String> kafkaTemplate) {
+        this.outboxRepo = outboxRepo; this.kafkaTemplate = kafkaTemplate;
     }
 
     // ▼ 每 2 秒扫一批未处理的 outbox 记录
@@ -134,11 +143,18 @@ public class OutboxPublisher {
     public void publish() {
         List<OutboxEvent> pending = outboxRepo.findTop100ByProcessedFalseOrderByIdAsc();
         for (OutboxEvent e : pending) {
-            // ▼ 用 eventType 作为 binding 名路由（一个 outbox 表可发多种事件）
-            //   实际中按 eventType 决定发到哪个 topic
-            bridge.send(e.getEventType() + "-out-0", e.getPayload());
+            // ▼ 按 eventType 决定发到哪个 topic（一个 outbox 表可发多种事件）
+            String topic = switch (e.getEventType()) {
+                case "OrderCreated"      -> "order-created";
+                case "InventoryReserved" -> "inventory-reserved";
+                default                  -> "events-default";
+            };
+            // ▼ 用 aggregateId 当 key → 同业务进同分区,天然有序（呼应方向 C）
+            //   .get(2, SECONDS) 同步等结果,发送失败抛异常 → 事务回滚 → 下轮重试
+            kafkaTemplate.send(topic, e.getAggregateId(), e.getPayload())
+                    .get(2, TimeUnit.SECONDS);
 
-            // ▼ 标记已处理（同事务,保证不重复发）
+            // ▼ 标记已处理（同一事务,commit 后 processed 才生效）
             e.setProcessed(true);
             e.setProcessedAt(java.time.OffsetDateTime.now());
             outboxRepo.save(e);
@@ -148,10 +164,15 @@ public class OutboxPublisher {
 ```
 
 ```java
+import org.springframework.data.jpa.repository.JpaRepository;
+import java.util.List;
+
 public interface OutboxRepository extends JpaRepository<OutboxEvent, Long> {
     List<OutboxEvent> findTop100ByProcessedFalseOrderByIdAsc();  // 取最早的 100 条未处理
 }
 ```
+
+> **关于同步等待 `.get()`**：`kafkaTemplate.send()` 返回的是 `CompletableFuture`,默认是**异步**的——发送结果走回调,调用处立刻返回。这里用 `.get(2, SECONDS)` 同步等结果,是为了让发送失败能抛异常、触发事务回滚（processed 不落库,下轮重试）。代价是每批最多等 2 秒;要更高吞吐可改成异步 + 回调（`whenComplete`）记录失败,但那要自己管失败补偿,复杂度高。
 
 #### A.3.4 轮询投递的两个坑（必看）
 
@@ -168,7 +189,7 @@ public interface OutboxRepository extends JpaRepository<OutboxEvent, Long> {
 
 轮询投递有个缺点:**定时扫表有延迟**（2 秒一批）,且给 DB 增加查询压力。**CDC** 用另一种思路:监听数据库的**变更日志**（binlog/WAL）,一旦 outbox 表有新行,**立即**捕获并发到 Kafka,不用轮询。
 
-**最主流的 CDC 工具:Debezium**。它部署在 Kafka Connect 里,监听 DB binlog,把行变更转成 Kafka 消息。
+**最主流的 CDC 工具:Debezium**。它部署在 Kafka Connect 里,监听 DB binlog,把行变更转成 Kafka 消息。注意:这一节和直接 Kafka 无关——CDC 是"投递器"的替代实现,订单服务端仍用 A.3.2 的代码。
 
 #### A.4.1 CDC + Outbox 的架构
 
@@ -188,7 +209,7 @@ public interface OutboxRepository extends JpaRepository<OutboxEvent, Long> {
          下游消费者（库存/支付服务）
 ```
 
-**关键**:订单服务的代码**和轮询方案一样**（还是事务里写 outbox）。区别在于"谁来把 outbox 搬到 Kafka"——轮询方案是你的 `@Scheduled`,CDC 方案是 Debezium。
+**关键**:订单服务的代码**和轮询方案一样**（还是事务里写 outbox）。区别在于"谁来把 outbox 搬到 Kafka"——轮询方案是你的 `@Scheduled` + `kafkaTemplate.send`,CDC 方案是 Debezium。
 
 #### A.4.2 Debezium Outbox SMT（事件路由）
 
@@ -224,7 +245,7 @@ Debezium 默认会把 outbox 表的整行（含 id/aggregate_id/event_type/paylo
 
 - **解决的问题**:dual-write——写 DB + 发 Kafka 不原子。
 - **核心**:把"发事件"变成"往 outbox 表插一行",和业务数据同事务。
-- **两种投递**:轮询（简单）/ CDC（优雅但重）。
+- **两种投递**:轮询（`@Scheduled` + `kafkaTemplate.send`）/ CDC（Debezium）。
 - **不忘**:消费者**仍要幂等**（Outbox 保证不丢,不保证不重）。
 
 ---
@@ -233,7 +254,7 @@ Debezium 默认会把 outbox 表的整行（含 id/aggregate_id/event_type/paylo
 
 ### B.1 问题：事件结构一改就崩
 
-[01 入门篇](./01-Spring-Cloud-Stream从入门到架构师.md) 里事件是 POJO + JSON 序列化。假设 `OrderCreated` 有 `orderId`/`productId`/`quantity`/`amount`。某天产品说"加个 `couponCode` 字段"。
+[01 入门篇](./01-Kafka消息队列从入门到架构师.md) 里事件是 POJO + JSON 序列化。假设 `OrderCreated` 有 `orderId`/`productId`/`quantity`/`amount`。某天产品说"加个 `couponCode` 字段"。
 
 你改了 POJO、重新部署订单服务。**但库存服务还跑着老版本**——它反序列化时,要么忽略新字段（还好）,要么遇到不兼容的改动（如改了字段类型）直接**反序列化失败、消息处理不了、堆积、雪崩**。
 
@@ -254,7 +275,7 @@ Debezium 默认会把 outbox 表的整行（含 id/aggregate_id/event_type/paylo
 消费者 <──③凭ID取schema── [ Schema Registry ] ──反序列化
 ```
 
-**Confluent Schema Registry** 是业界标准（和 Kafka 同源）。
+**Confluent Schema Registry** 是业界标准（和 Kafka 同源）。Schema Registry 不关心你的序列化是 Stream 还是原生 Kafka——它工作在序列化器这一层,所以 **`spring-boot-starter-kafka` 原生支持**。
 
 ### B.3 用 Avro 定义事件结构
 
@@ -277,32 +298,65 @@ Avro 是一种二进制序列化格式（比 JSON 小、比 Protobuf 在 Kafka �
 
 用 Avro Maven 插件编译成 Java 类（`OrderCreated.java`）,然后当普通 POJO 用。
 
-### B.4 Spring Cloud Stream 接 Schema Registry（配置已校验）
+### B.4 Spring Kafka 接 Schema Registry（配置已校验）
 
-关键配置在 `spring.cloud.stream.kafka.binder` 的 `producer-properties` / `consumer-properties` 下:
+关键配置在 `spring.kafka` 的 `producer` / `consumer` 下——**`spring-boot-starter-kafka` 的自动配置**会从 `spring.kafka.producer.*` 构建 `ProducerFactory`/`KafkaTemplate`,从 `spring.kafka.consumer.*` 构建 `@KafkaListener` 的容器工厂:
 
 ```yaml
 spring:
-  cloud:
-    stream:
-      kafka:
-        binder:
-          producer-properties:
-            key.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer      # ▼ Avro 序列化
-            value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
-            schema.registry.url: http://localhost:8081                              # ▼ Registry 地址
-          consumer-properties:
-            key.deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
-            value.deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
-            schema.registry.url: http://localhost:8081
-            specific.avro.reader: true       # ▼ 反序列化成生成的具体类（而非 GenericRecord）
-      bindings:
-        orderCreated-out-0:
-          producer:
-            use-native-encoding: true        # ▼ 用我们配的 Avro serializer,不用默认的
-        reserveInventory-in-0:
-          consumer:
-            use-native-decoding: true
+  kafka:
+    bootstrap-servers: localhost:9092                    # ▼ 直接 Kafka 的接入点
+    producer:                                            # ▼ KafkaTemplate 用的序列化器
+      key-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer      # ▼ Avro 序列化
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      properties:
+        schema.registry.url: http://localhost:8081                              # ▼ Registry 地址
+    consumer:                                            # ▼ @KafkaListener 用的反序列化器
+      key-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+      value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+      properties:
+        schema.registry.url: http://localhost:8081
+        specific.avro.reader: true       # ▼ 反序列化成生成的具体类（而非 GenericRecord）
+```
+
+发消息——`KafkaTemplate` 自动带上 schema ID（不再有 binding 名,直接写 topic 名）:
+
+```java
+import com.example.events.OrderCreated;   // Avro 插件生成的类
+import org.springframework.kafka.core.KafkaTemplate;
+
+public class OrderEventProducer {
+
+    private final KafkaTemplate<String, OrderCreated> kafkaTemplate;
+
+    public OrderEventProducer(KafkaTemplate<String, OrderCreated> kafkaTemplate) {
+        this.kafkaTemplate = kafkaTemplate;
+    }
+
+    // ▼ value 是 Avro 类,KafkaAvroSerializer 自动注册 schema、并在消息头带上 schema ID
+    public void publishOrderCreated(OrderCreated event, String orderId) {
+        kafkaTemplate.send("orders-avro", orderId, event);
+    }
+}
+```
+
+收消息——`@KafkaListener` 凭 schema ID 反序列化成具体类:
+
+```java
+import com.example.events.OrderCreated;   // Avro 插件生成的类
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Component;
+
+@Component
+public class InventoryConsumer {
+
+    // ▼ KafkaAvroDeserializer 凭消息里的 schema ID 去 Registry 取 schema,
+    //   specific.avro.reader=true 让它直接反序列化成 OrderCreated（而非 GenericRecord）
+    @KafkaListener(topics = "orders-avro", groupId = "inventory")
+    public void onOrderCreated(OrderCreated event) {
+        // 处理库存预占...
+    }
+}
 ```
 
 > **依赖**（已校验 artifact）:
@@ -338,6 +392,7 @@ Registry 对每个 schema 维护版本,并可配置**兼容性规则**:
 - **解决的问题**:事件结构变更 → 消费者反序列化崩溃。
 - **核心**:显式管理 schema 版本 + 兼容性校验 + 消息只带 schema ID。
 - **何时上**:服务多了（3+）、事件结构会演进、对稳定性要求高。小项目 JSON 够用,别过度设计。
+- **和直接 Kafka 的关系**:序列化器/反序列化器通过 `spring.kafka.producer/consumer.properties` 配置,`KafkaTemplate` 发、`@KafkaListener` 收——与收发方式无关,换掉序列化器即可。
 
 ---
 
@@ -345,25 +400,38 @@ Registry 对每个 schema 维护版本,并可配置**兼容性规则**:
 
 ### C.1 复习：分区是 Kafka 的并行单元
 
-[进阶篇第 1 章](./02-Spring-Cloud-Stream进阶实战.md) 讲过:Kafka topic 分多个 partition,一个 partition 同一时间只能被消费组内**一个消费者线程**消费。所以:
+[进阶篇第 1 章](./02-Kafka进阶实战.md) 讲过:Kafka topic 分多个 partition,一个 partition 同一时间只能被消费组内**一个消费者线程**消费。所以:
 
 > **并行度上限 = min(分区数, 消费者线程数)**
 
 这是 C 章所有调优的基础。
 
-### C.2 并发配置:`concurrency`(已校验)
+### C.2 并发配置：`spring.kafka.listener.concurrency`（已校验）
 
 ```yaml
 spring:
-  cloud:
-    stream:
-      bindings:
-        process-in-0:
-          consumer:
-            concurrency: 3       # ▼ 单实例开 3 个消费线程
+  kafka:
+    listener:
+      concurrency: 3       # ▼ 每个 @KafkaListener 默认开 3 个消费线程
 ```
 
-`concurrency` = 单实例内的消费线程数。**有效并行度 = 实例数 × concurrency,上限是分区数**。
+也可以按监听器单独覆盖（覆盖全局默认）:
+
+```java
+import org.springframework.kafka.annotation.KafkaListener;
+
+@Component
+public class ProcessConsumer {
+
+    // ▼ concurrency = 3：这个监听容器开 3 个消费线程
+    @KafkaListener(topics = "process", groupId = "processor", concurrency = "3")
+    public void onMessage(String msg) {
+        // ...
+    }
+}
+```
+
+`concurrency` = 单实例内的消费线程数（即一个监听容器起的线程数）。**有效并行度 = 实例数 × concurrency,上限是分区数**。
 
 ### C.3 三种情况的实际并行度（必算清楚）
 
@@ -383,7 +451,7 @@ spring:
 
 **如果你的 topic 只有 1 个分区**,那么无论 `concurrency` 设多大、实例扩到多少,**始终只有 1 个线程消费**——因为 1 个分区只能给 1 个消费者。
 
-**新手常犯的错**:发现消费慢,疯狂调 `concurrency` 从 1 到 10,吞吐毫无变化——一查 topic 只有 1 个分区。**解法:先加分区**。
+**新手常犯的错**:发现消费慢,疯狂调 `@KafkaListener(concurrency)` 从 1 到 10,吞吐毫无变化——一查 topic 只有 1 个分区。**解法:先加分区**。
 
 ### C.5 顺序性:分区内有序 vs 全局有序
 
@@ -392,25 +460,36 @@ spring:
 | **全局有序**(所有消息严格按序) | topic 只用 1 个分区 | **完全无并行**(只有 1 个消费者) |
 | **分区内有序**(同一实体有序) | 用 key 分区,同 key 进同分区 | 该 key 的消息有序,不同 key 可并行 |
 
-**绝大多数业务要的是"分区内有序"**:同一订单的事件按序(创建→支付→发货),不同订单可并行。用 orderId 当 key:
-
-```yaml
-spring:
-  cloud:
-    stream:
-      bindings:
-        orderEvents-out-0:
-          producer:
-            partition-count: 6
-            partition-key-expression: headers['partitionKey']   # ▼ 用 header 里的 key 算分区
-```
+**绝大多数业务要的是"分区内有序"**:同一订单的事件按序(创建→支付→发货),不同订单可并行。用 orderId 当 key——**直接 Kafka 里就是 `KafkaTemplate.send(topic, key, value)` 的 key**,由 `DefaultPartitioner` 按 key 的哈希值取模分到同一个分区（Stream 的 `partition-key-expression` 底层就是它,这里不再有表达式,直接选 key）:
 
 ```java
-// 发送时带 key
-Message<OrderEvent> msg = MessageBuilder.withPayload(event)
-        .setHeader("partitionKey", event.getOrderId())   // ▼ 同 orderId 进同分区
-        .build();
-bridge.send("orderEvents-out-0", msg);
+import com.example.events.OrderCreated;
+import org.springframework.kafka.core.KafkaTemplate;
+
+// 发事件时把 orderId 当 key → 同一订单的所有事件进同一分区,有序
+kafkaTemplate.send("order-events", event.getOrderId(), event);
+```
+
+topic 的分区数在**创建时定死**（对应 Stream 的 `partition-count`,但这里不是配置,是建 topic 时给的参数）:
+
+```java
+import org.apache.kafka.clients.admin.NewTopic;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.config.TopicBuilder;
+
+@Configuration
+public class KafkaTopicConfig {
+
+    // ▼ 建 topic：6 个分区,3 个副本。分区数一旦定下、有数据后只能加不能减
+    @Bean
+    public NewTopic orderEventsTopic() {
+        return TopicBuilder.name("order-events")
+                .partitions(6)
+                .replicas(3)
+                .build();
+    }
+}
 ```
 
 > **顺序与并行是矛盾的**:要全局有序就别想并行;要高并行就得接受"只在分区内有序"。架构师要在业务允许的粒度(如"同一订单有序"而非"全局有序")上找平衡。
@@ -436,7 +515,7 @@ bridge.send("orderEvents-out-0", msg);
 分区数 ≈ 预期峰值吞吐 / 单分区处理能力
 ```
 
-单分区一般能扛每秒几千~几万条(看消息大小和处理复杂度)。比如预期峰值 5 万条/秒、单分区能扛 1 万 → 5-6 个分区,留点余量取 8。**分区数一旦定了、有数据后就不能减**(只能加),所以宁可一开始多留点。
+单分区一般能扛每秒几千~几万条(看消息大小和处理复杂度)。比如预期峰值 5 万条/秒、单分区能扛 1 万 → 5-6 个分区,留点余量取 8。**分区数一旦定了、有数据后就不能减**(只能加),所以宁可一开始多留点——`TopicBuilder` 建 topic 时就要想好。
 
 ### C.8 分区调优小结
 
@@ -454,9 +533,9 @@ bridge.send("orderEvents-out-0", msg);
 | 要点 | 说明 |
 |------|------|
 | 核心 | 业务数据 + outbox 事件行写同一 `@Transactional` |
-| 轮询投递 | `@Scheduled` 扫 outbox → `StreamBridge.send` → 标记 processed |
+| 轮询投递 | `@Scheduled` 扫 outbox → `KafkaTemplate.send(topic, key, payload)` → 标记 processed |
 | 多实例轮询 | `SELECT ... FOR UPDATE SKIP LOCKED`(PG/MySQL 8+)或 Redisson 锁 |
-| CDC 投递 | Debezium 监 binlog,Outbox Event Router SMT 路由 payload |
+| CDC 投递 | Debezium 监听 binlog,Outbox Event Router SMT 路由 payload |
 | 消费者 | **仍要幂等**(Outbox 不丢不保证不重) |
 
 ### A.2 Schema Registry(Confluent)
@@ -466,7 +545,7 @@ bridge.send("orderEvents-out-0", msg);
 | 序列化器 | `io.confluent.kafka.serializers.KafkaAvroSerializer` |
 | 反序列化器 | `io.confluent.kafka.serializers.KafkaAvroDeserializer` |
 | Registry 地址 | `schema.registry.url: http://localhost:8081` |
-| 配置位置 | `spring.cloud.stream.kafka.binder.producer-properties` / `consumer-properties` |
+| 配置位置 | `spring.kafka.producer.properties` / `spring.kafka.consumer.properties` |
 | 具体类反序列化 | `specific.avro.reader: true` |
 | 默认兼容性 | BACKWARD(可加字段,删字段需谨慎) |
 
@@ -474,9 +553,9 @@ bridge.send("orderEvents-out-0", msg);
 
 | 配置项 | 含义 |
 |--------|------|
-| `bindings.<name>.consumer.concurrency` | 单实例消费线程数 |
-| `bindings.<name>.producer.partition-count` | topic 分区数 |
-| `bindings.<name>.producer.partition-key-expression` | 分区 key 表达式(同 key 同分区,有序) |
+| `spring.kafka.listener.concurrency`（或 `@KafkaListener(concurrency=...)`） | 单实例消费线程数 |
+| `TopicBuilder.name(...).partitions(n)` | 建 topic 时定分区数 |
+| `KafkaTemplate.send(topic, key, value)` 的 key | 分区 key（同 key 同分区,有序;替代 Stream 的 `partition-key-expression`） |
 | 有效并行 | `min(实例数 × concurrency, 分区数)` |
 
 ### A.4 三方向的取舍(架构师视角)
@@ -493,7 +572,7 @@ bridge.send("orderEvents-out-0", msg);
 
 ## 下一步：三个独立进阶专题
 
-到这里 Spring Cloud Stream 专题（01-04）已经完整闭环。**继续深入的方向在 Stream 之外**，是三个独立的进阶专题（按你的兴趣选读）：
+到这里 Kafka 消息队列实战专题（01-04）已经完整闭环。**继续深入的方向在 Kafka 之外**，是三个独立的进阶专题（按你的兴趣选读）：
 
 | 方向 | 专题 | 深入什么 |
 |------|------|---------|
@@ -501,20 +580,22 @@ bridge.send("orderEvents-out-0", msg);
 | 实时计算 | [Kafka Streams 流处理专题](../Kafka-Streams流处理专题/README.md) | 窗口/JOIN/状态查询（本篇方向 C 的深化） |
 | 数据集成 | [Debezium CDC 实战专题](../Debezium-CDC实战/README.md) | CDC 投递落地（本篇方向 A.4 的深化） |
 
-这三个不属于 Spring Cloud Stream 框架本身，而是事件驱动系统的进阶领域。各按需深入。
+这三个不属于 Kafka 客户端框架本身，而是事件驱动系统的进阶领域。各按需深入。
 
 ---
 
 ## 配套学习资料
 
-- [Spring Cloud Stream 专题 README](./README.md)(本专题学习顺序)
+- [Kafka 消息队列实战专题 README](./README.md)(本专题学习顺序)
 - [03 事件驱动微服务端到端实战](./03-事件驱动微服务端到端实战.md)(本篇是其 9.3 演进方向的展开)
 - [Spring 官方博客:Transactional Outbox](https://spring.io/blog/2023/10/24/a-use-case-for-transactions-adapting-to-transactional-outbox-pattern)(方向 A 权威)
 - [Debezium:Outbox 模式](https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/)(CDC+Outbox 经典文章)
-- [Baeldung:Spring Cloud Stream + Avro + Confluent](https://www.baeldung.com/spring-cloud-stream-kafka-avro-confluent)(方向 B 实战)
-- [Spring 官方:Kafka Binder 分区](https://docs.spring.io/spring-cloud-stream/reference/kafka/kafka-binder/partitions.html)(方向 C 权威)
+- [Baeldung:Spring Kafka 教程](https://www.baeldung.com/spring-kafka)(方向 B 实战)
+- [Confluent 官方:Schema Registry 文档](https://docs.confluent.io/platform/current/schema-registry/index.html)(方向 B 权威)
+- [Spring 官方:Spring for Apache Kafka 参考文档](https://docs.spring.io/spring-kafka/reference/)(方向 C 权威)
+- [Apache Kafka 官方文档:Topic 与分区](https://kafka.apache.org/documentation/#intro_topics)(方向 C 原理)
 - [Redis 分布式锁实战](../Redis专题/02-Redis分布式锁实战.md)(Outbox 多实例投递加锁用)
 
 ---
 
-> **写在最后**:这是 Spring Cloud Stream 专题的**生产级毕业篇**。从 01 的"会发会收"、02 的"懂原理"、03 的"装成系统",到这一篇的"做成生产级"——Outbox 保一致性、Schema Registry 管契约、分区调优撑吞吐。**真正让你从"能搭 demo"到"能扛生产"的就是这三个**(尤其 Outbox,几乎是事件驱动系统的分水岭)。记住:生产级不是堆技术,而是**在合适的阶段引入合适的方案**——Outbox 尽早、Schema/分区按需。到此,你已经具备完整的"事件驱动系统架构师"能力链。祝你做成真正的生产级系统。
+> **写在最后**:这是 Kafka 消息队列实战专题的**生产级毕业篇**。从 01 的"会发会收"、02 的"懂原理"、03 的"装成系统",到这一篇的"做成生产级"——Outbox 保一致性、Schema Registry 管契约、分区调优撑吞吐。**真正让你从"能搭 demo"到"能扛生产"的就是这三个**(尤其 Outbox,几乎是事件驱动系统的分水岭)。记住:生产级不是堆技术,而是**在合适的阶段引入合适的方案**——Outbox 尽早、Schema/分区按需。到此,你已经具备完整的"事件驱动系统架构师"能力链。祝你做成真正的生产级系统。

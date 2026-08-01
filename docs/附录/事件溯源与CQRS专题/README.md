@@ -6,6 +6,6 @@
 |:---:|------|---------|
 | **01** | [事件溯源与 CQRS 实战](./01-事件溯源与CQRS实战.md) | 从状态存储到事件日志的思维跃迁；聚合/事件存储/投影/快照；Spring Boot+PG 完整实现；何时用何时不用 |
 
-> **前置**：先学完 [Spring Cloud Stream 专题](../Spring-Cloud-Stream专题/README.md)（事件溯源的事件常通过 Stream 分发）。
+> **前置**：先学完 [Spring Cloud Stream 专题](../Kafka消息队列实战专题/README.md)（事件溯源的事件常通过 Stream 分发）。
 >
 > **适合谁**：做金融/审计/电商，需要完整历史、时间旅行、读写分离的场景。简单 CRUD 不需要。

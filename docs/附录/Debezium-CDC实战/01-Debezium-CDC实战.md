@@ -2,9 +2,9 @@
 
 > **这份文档是什么**：一篇**独立专题**，讲 **Debezium**——业界主流的 **CDC（Change Data Capture，变更数据捕获）** 工具。它监听数据库的变更日志，把"数据库的每一次改动"自动变成事件流。
 >
-> **写给谁**：读完了 [Spring Cloud Stream 专题 04 生产级进阶](../Spring-Cloud-Stream专题/04-生产级进阶-Outbox与Schema与分区调优.md) 方向 A（Outbox 模式）的人。那篇讲了 Outbox 的"轮询投递"，并提到"CDC 是更优雅但更重的方案"。**本篇就是那个 CDC 的深度落地。**
+> **写给谁**：读完了 [Spring Cloud Stream 专题 04 生产级进阶](../Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md) 方向 A（Outbox 模式）的人。那篇讲了 Outbox 的"轮询投递"，并提到"CDC 是更优雅但更重的方案"。**本篇就是那个 CDC 的深度落地。**
 >
-> **和 Stream 的关系**：CDC 是 Outbox 模式的进阶投递方式（04 方向 A.4 只讲概念，本篇落地）。它本身不是 Spring Cloud Stream，但常和 Stream 配合——Debezium 把变更发到 Kafka，下游服务用 Stream 消费。
+> **和消息框架的关系**：CDC 是 Outbox 模式的进阶投递方式（04 方向 A.4 只讲概念，本篇落地）。它本身不是 Spring Cloud Stream，但常和消息框架配合——Debezium 把变更发到 Kafka，下游服务用 Kafka（`@KafkaListener`）消费。
 >
 > **版本前提（已校验）**：Debezium 3.x（2025 最新）+ Kafka Connect + PostgreSQL 16。配置对照 [Confluent Debezium PG 文档](https://docs.confluent.io/kafka-connectors/debezium-postgres-source/current/overview.html) 和 [Debezium 官方示例](https://github.com/debezium/debezium-examples/blob/main/tutorial/docker-compose-postgres.yaml) 校验。
 
@@ -25,7 +25,7 @@
 
 ### 1.1 回顾 Outbox 轮询投递（04 方向 A.3）
 
-[04 生产级进阶](../Spring-Cloud-Stream专题/04-生产级进阶-Outbox与Schema与分区调优.md) 讲过：Outbox 模式里，业务数据 + outbox 事件写同一事务，再用一个 `@Scheduled` 投递器定时扫 outbox 表发 Kafka。
+[04 生产级进阶](../Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md) 讲过：Outbox 模式里，业务数据 + outbox 事件写同一事务，再用一个 `@Scheduled` 投递器定时扫 outbox 表发 Kafka。
 
 轮询投递有两个痛点：
 
@@ -251,7 +251,7 @@ Debezium 默认消息含 `before/after/source/op` 一堆字段，下游消费者
 
 ### 5.1 业务代码（和轮询方案完全一样）
 
-业务代码不变——还是事务里写业务数据 + outbox 表（见 [04 方向 A.3.2](../Spring-Cloud-Stream专题/04-生产级进阶-Outbox与Schema与分区调优.md)）。**没有 `@Scheduled` 投递器了**——Debezium 监听 outbox 表自动投递。
+业务代码不变——还是事务里写业务数据 + outbox 表（见 [04 方向 A.3.2](../Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md)）。**没有 `@Scheduled` 投递器了**——Debezium 监听 outbox 表自动投递。
 
 ### 5.2 Debezium 监听 outbox 表 + Outbox SMT
 
@@ -318,7 +318,7 @@ Debezium 默认消息含 `before/after/source/op` 一堆字段，下游消费者
 
 ## 配套学习资料
 
-- [Spring Cloud Stream 专题 04 生产级进阶 方向 A](../Spring-Cloud-Stream专题/04-生产级进阶-Outbox与Schema与分区调优.md)（Outbox 轮询投递，本篇是其 CDC 升级）
+- [Spring Cloud Stream 专题 04 生产级进阶 方向 A](../Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md)（Outbox 轮询投递，本篇是其 CDC 升级）
 - [Confluent：Debezium PG connector 文档](https://docs.confluent.io/kafka-connectors/debezium-postgres-source/current/overview.html)（配置权威）
 - [Debezium 官方 docker-compose 示例](https://github.com/debezium/debezium-examples/blob/main/tutorial/docker-compose-postgres.yaml)（搭建模板）
 - [Debezium 官方博客：Outbox 模式](https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/)（Outbox+CDC 经典）

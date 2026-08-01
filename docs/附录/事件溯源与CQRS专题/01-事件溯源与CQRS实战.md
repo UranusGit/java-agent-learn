@@ -2,9 +2,9 @@
 
 > **这份文档是什么**：一篇**独立专题**，讲事件驱动架构里最深的两个模式——**事件溯源（Event Sourcing）** 和 **CQRS（命令查询职责分离）**。它们不属于 Spring Cloud Stream（那是消息框架），而是**数据架构模式**——决定"系统怎么存储和查询数据"的根本思维。
 >
-> **写给谁**：读完了 [Spring Cloud Stream 专题](../Spring-Cloud-Stream专题/README.md) 的人。你已经会用事件通信了，这篇带你理解"**如果把事件当成数据的源头本身**"会发生什么——这是金融、电商、审计类系统的深度玩法。
+> **写给谁**：读完了 [Spring Cloud Stream 专题](../Kafka消息队列实战专题/README.md) 的人。你已经会用事件通信了，这篇带你理解"**如果把事件当成数据的源头本身**"会发生什么——这是金融、电商、审计类系统的深度玩法。
 >
-> **和 Stream 的关系**：Stream 是"**搬**事件"的管道；事件溯源是"**用事件当数据库**"的思想。两者常配合：事件溯源系统产生的事件，用 Stream/Kafka 分发给读模型。但它们是**独立的两件事**——本篇不依赖 Stream。
+> **和消息框架的关系**：消息框架（本仓库用 Kafka）是"**搬**事件"的管道；事件溯源是"**用事件当数据库**"的思想。两者常配合：事件溯源系统产生的事件，用 Kafka 分发给读模型。但它们是**独立的两件事**——本篇不依赖 Kafka 消息框架。
 >
 > **版本前提（已校验）**：Spring Boot 3.4.x + PostgreSQL。核心概念对照 [microservices.io 事件溯源模式](https://microservices.io/patterns/data/event-sourcing.html) 和 [Axon Framework](https://blog.nebrass.fr/playing-with-cqrs-and-event-sourcing-in-spring-boot-and-axon/) 校验。
 
@@ -436,7 +436,7 @@ public AccountAggregate load(String accountId) {
 
 ## 配套学习资料
 
-- [Spring Cloud Stream 专题](../Spring-Cloud-Stream专题/README.md)（事件溯源的事件常通过 Stream/Kafka 分发给读模型）
+- [Spring Cloud Stream 专题](../Kafka消息队列实战专题/README.md)（事件溯源的事件常通过 Stream/Kafka 分发给读模型）
 - [microservices.io：事件溯源模式](https://microservices.io/patterns/data/event-sourcing.html)（权威概念）
 - [Axon Framework 实战](https://blog.nebrass.fr/playing-with-cqrs-and-event-sourcing-in-spring-boot-and-axon/)（Java 事件溯源框架）
 - [PG 事件溯源参考实现](https://github.com/eugene-khyst/postgresql-event-sourcing)（PG 自建 event store）

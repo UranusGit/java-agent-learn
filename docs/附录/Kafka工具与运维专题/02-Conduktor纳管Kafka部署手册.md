@@ -807,7 +807,7 @@ docker exec -it <pg容器名> psql -U postgres -d conduktor -c "\dt"
 ```xml
 <dependency>
     <groupId>org.springframework.kafka</groupId>
-    <artifactId>spring-kafka</artifactId>
+    <artifactId>spring-boot-starter-kafka</artifactId>
     <version>3.2.x</version>
 </dependency>
 ```
