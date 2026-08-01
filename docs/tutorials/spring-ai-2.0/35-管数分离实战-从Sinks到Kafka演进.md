@@ -4,7 +4,7 @@
 >
 > **它和 34 系列的关系**：[34-轻依赖版](./34-轻依赖版-Agent与知识库实战.md) 是一个"什么都讲"的大全（Agent 循环、RAG、审计、记忆、管数分离、微服务……），信息密度极高，**对初学者来说一次性吞下太难**。本文是把其中**最核心、最常被问到的一条主线——「管数分离」**单独抽出来、把步子切得更细、砍掉一切支线，做成一份**专注、可线性跟读**的实践文档。学完本文，你再回去看 34 系列的架构演进章节会非常轻松。
 >
-> **技术栈**：**Spring Boot 4.0.6 · Spring AI 2.0.0** · Java 21 · WebFlux（响应式）· Reactor Sinks · **PostgreSQL**（run 状态/幂等/会话持久化，`postgresql` 驱动）· **MyBatis-Flex**（PG 的 ORM 访问层，`mybatis-flex-spring-boot3-starter`）· **Redis**（Streams + Pub/Sub，`spring-boot-starter-data-redis-reactive`）· **Redisson**（分布式锁，看门狗自动续期，`redisson-spring-boot-starter`）· **Kafka**（chunk 持久总线，`spring-kafka`）· Spring Cloud Gateway（网关）。LLM 默认用 DeepSeek（OpenAI 兼容协议，国内直连、价格低）。
+> **技术栈**：**Spring Boot 4.0.6 · Spring AI 2.0.0** · Java 21 · WebFlux（响应式）· Reactor Sinks · **PostgreSQL**（run 状态/幂等/会话持久化，`postgresql` 驱动）· **MyBatis-Flex**（PG 的 ORM 访问层，`mybatis-flex-spring-boot3-starter`）· **Redis**（Streams + Pub/Sub，`spring-boot-starter-data-redis-reactive`）· **Redisson**（分布式锁，看门狗自动续期，`redisson-spring-boot-starter`）· **Kafka**（chunk 持久总线，`spring-boot-starter-kafka`）· Spring Cloud Gateway（网关）。LLM 默认用 DeepSeek（OpenAI 兼容协议，国内直连、价格低）。
 >
 > **难度假设**：你会 Java、会用 IDE、会跑 Maven，但不熟 WebFlux/Reactor/Redis/Kafka。每个新概念**第一次出现都先用大白话讲**，再给代码。所有涉及的第三方 API 均为 Spring AI 2.0 / Spring Boot 4.0.6 时代真实签名（已逐一校验），照抄能编译。
 >
@@ -24,10 +24,11 @@
 - [第 5 章：晚加入的设备漏掉了前半段——seq 游标回放 + 客户端去重](#第-5-章晚加入的设备漏掉了前半段seq-游标回放--客户端去重)
 - [第 6 章：多端同时点生成，重复触发——run 资源 + 幂等键](#第-6-章多端同时点生成重复触发run-资源--幂等键)
 - [第 7 章：run 状态存 Redis 重启全清、查不动——PostgreSQL + MyBatis-Flex 持久化](#第-7-章run-状态存-redis-重启全清查不动postgresql--mybatis-flex-持久化)
-- [第 8 章：水平扩展成两台实例——跨实例广播 + 单一写者锁](#第-8-章水平扩展成两台实例跨实例广播--单一写者锁)
-- [第 9 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线](#第-9-章chunk-要跨服务消费长期保留升级-kafka-持久总线)
-- [第 10 章：触发与生成资源画像冲突——拆订阅服务](#第-10-章触发与生成资源画像冲突拆订阅服务)
-- [第 11 章：前端记一堆端口——API 网关统一入口](#第-11-章前端记一堆端口api-网关统一入口)
+- [第 8 章：会话历史与多轮上下文——正式项目必须有历史记录](#第-8-章会话历史与多轮上下文正式项目必须有历史记录)
+- [第 9 章：水平扩展成两台实例——跨实例广播 + 单一写者锁](#第-9-章水平扩展成两台实例跨实例广播--单一写者锁)
+- [第 10 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线](#第-10-章chunk-要跨服务消费长期保留升级-kafka-持久总线)
+- [第 11 章：触发与生成资源画像冲突——拆订阅服务](#第-11-章触发与生成资源画像冲突拆订阅服务)
+- [第 12 章：前端记一堆端口——API 网关统一入口](#第-12-章前端记一堆端口api-网关统一入口)
 - [全文演进总览与后续方向](#全文演进总览与后续方向)
 - [附录：项目结构与踩坑手册](#附录项目结构与踩坑手册)
 
@@ -79,7 +80,7 @@ GET  /runs/{id}/stream→ 纯只读地订阅这个任务的输出流
 - **触发和订阅一损俱损的耦合被解除**——订阅流出错不会连累正在跑的生成器。
 - **天然支持幂等**——多端同时点"生成"，用一个幂等键保证只触发一次。
 
-**管数分离 ≠ 微服务拆分**。本章前期**只在单进程内把接口拆开**（逻辑解耦），物理拆成独立服务是第 10 章的事。**先逻辑后物理，顺序不能反。**
+**管数分离 ≠ 微服务拆分**。本章前期**只在单进程内把接口拆开**（逻辑解耦），物理拆成独立服务是第 11 章的事。**先逻辑后物理，顺序不能反。**
 
 ### 为什么"企业级"总是绕不开它
 
@@ -123,9 +124,11 @@ GET  /runs/{id}/stream→ 纯只读地订阅这个任务的输出流
 | **MyBatis-Flex** | 轻量 ORM。比手写 JDBC 省事、比 MyBatis-Plus 更适配 Spring Boot 4/Java 21。本文访问 PG 的数据层。 | 第 7 章 |
 | **Redis Stream** | Redis 的持久追加日志结构，可从任意位置回放。本文 chunk 总线的载体（后被 Kafka 接管）。 | 第 4 章 |
 | **seq 游标** | 给每个 chunk 一个单调递增编号，客户端记录最后收到的 seq，断线重连时从该 seq 之后补推。 | 第 5 章 |
-| **Pub/Sub** | Redis 的实时消息广播，发布者发一条，所有订阅者立刻收到。不持久。 | 第 8 章 |
-| **单一写者（single-writer）** | 多实例集群里，保证全集群只有一个实例真正去跑生成器。否则会重复触发、结果分叉。 | 第 8 章 |
-| **Kafka 消费组** | Kafka 的标准消费模式，每个组各自维护消费进度（offset），互不干扰。 | 第 9 章 |
+| **Pub/Sub** | Redis 的实时消息广播，发布者发一条，所有订阅者立刻收到。不持久。 | 第 9 章 |
+| **单一写者（single-writer）** | 多实例集群里，保证全集群只有一个实例真正去跑生成器。否则会重复触发、结果分叉。 | 第 9 章 |
+| **Kafka 消费组** | Kafka 的标准消费模式，每个组各自维护消费进度（offset），互不干扰。 | 第 10 章 |
+| **会话历史（gen_session / gen_message）** | 对话内容的结构化落库：每轮一行（user/assistant），可按会话回看、长期保留。 | 第 8 章 |
+| **多轮上下文注入** | 触发时读该会话最近 N 轮注入 ChatClient，让 LLM 记得前文；上下文跟着 sessionId 走，切换会话即切换上下文。 | 第 8 章 |
 
 > **不用现在全懂**。每个名词在它对应的章节会重新、详细地讲一遍。这张表是供你读到一半忘了回来对一眼用的。
 
@@ -197,7 +200,8 @@ research-stream/
             openai starter —— Spring AI 2.0（ChatClient 流式调 LLM；DeepSeek 走 OpenAI 兼容协议）
           演进纪律：后面章节用到才加——
             第 4 章加 data-redis-reactive；第 7 章加 postgresql + mybatis-flex；
-            第 8 章加 redisson；第 9 章加 spring-kafka；第 11 章加 cloud-gateway。
+            第 8 章无需新依赖（会话历史沿用 PG + MyBatis-Flex）；
+            第 6 章加 redisson（会话锁，第 9 章任务锁沿用）；第 10 章加 spring-boot-starter-kafka；第 12 章加 cloud-gateway。
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -1570,7 +1574,7 @@ git add -A && git commit -m "第5章:seq游标回放+SSE Last-Event-ID续传"
 | **run 资源** | 每次触发创建一个 `run`，有 `runId`、归属 `sessionId`、状态（`queued → RUNNING → DONE/FAILED/CANCELLED`）、创建时间 |
 | **状态存储** | 本章先放 Redis（`run:{id}:status`）；**第 7 章迁到 PostgreSQL**（结构化数据该进关系库） | 状态查询要低延迟、可跨实例 |
 | **幂等键** | 请求头 `Idempotency-Key` → 同 key 返回同一个 runId | 多端同时提交，只有一个 run |
-| **会话级独占** | Redis 标记 `session:{id}:running` → 同一会话同时只一个 run | 串行化，防并发错乱 |
+| **会话级独占** | Redisson 锁 `session:{id}:running` → 同一会话同时只一个 run | 串行化，防并发错乱 |
 | **取消** | `POST /runs/{id}/cancel` | 主动停止（终态，释放会话锁） |
 
 REST 形态升级：
@@ -1586,12 +1590,12 @@ GET  /api/runs/{runId}/stream        → 只读 SSE（沿用第 5 章）
 
 > **幂等键的原理**：客户端为"这次提交"生成一个随机 key（如设备id+时间戳），放在 `Idempotency-Key` 头里。服务端把 `key → runId` 存进 Redis（带 TTL）。**同一个 key 再次来，直接返回已存的 runId，不重复触发。** 这样"手机和 iPad 同时点"（同一个 key）只会创建一个 run。
 
-> **会话级独占的原理（本章重点）**：给每个 `sessionId` 维护一个 Redis 标记 `session:{id}:running`（SETNX 抢、终态删）。触发时先抢这个标记——**抢到才允许生成，抢不到（说明该会话已有任务在跑）直接返回 409**。生成到终态（DONE/FAILED/CANCELLED）时删除标记，会话才能接受下一个任务。**这是最外层的并发闸门**，比幂等键、任务锁都靠前——它保证"同一会话永远不会有并发生成"。
+> **会话级独占的原理（本章重点）**：给每个 `sessionId` 维护一把 Redisson 分布式锁 `session:{id}:running`（抢到锁=会话被占用，终态释放）。触发时先抢这把锁——**抢到才允许生成，抢不到（说明该会话已有任务在跑）直接返回 409**。生成到终态（DONE/FAILED/CANCELLED）时释放锁，会话才能接受下一个任务。**这是最外层的并发闸门**，比幂等键、任务锁都靠前——它保证"同一会话永远不会有并发生成"。
 
 > **三道防线的层次关系（别混淆）**：
 > - **会话级独占**（本章新增，粒度=sessionId）：同一会话同时只一个任务 → **最外层闸门**。
 > - **幂等键**（粒度=idempotencyKey）：同一提交只创建一个 run。
-> - **任务级单一写者锁**（第 8 章，粒度=runId）：同一任务多实例只跑一个。
+> - **任务级单一写者锁**（第 9 章，粒度=runId）：同一任务多实例只跑一个。
 >
 > 三者**并存**，从外到内依次生效。会话级独占挡掉绝大多数并发问题，后两个是兜底。
 
@@ -1599,18 +1603,37 @@ GET  /api/runs/{runId}/stream        → 只读 SSE（沿用第 5 章）
 
 #### 6.2.1 RunStore：run 资源 + 幂等映射
 
+先加 Redisson 依赖——**会话锁是分布式锁，按企业级标准用 Redisson，而不是手写 SETNX**：
+
+**【改已有文件，追加】** `pom.xml`：
+
+```xml
+<!-- ▼ 第6章新增：Redisson 分布式锁（会话级独占；看门狗自动续期，业务没跑完锁不过期） -->
+<dependency>
+    <groupId>org.redisson</groupId>
+    <artifactId>redisson-spring-boot-starter</artifactId>
+</dependency>
+```
+
+> **为什么会话锁用 Redisson 而不是手写 SETNX？** 会话锁要在**整个 run 的生命周期**里锁住会话（可能几分钟）。手写 `SETNX + 固定 TTL` 有两个坑：① run 生成很慢（LLM 卡顿）时 TTL 可能过期，锁被别人抢走，并发闸门失效；② `DELETE` 释放不校验持有者，旧锁过期被抢走后，原持有者可能误删别人的锁。Redisson 的**看门狗**每 10s 把锁续期到 30s（只要实例活着锁不过期），释放走 Lua **先比对 owner 再删**——两个坑都解了（详见第 9 章的对比）。
+
 **【新建文件】** `research-stream/src/main/java/com/example/stream/run/RunStore.java`：
 
 ```java
 package com.example.stream.run;
 
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Run 资源存储（落 Redis）。
@@ -1618,24 +1641,30 @@ import java.util.UUID;
  * - create(idemKey, sessionId) ：幂等创建 run。同 idemKey 返回同一 runId；否则新建（带 sessionId）。
  * - get(runId)       ：查 run 资源 JSON。
  * - setStatus(runId) ：改状态（queued/RUNNING/DONE/FAILED/CANCELLED）。
- * - acquireSession(sessionId, runId) ：会话级独占——SETNX 抢 session:{id}:running。
+ * - acquireSession(sessionId) ：会话级独占——Redisson 抢 session:{id}:running。
  * - releaseSession(sessionId)        ：释放会话独占（终态时调）。
  *
  * 状态机：queued → RUNNING → DONE / FAILED / CANCELLED
+ *
+ * ⚠️ 会话锁是分布式锁，用 Redisson RLock（企业级）：看门狗自动续期，业务没跑完锁不过期；
+ *    释放走 Lua 校验 owner 才删，不会误删别人的锁（详见第 9 章对比）。
  */
 @Component
 public class RunStore {
 
     private static final String KEY_RUN     = "run:%s:status";
     private static final String KEY_IDEM    = "idem:%s";              // idempotencyKey → runId
-    private static final String KEY_SESSION = "session:%s:running";   // ▼ 会话级独占标记
-    private static final Duration TTL          = Duration.ofDays(1);
-    private static final Duration SESSION_LOCK = Duration.ofMinutes(10); // ▼ 会话锁 TTL（兜底，防崩溃不释放）
+    private static final String KEY_SESSION = "session:%s:running";   // ▼ 会话级独占锁（Redisson）
+    private static final Duration TTL          = Duration.ofDays(1);  // run 状态/幂等映射的保留时长
 
     private final ReactiveRedisTemplate<String, String> redis;
+    private final RedissonClient redisson;   // ▼ 企业级分布式锁客户端
+    /** 本实例抢到的会话锁引用。释放时必须用同一个对象，Redisson 才能比对 owner 安全释放。 */
+    private final ConcurrentHashMap<String, RLock> sessionLocks = new ConcurrentHashMap<>();
 
-    public RunStore(ReactiveRedisTemplate<String, String> redis) {
+    public RunStore(ReactiveRedisTemplate<String, String> redis, RedissonClient redisson) {
         this.redis = redis;
+        this.redisson = redisson;
     }
 
     /** 幂等创建：同 idemKey 返回同一 runId；否则新建（记录归属 sessionId）。 */
@@ -1651,14 +1680,29 @@ public class RunStore {
         return newRun(sessionId);
     }
 
-    /** ▼ 会话级独占：SETNX 抢 session:{id}:running。返回 true=抢到可生成；false=该会话已有任务在跑。 */
-    public Mono<Boolean> acquireSession(String sessionId, String runId) {
-        return redis.opsForValue().setIfAbsent(KEY_SESSION.formatted(sessionId), runId, SESSION_LOCK);
+    /** ▼ 会话级独占：Redisson 抢 session:{id}:running。返回 true=抢到可生成；false=该会话已有任务在跑。
+     *  tryLock(0, -1)：0=拿不到立即返回；-1=启用看门狗自动续期（每 10s 续到 30s，业务没跑完锁不过期）。
+     *  ⚠️ RLock 是阻塞 API，用 Schedulers.boundedElastic() 隔离，避免卡住 reactor 事件循环。
+     *  注意：锁的值是 Redisson 内部 owner 令牌，不存 runId；会话↔run 归属由 StreamService 的 runSession 映射维护。 */
+    public Mono<Boolean> acquireSession(String sessionId) {
+        return Mono.fromCallable(() -> {
+            RLock lock = redisson.getLock(KEY_SESSION.formatted(sessionId));
+            boolean acquired = lock.tryLock(0, -1, TimeUnit.MILLISECONDS);
+            if (acquired) {
+                sessionLocks.put(KEY_SESSION.formatted(sessionId), lock);   // 留着 release 用同一对象安全释放
+            }
+            return acquired;
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    /** ▼ 释放会话独占（run 到终态时调，让会话能接受下一个任务）。 */
+    /** ▼ 释放会话独占（run 到终态时调）。用抢锁时存下的 RLock 引用 unlock——Redisson 内部走 Lua 校验 owner 后才删，不会误删别人的锁。 */
     public Mono<Void> releaseSession(String sessionId) {
-        return redis.delete(KEY_SESSION.formatted(sessionId)).then();
+        return Mono.fromRunnable(() -> {
+            RLock lock = sessionLocks.remove(KEY_SESSION.formatted(sessionId));
+            if (lock != null && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }).subscribeOn(Schedulers.boundedElastic()).then();
     }
 
     private Mono<String> newRun(String sessionId) {
@@ -1684,7 +1728,7 @@ public class RunStore {
 
 > **`switchIfEmpty(Mono.defer(...))` 的细节**：`switchIfEmpty` 接收的 Mono 会**立即求值**（即使上游有值）。用 `Mono.defer(() -> ...)` 包一层，让它**延迟到真正需要时**才执行 `newRun()`——避免每次查询都白创建一个 run。这是 Reactor 的常见坑。
 
-> **会话锁的 TTL（10 分钟）是兜底**：正常靠 `releaseSession` 在终态释放；如果实例崩溃没释放，10 分钟后自动过期，会话不会永久锁死。比生成最长耗时（第 8 章任务锁）略长即可。
+> **会话锁靠看门狗自动续期**：用 Redisson 后，只要实例活着、run 没到终态，锁就每 10s 续到 30s——**生成再慢锁也不会过期**（这正是手写 `SETNX + 固定 TTL` 在长生成时会失效的坑）。实例崩溃时看门狗随之死亡，锁 30s 后自动过期，会话不会永久锁死。
 
 #### 6.2.2 StreamService：接 RunStore，触发时维护状态 + 记取消句柄
 
@@ -1738,7 +1782,7 @@ public class StreamService {
     /** ▼ 管理面：会话级独占 + 幂等创建 run + 触发。返回 runId；会话忙时返回 409 错误。 */
     public Mono<String> trigger(String prompt, String sessionId, String idempotencyKey) {
         return runs.create(idempotencyKey, sessionId)
-                .flatMap(runId -> runs.acquireSession(sessionId, runId)   // ▼ ① 最外层闸门
+                .flatMap(runId -> runs.acquireSession(sessionId)   // ▼ ① 最外层闸门
                         .flatMap(acquired -> {
                             if (Boolean.FALSE.equals(acquired)) {
                                 // 该会话已有任务在跑：标记 run 为 CANCELLED（作废），返回 409
@@ -1812,14 +1856,14 @@ public class StreamService {
 
 > **会话级独占的状态机视图**：
 > ```
-> 空闲（无 session:X:running）
+> 空闲（无会话锁）
 >   │ POST 触发
->   ▼ acquireSession SETNX 成功
-> 生成中（session:X:running = runId）
+>   ▼ acquireSession Redisson 抢到锁
+> 生成中（会话锁被当前 run 持有）
 >   │ 这期间同会话再 POST？acquireSession 失败 → 409 拒绝 ❌
 >   │
 >   │ 生成到终态（DONE/FAILED/CANCELLED）
->   ▼ releaseSession DELETE
+>   ▼ releaseSession unlock（实例崩溃则看门狗停止，30s 后锁过期兜底）
 > 空闲（可接受下一个任务）
 > ```
 
@@ -1962,9 +2006,9 @@ git add -A && git commit -m "第6章:run资源+状态机+幂等键+会话级独�
 
 ### 6.5 复盘 + 暴露问题
 
-到这里，**单实例的管数分离已经是企业级标准形态**了：run 资源、状态机、幂等、**会话级独占**、取消、断线续传、持久回放。三道并发防线（会话级独占 → 幂等键 → 任务锁）也到位了两道（任务锁第 8 章补）。但第 6 章有个**一直被刻意回避的隐患**现在藏不住了：
+到这里，**单实例的管数分离已经是企业级标准形态**了：run 资源、状态机、幂等、**会话级独占**、取消、断线续传、持久回放。三道并发防线（会话级独占 → 幂等键 → 任务锁）也到位了两道（任务锁第 9 章补）。但第 6 章有个**一直被刻意回避的隐患**现在藏不住了：
 
-> run 状态、幂等映射、会话独占标记**全部存在 Redis 的 KV 里**（`run:{id}:status`、`idem:{key}`、`session:{id}:running`），而且都**带 TTL（1 天 / 10 分钟）**。这意味着——**服务一重启、TTL 一到，所有 run 记录、幂等关系、会话历史全部蒸发**。你想"查上周某个 run 跑了什么"、"按会话统计生成次数"、"给幂等创建加 ACID 保证防并发"、"做审计对账"——Redis KV 全做不到。
+> run 状态、幂等映射**全部存在 Redis 的 KV 里**（`run:{id}:status`、`idem:{key}`），而且都**带 TTL（1 天）**（会话锁虽然升级成了 Redisson，但仍在 Redis）。这意味着——**服务一重启、TTL 一到，所有 run 记录、幂等关系全部蒸发**。你想"查上周某个 run 跑了什么"、"按会话统计生成次数"、"给幂等创建加 ACID 保证防并发"、"做审计对账"——Redis KV 全做不到。
 
 **run 状态是结构化的业务数据（有字段、要查询、要事务、要长期保留），它天生该住关系库，而不是 Redis 的临时 KV**。
 
@@ -1992,11 +2036,11 @@ git add -A && git commit -m "第6章:run资源+状态机+幂等键+会话级独�
 | **幂等映射** | 结构化、要唯一约束、要原子防并发 | **PostgreSQL** | 用 `UNIQUE(idempotency_key)` + 事务，原子防并发，比 Redis 两步操作稳 |
 | **会话记录** | 结构化、要按 session 查历史 | **PostgreSQL** | 同上 |
 | **会话独占标记** | 临时并发闸门，短命 | **Redis**（保留） | 极低延迟、TTL 自动过期兜底，KV 正合适 |
-| **chunk 流** | 高频追加、流式、按游标回放 | **Redis Stream**（第 4 章）→ 后续 Kafka（第 9 章） | 流式追加不该进关系库 |
-| **分布式锁** | 临时、低延迟 | **Redis（Redisson）** | 第 8 章用 |
-| **实时取消/结束通知** | 即时广播、不持久 | **Redis Pub/Sub** | 第 8 章用 |
+| **chunk 流** | 高频追加、流式、按游标回放 | **Redis Stream**（第 4 章）→ 后续 Kafka（第 10 章） | 流式追加不该进关系库 |
+| **分布式锁** | 临时、低延迟 | **Redis（Redisson）** | 第 6 章用（会话锁）；第 9 章（任务锁） |
+| **实时取消/结束通知** | 即时广播、不持久 | **Redis Pub/Sub** | 第 9 章用 |
 
-> **为什么 chunk 不进 PG？** chunk 是"每秒几十条、按顺序追加、按游标回放"的流式数据。PG 的关系表做高频追加 + 范围回放，性能和成本都不如 Redis Stream（第 4 章）/ Kafka（第 9 章）。**把流式数据塞进关系库是常见反模式**——流有流的家（Kafka），记录有记录的家（PG）。
+> **为什么 chunk 不进 PG？** chunk 是"每秒几十条、按顺序追加、按游标回放"的流式数据。PG 的关系表做高频追加 + 范围回放，性能和成本都不如 Redis Stream（第 4 章）/ Kafka（第 10 章）。**把流式数据塞进关系库是常见反模式**——流有流的家（Kafka），记录有记录的家（PG）。
 
 #### 为什么选 MyBatis-Flex 而不是 MyBatis-Plus / JPA
 
@@ -2006,7 +2050,7 @@ git add -A && git commit -m "第6章:run资源+状态机+幂等键+会话级独�
 | MyBatis-Plus | 老牌、生态广，但近年迭代慢，对高版本 Boot 的兼容偶有滞后。 |
 | Spring Data JPA | 标准、面向对象，但复杂查询要写 SQL 或 Specification，流式场景不够灵活。 |
 
-> **响应式栈的一个坑（重要）**：本文是 WebFlux 响应式栈，而 **MyBatis-Flex / JDBC 是阻塞的**。直接在 reactor 线程里调 Mapper 会卡住事件循环。**正确做法：用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` 把阻塞的 DB 调用隔离到弹性线程池**。本章 `RunStore` 的每个方法都这么包。这是响应式 + 阻塞 DB 的标准配合方式，和第 8 章 Redisson 锁的处理一致。
+> **响应式栈的一个坑（重要）**：本文是 WebFlux 响应式栈，而 **MyBatis-Flex / JDBC 是阻塞的**。直接在 reactor 线程里调 Mapper 会卡住事件循环。**正确做法：用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` 把阻塞的 DB 调用隔离到弹性线程池**。本章 `RunStore` 的每个方法都这么包。这是响应式 + 阻塞 DB 的标准配合方式，和第 9 章 Redisson 锁的处理一致。
 
 ### 7.2 动手
 
@@ -2138,29 +2182,32 @@ public interface RunMapper extends BaseMapper<RunEntity> {
 
 #### 7.2.5 RunStore：从 Redis KV 改为 PG（响应式包装）
 
-**【改已有文件，完整版覆盖】** `RunStore.java`（核心：run 状态/幂等走 PG；会话独占标记**保留 Redis**——它是短命并发闸门，KV 正合适）：
+**【改已有文件，完整版覆盖】** `RunStore.java`（核心：run 状态/幂等走 PG；会话独占锁**保留 Redis + Redisson**——短命并发闸门，锁本身就适合留 Redis）：
 
 ```java
 package com.example.stream.run;
 
 import com.mybatisflex.core.query.QueryWrapper;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Run 资源存储（第 7 章：结构化数据落 PostgreSQL，会话独占标记保留 Redis）。
+ * Run 资源存储（第 7 章：结构化数据落 PostgreSQL，会话独占锁保留 Redis + Redisson）。
  *
  * - create(idemKey, sessionId) ：幂等创建 run。同 idemKey 返回同一 runId（PG 唯一约束保证原子）。
  * - get(runId)       ：查 run 资源（从 PG）。
  * - setStatus(runId) ：改状态（更新 PG）。
- * - acquireSession(sessionId, runId) ：会话级独占——Redis SETNX（短命并发闸门，保留 Redis）。
+ * - acquireSession(sessionId) ：会话级独占——Redisson 抢 session:{id}:running。
  * - releaseSession(sessionId)        ：释放会话独占。
  *
  * 状态机：queued → RUNNING → DONE / FAILED / CANCELLED
@@ -2171,18 +2218,21 @@ import java.util.UUID;
 @Component
 public class RunStore {
 
-    private static final String KEY_SESSION = "session:%s:running";   // ▼ 会话独占标记（保留 Redis）
-    private static final Duration SESSION_LOCK = Duration.ofMinutes(10); // ▼ 会话锁 TTL（兜底，防崩溃不释放）
+    private static final String KEY_SESSION = "session:%s:running";   // ▼ 会话独占锁（Redisson，保留 Redis）
 
     private final RunMapper runMapper;
     private final IdempotencyMapper idempotencyMapper;
     private final ReactiveRedisTemplate<String, String> redis;
+    private final RedissonClient redisson;   // ▼ 企业级分布式锁
+    /** 本实例抢到的会话锁引用（release 用同一对象安全释放）。 */
+    private final ConcurrentHashMap<String, RLock> sessionLocks = new ConcurrentHashMap<>();
 
     public RunStore(RunMapper runMapper, IdempotencyMapper idempotencyMapper,
-                    ReactiveRedisTemplate<String, String> redis) {
+                    ReactiveRedisTemplate<String, String> redis, RedissonClient redisson) {
         this.runMapper = runMapper;
         this.idempotencyMapper = idempotencyMapper;
         this.redis = redis;
+        this.redisson = redisson;
     }
 
     /** 幂等创建：同 idemKey 返回同一 runId；否则新建。
@@ -2221,14 +2271,28 @@ public class RunStore {
                 .subscribeOn(Schedulers.boundedElastic()).then();
     }
 
-    /** ▼ 会话级独占：Redis SETNX 抢 session:{id}:running。短命并发闸门，保留 Redis（低延迟 + TTL 兜底）。 */
-    public Mono<Boolean> acquireSession(String sessionId, String runId) {
-        return redis.opsForValue().setIfAbsent(KEY_SESSION.formatted(sessionId), runId, SESSION_LOCK);
+    /** ▼ 会话级独占：Redisson 抢 session:{id}:running。返回 true=抢到可生成；false=该会话已有任务在跑。
+     *  tryLock(0, -1)：0=拿不到立即返回；-1=看门狗自动续期（业务没跑完锁不过期）。
+     *  ⚠️ RLock 是阻塞 API，用 boundedElastic 隔离（同第 6 章）。 */
+    public Mono<Boolean> acquireSession(String sessionId) {
+        return Mono.fromCallable(() -> {
+            RLock lock = redisson.getLock(KEY_SESSION.formatted(sessionId));
+            boolean acquired = lock.tryLock(0, -1, TimeUnit.MILLISECONDS);
+            if (acquired) {
+                sessionLocks.put(KEY_SESSION.formatted(sessionId), lock);
+            }
+            return acquired;
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    /** ▼ 释放会话独占（run 到终态时调，让会话能接受下一个任务）。 */
+    /** ▼ 释放会话独占（run 到终态时调）。用抢锁时存下的 RLock 引用 unlock——Redisson 走 Lua 校验 owner 后才删。 */
     public Mono<Void> releaseSession(String sessionId) {
-        return redis.delete(KEY_SESSION.formatted(sessionId)).then();
+        return Mono.fromRunnable(() -> {
+            RLock lock = sessionLocks.remove(KEY_SESSION.formatted(sessionId));
+            if (lock != null && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }).subscribeOn(Schedulers.boundedElastic()).then();
     }
 
     // —— 内部：阻塞 DB 操作 —— //
@@ -2277,7 +2341,7 @@ public class RunStore {
 
 > **三个关键改动（对比第 6 章 Redis 版）**：
 > 1. **run 状态/幂等从 Redis KV → PG**：`get`/`setStatus`/`create` 全走 `RunMapper`，重启不丢、能 SQL 查、有唯一约束原子幂等。
-> 2. **会话独占标记保留 Redis**：`acquireSession`/`releaseSession` 没变——它是"短命并发闸门"，Redis KV 的低延迟 + TTL 兜底正合适，没必要落 PG。
+> 2. **会话独占锁保留 Redis（Redisson）**：`acquireSession`/`releaseSession` 用 Redisson（第 6 章引入）——它是"短命并发闸门"，锁本身就是 Redis 的强项（低延迟 + 看门狗续期），没必要落 PG。
 > 3. **每个 DB 调用包 `Schedulers.boundedElastic()`**：MyBatis-Flex 是阻塞的，必须隔离出 reactor 线程，否则卡事件循环。
 >
 > ⚠️ **教学简化处（诚实标注）**：为聚焦"管数分离主线"，`IdempotencyEntity`/`IdempotencyMapper`/`GEN_IDEMPOTENCY`（MyBatis-Flex 编译期生成的表元数据）只示意用法、未全部展开源码；`insertRun` 里的"run 插入 + 幂等插入"应用 `@Transactional` 包成一个事务（生产级必须，否则半失败会脏）。这些 ORM/事务细节非本文重点，详见 [数据库事务与 @Transactional 详解](../../附录/协议与数据库/02-数据库事务与Transactional详解.md) 附录。
@@ -2285,7 +2349,7 @@ public class RunStore {
 ### 7.3 验证
 
 ```bash
-# 起 PG（本地起一个，第 9 章起 Kafka，PG/Kafka 也可统一进 docker-compose）
+# 起 PG（本地起一个，第 10 章起 Kafka，PG/Kafka 也可统一进 docker-compose）
 docker run -d --name pg -p 5432:5432 \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=research_stream postgres:16
 
@@ -2324,17 +2388,713 @@ git add -A && git commit -m "第7章:run状态/幂等从Redis迁PostgreSQL+MyBat
 
 run 状态、幂等映射现在落 PG 了——能 SQL 查询、重启不丢、ACID 保证幂等原子、可审计。Redis 退回到真正擅长的角色：会话独占标记 + （后续）锁 + 实时通知。**结构化数据进关系库、流式数据进 Stream/Kafka、临时并发标记进 Redis KV——各司其职**。
 
-但所有东西还在**一个进程**里。下一个真实痛点来了：
+但还有一件"正式项目必须有"的事没做：**对话内容没人管**。用户问过什么、AI 回过什么，没有落库；LLM 每轮都"失忆"；前端也没有历史列表、不能新建/切换会话。这三件事，前 7 章一个都答不了。
 
-**水平扩展成两台实例后，A 实例触发的 run，B 实例的订阅请求会落空**（因为生成流句柄 `Disposable` 只在 A 的内存里）。而且两台实例如果都收到触发请求，可能各自跑一次（虽然有会话级独占、幂等键兜底，但任务级单一写者锁需要显式处理）。
-
-**第 8 章：跨实例广播 + 单一写者锁**，把管数分离推向真正的多实例集群。
+**第 8 章：会话历史与多轮上下文**——把对话记录落库、按会话注入上下文、补上会话管理接口和前端切换。
 
 ---
 
-## 第 8 章：水平扩展成两台实例——跨实例广播 + 单一写者锁
+## 第 8 章：会话历史与多轮上下文——正式项目必须有历史记录
 
 ### 8.0 场景
+
+第 7 章后，run 状态/幂等落 PG 了。但产品提了三个真实需求，当前设计一个都答不了：
+
+1. **"我换台设备，想接着之前的对话看"**——用户问过什么、AI 回过什么，**没有任何地方记录**。chunk 在 Redis Stream 里，但那是给"实时流"用的，不是给人看的历史记录。
+2. **"我再问一个问题，它得记得我刚才问过什么"**——`TextGenerator` 每次只发当前 prompt，LLM 每轮都"失忆"。真实聊天产品必须把**该会话的历史上下文**喂给模型。
+3. **"前端要有个历史列表，能新建会话、能点开旧会话继续聊"**——没有"会话"这个一级资源，没有列表接口，前端无从下手。
+
+> 一句话：**前 7 章把"任务怎么跑"管好了，但"人说了什么"没人管。** 正式项目里"历史记录"不是加分项，是基本盘——对话内容要能查、能回看、能作为上下文继续聊。
+
+### 8.1 思路：对话历史落 PG，上下文跟着 sessionId 走
+
+**关键判断（延续第 7 章）**：chunk 总线负责"快 + 实时回放"，**对话历史是结构化、要长期查的业务数据，落 PG**——这是系统记录（system of record），不是 Redis/Kafka 的临时缓存。
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 历史存储 | **PostgreSQL**（`gen_session` + `gen_message`） | 结构化、可 SQL 查、长期保留、与 run 状态同库 |
+| user 消息写入 | 触发时（`POST /api/runs`）落库 | 一触发就有记录 |
+| assistant 消息写入 | 生成完（终态），把 chunk 缓冲拼成全文落库 | 对话内容以"完整消息"为单位存，不回放拼接 |
+| 多轮上下文 | 触发时读该 session 最近 N 轮 → 注入 `ChatClient` | 让 LLM 记得前文 |
+| 会话管理 | `POST /api/sessions`（新建）+ `GET /api/sessions`（列表）+ `GET /api/sessions/{id}/messages`（对话） | 前端"新会话"按钮 + 历史列表 + 切换 |
+
+**"上下文跟着 sessionId 走"（本章最重要的设计点，记住这句话）**：
+
+> 每次触发，后端从**请求里的 sessionId** 读该会话的历史注入模型。所以**前端切到哪个历史会话，LLM 就感知哪个会话的历史**——会话 A 的问题不会串到会话 B，切回 A 它记得 A 说过什么。上下文**不是**"全局最后状态"，而是"当前会话的历史"。这正是真实聊天产品（ChatGPT 等）的语义，也是"切回历史会话不失忆"的机制本身。
+
+**表设计**：
+
+```
+gen_session  会话本体（历史列表用：id / title / 创建/更新时间）
+gen_message  对话消息（每轮一行：session_id / run_id / role / content / 时间）
+```
+
+> **一个约定变化（重要）**：第 6、7 章里 `sessionId` 是前端随手传的字符串（如 `sess-001`）。从本章起，**会话要先用 `POST /api/sessions` 创建**（拿到合法 sessionId），`gen_message` 用外键约束保证消息一定挂在已存在的会话下——否则历史列表和消息对不上。前几章的 curl 样例照旧能跑，但那只是"无历史"的简版。
+
+### 8.2 动手
+
+#### 8.2.1 建表：gen_session + gen_message
+
+**【改已有文件，追加】** `schema.sql`：
+
+```sql
+-- ▼ 第8章新增：会话本体（历史列表、新会话）
+CREATE TABLE IF NOT EXISTS gen_session (
+    id          VARCHAR(64)  PRIMARY KEY,          -- sessionId
+    title       VARCHAR(128) NOT NULL DEFAULT '新会话',
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+-- ▼ 第8章新增：对话消息（每轮一行，user/assistant）
+CREATE TABLE IF NOT EXISTS gen_message (
+    id          BIGSERIAL    PRIMARY KEY,
+    session_id  VARCHAR(64)  NOT NULL,
+    run_id      VARCHAR(32)  NOT NULL,
+    role        VARCHAR(16)  NOT NULL,             -- user / assistant
+    content     TEXT         NOT NULL,             -- 该轮完整文本
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT fk_msg_session FOREIGN KEY (session_id) REFERENCES gen_session(id) ON DELETE CASCADE,
+    CONSTRAINT fk_msg_run     FOREIGN KEY (run_id)     REFERENCES gen_run(id)     ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_gen_msg_session ON gen_message (session_id, created_at); -- ▼ 按会话查对话
+```
+
+> **两张表的分工**：`gen_session` 是会话的"门牌"（历史列表页靠它），`gen_message` 是会话的"聊天记录"。run 结束、消息挂好，会话随时能翻出完整对话。
+
+#### 8.2.2 实体 + Mapper（MyBatis-Flex）
+
+与第 7 章 `RunEntity`/`RunMapper` 完全对称，这里新建两个实体、两个 Mapper。
+
+**【新建文件】** `research-stream/src/main/java/com/example/stream/run/SessionEntity.java`：
+
+```java
+package com.example.stream.run;
+
+import com.mybatisflex.annotation.Column;
+import com.mybatisflex.annotation.Id;
+import com.mybatisflex.annotation.KeyType;
+import com.mybatisflex.annotation.Table;
+import java.time.OffsetDateTime;
+
+/** ▼ 会话实体（对应 gen_session 表）。 */
+@Table("gen_session")
+public class SessionEntity {
+
+    @Id(keyType = KeyType.None)   // sessionId 由应用生成
+    private String id;
+
+    private String title;
+
+    @Column("created_at")
+    private OffsetDateTime createdAt;
+
+    @Column("updated_at")
+    private OffsetDateTime updatedAt;
+
+    // getters / setters 省略（实际项目用 Lombok @Data）
+}
+```
+
+**【新建文件】** `research-stream/src/main/java/com/example/stream/run/MessageEntity.java`：
+
+```java
+package com.example.stream.run;
+
+import com.mybatisflex.annotation.Column;
+import com.mybatisflex.annotation.Id;
+import com.mybatisflex.annotation.KeyType;
+import com.mybatisflex.annotation.Table;
+import java.time.OffsetDateTime;
+
+/** ▼ 对话消息实体（对应 gen_message 表）。 */
+@Table("gen_message")
+public class MessageEntity {
+
+    @Id(keyType = KeyType.Auto)   // BIGSERIAL 自增
+    private Long id;
+
+    @Column("session_id")
+    private String sessionId;
+
+    @Column("run_id")
+    private String runId;
+
+    private String role;          // user / assistant
+
+    private String content;
+
+    @Column("created_at")
+    private OffsetDateTime createdAt;
+
+    // getters / setters 省略
+}
+```
+
+**【新建文件】** `SessionMapper.java` + `MessageMapper.java`：
+
+```java
+package com.example.stream.run;
+
+import com.mybatisflex.core.BaseMapper;
+import org.apache.ibatis.annotations.Mapper;
+
+/** ▼ 会话表 Mapper：继承 BaseMapper 自动获得 CRUD。 */
+@Mapper
+public interface SessionMapper extends BaseMapper<SessionEntity> {
+}
+```
+
+```java
+package com.example.stream.run;
+
+import com.mybatisflex.core.BaseMapper;
+import org.apache.ibatis.annotations.Mapper;
+
+/** ▼ 消息表 Mapper。 */
+@Mapper
+public interface MessageMapper extends BaseMapper<MessageEntity> {
+}
+```
+
+#### 8.2.3 HistoryStore：历史读写 + 上下文装载
+
+**【新建文件】** `research-stream/src/main/java/com/example/stream/run/HistoryStore.java`：
+
+```java
+package com.example.stream.run;
+
+import com.mybatisflex.core.query.QueryWrapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * 会话历史存储（第 8 章）。
+ *
+ * 写：user 消息（触发时）、assistant 消息（run 终态，chunk 拼成全文）。
+ * 读：loadContext(sessionId) —— 该会话最近 N 轮 → Spring AI Message 列表，注入 LLM。
+ * 会话：createSession / listSessions / listMessages。
+ *
+ * ⚠️ MyBatis-Flex/JDBC 是阻塞的，每个 DB 调用都用 Schedulers.boundedElastic() 隔离
+ *    （同第 7 章 RunStore），否则卡住 reactor 事件循环。
+ */
+@Component
+public class HistoryStore {
+
+    private static final Logger log = LoggerFactory.getLogger(HistoryStore.class);
+    private static final int MAX_CONTEXT = 20;   // ▼ 注入 LLM 的最近轮数（控制 token 开销）
+
+    private final SessionMapper sessionMapper;
+    private final MessageMapper messageMapper;
+
+    public HistoryStore(SessionMapper sessionMapper, MessageMapper messageMapper) {
+        this.sessionMapper = sessionMapper;
+        this.messageMapper = messageMapper;
+    }
+
+    /** 写 user 消息（触发时调）。 */
+    public Mono<Void> writeUserMessage(String sessionId, String runId, String content) {
+        return write(sessionId, runId, "user", content);
+    }
+
+    /** 写 assistant 消息（run 终态，chunk 拼成的全文）。 */
+    public Mono<Void> writeAssistantMessage(String sessionId, String runId, String content) {
+        return write(sessionId, runId, "assistant", content);
+    }
+
+    /**
+     * 读该会话最近 N 轮，转成 Spring AI 的 Message 列表（注入 ChatClient 用）。
+     * ▼ 关键：上下文**跟着 sessionId 走**——前端切到哪个历史会话，这里就读哪个会话的历史，
+     *   所以"切回旧会话继续聊"时模型记得那个会话之前说过的话。
+     */
+    public Mono<List<Message>> loadContext(String sessionId) {
+        return Mono.fromCallable(() -> {
+            List<MessageEntity> recent = messageMapper.selectListByQuery(
+                    QueryWrapper.create()
+                            .where(GEN_MESSAGE.SESSION_ID.eq(sessionId))
+                            .orderBy(GEN_MESSAGE.ID.desc())
+                            .limit(MAX_CONTEXT));
+            Collections.reverse(recent);          // ▼ 最近 N 条（倒序）→ 翻回时间正序
+            List<Message> context = new ArrayList<>(recent.size());
+            for (MessageEntity m : recent) {
+                context.add("user".equals(m.getRole())
+                        ? new UserMessage(m.getContent())
+                        : new AssistantMessage(m.getContent()));
+            }
+            return context;
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** ▼ 会话管理：新建会话（前端"新会话"按钮调它）。 */
+    public Mono<SessionEntity> createSession() {
+        return Mono.fromCallable(() -> {
+            SessionEntity s = new SessionEntity();
+            s.setId("sess_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+            s.setTitle("新会话");
+            OffsetDateTime now = OffsetDateTime.now();
+            s.setCreatedAt(now);
+            s.setUpdatedAt(now);
+            sessionMapper.insert(s);
+            return s;
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** ▼ 会话管理：历史列表（按最近活跃倒序，前端侧栏用）。 */
+    public Flux<SessionEntity> listSessions() {
+        return Mono.fromCallable(() ->
+                    sessionMapper.selectListByQuery(
+                            QueryWrapper.create().orderBy(GEN_SESSION.UPDATED_AT.desc())))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(Flux::fromIterable);
+    }
+
+    /** ▼ 会话管理：某会话的对话记录（时间正序，切换会话后回看用）。 */
+    public Flux<MessageEntity> listMessages(String sessionId) {
+        return Mono.fromCallable(() ->
+                    messageMapper.selectListByQuery(
+                            QueryWrapper.create()
+                                    .where(GEN_MESSAGE.SESSION_ID.eq(sessionId))
+                                    .orderBy(GEN_MESSAGE.ID.asc())))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(Flux::fromIterable);
+    }
+
+    /** ▼ 内部：插入一条消息 + 刷新会话的 updated_at。 */
+    private Mono<Void> write(String sessionId, String runId, String role, String content) {
+        return Mono.fromRunnable(() -> {
+            MessageEntity m = new MessageEntity();
+            m.setSessionId(sessionId);
+            m.setRunId(runId);
+            m.setRole(role);
+            m.setContent(content);
+            m.setCreatedAt(OffsetDateTime.now());
+            messageMapper.insert(m);
+            SessionEntity s = sessionMapper.selectOneById(sessionId);
+            if (s != null) {
+                s.setUpdatedAt(OffsetDateTime.now());
+                // ▼ 生产小细节：该会话第一条 user 消息当标题（截断）
+                if ("user".equals(role) && "新会话".equals(s.getTitle())) {
+                    s.setTitle(content.length() > 20 ? content.substring(0, 20) + "…" : content);
+                }
+                sessionMapper.update(s);
+            }
+        }).subscribeOn(Schedulers.boundedElastic()).then();
+    }
+}
+```
+
+> **Spring AI 的 `Message` 三件套**：`org.springframework.ai.chat.messages.Message`（接口）、`UserMessage`、`AssistantMessage`（实现类）。`ChatClient.prompt().messages(list)` 正是收 `List<Message>`。把 PG 里存的 role/content 翻回 `UserMessage`/`AssistantMessage`，就能把历史上下文原样喂回模型。
+>
+> **`GEN_MESSAGE` / `GEN_SESSION` 是什么**：MyBatis-Flex 编译期自动生成的表元数据类（同第 7 章的 `GEN_IDEMPOTENCY`），`SESSION_ID.eq(...)`、`ID.desc()` 是类型安全的链式条件，避免硬编码列名。
+>
+> **`loadContext` 的 token 开销**：喂给 LLM 的历史越多越贵、越慢，所以只取最近 20 轮（`MAX_CONTEXT`）。这是生产聊天产品的标准做法（类似 ChatGPT 的"模型看到最近几十条"），控制成本与延迟。
+
+#### 8.2.4 TextGenerator：支持历史注入
+
+**【改已有文件，完整版覆盖】** `TextGenerator.java`：
+
+```java
+package com.example.stream.generator;
+
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+
+import java.util.List;
+
+/**
+ * 流式生成器（数据源）—— 基于 Spring AI 2.0 的 ChatClient。
+ * 第 8 章起支持带历史上下文的生成：先注入该会话最近 N 轮，再问当前问题。
+ */
+@Component
+public class TextGenerator {
+
+    private final ChatClient chatClient;
+
+    public TextGenerator(ChatClient.Builder builder) {
+        this.chatClient = builder.build();
+    }
+
+    /** ▼ 流式生成（第8章起带历史上下文）。history 是该会话最近 N 轮，可为空。 */
+    public Flux<String> generate(String prompt, List<Message> history) {
+        return chatClient.prompt()
+                .messages(history)          // ▼ 先注入历史（模型据此"记得"前文）
+                .user(prompt)               // 再问当前问题
+                .stream()
+                .content();
+    }
+
+    /** 兼容无历史的调用（第0-7章的老调用，直接转空历史）。 */
+    public Flux<String> generate(String prompt) {
+        return generate(prompt, List.of());
+    }
+}
+```
+
+> **`prompt().messages(history)`**：ChatClient 的 prompt 构造里可以塞一组历史消息，再叠加当前的 `.user(...)`。注入顺序就是对话顺序（时间正序）——模型看到的是完整上下文。这也是 `loadContext` 要按时间正序返回的原因。
+
+#### 8.2.5 StreamService：接 HistoryStore
+
+**【改已有文件，完整版覆盖】** `StreamService.java`（基于第 7 章状态；触发时读上下文 + 落 user 消息，终态拼全文落 assistant 消息）：
+
+```java
+package com.example.stream.serve;
+
+import com.example.stream.bus.StreamBus;
+import com.example.stream.generator.TextGenerator;
+import com.example.stream.run.HistoryStore;
+import com.example.stream.run.RunStore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.stereotype.Service;
+import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * 管数分离 + 会话历史 + 多轮上下文（第 8 章）。
+ *
+ * 触发：会话独占 → 幂等创建 → 读该会话历史上下文 → 落 user 消息 → 带上下文生成。
+ * 终态：把缓冲的 chunk 拼成完整回答，落 assistant 消息（历史以"完整消息"为单位存）。
+ * 上下文跟着 sessionId 走——切到哪个会话，模型就记得哪个会话。
+ */
+@Service
+public class StreamService {
+
+    private static final Logger log = LoggerFactory.getLogger(StreamService.class);
+
+    private final TextGenerator generator;
+    private final StreamBus bus;
+    private final RunStore runs;
+    private final HistoryStore history;   // ▼ 第8章新增：会话历史
+
+    private final ConcurrentHashMap<String, Disposable> handles = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> runSession = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, StringBuilder> buffers = new ConcurrentHashMap<>();  // ▼ chunk 缓冲
+
+    public StreamService(TextGenerator generator, StreamBus bus, RunStore runs, HistoryStore history) {
+        this.generator = generator;
+        this.bus = bus;
+        this.runs = runs;
+        this.history = history;
+    }
+
+    /** ▼ 管理面：会话独占 → 幂等创建 → 读上下文 → 落 user 消息 → 触发。返回 runId；会话忙时 409。 */
+    public Mono<String> trigger(String prompt, String sessionId, String idempotencyKey) {
+        return runs.create(idempotencyKey, sessionId)
+                .flatMap(runId -> runs.acquireSession(sessionId)
+                        .flatMap(acquired -> {
+                            if (Boolean.FALSE.equals(acquired)) {
+                                // 会话忙：请求被拒，这条 user 消息不该进历史（它没真正开始）
+                                runs.setStatus(runId, "CANCELLED").subscribe();
+                                return Mono.<String>error(new IllegalStateException(
+                                        "当前会话有任务正在生成，请等待完成后再提问"));
+                            }
+                            runSession.put(runId, sessionId);
+                            return history.loadContext(sessionId)           // ▼ ① 读该会话最近 N 轮（不含本轮）
+                                    .flatMap(context -> runs.setStatus(runId, "RUNNING")
+                                            .then(history.writeUserMessage(sessionId, runId, prompt)) // ▼ ② user 落库
+                                            .then(Mono.fromRunnable(() -> startGeneration(runId, prompt, context)))
+                                            .thenReturn(runId));
+                        }));
+    }
+
+    /** 跑生成器：带历史上下文；每个 chunk 缓冲一份，终态拼成全文落库。 */
+    private void startGeneration(String runId, String prompt, List<Message> context) {
+        StringBuilder buf = new StringBuilder();
+        buffers.put(runId, buf);
+        Disposable handle = generator.generate(prompt, context)
+                .doOnNext(buf::append)                        // ▼ 缓冲 chunk
+                .flatMap(chunk -> bus.write(runId, chunk))    // 同时写总线（实时推流）
+                .doOnComplete(() -> finishRun(runId, "DONE"))
+                .doOnError(err -> {
+                    log.error("[run] 失败 runId={}: {}", runId, err.getMessage());
+                    finishRun(runId, "FAILED");
+                })
+                .subscribe();
+        handles.put(runId, handle);
+    }
+
+    /** ▼ 终态统一：写结束标记、改状态、落 assistant 全文、释放会话锁。 */
+    private void finishRun(String runId, String status) {
+        bus.writeEnd(runId).subscribe();
+        runs.setStatus(runId, status).subscribe();
+        handles.remove(runId);
+        saveAssistantMessage(runId);                          // ▼ 拼缓冲 → 落 assistant 历史
+        String sessionId = runSession.remove(runId);
+        if (sessionId != null) {
+            runs.releaseSession(sessionId).subscribe();
+        }
+        log.info("[run] 终态 runId={} status={}", runId, status);
+    }
+
+    /** ▼ 把缓冲的 chunk 拼成完整回答，写进历史。失败/取消时落"已生成的部分"，诚实记录半截回答。 */
+    private void saveAssistantMessage(String runId) {
+        StringBuilder buf = buffers.remove(runId);
+        String sessionId = runSession.get(runId);
+        if (buf != null && sessionId != null && !buf.isEmpty()) {
+            history.writeAssistantMessage(sessionId, runId, buf.toString()).subscribe();
+        }
+    }
+
+    /** ▼ 数据面：只读订阅（按 runId）。 */
+    public Flux<StreamBus.ChunkEntity> subscribe(String runId, long lastSeq) {
+        return bus.subscribe(runId, lastSeq);
+    }
+
+    /** ▼ 管理面：查状态。 */
+    public Mono<String> status(String runId) {
+        return runs.get(runId);
+    }
+
+    /** ▼ 管理面：取消（CANCELLED 也是终态，落半截回答 + 释放会话锁）。 */
+    public Mono<Void> cancel(String runId) {
+        saveAssistantMessage(runId);
+        Disposable handle = handles.remove(runId);
+        if (handle != null && !handle.isDisposed()) {
+            handle.dispose();
+        }
+        String sessionId = runSession.remove(runId);
+        return runs.setStatus(runId, "CANCELLED")
+                .then(bus.writeEnd(runId))
+                .then(sessionId != null ? runs.releaseSession(sessionId) : Mono.empty());
+    }
+}
+```
+
+> **两个关键改动（对比第 7 章）**：
+> - **触发**：`history.loadContext(sessionId)` 先把该会话最近 20 轮读出来，传给 `startGeneration` → `generate(prompt, context)`。**上下文来自请求里的 sessionId**——前端切到哪个历史会话，模型就感知哪个会话的上下文（这就是"切回旧会话不失忆"的机制）。
+> - **终态**：生成过程中把每个 chunk 缓冲进 `StringBuilder`，`finishRun` 时拼成**完整回答**写入 `gen_message`。历史存的是"一条完整消息"，不是几千条 chunk——回看、导出、审计都方便。
+
+> **为什么用内存缓冲拼全文，而不是从总线回放？** 简单、不依赖总线结构；生产上"生成完落一条完整消息"也是标准做法。代价是 run 期间多占一份内存——对文本生成（K~几十 KB）完全可接受。失败/取消时缓冲里是"已生成的部分"，照样落库（诚实记录半截回答）。
+
+> **`loadContext` 放在 `acquireSession` 之后**：会话忙（409）时请求被拒，**不该把这条 user 消息写进历史**（它没真正开始）。顺序：先抢到会话 → 再读上下文 → 写 user 消息 → 开跑。
+
+#### 8.2.6 SessionController：会话管理 + 历史接口
+
+**【新建文件】** `research-stream/src/main/java/com/example/stream/run/SessionController.java`：
+
+```java
+package com.example.stream.run;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+/**
+ * 会话历史（第 8 章）。
+ *   POST /api/sessions                  → 新建会话（前端"新会话"按钮调它）
+ *   GET  /api/sessions                  → 会话列表（历史列表，按最近活跃倒序）
+ *   GET  /api/sessions/{id}/messages    → 某会话的对话记录（切换会话后回看）
+ */
+@RestController
+@RequestMapping("/api/sessions")
+public class SessionController {
+
+    private final HistoryStore history;
+
+    public SessionController(HistoryStore history) {
+        this.history = history;
+    }
+
+    /** 新会话按钮：创建会话，返回 sessionId。 */
+    @PostMapping
+    public Mono<ResponseEntity<SessionEntity>> create() {
+        return history.createSession()
+                .map(s -> ResponseEntity.status(HttpStatus.CREATED).body(s));
+    }
+
+    /** 历史列表（按最近活跃倒序）。 */
+    @GetMapping
+    public Flux<SessionEntity> list() {
+        return history.listSessions();
+    }
+
+    /** 某会话的对话记录（时间正序）。 */
+    @GetMapping("/{sessionId}/messages")
+    public Flux<MessageEntity> messages(@PathVariable String sessionId) {
+        return history.listMessages(sessionId);
+    }
+}
+```
+
+#### 8.2.7 前端：新会话按钮 + 历史列表 + 切换会话
+
+**【新建文件】** `research-stream/src/main/resources/static/index.html`（WebFlux 默认静态目录，起服务后直接打开 `http://localhost:8080/`）：
+
+```html
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>管数分离 · 会话历史演示</title>
+<style>
+  body { margin:0; display:flex; height:100vh; font-family: sans-serif; }
+  aside { width:220px; border-right:1px solid #ddd; padding:8px; overflow:auto; }
+  aside button { width:100%; padding:8px; margin-bottom:8px; }
+  aside li { padding:6px; cursor:pointer; border-bottom:1px solid #eee; }
+  aside li:hover { background:#f5f5f5; }
+  main { flex:1; padding:12px; display:flex; flex-direction:column; }
+  #chat { flex:1; overflow:auto; white-space:pre-wrap; }
+  input { padding:8px; font-size:14px; }
+</style>
+</head>
+<body>
+  <aside>
+    <button id="newBtn">＋ 新会话</button>
+    <ul id="sessionList"></ul>
+  </aside>
+  <main>
+    <pre id="chat"></pre>
+    <input id="input" placeholder="输入问题，回车发送">
+  </main>
+<script>
+  let currentSession = null;   // ▼ 当前会话：切到哪个历史会话，发的消息就挂到哪个会话
+
+  // 1. 加载会话列表（历史记录）
+  async function loadSessions() {
+    const list = await fetch("/api/sessions").then(r => r.json());
+    sessionList.innerHTML = "";
+    for (const s of list) {
+      const li = document.createElement("li");
+      li.textContent = s.title;
+      li.onclick = () => switchTo(s.id, true);   // 2. 点击历史会话 → 切换
+      sessionList.appendChild(li);
+    }
+  }
+
+  // 3. 新会话按钮 → POST /api/sessions
+  newBtn.onclick = async () => {
+    const s = await fetch("/api/sessions", {method: "POST"}).then(r => r.json());
+    await switchTo(s.id, false);
+    loadSessions();
+  };
+
+  // 4. 切换会话：清屏 + 加载该会话的历史对话
+  async function switchTo(sessionId, loadHistory) {
+    currentSession = sessionId;
+    chat.textContent = "";
+    if (loadHistory) {
+      const msgs = await fetch(`/api/sessions/${sessionId}/messages`).then(r => r.json());
+      for (const m of msgs)
+        chat.textContent += (m.role === "user" ? "我： " : "AI： ") + m.content + "\n";
+    }
+  }
+
+  // 5. 发送 → POST /api/runs（带 currentSession）→ EventSource 订阅流
+  input.addEventListener("keydown", async e => {
+    if (e.key !== "Enter" || !currentSession) return;
+    const prompt = input.value; input.value = "";
+    chat.textContent += "我： " + prompt + "\nAI： ";
+    const r = await fetch(`/api/runs?sessionId=${currentSession}&prompt=${encodeURIComponent(prompt)}`,
+                          {method: "POST", headers: {"Idempotency-Key": crypto.randomUUID()}});
+    const { runId } = await r.json();
+    const es = new EventSource(`/api/runs/${runId}/stream`);
+    es.addEventListener("token", e => chat.textContent += e.data);
+    es.addEventListener("done",  e => { es.close(); loadSessions(); });   // 结束刷新列表（标题/时间变了）
+  });
+
+  loadSessions();
+</script>
+</body>
+</html>
+```
+
+> **切换会话 = 切换上下文（呼应 8.1 的设计点）**：前端每次发送都带 `currentSession`，后端从该 sessionId 读历史注入模型。**所以"点开旧会话继续聊"时，模型自动记得那个会话之前说过的话**——这就是"历史记录要和 LLM 交互对上"的落点。点"新会话"（`POST /api/sessions`）换一个 sessionId，历史从零开始。
+>
+> **`Idempotency-Key` 用 `crypto.randomUUID()`**：浏览器原生生成随机键，防双击/重试重复触发（第 6 章机制）。
+
+### 8.3 验证（端到端：新建会话 → 多轮 → 切回历史会话）
+
+```bash
+./mvnw spring-boot:run
+
+# 1. 新建会话（前端"新会话"按钮调它）
+curl -i -X POST http://localhost:8080/api/sessions
+# {"id":"sess_xxx...","title":"新会话",...}   ← 记下 sess_xxx
+
+# 2. 在会话里问第一句
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess_xxx&prompt=我叫小明" -H "Idempotency-Key: k1"
+curl -N "http://localhost:8080/api/runs/run_xxx/stream"   # 看流
+
+# 3. 问第二句——模型应该"记得"刚才我叫小明
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess_xxx&prompt=我刚才说自己叫什么" -H "Idempotency-Key: k2"
+# ✅ 输出里会提到"小明"——多轮上下文生效（历史注入在起作用）
+
+# 4. 历史记录：查这个会话的完整对话（换设备、重启都不丢，在 PG 里）
+curl "http://localhost:8080/api/sessions/sess_xxx/messages"
+# [{"role":"user","content":"我叫小明",...},{"role":"assistant","content":"你好，小明！...",...}, ...]
+
+# 5. 会话列表
+curl "http://localhost:8080/api/sessions"
+# [{"id":"sess_xxx","title":"我叫小明…",...}]   ← 标题自动用第一句
+
+# 6. SQL 直接看（系统记录在 PG）
+docker exec -it pg psql -U postgres -d research_stream \
+  -c "SELECT role, left(content,20) FROM gen_message WHERE session_id='sess_xxx' ORDER BY id;"
+
+# 7. ▼ 切换会话场景：新建另一个会话，问同一个问题，模型不该"记得"上一个会话
+curl -X POST http://localhost:8080/api/sessions   # 得到 sess_yyy
+curl -i -X POST "http://localhost:8080/api/runs?sessionId=sess_yyy&prompt=我刚才说自己叫什么" -H "Idempotency-Key: k3"
+# ✅ 这个会话没有"我叫小明"的历史 → 模型回答"你没有告诉过我"——上下文按会话隔离
+```
+
+**关键观察（对应 8.1 的设计）**：
+- **同会话多轮**：第 2、3 步之间模型记得上下文（历史注入）。
+- **跨会话隔离**：第 7 步换会话后，模型不记得上一个会话——**上下文跟着 sessionId 走，不是全局状态**。切回 `sess_xxx` 再问，它又记得小明。
+- **历史可查**：`/api/sessions/{id}/messages` 拿到完整对话，PG 里也有——换设备、重启都不丢。
+
+### 8.4 checkpoint
+
+```bash
+git add -A && git commit -m "第8章:会话历史(gen_session/gen_message)+多轮上下文+会话管理API+前端切换"
+```
+
+项目结构新增：
+
+```
+research-stream/src/main/java/com/example/stream/run/
+├── SessionEntity.java / MessageEntity.java
+├── SessionMapper.java / MessageMapper.java
+├── HistoryStore.java
+└── SessionController.java
+research-stream/src/main/resources/
+├── static/index.html      # 前端演示：新会话按钮 + 历史列表 + 切换
+└── schema.sql             # 追加 gen_session / gen_message
+```
+
+### 8.5 复盘 + 暴露问题
+
+历史记录这关过了：对话落库、列表可查、**多轮上下文按会话注入、切换会话不失忆**、前端能新建/切换会话。但有两个真实问题藏不住了：
+
+1. **所有东西还在一个进程里**。水平扩展成两台实例后，A 实例触发的 run，B 实例的订阅请求会落空（生成流句柄 `Disposable` 只在 A 的内存里）；两台实例如果都收到触发请求，可能各自跑一次（虽然有会话级独占、幂等键兜底，但任务级单一写者锁需要显式处理）。**第 9 章：跨实例广播 + 单一写者锁**，把管数分离推向真正的多实例集群。
+2. **历史消息的写入是"fire-and-forget"**（`history.writeAssistantMessage(...).subscribe()`），没等落库成功就返回了。单机够用，但严格场景（审计对账）要等写库成功再标 DONE——留作进阶。第 9 章跨实例时这点依然成立。
+
+---
+
+## 第 9 章：水平扩展成两台实例——跨实例广播 + 单一写者锁
+
+### 9.0 场景
 
 单实例扛不住流量了，你部署了两台实例（`instance-1` 端口 8080、`instance-2` 端口 8081），前面挂个负载均衡。真实问题立刻浮现：
 
@@ -2349,11 +3109,11 @@ run 状态、幂等映射现在落 PG 了——能 SQL 查询、重启不丢、A
 1. **重复触发**：如果触发请求被负载均衡分给两台实例各一次（极端情况，或前端重试），两台都跑生成器。需要**单一写者**保证——全集群只有一个实例真正去跑。
 2. **取消跨实例**：用户在 instance-2 上点取消，但生成器句柄在 instance-1 的内存里。instance-2 怎么停掉 instance-1 的生成器？
 
-### 8.1 思路
+### 9.1 思路
 
 #### ① 单一写者：Redisson 分布式锁
 
-用分布式锁保证**抢到锁的实例才跑生成器**，没抢到的直接返回"已有人在跑"。本章直接用 **Redisson** 的 `RLock`——它是 Redis 分布式锁的**生产首选**实现，比手写 `SET NX EX` 稳得多：
+用分布式锁保证**抢到锁的实例才跑生成器**，没抢到的直接返回"已有人在跑"。第 6 章我们已用 Redisson 做过**会话锁**，这里用同一个 `RLock` 做**任务级单一写者锁**——Redisson 是 Redis 分布式锁的**生产首选**实现，比手写 `SET NX EX` 稳得多：
 
 | 方案 | 实现 | 取舍 |
 |------|------|------|
@@ -2374,9 +3134,9 @@ run 状态、幂等映射现在落 PG 了——能 SQL 查询、重启不丢、A
 
 `cancel` 时不再依赖本地 `Disposable`，而是 `PUBLISH` 一个取消指令到频道。**持有生成器的那台实例监听到指令，自己 dispose 掉生成流。** 这样取消天然跨实例。
 
-### 8.2 动手
+### 9.2 动手
 
-#### 8.2.1 StreamBus：加锁 + 跨实例取消监听
+#### 9.2.1 StreamBus：加锁 + 跨实例取消监听
 
 **【改已有文件，完整版覆盖】** `StreamBus.java`（核心：`trigger` 变成"抢锁才跑"，新增取消频道监听）：
 
@@ -2408,7 +3168,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 流总线（第 8 章）：Redisson 分布式锁保证单一写者 + Pub/Sub 跨实例取消。
+ * 流总线（第 9 章）：Redisson 分布式锁保证单一写者 + Pub/Sub 跨实例取消。
  *
  * trigger：Redisson 抢锁，抢到才跑生成器（全集群只有一个实例跑）。看门狗自动续期，业务没跑完锁不过期。
  * cancel：PUBLISH 取消指令，持有生成器的实例监听后自行 dispose。
@@ -2552,7 +3312,7 @@ public class StreamBus {
 }
 ```
 
-#### 8.2.2 StreamService：会话级独占 + 触发抢锁 + 注册本地 run
+#### 9.2.2 StreamService：会话级独占 + 触发抢锁 + 注册本地 run
 
 **【改已有文件，完整版覆盖】** `StreamService.java`：
 
@@ -2561,18 +3321,22 @@ package com.example.stream.serve;
 
 import com.example.stream.bus.StreamBus;
 import com.example.stream.generator.TextGenerator;
+import com.example.stream.run.HistoryStore;
 import com.example.stream.run.RunStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.stereotype.Service;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 管数分离 + 多实例（第 8 章）：会话级独占 → 幂等创建 → 抢分布式锁 → 抢到才跑；取消走 Pub/Sub。
+ * 管数分离 + 多实例（第 9 章）：会话级独占 → 幂等创建 → 抢分布式锁 → 抢到才跑；取消走 Pub/Sub。
+ * 历史能力延续第 8 章：触发读上下文 + 落 user 消息，终态拼 chunk 落 assistant 消息。
  *
  * 三道防线（从外向内）：
  *   ① 会话级独占（acquireSession）—— 同 session 同时只一个任务，拒绝 409
@@ -2587,19 +3351,23 @@ public class StreamService {
     private final TextGenerator generator;
     private final StreamBus bus;
     private final RunStore runs;
-    /** runId → sessionId（用于终态释放会话锁）。 */
+    private final HistoryStore history;   // ▼ 第8章新增：会话历史
+    /** runId → sessionId（用于终态释放会话锁 + 落历史）。 */
     private final ConcurrentHashMap<String, String> runSession = new ConcurrentHashMap<>();
+    /** runId → chunk 缓冲（终态拼全文落历史）。 */
+    private final ConcurrentHashMap<String, StringBuilder> buffers = new ConcurrentHashMap<>();
 
-    public StreamService(TextGenerator generator, StreamBus bus, RunStore runs) {
+    public StreamService(TextGenerator generator, StreamBus bus, RunStore runs, HistoryStore history) {
         this.generator = generator;
         this.bus = bus;
         this.runs = runs;
+        this.history = history;
     }
 
-    /** ▼ 管理面：① 会话独占 → ② 幂等创建 → ③ 抢任务锁 → 跑生成器。返回 runId。 */
+    /** ▼ 管理面：① 会话独占 → ② 幂等创建 → ③ 抢任务锁 → 抢到才读上下文/落 user/跑生成。返回 runId。 */
     public Mono<String> trigger(String prompt, String sessionId, String idempotencyKey) {
         return runs.create(idempotencyKey, sessionId)
-                .flatMap(runId -> runs.acquireSession(sessionId, runId)
+                .flatMap(runId -> runs.acquireSession(sessionId)
                         .flatMap(acquired -> {
                             if (Boolean.FALSE.equals(acquired)) {
                                 // 会话忙：标记 run 作废，返回 409
@@ -2610,19 +3378,25 @@ public class StreamService {
                             runSession.put(runId, sessionId);
                             return runs.setStatus(runId, "RUNNING")
                                     .then(bus.acquireLock(runId))
-                                    .doOnNext(taskLocked -> {
+                                    .flatMap(taskLocked -> {
                                         if (Boolean.TRUE.equals(taskLocked)) {
-                                            startGeneration(runId, prompt);
-                                        } else {
-                                            log.info("[run] runId={} 已有其他实例在跑", runId);
+                                            // ▼ 抢到锁才落历史：读该会话最近 N 轮 → 落 user → 带上下文生成
+                                            return history.loadContext(sessionId)
+                                                    .flatMap(context -> history.writeUserMessage(sessionId, runId, prompt)
+                                                            .then(Mono.fromRunnable(() -> startGeneration(runId, prompt, context)))
+                                                            .thenReturn(runId));
                                         }
-                                    })
-                                    .thenReturn(runId);
+                                        log.info("[run] runId={} 已有其他实例在跑", runId);
+                                        return Mono.just(runId);
+                                    });
                         }));
     }
 
-    private void startGeneration(String runId, String prompt) {
-        Disposable handle = generator.generate(prompt)
+    private void startGeneration(String runId, String prompt, List<Message> context) {
+        StringBuilder buf = new StringBuilder();
+        buffers.put(runId, buf);
+        Disposable handle = generator.generate(prompt, context)   // ▼ 带历史上下文（第8章）
+                .doOnNext(buf::append)                            // ▼ 缓冲 chunk，终态拼全文落历史
                 .flatMap(chunk -> bus.write(runId, chunk))
                 .doOnComplete(() -> finishRun(runId, "DONE"))
                 .doOnError(err -> finishRun(runId, "FAILED"))
@@ -2630,13 +3404,23 @@ public class StreamService {
         bus.registerLocalRun(runId, handle);   // ▼ 注册句柄 + 监听取消频道
     }
 
-    /** ▼ 终态统一：写结束标记、改状态、释放任务锁、释放会话锁。 */
+    /** ▼ 终态统一：写结束标记、改状态、落 assistant 全文、释放任务锁、释放会话锁。 */
     private void finishRun(String runId, String status) {
         bus.writeEnd(runId).subscribe();
         runs.setStatus(runId, status).subscribe();
+        saveAssistantMessage(runId);          // ▼ 第8章：拼缓冲 → 落 assistant 历史
         bus.releaseLock(runId).subscribe();
         releaseSessionFor(runId);
         log.info("[run] 终态 runId={} status={}", runId, status);
+    }
+
+    /** ▼ 把缓冲的 chunk 拼成完整回答写进历史（失败/取消落已生成部分）。 */
+    private void saveAssistantMessage(String runId) {
+        StringBuilder buf = buffers.remove(runId);
+        String sessionId = runSession.get(runId);
+        if (buf != null && sessionId != null && !buf.isEmpty()) {
+            history.writeAssistantMessage(sessionId, runId, buf.toString()).subscribe();
+        }
     }
 
     /** 释放 run 对应的会话锁（三终态 + cancel 都要调）。 */
@@ -2655,19 +3439,21 @@ public class StreamService {
         return runs.get(runId);
     }
 
-    /** ▼ 管理面：取消（走 Pub/Sub，跨实例），同时释放会话锁。 */
+    /** ▼ 管理面：取消（走 Pub/Sub，跨实例），落半截回答 + 释放会话锁。 */
     public Mono<Void> cancel(String runId) {
+        saveAssistantMessage(runId);          // ▼ 第8章：取消也把已生成的部分存下来
         releaseSessionFor(runId);          // ▼ 释放会话锁，让会话能接受新任务
         return runs.setStatus(runId, "CANCELLED").then(bus.cancel(runId));
     }
 }
 ```
 
-> **关键改动（第 8 章恢复第 6 章的会话级独占）**：
+> **关键改动（第 9 章恢复第 6 章的会话级独占）**：
 > - `trigger` 恢复 `sessionId` 参数，先 `acquireSession`→ 幂等创建 → 抢任务锁（三道防线从外到内）。
-> - `finishRun` 统一处理终态：写结束标记 + 改状态 + 释放任务锁 + **释放会话锁**（四件事一件不能少）。
+> - **历史能力延续第 8 章**：抢到锁才 `loadContext` + 落 user 消息 + 带上下文生成（上下文仍跟着 sessionId 走，多实例下每个会话的历史在共享 PG 里，任意实例都能读）；`finishRun` 把 chunk 拼成全文落 assistant。
+> - `finishRun` 统一处理终态：写结束标记 + 改状态 + 落 assistant + 释放任务锁 + **释放会话锁**（五件事一件不能少）。
 > - `cancel` 也释放会话锁——CANCELLED 是终态，不释放会话就永久锁死。
-> - **跨实例取消的会话锁释放**：`runSession` 是本实例内存 Map，跨实例取消时该 Map 没有映射，`releaseSessionFor` 不会生效。但会话锁有 10 分钟 TTL 兜底过期——这是已知取舍，严格场景应把 run→session 映射存 Redis（留作进阶扩展点）。
+> - **跨实例取消的会话锁释放**：`runSession` 是本实例内存 Map，跨实例取消时该 Map 没有映射，`releaseSessionFor` 不会生效。但会话锁有 Redisson 看门狗兜底（实例崩溃 30s 后锁自动过期）——这是已知取舍，严格场景应把 run→session 映射存 Redis（留作进阶扩展点）。
 
 > **三道防线的层次**：
 > ```
@@ -2683,7 +3469,7 @@ public class StreamService {
 > ```
 > ① 是**最外层闸门**——挡掉绝大多数并发（"同一个会话狂点发送"）；②③ 是兜底。
 
-### 8.3 验证（两个实例）
+### 9.3 验证（两个实例）
 
 ```bash
 # 终端1：实例1
@@ -2708,27 +3494,27 @@ curl -X POST "http://localhost:8081/api/runs/run_xxx/cancel"
 
 **核心收获**：因为第 4 章就把数据搬出进程落 Redis，**多实例下订阅天然可用，几乎不用改订阅逻辑**。新增的是"会话级独占 + 单一写者锁 + 跨实例取消"——三道防线从外到内保证并发安全。
 
-### 8.4 checkpoint
+### 9.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第8章:多实例跨实例广播+Redisson单一写者+Pub/Sub跨实例取消"
+git add -A && git commit -m "第9章:多实例跨实例广播+Redisson单一写者+Pub/Sub跨实例取消"
 ```
 
-### 8.5 复盘 + 暴露问题
+### 9.5 复盘 + 暴露问题
 
 多实例同步成了。到这里，**管数分离 + 多实例**的单体集群已经很稳。下一个需求驱动 Kafka：
 
 > 生成出来的 chunk 是宝贵数据，**审计/计费/分析三个服务都要消费同一批 chunk**，而且**法规要求保留 30 天**。Redis Stream 是内存型，存 30 天太贵；跨服务各自消费 Redis Streams 也不够标准。
 
-**第 9 章：chunk 总线升级 Kafka**——磁盘持久、消费组、跨服务标准化消费。
+**第 10 章：chunk 总线升级 Kafka**——磁盘持久、消费组、跨服务标准化消费。
 
 ---
 
-## 第 9 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线
+## 第 10 章：chunk 要跨服务消费、长期保留——升级 Kafka 持久总线
 
-### 9.0 场景
+### 10.0 场景
 
-第 8 章后，多实例集群已就绪。新需求来了：
+第 9 章后，多实例集群已就绪。新需求来了：
 
 1. **审计、计费、分析三个独立服务都要消费同一批 chunk**（跨服务消费）。Redis Streams 也能多消费者读，但各自为战、没有标准的消费组进度管理。
 2. **法规要求 chunk 保留 30 天**。Redis Stream 是内存型，存 30 天成本高得离谱。
@@ -2743,9 +3529,9 @@ git add -A && git commit -m "第8章:多实例跨实例广播+Redisson单一写�
 >
 > 这是企业级的常见分工——**不是"用 Kafka 替换 Redis"，而是"各司其职"**。
 
-### 9.1 思路：Redis Streams 多播 → Kafka 消费组
+### 10.1 思路：Redis Streams 多播 → Kafka 消费组
 
-| 维度 | Redis Streams（第 4-8 章） | Kafka（本章） |
+| 维度 | Redis Streams（第 4-9 章） | Kafka（本章） |
 |------|---------------------------|--------------|
 | 持久 | 内存（AOF/RDB 成本高） | 磁盘原生（保留 30 天成本低） |
 | 消费模式 | 多个消费者各自读 | **消费组**（每组进度独立、自动提交） |
@@ -2761,20 +3547,19 @@ git add -A && git commit -m "第8章:多实例跨实例广播+Redisson单一写�
 
 > **为什么"每个实例一个消费者，N 个 SSE 连接共享"？** 如果每个 SSE 连接都建一个 Kafka 消费者，连接数一多，消费者数会爆炸（Kafka 单分区同时只能被组内一个消费者消费，消费者数 > 分区数会闲置）。正确做法：**一个实例一个消费者，把收到的消息按 key 扇出到内存 Sinks，N 个 SSE 连接共享这个 Sinks**。这是 Kafka + SSE 的标准架构。
 
-### 9.2 动手
+### 10.2 动手
 
-#### 9.2.1 加 Kafka 依赖 + 配置
+#### 10.2.1 加 Kafka 依赖 + 配置
 
 **【改已有文件，追加】** `pom.xml`：
 
 ```xml
-<!-- ▼ 第9章新增：Kafka（Spring Boot 官方 starter）
-     spring-kafka 就是 Spring Boot 生态里 Kafka 的官方依赖，
-     配合 spring-boot-starter-parent 自动装配 KafkaTemplate / 消费容器 / 配置类。
+<!-- ▼ 第10章新增：Kafka（Spring Boot 官方 starter）
+     spring-boot-starter-kafka = spring-kafka 库 + Boot 自动装配（KafkaTemplate / 消费容器 / 配置类）。
      版本由 Spring Boot BOM 管理，无需手写版本号。 -->
 <dependency>
     <groupId>org.springframework.kafka</groupId>
-    <artifactId>spring-kafka</artifactId>
+    <artifactId>spring-boot-starter-kafka</artifactId>
 </dependency>
 
 <!-- ▼ Kafka 测试支持：嵌入式 Kafka broker，单元/集成测试不依赖外部 Kafka。
@@ -2786,7 +3571,7 @@ git add -A && git commit -m "第8章:多实例跨实例广播+Redisson单一写�
 </dependency>
 ```
 
-> **为什么 `spring-kafka` 就是"Spring Boot 企业版 Kafka"？** Spring Boot 官方只为 Kafka 提供这一个 starter。引了它之后，Spring Boot 自动装配会：① 根据 `spring.kafka.*` 配置创建 `ProducerFactory`/`ConsumerFactory`；② 自动注册 `KafkaTemplate` Bean（生产端注入即用）；③ 自动注册 `ConcurrentKafkaListenerContainerFactory`（让 `@KafkaListener` 注解开箱即用）；④ 暴露 Kafka 健康指标到 actuator。**不需要手动 `new KafkaTemplate`**——这正是"Spring Boot 形态"的含义。
+> **为什么 `spring-boot-starter-kafka` 就是"Spring Boot 企业版 Kafka"？** 它是 Spring Boot 官方的 Kafka starter（= `spring-kafka` 库 + Boot 自动装配）。引了它之后，Spring Boot 自动装配会：① 根据 `spring.kafka.*` 配置创建 `ProducerFactory`/`ConsumerFactory`；② 自动注册 `KafkaTemplate` Bean（生产端注入即用）；③ 自动注册 `ConcurrentKafkaListenerContainerFactory`（让 `@KafkaListener` 注解开箱即用）；④ 暴露 Kafka 健康指标到 actuator。**不需要手动 `new KafkaTemplate`**——这正是"Spring Boot 形态"的含义。
 
 **【改已有文件，追加】** `application.yaml`：
 
@@ -2818,7 +3603,7 @@ spring:
 > 2. **`enable-auto-commit: false` + `ack-mode: manual_immediate`**：关闭自动提交 offset，处理完再确认——**防止"消息没处理完就提交 offset，崩溃后丢消息"**。这是流式系统的基本盘。
 > 3. **`concurrency: 3`**：消费容器并发线程数，要 ≤ topic 分区数（否则多余线程闲置，见坑 6）。
 
-#### 9.2.2 KafkaChunkBus：chunk 持久总线
+#### 10.2.2 KafkaChunkBus：chunk 持久总线
 
 **【新建文件】** `research-stream/src/main/java/com/example/stream/bus/KafkaChunkBus.java`：
 
@@ -2836,7 +3621,7 @@ import reactor.core.publisher.Sinks;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 基于 Kafka 的 chunk 持久总线（第 9 章）。
+ * 基于 Kafka 的 chunk 持久总线（第 10 章）。
  *
  * 写：produce 到 topic=gen-chunks，key=runId（同 run 进同分区，保序）。
  * 读：本实例一个消费者收所有消息，按 key(runId) 分发到对应 Sinks.Many，
@@ -2889,7 +3674,7 @@ public class KafkaChunkBus {
 
 > **回顾第 3 章的 Sinks**：这里又用上了 `Sinks.many().multicast().onBackpressureBuffer()`——但这次不是从生成器直接塞，而是从 Kafka 消费者塞。**Sinks 是"把一份数据扇出给多个订阅者"的通用工具**，无论数据来自生成器还是 Kafka。
 
-#### 9.2.3 Kafka 消费容器：一个消费者按 key 分发
+#### 10.2.3 Kafka 消费容器：一个消费者按 key 分发
 
 **【新建文件】** `research-stream/src/main/java/com/example/stream/config/KafkaConfig.java`：
 
@@ -2927,7 +3712,7 @@ public class KafkaConfig {
 
 > **`ConcurrentMessageListenerContainer` 是什么？** Spring Kafka 提供的消息监听容器——它内部跑一个或多个消费者线程，不断从 topic 拉消息，每条交给 `MessageListener` 回调处理。我们在这里把回调设成 `bus.dispatch(record)`，于是每条 Kafka 消息按 key 分发到对应 Sinks。**这个 Bean 一启动，消费就开始了。**
 
-#### 9.2.4 StreamService：会话级独占 + Kafka chunk 总线
+#### 10.2.4 StreamService：会话级独占 + Kafka chunk 总线
 
 **【改已有文件，完整版覆盖】** `StreamService.java`（触发时 chunk 写 Kafka，订阅走 KafkaChunkBus；锁/状态/会话独占仍走 Redis）：
 
@@ -2937,26 +3722,30 @@ package com.example.stream.serve;
 import com.example.stream.bus.KafkaChunkBus;
 import com.example.stream.bus.StreamBus;
 import com.example.stream.generator.TextGenerator;
+import com.example.stream.run.HistoryStore;
 import com.example.stream.run.RunStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.stereotype.Service;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 管数分离 + Kafka 持久总线（第 9 章）。
+ * 管数分离 + Kafka 持久总线（第 10 章）。
  *
- * 三道防线（继承第 6-7 章）：
+ * 三道防线（继承第 6-9 章）：
  *   ① 会话级独占 —— 同 session 同时只一个任务
  *   ② 幂等创建   —— 同 key 只创建一个 run
  *   ③ 任务级锁   —— 同 run 多实例只一个跑
  *
- * 触发：会话独占 → 幂等创建 → 抢 Redis 锁 → 生成器 chunk 写 Kafka（持久总线）→ run 状态落 Redis。
+ * 触发：会话独占 → 幂等创建 → 抢 Redis 锁 → 读上下文 + 落 user → 生成器 chunk 写 Kafka。
  * 订阅：走 KafkaChunkBus（消费组托管 offset）。
+ * 历史：延续第 8 章——上下文按 sessionId 注入，终态把 chunk 拼全文落 gen_message。
  * Redis 仍负责：会话锁、任务锁、run 状态、跨实例取消通知。
  */
 @Service
@@ -2968,21 +3757,25 @@ public class StreamService {
     private final StreamBus bus;          // Redis：会话锁 + 任务锁 + 跨实例取消
     private final KafkaChunkBus chunkBus; // Kafka：chunk 持久总线
     private final RunStore runs;
-    /** runId → sessionId（用于终态释放会话锁）。 */
+    private final HistoryStore history;   // ▼ 第8章：会话历史
+    /** runId → sessionId（用于终态释放会话锁 + 落历史）。 */
     private final ConcurrentHashMap<String, String> runSession = new ConcurrentHashMap<>();
+    /** runId → chunk 缓冲（终态拼全文落历史）。 */
+    private final ConcurrentHashMap<String, StringBuilder> buffers = new ConcurrentHashMap<>();
 
     public StreamService(TextGenerator generator, StreamBus bus,
-                         KafkaChunkBus chunkBus, RunStore runs) {
+                         KafkaChunkBus chunkBus, RunStore runs, HistoryStore history) {
         this.generator = generator;
         this.bus = bus;
         this.chunkBus = chunkBus;
         this.runs = runs;
+        this.history = history;
     }
 
-    /** ▼ 管理面：① 会话独占 → ② 幂等创建 → ③ 抢任务锁 → 跑生成器（chunk 写 Kafka）。 */
+    /** ▼ 管理面：① 会话独占 → ② 幂等创建 → ③ 抢任务锁 → 抢到才读上下文/落 user/跑生成。 */
     public Mono<String> trigger(String prompt, String sessionId, String idempotencyKey) {
         return runs.create(idempotencyKey, sessionId)
-                .flatMap(runId -> runs.acquireSession(sessionId, runId)
+                .flatMap(runId -> runs.acquireSession(sessionId)
                         .flatMap(acquired -> {
                             if (Boolean.FALSE.equals(acquired)) {
                                 runs.setStatus(runId, "CANCELLED").subscribe();
@@ -2992,31 +3785,47 @@ public class StreamService {
                             runSession.put(runId, sessionId);
                             return runs.setStatus(runId, "RUNNING")
                                     .then(bus.acquireLock(runId))
-                                    .doOnNext(taskLocked -> {
+                                    .flatMap(taskLocked -> {
                                         if (Boolean.TRUE.equals(taskLocked)) {
-                                            startGeneration(runId, prompt);
+                                            // ▼ 读该会话最近 N 轮 → 落 user → 带上下文生成
+                                            return history.loadContext(sessionId)
+                                                    .flatMap(context -> history.writeUserMessage(sessionId, runId, prompt)
+                                                            .then(Mono.fromRunnable(() -> startGeneration(runId, prompt, context)))
+                                                            .thenReturn(runId));
                                         }
-                                    })
-                                    .thenReturn(runId);
+                                        return Mono.just(runId);
+                                    });
                         }));
     }
 
-    private void startGeneration(String runId, String prompt) {
-        Disposable handle = generator.generate(prompt)
-                .doOnNext(chunk -> chunkBus.write(runId, chunk))   // ▼ chunk 写 Kafka
+    private void startGeneration(String runId, String prompt, List<Message> context) {
+        StringBuilder buf = new StringBuilder();
+        buffers.put(runId, buf);
+        Disposable handle = generator.generate(prompt, context)   // ▼ 带历史上下文（第8章）
+                .doOnNext(chunk -> { buf.append(chunk); chunkBus.write(runId, chunk); })  // ▼ 缓冲 + 写 Kafka
                 .doOnComplete(() -> finishRun(runId, "DONE"))
                 .doOnError(err -> finishRun(runId, "FAILED"))
                 .subscribe();
         bus.registerLocalRun(runId, handle);
     }
 
-    /** ▼ 终态统一：写结束标记、改状态、释放任务锁、释放会话锁。 */
+    /** ▼ 终态统一：写结束标记、改状态、落 assistant 全文、释放任务锁、释放会话锁。 */
     private void finishRun(String runId, String status) {
         chunkBus.write(runId, "__END__");
         runs.setStatus(runId, status).subscribe();
+        saveAssistantMessage(runId);          // ▼ 第8章：拼缓冲 → 落 assistant 历史
         bus.releaseLock(runId).subscribe();
         releaseSessionFor(runId);
         log.info("[run] 终态 runId={} status={}", runId, status);
+    }
+
+    /** ▼ 把缓冲的 chunk 拼成完整回答写进历史。 */
+    private void saveAssistantMessage(String runId) {
+        StringBuilder buf = buffers.remove(runId);
+        String sessionId = runSession.get(runId);
+        if (buf != null && sessionId != null && !buf.isEmpty()) {
+            history.writeAssistantMessage(sessionId, runId, buf.toString()).subscribe();
+        }
     }
 
     private void releaseSessionFor(String runId) {
@@ -3037,21 +3846,23 @@ public class StreamService {
         return runs.get(runId);
     }
 
-    /** ▼ 管理面：取消（走 Pub/Sub，跨实例），同时释放会话锁。 */
+    /** ▼ 管理面：取消（走 Pub/Sub，跨实例），落半截回答 + 释放会话锁。 */
     public Mono<Void> cancel(String runId) {
+        saveAssistantMessage(runId);          // ▼ 第8章：取消也把已生成的部分存下来
         releaseSessionFor(runId);          // ▼ 释放会话锁
         return runs.setStatus(runId, "CANCELLED").then(bus.cancel(runId));
     }
 }
 ```
 
-> **关键改动（第 9 章恢复会话级独占）**：
-> - `trigger` 恢复 `sessionId` 参数，三道防线从外到内（会话独占 → 幂等 → 任务锁）——与第 8 章一致。
-> - `finishRun` 终态统一处理：写结束标记 + 改状态 + 释放任务锁 + **释放会话锁**。Kafka 下结束标记写进 topic 而非 Redis Pub/Sub。
+> **关键改动（第 10 章恢复会话级独占）**：
+> - `trigger` 恢复 `sessionId` 参数，三道防线从外到内（会话独占 → 幂等 → 任务锁）——与第 9 章一致。
+> - **历史能力延续第 8 章**：触发仍读该会话上下文注入（上下文跟着 sessionId 走，与总线换不换无关）；`finishRun` 把 chunk 拼成全文落 `gen_message`。
+> - `finishRun` 终态统一处理：写结束标记 + 改状态 + 落 assistant + 释放任务锁 + **释放会话锁**。Kafka 下结束标记写进 topic 而非 Redis Pub/Sub。
 > - `cancel` 也释放会话锁——CANCELLED 是终态。
 > - **Kafka 下 SSE 续传说明**：Kafka 消费组 offset 托管，不需要手写 seq（第 5 章的 seq 在 Kafka 下被 offset 取代）。但 `Last-Event-ID` 在 Kafka 下不再自动生效——回放靠 `auto-offset-reset: earliest` + 消费组续读。
 
-#### 9.2.5 Controller 订阅改调 KafkaChunkBus
+#### 10.2.5 Controller 订阅改调 KafkaChunkBus
 
 **【改已有文件，stream 方法】** `RunController.java` 的 `stream` 简化（不再解析 seq）：
 
@@ -3069,7 +3880,7 @@ public Flux<ServerSentEvent<String>> stream(@PathVariable String runId) {
 
 （去掉 `Last-Event-ID` 头解析——Kafka 下续读由消费组托管。）
 
-### 9.3 验证（Kafka 跨服务消费）
+### 10.3 验证（Kafka 跨服务消费）
 
 ```bash
 # 起 Kafka（KRaft 单节点，无需 ZooKeeper）
@@ -3101,33 +3912,33 @@ docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 \
 
 **核心收获**：Kafka 让 chunk 变成**可被多服务、标准化、长期保留**的数据资产。审计/计费/分析各起一个消费组，互不干扰，各自维护进度。
 
-### 9.4 checkpoint
+### 10.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第9章:chunk总线升级Kafka+消费组跨服务消费"
+git add -A && git commit -m "第10章:chunk总线升级Kafka+消费组跨服务消费"
 ```
 
-### 9.5 复盘 + 暴露问题
+### 10.5 复盘 + 暴露问题
 
 chunk 总线升级完成。系统现在有 **PG（run 状态/幂等）+ Redis（锁/会话独占/取消通知）+ Kafka（chunk 总线）** 三套存储各司其职，很稳。但架构上仍是**一个进程干所有事**。下一个痛点：
 
 > 触发接口是**轻量 IO**（收请求、写 Kafka、写 PG），而生成器是**CPU/长连接密集**（跑生成、维持大量 SSE 长连接）。两者资源画像冲突——SSE 长连接把进程的事件循环占满，连触发请求都进不来。
 
-**第 10 章：拆订阅服务**——把"维持 SSE 长连接"和"触发/生成"分开部署。
+**第 11 章：拆订阅服务**——把"维持 SSE 长连接"和"触发/生成"分开部署。
 
 ---
 
-## 第 10 章：触发与生成资源画像冲突——拆订阅服务
+## 第 11 章：触发与生成资源画像冲突——拆订阅服务
 
-### 10.0 场景
+### 11.0 场景
 
-第 9 章后，系统一个进程包揽所有事：收触发请求、跑生成器、维持 SSE 长连接。上量后暴露资源冲突：
+第 10 章后，系统一个进程包揽所有事：收触发请求、跑生成器、维持 SSE 长连接。上量后暴露资源冲突：
 
 > 生成器是 **CPU 密集**（占计算），SSE 订阅是**长连接密集**（占连接数、占事件循环）。两者挤在一个进程——某次流量高峰，大量 SSE 长连接把 WebFlux 事件循环占满，**连触发请求都处理不了**。生成和订阅互相拖累。
 
 而且从**职责**看：管数分离已经把"触发（管理面）"和"订阅（数据面）"在接口上拆开了，但**物理上还是同一个进程**。下一步自然是**物理拆分**——让它们各自独立扩展。
 
-### 10.1 思路：按资源画像拆服务
+### 11.1 思路：按资源画像拆服务
 
 | 服务 | 职责 | 资源画像 | 独立扩展理由 |
 |------|------|---------|------------|
@@ -3136,13 +3947,13 @@ chunk 总线升级完成。系统现在有 **PG（run 状态/幂等）+ Redis（
 
 拆开后：生成高峰扩 trigger-service，连接高峰扩 stream-service，互不干扰。
 
-> **怎么拆（学习阶段的最简方式）**：不需要立刻上完整微服务体系。**用同一个代码库 + Spring Profile**——同一个应用，根据激活的 profile 决定暴露哪些 Controller。本地两个不同端口、不同 profile 起两个进程，就模拟出两个服务。这比一上来搞多 module + Eureka + Gateway 对初学者友好得多。**第 11 章再加网关收口。**
+> **怎么拆（学习阶段的最简方式）**：不需要立刻上完整微服务体系。**用同一个代码库 + Spring Profile**——同一个应用，根据激活的 profile 决定暴露哪些 Controller。本地两个不同端口、不同 profile 起两个进程，就模拟出两个服务。这比一上来搞多 module + Eureka + Gateway 对初学者友好得多。**第 12 章再加网关收口。**
 
 **通信方式**：两个服务**不直接调用**，而是通过 **Kafka（chunk 总线）+ Redis（锁/会话独占）+ PG（状态/幂等）** 间接通信。trigger-service 写 Kafka/PG，stream-service 从 Kafka 读——天然解耦。这正是第 4 章"把数据搬出进程"的又一次回报。
 
-### 10.2 动手（同代码库 + Profile 拆分）
+### 11.2 动手（同代码库 + Profile 拆分）
 
-#### 10.2.1 配置两个 Profile
+#### 11.2.1 配置两个 Profile
 
 **【改已有文件】** `application.yaml`（加 profile 分组）：
 
@@ -3152,7 +3963,7 @@ spring:
     active: ${PROFILE:all}   # 默认 all（单进程跑全部，向后兼容前面章节）
 ```
 
-#### 10.2.2 Controller 加 profile 条件
+#### 11.2.2 Controller 加 profile 条件
 
 **【改已有文件，加注解】** `RunController.java`：把"触发类接口"和"订阅接口"分别限定 profile。
 
@@ -3177,8 +3988,10 @@ public Flux<ServerSentEvent<String>> stream(...) { ... }
 ```
 
 > **`@Profile` 的作用**：Spring 启动时，只有激活的 profile 匹配时，这个方法/Bean 才生效。`Profile({"trigger","all"})` 表示激活 `trigger` 或 `all` 时生效。这样同一个 Controller，在 trigger 实例上只暴露管理面接口，在 stream 实例上只暴露订阅接口。**更干净的做法是拆成两个 Controller 类**（`TriggerController` + `StreamController`），这里为改动最小用方法级 `@Profile`，留作练习。
+>
+> **第 8 章的 `SessionController` 同理**：新建会话/会话列表/消息列表都是管理面（读 PG 历史），给这个 Controller 也加类级 `@org.springframework.context.annotation.Profile({"trigger", "all"})`，让它只在 trigger-service 暴露。stream-service 只管 SSE 订阅，不需要历史接口。
 
-#### 10.2.3 运行两个服务
+#### 11.2.3 运行两个服务
 
 ```bash
 # 终端1：触发服务（端口 8080，profile=trigger）
@@ -3188,7 +4001,7 @@ PROFILE=trigger SERVER_PORT=8080 ./mvnw spring-boot:run
 PROFILE=stream SERVER_PORT=8081 ./mvnw spring-boot:run
 ```
 
-### 10.3 验证（服务拆分）
+### 11.3 验证（服务拆分）
 
 ```bash
 # 触发请求打到 trigger-service（8080）
@@ -3202,25 +4015,25 @@ curl -N "http://localhost:8081/api/runs/run_xxx/stream"
 
 **核心收获**：两个服务**物理隔离**，只通过 Kafka/Redis 通信。trigger-service 挂了，已生成的 chunk 仍可被 stream-service 读出（Kafka 持久）；stream-service 挂了，不影响 trigger-service 继续生成。
 
-### 10.4 checkpoint
+### 11.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第10章:按Profile拆触发服务/订阅服务"
+git add -A && git commit -m "第11章:按Profile拆触发服务/订阅服务"
 ```
 
-### 10.5 复盘 + 暴露问题
+### 11.5 复盘 + 暴露问题
 
 服务拆开了，但现在前端要记两个端口（触发打 8080、订阅打 8081）。多几个服务前端就要记几个端口——不现实。
 
-**第 11 章：API 网关**——统一入口，前端只认一个地址。
+**第 12 章：API 网关**——统一入口，前端只认一个地址。
 
 ---
 
-## 第 11 章：前端记一堆端口——API 网关统一入口
+## 第 12 章：前端记一堆端口——API 网关统一入口
 
-### 11.0 场景
+### 12.0 场景
 
-第 10 章后有两个服务、两个端口。前端代码写死 `POST localhost:8080`、`GET localhost:8081`。问题：
+第 11 章后有两个服务、两个端口。前端代码写死 `POST localhost:8080`、`GET localhost:8081`。问题：
 
 1. **前端记一堆端口**——服务一多就乱。
 2. **扩容/迁移要改前端**——后端换地址，前端跟着改。
@@ -3228,7 +4041,7 @@ git add -A && git commit -m "第10章:按Profile拆触发服务/订阅服务"
 
 企业级标准答案：**API 网关**。所有请求先到网关，网关按路径路由到后端服务。前端永远只认网关地址。
 
-### 11.1 思路：Spring Cloud Gateway
+### 12.1 思路：Spring Cloud Gateway
 
 **Spring Cloud Gateway** 是 Spring 生态的响应式网关。它做三件事：
 
@@ -3238,9 +4051,9 @@ git add -A && git commit -m "第10章:按Profile拆触发服务/订阅服务"
 
 > **SSE 长连接经过网关的坑**：网关默认可能缓冲响应或断开长连接。Spring Cloud Gateway 是响应式的（基于 WebFlux），**原生支持流式透传**——这是我们选它而非阻塞式网关的原因。学习阶段先做**固定路由版**，Eureka 服务发现作为进阶方向标注，不在这章强加。
 
-### 11.2 动手（最小版：固定路由，先不引 Eureka）
+### 12.2 动手（最小版：固定路由，先不引 Eureka）
 
-#### 11.2.1 新建网关项目
+#### 12.2.1 新建网关项目
 
 ```
 gateway/
@@ -3270,7 +4083,7 @@ gateway/
 
     <properties>
         <java.version>21</java.version>
-        <spring-cloud.version>2025.0.3</spring-cloud.version>
+        <spring-cloud.version>2025.1.2</spring-cloud.version>
     </properties>
 
     <dependencyManagement>
@@ -3288,7 +4101,7 @@ gateway/
     <dependencies>
         <dependency>
             <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-gateway</artifactId>
+            <artifactId>spring-cloud-starter-gateway-server-webflux</artifactId>
         </dependency>
     </dependencies>
 
@@ -3303,7 +4116,7 @@ gateway/
 </project>
 ```
 
-> **Spring Cloud 版本（重要）**：Spring Boot 4.0.x 配 **Spring Cloud 2025.0.x（Northfields）**，本文用 `2025.0.3`。版本要严格配套——Boot 4.0 不能配 2025.1.x（那是给 4.1 的）。以你实际 Spring Boot 版本的[官方兼容矩阵](https://spring.io/projects/spring-cloud)为准。
+> **Spring Cloud 版本（重要，已按官方矩阵修正）**：Spring Boot 4.x 配 **Spring Cloud 2025.1.x（Oakwood）**，本文用 `2025.1.2`（支持 Boot 4.0/4.1，4.1.x 支持从 2025.1.2 起）。注意 **2025.0.x（Northfields）是给 Boot 3.5 的**，不能用在 Boot 4。以你实际 Spring Boot 版本的[官方兼容矩阵](https://spring.io/projects/spring-cloud)为准。
 
 **【新建文件】** `gateway/src/main/java/com/example/gateway/GatewayApplication.java`：
 
@@ -3321,7 +4134,7 @@ public class GatewayApplication {
 }
 ```
 
-#### 11.2.2 网关路由配置
+#### 12.2.2 网关路由配置
 
 **【新建文件】** `gateway/src/main/resources/application.yaml`：
 
@@ -3332,22 +4145,24 @@ server:
 spring:
   cloud:
     gateway:
-      routes:
-        # SSE 订阅流 → stream-service（先匹配 stream，它更具体）
-        - id: stream-route
-          uri: http://localhost:8081
-          predicates:
-            - Path=/api/runs/*/stream
-        # 其余（触发/状态/取消）→ trigger-service
-        - id: trigger-route
-          uri: http://localhost:8080
-          predicates:
-            - Path=/api/runs/**
+      server:
+        webflux:
+          routes:
+            # SSE 订阅流 → stream-service（先匹配 stream，它更具体）
+            - id: stream-route
+              uri: http://localhost:8081
+              predicates:
+                - Path=/api/runs/*/stream
+            # 其余（触发/状态/取消）→ trigger-service
+            - id: trigger-route
+              uri: http://localhost:8080
+              predicates:
+                - Path=/api/runs/**
 ```
 
 > **路由匹配顺序**：Gateway 按配置顺序匹配。`/api/runs/*/stream` 更具体，放前面；`/api/runs/**` 兜底放后面。**Spring Cloud Gateway 默认支持 SSE 流式透传**——长连接不会被缓冲截断，无需额外配置。
 
-### 11.3 验证（统一入口）
+### 12.3 验证（统一入口）
 
 ```bash
 # 起三个进程：trigger(8080)、stream(8081)、gateway(8000)
@@ -3365,13 +4180,13 @@ curl -N "http://localhost:8000/api/runs/run_xxx/stream"
 
 **核心收获**：前端只认 `localhost:8000` 一个地址。后端 trigger/stream 怎么扩容、怎么迁移，前端代码一行不改——**网关屏蔽了后端的物理拓扑**。
 
-### 11.4 checkpoint
+### 12.4 checkpoint
 
 ```bash
-git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
+git add -A && git commit -m "第12章:Spring Cloud Gateway统一入口"
 ```
 
-### 11.5 复盘 + 后续进阶方向
+### 12.5 复盘 + 后续进阶方向
 
 到这里，你已经从"一个 `Flux<String>` 接口"演进到了**网关 + 触发服务 + 订阅服务 + Redis（锁/会话独占/通知）+ Kafka（chunk 总线）**的完整分布式管数分离系统。
 
@@ -3379,8 +4194,8 @@ git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
 
 1. **服务发现（Eureka）**：把固定路由换成动态发现，trigger/stream 自动注册，网关自动路由。扩容真正零配置。
 2. **网关鉴权/限流**：JWT 认证、租户隔离、按租户限流——横切关注点收口到网关。
-3. **Kafka 精确续传**：把消费组 offset 暴露给前端，实现 Kafka 方案下的"从某条精确续读"（弥补第 9 章的取舍）。
-4. **fencing token**：在 Redisson 锁之上叠加单调递增 token，消除"GC 停顿导致看门狗冻结、旧持有者恢复后继续写"的窗口（第 8 章遗留的严格性问题）。
+3. **Kafka 精确续传**：把消费组 offset 暴露给前端，实现 Kafka 方案下的"从某条精确续读"（弥补第 10 章的取舍）。
+4. **fencing token**：在 Redisson 锁之上叠加单调递增 token，消除"GC 停顿导致看门狗冻结、旧持有者恢复后继续写"的窗口（第 9 章遗留的严格性问题）。
 5. **可观测性**：OpenTelemetry 链路追踪、指标、告警——分布式系统出问题时能定位到哪个服务。
 
 ---
@@ -3402,17 +4217,19 @@ git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
   │
 第5章  seq 游标 + SSE Last-Event-ID：重连不重复不漏                    ← 精确回放
   │
-第6章  run 资源 + 状态机 + 幂等键 + 取消 + 会话级独占（状态存 Redis KV）← 企业级标准形态（含并发闸门）
+第6章  run 资源 + 状态机 + 幂等键 + 取消 + 会话级独占（Redisson 会话锁，状态存 Redis KV）← 企业级标准形态（含并发闸门）
   │
 第7章  PostgreSQL + MyBatis-Flex：run 状态/幂等落关系库                ← 结构化数据持久化、SQL 查询、ACID 幂等
   │
-第8章  多实例：跨实例广播 + 会话级独占 + Redisson 单一写者 + Pub/Sub   ← 水平扩展（三道防线）
+第8章  会话历史落 PG + 多轮上下文注入 + 会话管理 API                    ← 历史记录、上下文记忆、切换会话
   │
-第9章  chunk 总线升级 Kafka：消费组、跨服务消费、长期保留              ← 持久总线
+第9章  多实例：跨实例广播 + 会话级独占 + Redisson 单一写者 + Pub/Sub   ← 水平扩展（三道防线）
   │
-第10章 按 Profile 拆触发服务/订阅服务                                  ← 物理拆分
+第10章  chunk 总线升级 Kafka：消费组、跨服务消费、长期保留              ← 持久总线
   │
-第11章 Spring Cloud Gateway 统一入口                                    ← 网关收口
+第11章 按 Profile 拆触发服务/订阅服务                                  ← 物理拆分
+  │
+第12章 Spring Cloud Gateway 统一入口                                    ← 网关收口
 ```
 
 ### 每章引入的核心概念回顾
@@ -3425,21 +4242,22 @@ git add -A && git commit -m "第11章:Spring Cloud Gateway统一入口"
 | 3 | Sinks.Many（热流广播） | 冷流导致重复触发 |
 | 4 | Redis Stream + Pub/Sub | 内存丢失、断线丢内容 |
 | 5 | seq 游标 + Last-Event-ID | 重连重复/漏 chunk |
-| 6 | run 资源 + 幂等键 + 会话级独占 | 多端重复提交、同会话并发触发、状态黑盒 |
+| 6 | run 资源 + 幂等键 + 会话级独占（Redisson 会话锁） | 多端重复提交、同会话并发触发、状态黑盒 |
 | 7 | PostgreSQL + MyBatis-Flex | run 状态存 Redis 重启全清、查不动、幂等无原子保证 |
-| 8 | Redisson 分布式锁 + 跨实例取消 | 多实例重复触发、压测并发打挂服务、取消跨不了实例 |
-| 9 | Kafka 消费组 | 跨服务消费、长期保留 |
-| 10 | Profile 拆服务 | 资源画像冲突 |
-| 11 | API 网关 | 前端记一堆端口 |
+| 8 | 会话历史 + 多轮上下文 + 会话管理 | 对话内容没落库、LLM 每轮失忆、无历史列表/切换 |
+| 9 | Redisson 任务级单一写者锁 + 跨实例取消 | 多实例重复触发、压测并发打挂服务、取消跨不了实例 |
+| 10 | Kafka 消费组 | 跨服务消费、长期保留 |
+| 11 | Profile 拆服务 | 资源画像冲突 |
+| 12 | API 网关 | 前端记一堆端口 |
 
 ### 这套设计的几个关键判断（值得记住）
 
-1. **先逻辑后物理**：管数分离先在单进程内把接口拆开（第 2 章），物理拆服务是第 10 章的事。顺序不能反。
-2. **数据搬出进程，越早越好**：第 4 章就把 chunk 落 Redis，这让后面的多实例（第 8 章）、拆服务（第 10 章）几乎"免费"获得跨实例能力。
-3. **结构化数据进关系库，流式数据进流总线**：run 状态/幂等这种结构化数据落 PG（第 7 章），chunk 这种流式数据落 Kafka（第 9 章），临时并发标记留 Redis KV——各按数据形态选家，不混用。
+1. **先逻辑后物理**：管数分离先在单进程内把接口拆开（第 2 章），物理拆服务是第 11 章的事。顺序不能反。
+2. **数据搬出进程，越早越好**：第 4 章就把 chunk 落 Redis，这让后面的多实例（第 9 章）、拆服务（第 11 章）几乎"免费"获得跨实例能力。
+3. **结构化数据进关系库，流式数据进流总线**：run 状态/幂等这种结构化数据落 PG（第 7 章），chunk 这种流式数据落 Kafka（第 10 章），临时并发标记留 Redis KV——各按数据形态选家，不混用。
 4. **并发闸门要分层**：会话级独占（最外层）→ 幂等键 → 任务锁（最内层）。三道防线各管一层，不能互相替代。"同一个 session 在输出时不允许再次调用"是生产级系统的基本功——没有这道闸门，压测一轮就能把服务打挂。
-5. **不是替换，是分工**：PG 管结构化状态，Redis 管锁/会话独占/低延迟通知，Kafka 管持久总线/跨服务消费。各司其职。
-6. **诚实标注局限**：Redisson 锁仍有 GC 停顿导致的陈旧写入窗口（第 8 章）、Kafka 下 Last-Event-ID 失效（第 9 章）、`readAfter` 读全量（第 5 章）——都明确写出，并在合适的地方给出进阶方向。**生产级工程师知道每个方案的代价，而不是假装完美。**
+5. **不是替换，是分工**：PG 管结构化状态 + 会话历史，Redis 管锁/会话独占/低延迟通知，Kafka 管持久总线/跨服务消费。各司其职。
+6. **诚实标注局限**：Redisson 锁仍有 GC 停顿导致的陈旧写入窗口（第 9 章）、Kafka 下 Last-Event-ID 失效（第 10 章）、`readAfter` 读全量（第 5 章）——都明确写出，并在合适的地方给出进阶方向。**生产级工程师知道每个方案的代价，而不是假装完美。**
 
 ### 学完之后
 
@@ -3468,15 +4286,22 @@ research-stream/                    # 主应用（trigger/stream 双 profile）
     │   │   ├── StreamBus.java             # Redis：Redisson 锁 + Pub/Sub 跨实例取消
     │   │   └── KafkaChunkBus.java         # Kafka：chunk 持久总线
     │   ├── serve/
-    │   │   └── StreamService.java         # 编排：触发/订阅/状态/取消
+    │   │   └── StreamService.java         # 编排：触发/订阅/状态/取消/历史落库
     │   └── run/
     │       ├── RunEntity.java             # ▼ MyBatis-Flex 实体（gen_run 表）
     │       ├── RunMapper.java             # ▼ MyBatis-Flex Mapper
     │       ├── RunStore.java              # run 状态/幂等（PG）+ 会话独占（Redis）
+    │       ├── SessionEntity.java         # ▼ 会话实体（gen_session 表）
+    │       ├── MessageEntity.java         # ▼ 对话消息实体（gen_message 表）
+    │       ├── SessionMapper.java         # ▼ 会话 Mapper
+    │       ├── MessageMapper.java         # ▼ 消息 Mapper
+    │       ├── HistoryStore.java          # 会话历史读写 + 上下文装载 + 会话管理
+    │       ├── SessionController.java     # 会话管理 REST（新建/列表/消息）
     │       └── RunController.java         # 企业级 REST
     └── resources/
         ├── application.yaml
-        └── schema.sql                     # ▼ PG 建表（gen_run / gen_idempotency）
+        ├── static/index.html              # ▼ 前端演示：新会话按钮 + 历史列表 + 切换
+        └── schema.sql                     # ▼ PG 建表（gen_run / gen_idempotency / gen_session / gen_message）
 
 gateway/                            # API 网关
 └── src/main/
@@ -3537,6 +4362,12 @@ docker/
 **原因**：`switchIfEmpty(newRun())` 中 `newRun()` **立即执行**（方法调用先于 switchIfEmpty 判断）。
 **解决**：用 `switchIfEmpty(Mono.defer(() -> newRun()))` 延迟到真正需要时。见第 6 章 `RunStore`。
 
+#### 坑 9：切换会话后，LLM 还"记得"上一个会话（上下文泄漏）
+
+**现象**：用户切到历史会话 B 提问，模型的回答却带着会话 A 的上下文。
+**原因**：上下文注入没有跟着 sessionId 走——比如把上下文缓存成了"最后一次会话"，或把 `loadContext(sessionId)` 的 sessionId 传错成固定值。**上下文是"当前会话"的属性，不是全局状态。**
+**解决**：每次触发都用**请求里的 sessionId** 重新 `loadContext(sessionId)`（第 8 章 `HistoryStore.loadContext`）。验证方法：新开会话问同一个问题，模型必须答"你没告诉过我"——见第 8 章 8.3 验证第 7 步。
+
 ### A.3 外部依赖一键起
 
 ```bash
@@ -3544,7 +4375,7 @@ docker/
 docker run -d --name pg -p 5432:5432 \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=research_stream postgres:16
 
-# Kafka KRaft 单节点（第 9 章）
+# Kafka KRaft 单节点（第 10 章）
 docker run -d --name kafka -p 9092:9092 \
   -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
   -e KAFKA_LISTENERS=PLAINTEXT://:9092 -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
@@ -3558,24 +4389,24 @@ docker run -d --name kafka -p 9092:9092 \
 
 | 你想深入的点 | 对应附录 | 对应本文章节 |
 |------------|---------|------------|
+| 这套系统里所有的 ID（sessionId/runId/幂等键/seq/offset…谁生成、何时用、存哪） | [管数分离 ID 体系全解析](../../附录/管数分离专题/01-管数分离ID体系全解析.md) | 全文 |
 | `Flux`/`Mono` 的各种操作符（map/flatMap/concatWith...） | [Flux 方法速查](../../附录/Reactor响应式编程/02-Flux方法速查.md) | 全文 |
-| `Sinks.Many` 是什么、怎么用 | [Reactor Sinks 入门](../../附录/Reactor响应式编程/03-Reactor-Sinks入门.md) | 第 3、10 章 |
+| `Sinks.Many` 是什么、怎么用 | [Reactor Sinks 入门](../../附录/Reactor响应式编程/03-Reactor-Sinks入门.md) | 第 3、11 章 |
 | "消费太慢怎么办"——背压（Backpressure） | [Reactor 背压详解](../../附录/Reactor响应式编程/04-Reactor背压详解.md) | 第 3 章 `onBackpressureBuffer` |
-| Redis Stream（XADD/XRANGE/消费组）与 Pub/Sub | [Redis Streams 与 Pub/Sub 实战](../../附录/Redis专题/01-Redis-Streams与PubSub实战.md) | 第 4、8 章 |
-| PostgreSQL + MyBatis-Flex（ORM/事务/连接池） | [数据库事务与 @Transactional 详解](../../附录/协议与数据库/02-数据库事务与Transactional详解.md) | 第 7 章持久化 |
-| 分布式锁（SETNX/Lua/Redisson/fencing token） | [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md) | 第 8 章单一写者 |
-| Kafka（topic/partition/offset/消费组）与 Spring Boot | [Kafka 核心概念与 Spring Boot 实战](../../附录/Kafka专题/01-Kafka核心概念与SpringBoot实战.md) | 第 9 章 |
-| Spring Cloud Stream（消息中间件抽象，第 9 章手写 Kafka 的架构升级） | [Spring Cloud Stream 从入门到架构师](../../附录/Spring-Cloud-Stream专题/01-Spring-Cloud-Stream从入门到架构师.md) | 第 9 章扩展 |
-| Spring Cloud Stream 进阶（Kafka 基础、Kafka Streams、事件驱动架构） | [Spring Cloud Stream 进阶实战](../../附录/Spring-Cloud-Stream专题/02-Spring-Cloud-Stream进阶实战.md) | 第 9 章扩展 |
-| 事件驱动微服务端到端实战（Saga、幂等、多服务落地） | [事件驱动微服务端到端实战](../../附录/Spring-Cloud-Stream专题/03-事件驱动微服务端到端实战.md) | 第 9 章扩展 |
-| 生产级进阶（Outbox 模式、Schema Registry、分区调优） | [生产级进阶：Outbox 与 Schema 与分区调优](../../附录/Spring-Cloud-Stream专题/04-生产级进阶-Outbox与Schema与分区调优.md) | 第 9 章扩展 |
-| Spring Cloud Stream 全知识点实践（每个 API 都有可跑代码） | [Spring Cloud Stream 全知识点实践项目](../../附录/Spring-Cloud-Stream专题/05-全知识点实践项目.md) | 第 9 章扩展 |
-| 事件溯源与 CQRS（用事件当数据源、读写分离） | [事件溯源与 CQRS 专题](../../附录/事件溯源与CQRS专题/README.md) | 第 9 章扩展 |
-| Kafka Streams 流处理（窗口、JOIN、状态查询） | [Kafka Streams 流处理专题](../../附录/Kafka-Streams流处理专题/README.md) | 第 9 章扩展 |
-| Debezium CDC（变更数据捕获、Outbox 投递落地） | [Debezium CDC 实战专题](../../附录/Debezium-CDC实战/README.md) | 第 9 章扩展 |
+| Redis Stream（XADD/XRANGE/消费组）与 Pub/Sub | [Redis Streams 与 Pub/Sub 实战](../../附录/Redis专题/01-Redis-Streams与PubSub实战.md) | 第 4、9 章 |
+| PostgreSQL + MyBatis-Flex（ORM/事务/连接池） | [数据库事务与 @Transactional 详解](../../附录/协议与数据库/02-数据库事务与Transactional详解.md) | 第 7、8 章持久化 |
+| 分布式锁（SETNX/Lua/Redisson/fencing token） | [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md) | 第 6 章会话锁 / 第 9 章单一写者 |
+| Kafka 消息队列（topic/分区/offset/消费组）与 Spring Boot 实战 | [Kafka 消息队列从入门到架构师](../../附录/Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md) | 第 10 章 |
+| Kafka 进阶（生产调优、Kafka Streams、EDA、响应式真相） | [Kafka 进阶实战](../../附录/Kafka消息队列实战专题/02-Kafka进阶实战.md) | 第 10 章扩展 |
+| 事件驱动微服务端到端实战（Saga、幂等、多服务落地） | [事件驱动微服务端到端实战](../../附录/Kafka消息队列实战专题/03-事件驱动微服务端到端实战.md) | 第 10 章扩展 |
+| 生产级进阶（Outbox 模式、Schema Registry、分区调优） | [生产级进阶：Outbox 与 Schema 与分区调优](../../附录/Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md) | 第 10 章扩展 |
+| Kafka 全知识点实践（每个 API 都有可跑代码） | [Kafka 全知识点实践项目](../../附录/Kafka消息队列实战专题/05-全知识点实践项目.md) | 第 10 章扩展 |
+| 事件溯源与 CQRS（用事件当数据源、读写分离） | [事件溯源与 CQRS 专题](../../附录/事件溯源与CQRS专题/README.md) | 第 10 章扩展 |
+| Kafka Streams 流处理（窗口、JOIN、状态查询） | [Kafka Streams 流处理专题](../../附录/Kafka-Streams流处理专题/README.md) | 第 10 章扩展 |
+| Debezium CDC（变更数据捕获、Outbox 投递落地） | [Debezium CDC 实战专题](../../附录/Debezium-CDC实战/README.md) | 第 10 章扩展 |
 | SSE 协议（id/event/Last-Event-ID/心跳/代理穿透） | [SSE 协议详解](../../附录/协议与数据库/01-SSE协议详解.md) | 第 1、5 章 |
 
-> **建议学习顺序**：先跟完本文 0→11 章（主线），遇到卡点再翻对应附录。附录之间相互独立，可按需挑读。
+> **建议学习顺序**：先跟完本文 0→12 章（主线），遇到卡点再翻对应附录。附录之间相互独立，可按需挑读。
 
 ---
 
