@@ -1653,6 +1653,7 @@ import java.util.concurrent.TimeUnit;
 public class RunStore {
 
     private static final String KEY_RUN     = "run:%s:status";
+    private static final String KEY_CURRENT = "run:%s:current";        // sessionId → 当前 runId（多页面加入用）
     private static final String KEY_IDEM    = "idem:%s";              // idempotencyKey → runId
     private static final String KEY_SESSION = "session:%s:running";   // ▼ 会话级独占锁（Redisson）
     private static final Duration TTL          = Duration.ofDays(1);  // run 状态/幂等映射的保留时长
@@ -1709,7 +1710,10 @@ public class RunStore {
         String runId = "run_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         String json = "{\"id\":\"" + runId + "\",\"session\":\"" + sessionId
                 + "\",\"status\":\"queued\",\"createdAt\":\"" + Instant.now() + "\"}";
-        return redis.opsForValue().set(KEY_RUN.formatted(runId), json, TTL).thenReturn(runId);
+        return redis.opsForValue().set(KEY_RUN.formatted(runId), json, TTL)
+                // ▼ 同时记 sessionId → 当前 runId（多页面靠它加入：见下方 getRunId）
+                .then(redis.opsForValue().set(KEY_CURRENT.formatted(sessionId), runId, TTL))
+                .thenReturn(runId);
     }
 
     public Mono<Void> setStatus(String runId, String status) {
@@ -1723,10 +1727,17 @@ public class RunStore {
     public Mono<String> get(String runId) {
         return redis.opsForValue().get(KEY_RUN.formatted(runId));
     }
+
+    /** ▼ 会话 → 当前 runId：**第二个页面没做过 POST，靠 sessionId 查这个**（借鉴 demo04 的 getRunId 模式）。 */
+    public Mono<String> getRunId(String sessionId) {
+        return redis.opsForValue().get(KEY_CURRENT.formatted(sessionId));
+    }
 }
 ```
 
 > **`switchIfEmpty(Mono.defer(...))` 的细节**：`switchIfEmpty` 接收的 Mono 会**立即求值**（即使上游有值）。用 `Mono.defer(() -> ...)` 包一层，让它**延迟到真正需要时**才执行 `newRun()`——避免每次查询都白创建一个 run。这是 Reactor 的常见坑。
+
+> **`getRunId(sessionId)`：多页面加入的关键（借鉴真实项目 demo04）**。第二个页面没有 runId（它没做过 POST），但它有 sessionId——查 `GET /api/runs/current?sessionId=X`（内部调 `getRunId`）就能拿到当前 runId，再订阅流。这正好补上了"**幂等键解决不了、sessionId 才能解决**"的多页面场景（详见第 12 章）。
 
 > **会话锁靠看门狗自动续期**：用 Redisson 后，只要实例活着、run 没到终态，锁就每 10s 续到 30s——**生成再慢锁也不会过期**（这正是手写 `SETNX + 固定 TTL` 在长生成时会失效的坑）。实例崩溃时看门狗随之死亡，锁 30s 后自动过期，会话不会永久锁死。
 
@@ -2749,6 +2760,18 @@ public class TextGenerator {
 
 > **`prompt().messages(history)`**：ChatClient 的 prompt 构造里可以塞一组历史消息，再叠加当前的 `.user(...)`。注入顺序就是对话顺序（时间正序）——模型看到的是完整上下文。这也是 `loadContext` 要按时间正序返回的原因。
 
+> 📌 **Spring AI 内置的多轮记忆（借鉴真实项目 demo04 的更省事做法）**：如果只需要"模型记得前文"、不需要把历史落 PG 查询，可以用 Spring AI 的 `MessageChatMemoryAdvisor` + `ChatMemory`，一行把会话记忆接上——按 `ChatMemory.CONVERSATION_ID`（就是 sessionId）自动管理上下文：
+>
+> ```java
+> @Bean
+> public ChatClient client(ChatClient.Builder builder, ChatMemory memory) {
+>     return builder
+>             .defaultAdvisors(MessageChatMemoryAdvisor.builder(memory).build())  // ▼ 内置多轮记忆
+>             .build();
+> }
+> ```
+> 之后调用时 `client.prompt().user(prompt).advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))` 即可。**注意**：`ChatMemory` 默认在内存，要长期可查、可审计（本仓库 ch8 的需求），仍需要 PG 持久化（`HistoryStore`）；两者可结合——用 Advisor 做记忆、用 `HistoryStore` 做存档。
+
 #### 8.2.5 StreamService：接 HistoryStore
 
 **【改已有文件，完整版覆盖】** `StreamService.java`（基于第 7 章状态；触发时读上下文 + 落 user 消息，终态拼全文落 assistant 消息）：
@@ -2905,18 +2928,21 @@ import reactor.core.publisher.Mono;
 
 /**
  * 会话历史（第 8 章）。
- *   POST /api/sessions                  → 新建会话（前端"新会话"按钮调它）
- *   GET  /api/sessions                  → 会话列表（历史列表，按最近活跃倒序）
- *   GET  /api/sessions/{id}/messages    → 某会话的对话记录（切换会话后回看）
+ *   POST /api/sessions                          → 新建会话（前端"新会话"按钮调它）
+ *   GET  /api/sessions                          → 会话列表（历史列表，按最近活跃倒序）
+ *   GET  /api/sessions/{id}/messages            → 某会话的对话记录（切换会话后回看）
+ *   GET  /api/sessions/{id}/current-run         → 该会话当前/最近 runId（**第二个页面加入流靠它**）
  */
 @RestController
 @RequestMapping("/api/sessions")
 public class SessionController {
 
     private final HistoryStore history;
+    private final RunStore runs;   // ▼ 第8章：多页面加入需要查"会话当前 runId"
 
-    public SessionController(HistoryStore history) {
+    public SessionController(HistoryStore history, RunStore runs) {
         this.history = history;
+        this.runs = runs;
     }
 
     /** 新会话按钮：创建会话，返回 sessionId。 */
@@ -2936,6 +2962,16 @@ public class SessionController {
     @GetMapping("/{sessionId}/messages")
     public Flux<MessageEntity> messages(@PathVariable String sessionId) {
         return history.listMessages(sessionId);
+    }
+
+    /** ▼ 该会话当前/最近 runId：第二个页面没做过 POST，靠这个接口拿 runId 再订阅流。
+     *  借鉴真实项目 demo04 的 getRunId 模式——多页面共享靠 sessionId，不靠幂等键。 */
+    @GetMapping("/{sessionId}/current-run")
+    public Mono<ResponseEntity<String>> currentRun(@PathVariable String sessionId) {
+        return runs.getRunId(sessionId)
+                .map(runId -> ResponseEntity.ok()
+                        .body("{\"currentRunId\":\"" + runId + "\"}"))
+                .defaultIfEmpty(ResponseEntity.notFound().build());
     }
 }
 ```
