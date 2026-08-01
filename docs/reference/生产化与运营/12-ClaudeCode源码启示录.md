@@ -17,7 +17,7 @@
 
 Claude Code 给出一条反常识的洞察：**别把精力花在"调出最强 prompt"上，要花在"模型错了/工具失败了/上下文溢出了，系统兜底是什么"上。**
 
-这条结论与本仓库 [`reference/选型与对比/09`](./11-企业级Java-AI架构选型真相.md) 的核心结论完全一致——**Anthropic Workflow > Agent** 的本质就是边界管理：能用确定性 DAG（Workflow）解决的，不要用自主 Agent（不可控）。
+这条结论与本仓库 [`reference/选型与对比/09`](../选型与对比/09-企业级Java-AI架构选型真相.md) 的核心结论完全一致——**Anthropic Workflow > Agent** 的本质就是边界管理：能用确定性 DAG（Workflow）解决的，不要用自主 Agent（不可控）。
 
 **Java 工程师的优势**：你天然懂"边界管理"（接口契约、异常处理、事务、熔断、限流）。把这套工程能力搬到 AI 应用上，就是你区别于算法工程师/Python 工程师的核心竞争力。
 
@@ -87,7 +87,7 @@ public ToolResult executeShell(@ToolParam("cmd") String cmd) {
 
 ### 1.3 Anthropic 5 大 Workflow 模式（已在阶段 4 计划里）
 
-详见 [`reference/选型与对比/09` §4](./11-企业级Java-AI架构选型真相.md)。5 种模式全部用 Spring AI 1.0 单框架实现：
+详见 [`reference/选型与对比/09` §4](../选型与对比/09-企业级Java-AI架构选型真相.md)。5 种模式全部用 Spring AI 1.0 单框架实现：
 - Prompt Chaining（串联）
 - Parallelization（并行/分段/投票）
 - Routing（路由分流）
@@ -292,8 +292,8 @@ Spring Boot 的自动配置能帮你快速起步，但**生产环境 AI 应用�
 
 ## 8. 相关文档
 
-- [`11-企业级Java-AI架构选型真相.md`](./11-企业级Java-AI架构选型真相.md) —— "Workflow > Agent" 的企业实战证据
-- [`10-SpringAI与LangChain4j分工模型.md`](./10-SpringAI与LangChain4j分工模型.md) —— 理论分工模型
+- [`11-企业级Java-AI架构选型真相.md`](../选型与对比/09-企业级Java-AI架构选型真相.md) —— "Workflow > Agent" 的企业实战证据
+- [`10-SpringAI与LangChain4j分工模型.md`](../选型与对比/08-SpringAI与LangChain4j分工模型.md) —— 理论分工模型
 - [`09-心智模型与决策树.md`](./09-心智模型与决策树.md) —— LLM = 远程 RPC 的心智模型
 - [`02-Agent原理.md`](./02-Agent原理.md) —— Agent 循环的理论基础
 

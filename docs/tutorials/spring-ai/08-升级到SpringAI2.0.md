@@ -226,7 +226,7 @@ Advisor budgetAdvisor = new BudgetControlAdvisor(maxTokens, maxCost);
 Advisor maxTurnsAdvisor = new MaxTurnsAdvisor(20);
 ```
 
-详见 [reference/生产化与运营/15-Agent可靠性工程Java视角.md](../../reference/生产化与运营/15-Agent可靠性工程Java视角.md)。
+详见 [reference/生产化与运营/15-Agent可靠性工程Java视角.md](../../reference/生产化与运营/16-Agent可靠性工程Java视角.md)。
 
 ---
 

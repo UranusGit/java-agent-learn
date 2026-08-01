@@ -7,8 +7,8 @@
 > 这不是简单的"二选一"，而是大型 Java AI 项目里两个框架的**职责分工模型**（⚠️ 理论范式，企业实战罕见）。本节是对 `04-Java与AI融合架构.md` 第 12 节和 `spring-ai/07-与LangChain4j对比.md` 第 12 节的展开。
 >
 > **相关文档**：
-> - [`11-企业级Java-AI架构选型真相.md`](./11-企业级Java-AI架构选型真相.md) —— 本文的现实校正（企业不混用）
-> - [`13-SpringAI-vs-LangChain4j何时用何框架.md`](./13-SpringAI-vs-LangChain4j何时用何框架.md) —— **决策手册（选型看这篇）**
+> - [`11-企业级Java-AI架构选型真相.md`](./09-企业级Java-AI架构选型真相.md) —— 本文的现实校正（企业不混用）
+> - [`13-SpringAI-vs-LangChain4j何时用何框架.md`](./10-SpringAI-vs-LangChain4j何时用何框架.md) —— **决策手册（选型看这篇）**
 
 ---
 

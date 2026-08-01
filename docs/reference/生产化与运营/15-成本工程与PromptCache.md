@@ -276,7 +276,7 @@ Stripe 2025 公开数据：用 vLLM 自部署 Llama 3.1 替代 GPT-4o，**省 73
 
 - [`生产化与运营/12-ClaudeCode源码启示录.md`](./12-ClaudeCode源码启示录.md) §1.5 / §2.2 —— Prompt Cache 边界 + 成本追踪
 - [`生产化与运营/11-LLMOps.md`](./11-LLMOps.md) —— 可观测性基础设施
-- [`生产化与运营/15-Agent可靠性工程Java视角.md`](./15-Agent可靠性工程Java视角.md) —— 预算控制 Advisor
+- [`生产化与运营/15-Agent可靠性工程Java视角.md`](./16-Agent可靠性工程Java视角.md) —— 预算控制 Advisor
 - [`工程架构/06-模型服务部署.md`](../工程架构/06-模型服务部署.md) —— vLLM 自部署
 
 ---

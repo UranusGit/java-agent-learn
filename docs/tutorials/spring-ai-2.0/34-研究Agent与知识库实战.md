@@ -5389,7 +5389,7 @@ LLM → XADD stream:{sid}                  LLM → produce topic=research-chunks
         <!-- 第 12 章：Kafka（chunk 持久总线，跨服务消费） -->
         <dependency>
             <groupId>org.springframework.kafka</groupId>
-            <artifactId>spring-kafka</artifactId>
+            <artifactId>spring-boot-starter-kafka</artifactId>
         </dependency>
 ```yaml
 
@@ -5613,7 +5613,7 @@ docker exec research-kafka kafka-console-consumer --bootstrap-server localhost:9
 
 ```
 research-agent/
-├── pom.xml                          （加 spring-kafka）
+├── pom.xml                          （加 spring-boot-starter-kafka）
 ├── application.yaml                 （加 spring.kafka）
 └── src/main/java/com/example/research/
     ├── stream/
@@ -5710,7 +5710,7 @@ git add -A && git commit -m "第12章：chunk总线升级Kafka+消费组跨服�
         <!-- Kafka：订阅 chunk 总线 -->
         <dependency>
             <groupId>org.springframework.kafka</groupId>
-            <artifactId>spring-kafka</artifactId>
+            <artifactId>spring-boot-starter-kafka</artifactId>
         </dependency>
     </dependencies>
 </project>
@@ -6025,7 +6025,7 @@ git add -A && git commit -m "第13章：拆出独立订阅服务research-subscri
         <!-- Kafka：写 chunk 总线 -->
         <dependency>
             <groupId>org.springframework.kafka</groupId>
-            <artifactId>spring-kafka</artifactId>
+            <artifactId>spring-boot-starter-kafka</artifactId>
         </dependency>
     </dependencies>
 </project>
@@ -6382,7 +6382,7 @@ eureka:
         <!-- Spring Cloud Gateway：响应式网关（支持 SSE 透传） -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-gateway</artifactId>
+            <artifactId>spring-cloud-starter-gateway-server-webflux</artifactId>
         </dependency>
         <!-- Eureka Client：从注册中心发现服务实例 -->
         <dependency>
@@ -9350,9 +9350,9 @@ flowchart TD
 
 - [33-Agent子过程实时可见性方案](./33-Agent子过程实时可见性方案.md) —— Agent 可观测性的理论全本
 - [33a-Agent可观测性最小实战](./33a-Agent可观测性最小实战.md) / [33b-Agent可观测性企业级演进实践](./33b-Agent可观测性企业级演进实践.md) —— 可观测主题实战
-- [03-Tool调用](./03-Tool调用.md) —— 工具调用基础（第 1 章前置）
-- [22-跨标签页与实时协作](../web-claude/22-跨标签页与实时协作.md) —— Web 前端的三层同步架构
-- [16-Agent可靠性工程Java视角](../reference/生产化与运营/16-Agent可靠性工程Java视角.md) —— Agent 可靠性设计
+- [03-Tool调用](./02-Tool与AgentLoop.md) —— 工具调用基础（第 1 章前置）
+- [22-跨标签页与实时协作](../../web-claude/22-跨标签页与实时协作.md) —— Web 前端的三层同步架构
+- [16-Agent可靠性工程Java视角](../../reference/生产化与运营/16-Agent可靠性工程Java视角.md) —— Agent 可靠性设计
 
 ---
 

@@ -261,7 +261,7 @@ public Flux<String> run(String input) {
 | 基础设施 | Nginx / CDN / 防火墙原生支持 | 需额外配置 `Upgrade` 头、超时 |
 | 与 Reactor 契合 | `Flux<ServerSentEvent>` 天然契合 | 需 `WebSocketHandler` 手动管理 session |
 | 断线恢复 | 浏览器自动重连 + `Last-Event-ID` | 需自研重连 + 状态同步 |
-| 适用场景 | **事件流推送（本文）** | 实时双向协作（[22-跨标签页协作](../web-claude/22-跨标签页与实时协作.md)） |
+| 适用场景 | **事件流推送（本文）** | 实时双向协作（[22-跨标签页协作](../../web-claude/22-跨标签页与实时协作.md)） |
 
 > **结论**：Agent 子过程是「服务端推、前端只读展示」，SSE 是最匹配的。WebSocket 仅在需要「前端中途取消 / 注入消息」时作为可选扩展（§16.5）。
 
@@ -2618,11 +2618,11 @@ public class AuditSink {
 }
 ```
 
-> 金融/医疗场景（[29](./29-金融风控Agent.md)/[30](./30-医疗问诊Agent.md)）审计要求「事件不可篡改 + 可追溯」，cold path 还要配 [34-数据治理与合规审计](../web-claude/34-数据治理与合规审计.md) 的写入校验和日志链。
+> 金融/医疗场景（[29](./29-金融风控Agent.md)/[30](./30-医疗问诊Agent.md)）审计要求「事件不可篡改 + 可追溯」，cold path 还要配 [34-数据治理与合规审计](../../web-claude/34-数据治理与合规审计.md) 的写入校验和日志链。
 
 ### 17.6 PII 与敏感数据脱敏
 
-**问题**：工具参数/结果里可能含手机号、身份证、密钥、用户隐私（[24-智能体安全](../web-claude/24-智能体安全.md)）。初版直接 `Truncator.truncate` 后发 SSE，raw 数据泄漏到前端/审计库。
+**问题**：工具参数/结果里可能含手机号、身份证、密钥、用户隐私（[24-智能体安全](../../web-claude/24-智能体安全.md)）。初版直接 `Truncator.truncate` 后发 SSE，raw 数据泄漏到前端/审计库。
 
 **方案**：`PiiRedactor`——在截断之后、emit 之前脱敏。可复用本仓库 [demo02 的 PiiMaskAdvisor](../../../src/main/java/org/demo02/advisor/PiiMaskAdvisor.java) 的正则规则。
 
@@ -2699,7 +2699,7 @@ Flux<AgentEvent> live = bus.asFlux()
         });
 ```
 
-> 配 [23-Web安全与可分享性](../web-claude/23-Web安全与可分享性.md) 的 sessionId 权限校验：SSE 订阅前验证「当前用户是否有权看该 sessionId」（防枚举他人 sessionId 窥探）。
+> 配 [23-Web安全与可分享性](../../web-claude/23-Web安全与可分享性.md) 的 sessionId 权限校验：SSE 订阅前验证「当前用户是否有权看该 sessionId」（防枚举他人 sessionId 窥探）。
 
 ### 17.9 治理面与健康检查（Actuator）
 
@@ -2884,7 +2884,7 @@ public class TenantQuotaService {
 }
 ```
 
-> `opsForValue().increment/decrement`、`opsForZSet().removeRangeByScore/zCard` 均为 `spring-data-redis` 真实 API。三层配额（session/tenant/user）对应 [15](../web-claude/../spring-ai-2.0/15-可观测性与成本治理.md) §6.3 的「配额三层」，本文补全了其中的租户/用户维度。
+> `opsForValue().increment/decrement`、`opsForZSet().removeRangeByScore/zCard` 均为 `spring-data-redis` 真实 API。三层配额（session/tenant/user）对应 [15](./15-可观测性与成本治理.md) §6.3 的「配额三层」，本文补全了其中的租户/用户维度。
 
 ### 17.13 事件节流与聚合（解决「事件风暴」）
 

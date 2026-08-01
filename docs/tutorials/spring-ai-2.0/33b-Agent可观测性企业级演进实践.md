@@ -6164,7 +6164,7 @@ if (random.nextDouble() < 0.1) {
 - [33a-Agent可观测性最小实战](./33a-Agent可观测性最小实战.md) —— 练手小项目（本文第 1 章的缩略版）
 - [34-研究Agent与知识库实战](./34-研究Agent与知识库实战.md) —— 补充项目：学完本文，想做"自主研究 Agent + 知识库 + MCP"时看
 - [04-流式响应与Reactor深度](./04-流式响应与Reactor深度.md) —— SSE、cold/hot Flux（第 1 章前置）
-- [03-Tool调用](./03-Tool调用.md) / [03-Advisor链全解](./03-Advisor链全解.md) —— 工具与 Advisor（第 3 章前置）
+- [03-Tool调用](./02-Tool与AgentLoop.md) / [03-Advisor链全解](./03-Advisor链全解.md) —— 工具与 Advisor（第 3 章前置）
 - [15-可观测性与成本治理](./15-可观测性与成本治理.md) —— 成本计量、Langfuse（第 3、5 章）
 - [26-AI工程的SRE实践](./26-AI工程的SRE实践.md) —— SLO、Runbook（第 6 章）
 - [Reactor Sinks入门](../../附录/Reactor响应式编程/03-Reactor-Sinks入门.md) —— 事件总线的底层原理（全文通用）

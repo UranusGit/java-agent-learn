@@ -4461,7 +4461,7 @@ git add -A && git commit -m "第11章：Redis Sentinel高可用+退避重试"
 <!-- pom.xml 追加 -->
 <dependency>
     <groupId>org.springframework.kafka</groupId>
-    <artifactId>spring-kafka</artifactId>
+    <artifactId>spring-boot-starter-kafka</artifactId>
 </dependency>
 ```
 
@@ -4702,7 +4702,7 @@ git add -A && git commit -m "第12章：chunk总线升级Kafka+消费组跨服�
     <version>0.0.1-SNAPSHOT</version>
     <dependencies>
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webflux</artifactId></dependency>
-        <dependency><groupId>org.springframework.kafka</groupId><artifactId>spring-kafka</artifactId></dependency>
+        <dependency><groupId>org.springframework.kafka</groupId><artifactId>spring-boot-starter-kafka</artifactId></dependency>
     </dependencies>
 </project>
 ```
@@ -4914,24 +4914,26 @@ git add -A && git commit -m "第14章：拆出独立触发服务research-trigger
 spring:
   cloud:
     gateway:
-      routes:
-        - id: trigger       # 管理面：创建 run（POST）、查状态、取消
-          uri: lb://research-trigger
-          predicates: [Path=/api/runs, Method=POST]
-        - id: run-status     # 管理面：GET /api/runs/{id}、cancel
-          uri: lb://research-trigger
-          predicates: [Path=/api/runs/**, Method=POST]   # cancel 走这里
-        - id: subscribe      # 数据面：只读 SSE 流（GET）
-          uri: lb://research-subscribe
-          predicates: [Path=/api/runs/*/stream, Method=GET]
-        - id: business
-          uri: lb://research-agent
-          predicates: [Path=/api/**]
+      server:
+        webflux:
+          routes:
+            - id: trigger       # 管理面：创建 run（POST）、查状态、取消
+              uri: lb://research-trigger
+              predicates: [Path=/api/runs, Method=POST]
+            - id: run-status     # 管理面：GET /api/runs/{id}、cancel
+              uri: lb://research-trigger
+              predicates: [Path=/api/runs/**, Method=POST]   # cancel 走这里
+            - id: subscribe      # 数据面：只读 SSE 流（GET）
+              uri: lb://research-subscribe
+              predicates: [Path=/api/runs/*/stream, Method=GET]
+            - id: business
+              uri: lb://research-agent
+              predicates: [Path=/api/**]
 ```
 
 > **网关必须响应式才支持 SSE**：Spring Cloud Gateway（WebFlux）逐 chunk 透传 SSE；传统 Servlet 网关（Zuul 1）会缓冲破坏流式。**这是流式系统在网关选型上的关键差异**。
 
-> **Spring Cloud 版本配套**：Spring Boot 4.0.x 配 **Spring Cloud 2025.0.x（Northfields）**（如 `2025.0.3`）。gateway/registry 服务的 pom 里用 `spring-cloud-dependencies` BOM 管版本，starter 用 `spring-cloud-starter-gateway`（网关）和 `spring-cloud-starter-netflix-eureka-server`/`-client`（注册中心/客户端）。**别配 2025.1.x（那是给 Boot 4.1 的）**——以[官方兼容矩阵](https://spring.io/projects/spring-cloud)为准。
+> **Spring Cloud 版本配套**：Spring Boot 4.x 配 **Spring Cloud 2025.1.x（Oakwood）**（如 `2025.1.2`，支持 Boot 4.0/4.1，4.1.x 从 2025.1.2 起）。gateway/registry 服务的 pom 里用 `spring-cloud-dependencies` BOM 管版本，starter 用 `spring-cloud-starter-gateway-server-webflux`（WebFlux 网关，2025.1.x 起旧名 `spring-cloud-starter-gateway` 已弃用）和 `spring-cloud-starter-netflix-eureka-server`/`-client`（注册中心/客户端）。注意 **2025.0.x（Northfields）是给 Boot 3.5 的**，不能用在 Boot 4——以[官方兼容矩阵](https://spring.io/projects/spring-cloud)为准。
 
 ### 15.2 checkpoint + 复盘
 

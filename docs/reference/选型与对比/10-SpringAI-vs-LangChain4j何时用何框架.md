@@ -12,8 +12,8 @@
 
 | 文档 | 定位 | 适用读者 |
 |------|------|---------|
-| [`10-SpringAI与LangChain4j分工模型.md`](./10-SpringAI与LangChain4j分工模型.md) | **理论范式**：两框架"接入/兜底 vs 思考/编排"分工 | 想理解两框架**设计哲学差异**的读者 |
-| [`11-企业级Java-AI架构选型真相.md`](./11-企业级Java-AI架构选型真相.md) | **现实校正**：企业不混用，单框架 + Workflow 是主流 | 想知道**企业真实在做什么**的读者 |
+| [`10-SpringAI与LangChain4j分工模型.md`](./08-SpringAI与LangChain4j分工模型.md) | **理论范式**：两框架"接入/兜底 vs 思考/编排"分工 | 想理解两框架**设计哲学差异**的读者 |
+| [`11-企业级Java-AI架构选型真相.md`](./09-企业级Java-AI架构选型真相.md) | **现实校正**：企业不混用，单框架 + Workflow 是主流 | 想知道**企业真实在做什么**的读者 |
 | **`13-SpringAI-vs-LangChain4j何时用何框架.md`（本文）** | **决策手册**：基于 2026-07 最新事实给出"用哪个"的明确答案 | 准备**选型/启动项目**的读者 |
 
 **重要事实更新**：第 10 篇写于 Spring AI 1.0 时代，彼时 LangChain4j 在"思考/编排"上有明显优势；Spring AI 2.0 GA（2026-06-12）后这个优势大幅缩水（详见 §2）。本文是 2026-07 的最新答案。
@@ -445,9 +445,9 @@ StateGraph<AgentState> graph = new StateGraph<>(...)
 
 ## 11. 相关文档
 
-- [`10-SpringAI与LangChain4j分工模型.md`](./10-SpringAI与LangChain4j分工模型.md) —— 理论分工模型（已标注部分过时）
-- [`11-企业级Java-AI架构选型真相.md`](./11-企业级Java-AI架构选型真相.md) —— 现实校正（企业不混用）
-- [`12-ClaudeCode源码启示录.md`](./12-ClaudeCode源码启示录.md) —— Agent 工程借鉴
+- [`10-SpringAI与LangChain4j分工模型.md`](./08-SpringAI与LangChain4j分工模型.md) —— 理论分工模型（已标注部分过时）
+- [`11-企业级Java-AI架构选型真相.md`](./09-企业级Java-AI架构选型真相.md) —— 现实校正（企业不混用）
+- [`12-ClaudeCode源码启示录.md`](../生产化与运营/12-ClaudeCode源码启示录.md) —— Agent 工程借鉴
 - [`09-心智模型与决策树.md`](./09-心智模型与决策树.md) —— LLM = 远程 RPC 心智模型
 - [`04-Java与AI融合架构.md`](./04-Java与AI融合架构.md) —— 整体架构
 

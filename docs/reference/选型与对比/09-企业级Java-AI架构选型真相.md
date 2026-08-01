@@ -7,7 +7,7 @@
 > 调研日期：2026-07-13。本仓库实际使用 **Spring AI 1.0.0 + Spring Boot 3.5.10 + JDK 21 + LangChain4j 1.0.1**（阶段 1-3 学习用），生产化阶段（阶段 5）建议升级到 **Spring AI 2.0.0 GA（2026-06-12 发布，基于 Spring Boot 4 + Jackson 3 + JSpecify）**。本文特性描述以 Spring AI 1.0 GA 为准，2.0 增量已在涉及处补充。所有版本号、官方立场基于公开资料，标注了来源。
 >
 > **相关文档**：
-> - [`13-SpringAI-vs-LangChain4j何时用何框架.md`](./13-SpringAI-vs-LangChain4j何时用何框架.md) —— **选型决策手册（基于本文 + Spring AI 2.0 事实更新）**
+> - [`13-SpringAI-vs-LangChain4j何时用何框架.md`](./10-SpringAI-vs-LangChain4j何时用何框架.md) —— **选型决策手册（基于本文 + Spring AI 2.0 事实更新）**
 
 ---
 
