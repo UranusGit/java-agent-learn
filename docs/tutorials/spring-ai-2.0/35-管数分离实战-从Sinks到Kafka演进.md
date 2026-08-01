@@ -936,8 +936,6 @@ import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.connection.stream.StringRecord;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.data.redis.listener.ChannelTopic;
-import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -966,12 +964,13 @@ public class StreamBus {
     private static final String END_MARK   = "__END__";          // 结束标记（第 5 章会被 seq 取代）
 
     private final ReactiveRedisTemplate<String, String> redis;
-    private final ReactiveRedisMessageListenerContainer listener;
 
-    public StreamBus(ReactiveRedisTemplate<String, String> redis,
-                     ReactiveRedisMessageListenerContainer listener) {
+    // ▼ 注意：这里不再注入共享的 ReactiveRedisMessageListenerContainer。
+    //   实时订阅改用 redis.listenToChannel(...)——每次调用新建独立容器。
+    //   容器隔离之外，还必须关掉 Lettuce 共享连接（RedisConfig 里 shareNativeConnection=false），
+    //   否则所有容器仍压在一条物理连接上，刷新一页仍会连坐其他页（见 4.2.4）。
+    public StreamBus(ReactiveRedisTemplate<String, String> redis) {
         this.redis = redis;
-        this.listener = listener;
     }
 
     /** 写一个 chunk：XADD 持久 + PUBLISH 实时通知。返回 Mono<Void>，可串到生成流里。 */
@@ -1004,11 +1003,18 @@ public class StreamBus {
 
         // 2. 接实时——只有历史里没见到结束标记时才连 Pub/Sub
         //    （如果生成已完成、END 在历史里，再连 live 就永远等不到 END → 请求挂起）
+        //    ▼ 用 redis.listenToChannel(...) 而非共享 listener 容器：
+        //      每次调用新建独立容器，多页面各自订阅互不影响。
+        //      ⚠️ 但这还不够——还必须关掉 Lettuce 的共享连接（见 4.2.4）：
+        //      默认 shareNativeConnection=true 会把所有容器压在一条物理连接上，
+        //      一页刷新仍会连坐其他页面。listenToChannel 管"容器"、关共享连接管"物理连接"，缺一不可。
         Flux<String> live = Flux.defer(() -> ended.get()
                 ? Flux.<String>empty()
-                : listener.receive(ChannelTopic.of(channel)).map(m -> m.getMessage()));
+                : redis.listenToChannel(channel).map(m -> m.getMessage()));
 
         // 拼接：先吐历史，再吐实时（如需要），遇到结束标记就 takeUntil 终止。
+        // 注意：本章还没有 seq，无法按序去重，history.concatWith(live) 在"回放完到订阅live生效"
+        // 之间的极小窗口仍可能漏掉新 chunk——这个拼接缝隙在第 5 章引入 seq 后解决。
         return history.concatWith(live)
                 .takeUntil(s -> s.equals(END_MARK))     // ▼ 遇到 END 就停
                 .filter(s -> !s.equals(END_MARK));       // ▼ END 本身不输出给前端
@@ -1025,27 +1031,42 @@ public class StreamBus {
 > - `redis.opsForStream()` 返回 Stream 操作接口。`.add(record)` = `XADD`，`.range(key, Range.unbounded())` = `XRANGE - +`（读全量）。
 > - `StreamRecords.string(Map).withStreamKey(key)` 构造一条 Stream 记录，value 是个 Map（我们只放一个 `chunk` 字段）。
 > - `redis.convertAndSend(channel, msg)` = `PUBLISH`，返回订阅者数量（我们忽略）。
-> - `listener.receive(ChannelTopic.of(channel))` 返回一个**永不结束**的 `Flux`，每收到一条频道消息就发出一个 `Message`。用 `.map(m -> m.getMessage())` 取消息体。
+> - `redis.listenToChannel(channel)` 返回该频道消息的**永不结束**的 `Flux`，每收到一条频道消息就发出一个 `Message`。用 `.map(m -> m.getMessage())` 取消息体。**它每次调用都新建一个监听容器**，订阅结束时自动销毁——这是"每个 SSE 连接独立订阅"的第一半。
+> - **为什么不用共享的 `ReactiveRedisMessageListenerContainer`？** 共享容器把所有页面的订阅绑在**同一条** Pub/Sub 连接上，任何页面刷新（取消订阅→重新订阅）都可能破坏这条连接，其他页面一起"停流"。`listenToChannel` 解决的是"容器"层面的隔离——但**默认 `shareNativeConnection=true` 会把所有容器压在同一条物理连接上**，一页刷新仍会连坐其他页（这是真实踩过的坑，第 5 章详述）。所以**必须搭配 4.2.4 的 `shareNativeConnection=false`**，才真正做到物理连接隔离。
 > - **`AtomicBoolean` + `Flux.defer` 防挂起**：`history.concatWith(live)` 在 history 完成后会订阅 live，但如果 history 里已经有结束标记（生成已完成），live 就永远等不到 END_MARK → 请求永久挂起。用 `doOnNext` 标记是否见过 `__END__`，再用 `Flux.defer` 按条件跳过 live 订阅——见到了就返回 `Flux.empty()`，不会挂起。
-> - **Pub/Sub 永不停的特性**：`listener.receive` 返回的 Flux **不会自发结束**（它一直监听频道）。必须靠 `takeUntil`（或 `take`）来终止订阅。如果终止条件（END_MARK）在订阅前已发布，就永远收不到——这正是 `AtomicBoolean` 要防的。
-> - **`history.concatWith(live)`**：先吐完 history，再接 live。`concatWith` 保证这个顺序。
+> - **Pub/Sub 永不停的特性**：`redis.listenToChannel` 返回的 Flux **不会自发结束**（它一直监听频道）。必须靠 `takeUntil`（或 `take`）来终止订阅。如果终止条件（END_MARK）在订阅前已发布，就永远收不到——这正是 `AtomicBoolean` 要防的。
+> - **`history.concatWith(live)`**：先吐完 history，再接 live。`concatWith` 保证这个顺序。本章还没有 seq，故保留简单的顺序拼接（极小窗口可能漏 chunk，第 5 章用"先订阅 live + 按 seq 去重"补齐）。
 
-#### 4.2.4 监听容器 Bean
+#### 4.2.4 监听容器 Bean——不需要声明，但必须关掉共享连接
 
-`StreamBus` 用到的 `ReactiveRedisMessageListenerContainer` 需要声明成 Bean。
+**第一件事：不要声明共享的 `ReactiveRedisMessageListenerContainer` Bean。** `listenToChannel` 每次调用会自己 new 一个容器，用完自动销毁。共享容器把所有页面的订阅挤在一条连接上，一个页面刷新就可能把其他页面一起带走——这是本书刻意规避的坑。
 
-**【改已有文件，追加一个 Bean】** `RedisConfig.java` 加：
+**第二件事（真正的关键）：关掉 Lettuce 的共享连接。** 只换 `listenToChannel` 还不够——Lettuce 默认 `shareNativeConnection=true`，所有容器虽然各自 `new` 了一个 `ReactiveRedisMessageListenerContainer`，但 `getReactiveConnection()` 返回的都是**同一条共享物理连接**，而且每个容器各自持有独立的 Pub/Sub 引用计数。于是刷新一页，那一页的引用计数归零 → 在共享物理连接上发 UNSUBSCRIBE → 其他页面的订阅被一起带走。**多页面"一挂全挂"的真凶是共享物理连接，不是共享容器。**
+
+**【改已有文件】** `RedisConfig.java` 加：
 
 ```java
-// ▼ 第4章新增：Pub/Sub 监听容器（响应式）
+// ▼ 第4章关键修复：关闭 Lettuce 共享原生连接。
+//   默认 shareNativeConnection=true 把 template 和所有 listenToChannel 容器
+//   挤在一条物理连接上，刷新一页的取消订阅会连坐其他页面。
+//   关闭后每次 getReactiveConnection() 都是独立物理连接，页面间互不影响。
 @Bean
-public ReactiveRedisMessageListenerContainer reactiveRedisMessageListenerContainer(
-        ReactiveRedisConnectionFactory factory) {
-    return new ReactiveRedisMessageListenerContainer(factory);
+public LettuceConnectionFactory lettuceConnectionFactory(DataRedisProperties props) {
+    RedisStandaloneConfiguration cfg = new RedisStandaloneConfiguration();
+    cfg.setHostName(props.getHost());
+    cfg.setPort(props.getPort());
+    if (props.getPassword() != null) {
+        cfg.setPassword(props.getPassword());
+    }
+    LettuceConnectionFactory factory = new LettuceConnectionFactory(cfg);
+    factory.setShareNativeConnection(false);   // ← 核心一行
+    return factory;
 }
 ```
 
-（记得加 import：`org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;` 和 `org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;`）
+> 为什么不用 yaml 配？Spring Boot 4.1.0 已经**移除了** `spring.data.redis.lettuce.share-native-connection` 这个属性（`DataRedisProperties.Lettuce` 里只有 `shutdownTimeout/readFrom/pool/cluster`），所以必须在代码里 `setShareNativeConnection(false)`。
+
+> 代价要知道：关闭后连接数 = `redisTemplate` 1 条 + 每个在线 SSE 订阅各 1 条。demo/中低并发无压力；到"同实例上千并发 SSE"量级，应改为"每实例对每 channel 订阅一次 + 实例内 fan-out"（见第 10 章 Kafka 的按 key 分发思路），而不是退回共享连接。
 
 #### 4.2.5 StreamService 改用 StreamBus
 
@@ -1089,7 +1110,7 @@ public class StreamService {
     public String trigger(String prompt) {
         String token = "gen_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         generator.generate(prompt)
-                .flatMap(chunk -> bus.write(token, chunk))   // ▼ 每个字落 Redis
+                .concatMap(chunk -> bus.write(token, chunk))   // ▼ 每个字落 Redis
                 .doOnComplete(() -> {
                     bus.writeEnd(token).subscribe();           // ▼ 写结束标记
                     log.info("[trigger] 生成完成 token={}", token);
@@ -1105,6 +1126,8 @@ public class StreamService {
     }
 }
 ```
+
+> **为什么是 `concatMap` 而不是 `flatMap`？** `flatMap` 默认并发 256，会把多个 chunk 的异步 `bus.write`（XADD）同时丢出去执行——**谁先完成谁先落库，chunk 顺序被打乱**，客户端拼出来就是乱文（这是真实的坑：一段话被切成"大还在槐树…"这种乱序片段）。`concatMap` 严格串行：写完一个 chunk 再写下一个，顺序和模型输出完全一致。**凡是"把有序流逐条异步写出去"的地方，都用 `concatMap`（或 `flatMapSequential`）保序。**
 
 #### 4.2.6 Controller 加 SSE 协议级 id（断线续传）
 
@@ -1260,8 +1283,6 @@ import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.connection.stream.StringRecord;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.data.redis.listener.ChannelTopic;
-import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -1294,13 +1315,14 @@ public class StreamBus {
     private static final String END_MARK   = "__END__";           // 结束标记（放进 chunk 字段）
 
     private final ReactiveRedisTemplate<String, String> redis;
-    private final ReactiveRedisMessageListenerContainer listener;
     private final ObjectMapper mapper = new ObjectMapper();      // ▼ Pub/Sub 消息用 JSON 传输
 
-    public StreamBus(ReactiveRedisTemplate<String, String> redis,
-                     ReactiveRedisMessageListenerContainer listener) {
+    // ▼ 不再注入共享 ReactiveRedisMessageListenerContainer：
+    //   live 订阅用 redis.listenToChannel(...)——每次调用新建独立容器。
+    //   还需配合 RedisConfig 里 shareNativeConnection=false（见 4.2.4），
+    //   否则所有容器仍压在一条物理连接上，刷新一页仍会连坐其他页。
+    public StreamBus(ReactiveRedisTemplate<String, String> redis) {
         this.redis = redis;
-        this.listener = listener;
     }
 
     /** 写 chunk：INCR seq → XADD(seq,chunk) → PUBLISH(ChunkEntity 的 JSON)。 */
@@ -1333,10 +1355,14 @@ public class StreamBus {
      * 输出 ChunkEntity，遇到 chunk == END_MARK 结束。
      *
      * 为什么 live 直接读 Pub/Sub，而不是"收到通知就重读 Stream"：
-     *   chunk 写入时 XADD（落 Stream）与 PUBLISH（发通知）几乎连续，漏 chunk 的窗口极小；
-     *   即使偶尔漏掉，数据全量持久在 Stream 里，客户端一刷新就从 lastSeq 重新回放——
-     *   正确性由持久层兜底，实时层只负责"快"，允许偶发漏窗。这样避免了每条 chunk
+     *   chunk 写入时 XADD（落 Stream）与 PUBLISH（发通知）几乎连续，避免每条 chunk
      *   都 XRANGE 全量的 O(N²) 性能问题（长文本会明显变慢）。
+     *
+     * 多页面隔离（与早期版本的区别）：
+     *   ① live 用 redis.listenToChannel 独立订阅——每个 SSE 连接独立容器（共享容器
+     *     把多页面绑在一条连接上，刷新一个页面会连带其他页面停流）；
+     *   ② 还必须关掉 Lettuce 共享连接（RedisConfig 里 shareNativeConnection=false）——
+     *     否则所有容器仍压在一条物理连接上，一页刷新仍会连坐其他页（见 4.2.4）。
      */
     public Flux<ChunkEntity> subscribe(String token, long lastSeq) {
         String streamKey = KEY_STREAM.formatted(token);
@@ -1345,11 +1371,17 @@ public class StreamBus {
         // 1. 回放历史：只取 seq > lastSeq 的（断线续传：重连不会重复已看过的）
         Flux<ChunkEntity> history = readAfter(streamKey, lastSeq);
 
-        // 2. 接实时：直接消费频道里的 JSON，反序列化成 ChunkEntity（PUBLISH 发的就是这个格式）
-        Flux<ChunkEntity> live = listener.receive(ChannelTopic.of(channel))
+        // 2. 接实时：▼ 用 redis.listenToChannel 独立订阅——每次调用新建容器，
+        //    直接消费频道里的 JSON，反序列化成 ChunkEntity（PUBLISH 发的就是这个格式）。
+        Flux<ChunkEntity> live = redis.listenToChannel(channel)
                 .map(ReactiveSubscription.Message::getMessage)
                 .map(json -> mapper.readValue(json, ChunkEntity.class));
 
+        // 3. concatWith 先吐历史、再吐实时（简单顺序拼接）。
+        //    已知取舍：concatWith 等 history 回放完才订阅 live，回放期间新写入的 chunk
+        //    有极小窗口可能两边都漏（拼接缝隙）——但因为数据全量持久在 Stream 里，
+        //    客户端一刷新就从 lastSeq 重放补上，正确性由持久层兜底，故接受这个缝隙。
+        //    （若要求"实时通道也不漏"，可改 mergeWith + distinct(seq)，留作扩展点。）
         return history.concatWith(live)
                 .takeUntil(e -> END_MARK.equals(e.chunk()))   // ▼ 遇到 END 结束
                 .filter(e -> !END_MARK.equals(e.chunk()));
@@ -1380,7 +1412,8 @@ public class StreamBus {
 > - `live` **直接消费** Pub/Sub 频道里的 JSON，反序列化成 `ChunkEntity`——新 chunk 写入时 PUBLISH 出去，在线订阅者立刻收到。
 > - **两条路径输出同一类型 `ChunkEntity`**：history 从 Stream 字段构造，live 从 JSON 反序列化。消费方（Controller）只认 `entity.seq()` / `entity.chunk()`，不用关心底层是 Stream 字段还是 JSON 字符串——这是用值对象替代 `"seq::chunk"` 字符串协议的好处（类型安全、不泄漏传输格式、易扩展）。
 > - **为什么 live 不再"收到通知就重读 Stream"？** 上一版的写法是 `live.flatMap(notify -> readAfter(...))`，每来一条通知就 `XRANGE` 读全量再过滤——对长文本是 **O(N²)**（第 N 条通知读 N 条，总读取量平方级增长）。改成直读 Pub/Sub 后变成 **O(N)**。
-> - **漏 chunk 怎么办？** 写入时 `XADD`（落 Stream）与 `PUBLISH`（发通知）几乎连续，漏窗极小；即便偶尔漏掉，数据**全量持久在 Stream 里**，客户端一刷新就从 `lastSeq` 重新回放——**正确性由持久层兜底，实时层只负责"快"，允许偶发漏窗**。这是"at-least-once、数据以持久存储为准"的工程取舍：不为了一个不可观测的极端场景，牺牲可观测的性能。
+> - **多页面隔离为什么是"两件事"？** ① 用 `redis.listenToChannel`（而非共享容器 Bean）让每个 SSE 连接有自己的监听容器；② 但容器隔离 ≠ 物理连接隔离——Lettuce 默认 `shareNativeConnection=true`，所有容器仍压在**同一条物理连接**上，且各自持有独立的 Pub/Sub 引用计数。刷新一页 → 那一页引用计数归零 → 在共享物理连接上发 UNSUBSCRIBE → **其他页面一起停流**（真实踩过的坑：两页看同一会话，刷新一页，另一页当场断流）。所以必须再在 `RedisConfig` 里 `shareNativeConnection=false`（见 4.2.4），让每个容器有独立物理连接，刷新才只影响自己。
+> - **`concatWith` 顺序拼接 + 已知取舍**：`concatWith` 先吐 history 再吐 live。它的缝隙在于——等 history 回放完才订阅 live，回放期间新写入的 chunk 有极小窗口两边都漏。但因为数据全量持久在 Stream 里，客户端一刷新就从 `lastSeq` 重放补上，**正确性由持久层兜底**，所以接受这个缝隙（若要"实时通道也不漏"，改 `mergeWith + distinct(seq)`，留作扩展点）。
 > - **`seq` 的作用没变**：它仍用于① history 按 `lastSeq` 过滤（不重复），② Controller 把 `entity.seq()` 放进 SSE `id`，浏览器记录后重连自动带 `Last-Event-ID`。
 
 #### 5.2.2 StreamService 透传 lastSeq
@@ -1415,7 +1448,7 @@ public class StreamService {
     public String trigger(String prompt) {
         String token = "gen_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         generator.generate(prompt)
-                .flatMap(chunk -> bus.write(token, chunk))
+                .concatMap(chunk -> bus.write(token, chunk))   // ▼ 保序：flatMap 并发会把 chunk 写乱
                 .doOnComplete(() -> { bus.writeEnd(token).subscribe(); log.info("[trigger] 完成 token={}", token); })
                 .doOnError(err -> log.error("[trigger] 失败 token={}: {}", token, err.getMessage()))
                 .subscribe();
@@ -1547,7 +1580,8 @@ git add -A && git commit -m "第5章:seq游标回放+SSE Last-Event-ID续传"
 
 1. **`202 + token` 仍是弱状态**：前端不知道任务在跑还是已结束、能否取消。**第 6 章：run 资源 + 状态机。**
 2. **多端同时 POST 触发**：手机和 iPad 同时点生成，会创建两个 token、跑两次生成器。**第 6 章：会话级独占挡多端并发 + 幂等键防单端重试。**
-3. **长文本性能已优化**：上一版 `live` 每收到一条通知就 `XRANGE` 读全量再过滤，是 O(N²)；本章已改为 `live` 直接消费 Pub/Sub 消息（O(N)），正确性由 Stream 持久层兜底。若未来要求"实时通道也 100% 不漏"（chunk 不持久、不能刷新等严苛场景），可升级为 `XREAD` 从指定 id 读 + 游标——本文聚焦管数分离主线，留作附录扩展点。
+3. **长文本性能已优化**：上一版 `live` 每收到一条通知就 `XRANGE` 读全量再过滤，是 O(N²)；本章已改为 `live` 直接消费 Pub/Sub 消息（O(N)）。正确性由 Stream 持久层兜底。`concatWith` 在"回放完到订阅 live 生效"之间有极小拼接缝隙——因为数据全量持久在 Stream 里，刷新即从 `lastSeq` 重放补上，故接受（若要"实时通道也不漏"，可改 `mergeWith + distinct(seq)`，留作扩展点）。
+4. **多页面隔离是本章补的另一课**：`listenToChannel` 管住容器还不够，必须在 `RedisConfig` 里 `shareNativeConnection=false` 管住物理连接——否则所有容器仍压在一条共享物理连接上，刷新一页连坐其他页（详见 4.2.4 / 5.2.1 注释）。
 
 下一章把"触发"升级成企业级的 run 资源，补上状态机和幂等。
 
@@ -1811,7 +1845,7 @@ public class StreamService {
     /** 跑生成器（fire-and-forget）。三终态都要释放会话锁。 */
     private void startGeneration(String runId, String prompt) {
         Disposable handle = generator.generate(prompt)
-                .flatMap(chunk -> bus.write(runId, chunk))    // ▼ 用 runId 当流 key
+                .concatMap(chunk -> bus.write(runId, chunk))    // ▼ 用 runId 当流 key；concatMap 保序
                 .doOnComplete(() -> finishRun(runId, "DONE"))
                 .doOnError(err -> {
                     log.error("[run] 失败 runId={}: {}", runId, err.getMessage());
@@ -2848,7 +2882,7 @@ public class StreamService {
         buffers.put(runId, buf);
         Disposable handle = generator.generate(prompt, context)
                 .doOnNext(buf::append)                        // ▼ 缓冲 chunk
-                .flatMap(chunk -> bus.write(runId, chunk))    // 同时写总线（实时推流）
+                .concatMap(chunk -> bus.write(runId, chunk))  // 同时写总线（实时推流）；concatMap 保序
                 .doOnComplete(() -> finishRun(runId, "DONE"))
                 .doOnError(err -> {
                     log.error("[run] 失败 runId={}: {}", runId, err.getMessage());
@@ -3192,8 +3226,6 @@ import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.connection.stream.StringRecord;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.data.redis.listener.ChannelTopic;
-import org.springframework.data.redis.listener.ReactiveRedisMessageListenerContainer;
 import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -3224,7 +3256,6 @@ public class StreamBus {
     private static final String END_MARK   = "__END__";
 
     private final ReactiveRedisTemplate<String, String> redis;
-    private final ReactiveRedisMessageListenerContainer listener;
     private final RedissonClient redisson;   // ▼ 分布式锁客户端（独立于 ReactiveRedisTemplate）
     private final String instanceId;   // ▼ 本实例唯一标识（日志/取消归属）
     private final ObjectMapper mapper = new ObjectMapper();   // ▼ Pub/Sub 消息用 JSON 传输
@@ -3235,12 +3266,13 @@ public class StreamBus {
     /** ▼ 本实例抢到的"runId → RLock 引用"。释放时必须用同一个对象，Redisson 才能比对 owner 做安全释放。 */
     private final ConcurrentHashMap<String, RLock> heldLocks = new ConcurrentHashMap<>();
 
+    // ▼ 不注入共享 ReactiveRedisMessageListenerContainer：live 订阅和取消监听都用
+    //   redis.listenToChannel(...)——每次调用独立容器；配合 RedisConfig 里
+    //   shareNativeConnection=false（见 4.2.4），多页面/多实例互不干扰。
     public StreamBus(ReactiveRedisTemplate<String, String> redis,
-                     ReactiveRedisMessageListenerContainer listener,
                      RedissonClient redisson,
                      @Value("${spring.application.name:inst}-${random.uuid}") String instanceId) {
         this.redis = redis;
-        this.listener = listener;
         this.redisson = redisson;
         this.instanceId = instanceId.substring(0, 12);
         // ▼ 启动时监听全局取消频道（通配）：实际按 runId 监听，见 cancel 流程
@@ -3295,10 +3327,12 @@ public class StreamBus {
                 .flatMap(maxSeq -> write(runId, END_MARK));
     }
 
-    /** 订阅（同第 5 章：history 按 lastSeq 回放 + live 直读 Pub/Sub 的 JSON）。 */
+    /** 订阅（同第 5 章）：history 按 lastSeq 回放 + live 直读 Pub/Sub 的 JSON；
+     *  live 用 redis.listenToChannel 独立订阅（多页面/多实例互不干扰，配合 shareNativeConnection=false）。
+     *  concatWith 顺序拼接，回放缝隙由持久层兜底（刷新重放补上），与第 5 章一致。 */
     public Flux<ChunkEntity> subscribe(String runId, long lastSeq) {
         Flux<ChunkEntity> history = readAfter(KEY_STREAM.formatted(runId), lastSeq);
-        Flux<ChunkEntity> live = listener.receive(ChannelTopic.of(CHANNEL.formatted(runId)))
+        Flux<ChunkEntity> live = redis.listenToChannel(CHANNEL.formatted(runId))
                 .map(ReactiveSubscription.Message::getMessage)
                 .map(json -> mapper.readValue(json, ChunkEntity.class));
         return history.concatWith(live)
@@ -3309,12 +3343,11 @@ public class StreamBus {
     // —— 跨实例取消：本实例持有句柄的 run，监听取消频道后自行 dispose —— //
 
     /** 注册本实例持有的生成句柄，并开始监听该 run 的取消频道。
-     *  ⚠️ 简陋处：run 正常完成时（走 doOnComplete）不会触发这里的 take(1)，
-     *     会留下一个挂着的 Pub/Sub 订阅。教学场景影响很小；生产级应记录这个
-     *     订阅句柄、在 doOnComplete 时一并 dispose 掉（留作进阶练习）。 */
+     *  ▼ 用 redis.listenToChannel 独立订阅：take(1) 收到取消指令即完成，订阅自动销毁（不泄漏）；
+     *    即使 run 正常完成而取消监听一直挂着，也只是本 run 一条独立订阅，不影响他人。 */
     public void registerLocalRun(String runId, Disposable handle) {
         localHandles.put(runId, handle);
-        listener.receive(ChannelTopic.of(CH_CANCEL.formatted(runId)))
+        redis.listenToChannel(CH_CANCEL.formatted(runId))
                 .take(1)   // 收到一条取消指令就停
                 .subscribe(m -> {
                     Disposable d = localHandles.remove(runId);
@@ -3435,7 +3468,7 @@ public class StreamService {
         buffers.put(runId, buf);
         Disposable handle = generator.generate(prompt, context)   // ▼ 带历史上下文（第8章）
                 .doOnNext(buf::append)                            // ▼ 缓冲 chunk，终态拼全文落历史
-                .flatMap(chunk -> bus.write(runId, chunk))
+                .concatMap(chunk -> bus.write(runId, chunk))      // ▼ 保序：flatMap 并发会把 chunk 写乱
                 .doOnComplete(() -> finishRun(runId, "DONE"))
                 .doOnError(err -> finishRun(runId, "FAILED"))
                 .subscribe();
@@ -4316,8 +4349,8 @@ research-stream/                    # 主应用（trigger/stream 双 profile）
     ├── java/com/example/stream/
     │   ├── StreamApplication.java
     │   ├── config/
-    │   │   ├── RedisConfig.java           # ReactiveRedisTemplate + 监听容器
-    │   │   └── KafkaConfig.java           # 消费容器
+    │   │   ├── RedisConfig.java           # ReactiveRedisTemplate（无共享监听容器 Bean）
+    │   │   └── KafkaConfig.java           # Kafka 消费容器（按 key 分发 chunk）
     │   ├── generator/
     │   │   └── TextGenerator.java         # 数据源（换真 LLM 只改这里）
     │   ├── bus/
