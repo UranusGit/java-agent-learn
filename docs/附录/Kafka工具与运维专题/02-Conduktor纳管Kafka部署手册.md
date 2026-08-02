@@ -40,32 +40,37 @@
 
 所以当 Conduktor 容器去连 `localhost:9092` 时，它在**自己肚子里**找 9092，自然找不到 → `Connection refused`。`127.0.0.1` 是 `localhost` 的 IP 写法，同理一样不通。
 
-### 结论：容器之间通信只能走两条路
+### 结论：容器之间连 Kafka，可靠的方式只有一种
 
 | 方式 | 地址 | 前提 |
 |------|------|------|
-| **容器名** | `kafka:29092` | 两个容器在**同一个 Docker 网络**里 |
-| **宿主机别名** | `host.docker.internal:9092` | Docker Desktop 提供，指回宿主机 |
+| **容器名** | `kafka:29092` | 两个容器在**同一个 Docker 网络**里（**唯一可靠的方式**） |
+| 宿主机映射端口 | `host.docker.internal:9092` | ⚠️ 本手册**不建议容器走这条路**：Kafka 的 9092 advertised 是 `localhost:9092`（见 2.2），容器连上后会被回传 `localhost`——指向它自己，直接断开 |
 
-### 那为什么 Conduktor 不直接填 `host.docker.internal:9092` 简单了事？
+### 那为什么 Conduktor 不直接走宿主机的 9092 端口（`host.docker.internal:9092`）简单了事？
 
-技术上能连上，但有**一个隐藏大坑——Kafka 的 `advertised.listeners` 机制**：
+这里有个**隐藏大坑——Kafka 的 `advertised.listeners` 机制**：
 
 > 客户端连上 Kafka 后，Kafka 会回一句话："以后连我请去这个地址。" 这个地址就是 `advertised.listeners`。
 
-如果让 Conduktor 走 `host.docker.internal:9092`，那么：
-1. Kafka 的 `advertised.listeners` 必须配成 `host.docker.internal:9092`；
-2. 这会**绑架你宿主机上所有业务代码**——它们也只能用 `host.docker.internal:9092`，不能用习惯的 `localhost:9092`；
-3. 一旦换网络环境或上 Linux（Linux 上 `host.docker.internal` 默认不存在），全线崩。
+本手册给宿主机用的 9092 端口，advertised 是 `localhost:9092`（见 2.2）。所以如果让 Conduktor 去连宿主机的 9092：
+1. 第一次握手可能成功（毕竟端口映射是通的）；
+2. 但 Kafka 会回传 `localhost:9092`——在 Conduktor 自己的容器里，`localhost` 指向它自己，根本没有 Kafka → 连接又断掉。
+
+反过来，如果把 advertised 改成 `host.docker.internal:9092` 来"迁就" Conduktor，又会绑架宿主机上所有业务代码（它们只能用 `host.docker.internal:9092`，不能用 `localhost:9092`）；而且 `host.docker.internal` 是 Docker Desktop 只在**容器内部**提供的域名，宿主机上经常解析不了（典型报错 `UnknownHostException: host.docker.internal`，见 6.1.6），一换环境或上 Linux 就全线崩。
+
+**结论：Conduktor 这种容器客户端，必须走容器网络 `kafka:29092`。**
 
 ### 本手册的解法：双 listener，各管一边（工业界标准）
 
 | 端口 | 给谁用 | advertised 地址 |
 |------|--------|----------------|
-| `9092`（PLAINTEXT_HOST） | **宿主机跑的代码**（你直接 `java -jar` 起的 Spring Boot） | `host.docker.internal:9092`，代码里写 `localhost:9092` |
+| `9092`（PLAINTEXT_HOST） | **宿主机本地跑的代码/终端**（IDE 里起的 Spring Boot、`java -jar`） | `localhost:9092`，代码里写 `localhost:9092` |
 | `29092`（PLAINTEXT） | **容器之间**（Conduktor、容器化的业务服务） | `kafka:29092` |
 
-这样你的代码用最自然的 `localhost:9092` 就能连，Conduktor 用 `kafka:29092` 纳管，互不干扰。**这也是后续第 9 章代码能直连的关键。**
+**两条路用哪种，取决于代码跑在哪：宿主机代码 → `localhost:9092`；容器代码 → `kafka:29092`。** 互不干扰。**这也是后续第 9 章代码能直连的关键。**
+
+> ⚠️ 这条约定务必守住：`9092` 的 advertised 是 `localhost`，所以**只有宿主机本地的客户端能用 9092**；任何容器里的客户端（Conduktor、以后容器化的业务服务）都必须走 `kafka:29092`，否则连上后会被回传 `localhost` 而断开。
 
 ### 疑问解答：为什么 Postgres 不用建网络，Kafka 却要？
 
@@ -79,13 +84,14 @@
 | 每个客户端能各走各的吗 | ✅ 能，各走各的端口映射 | ❌ 不能，advertised 是全局唯一的，所有客户端都得用它 |
 
 - **Postgres**：每个客户端走自己的端口映射就行，互不影响 → Conduktor 用 `host.docker.internal:5432`、你的代码用 `localhost:5432`，各走各的，**不需要共享网络**。
-- **Kafka**：advertised 地址是**全局唯一**的，必须选一个所有客户端都认的地址。
-  - 选 `kafka:29092`（容器网络）→ 容器用它、你的代码用 `localhost:9092`，互不绑架 ✅
-  - 选 `host.docker.internal:9092` → 你的代码也被迫用 `host.docker.internal:9092`（不能用 `localhost`），且 Linux 上默认没这个域名 ❌
+- **Kafka**：每个 listener 的 advertised 地址，都必须"该 listener 的客户端能访问"。所以干脆按客户端分家：
+  - 宿主机客户端走 `9092`（advertised 成 `localhost:9092`）→ 代码写 `localhost:9092`，闭环 ✅
+  - 容器客户端走 `29092`（advertised 成 `kafka:29092`）→ Conduktor 等容器写 `kafka:29092`，闭环 ✅
+  - （不推荐）advertised 成 `host.docker.internal:9092` → 依赖宿主机能解析该域名，而 Docker Desktop 只在容器内提供它，宿主机常解析不了 → 弃用，见 6.1.6
 
-**一句话**：`kafka-net` 不是为 Postgres 建的（Postgres 确实不需要），是为 **Conduktor 纳管 Kafka** 建的——因为 Kafka 的 advertised 机制要求一个所有客户端都通用的地址，用容器网络 + 双 listener 是最干净的解法。
+**一句话**：`kafka-net` 不是为 Postgres 建的（Postgres 确实不需要），是为 **Conduktor 纳管 Kafka** 建的——因为 Kafka 的 advertised 机制要求每个 listener 的地址都能被它的客户端访问，用容器网络 + 双 listener 是最干净的解法。
 
-> 💡 如果你不介意业务代码用 `host.docker.internal:9092`（而不是 `localhost:9092`），也可以不建网络——但本手册推荐建网络，因为业务代码用 `localhost` 才是长期最舒服的姿势。
+> 💡 所以这个网络**必须建**：没有它，Conduktor 就解析不了 `kafka` 这个容器名，只能去连宿主机的 9092 → 被回传 `localhost` → 断。建了网络，一切才闭环。
 
 ---
 
@@ -98,7 +104,7 @@
 | Docker Desktop | 已安装并运行（Mac 自动用 ARM 镜像） | `docker --version` |
 | Docker Compose | v2（`docker compose` 子命令） | `docker compose version` |
 | 本地 PostgreSQL | 在跑，账号 `postgres/postgres` | `psql -U postgres -d postgres -c "select 1"` |
-| 可用端口 | 9092（Kafka 对外）、8080（Conduktor）、8081（Schema Registry，可选） | 见下文 |
+| 可用端口 | 9092（Kafka 对外）、38080（Conduktor 对外，容器内是 8080）、8081（Schema Registry，可选） | 见下文 |
 
 > ⚠️ 如果你之前在某个库里留了一堆 `cdk` 开头的 schema（旧版 Conduktor 残留）想清掉重来，连到对应库执行（**会删数据，确认后再跑**）：
 > ```sql
@@ -160,7 +166,7 @@ services:
       # PLAINTEXT_HOST → 对宿主机/业务服务暴露（9092）
       # CONTROLLER    → KRaft 内部用（29093）
       KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:29092,PLAINTEXT_HOST://host.docker.internal:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
       KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
 
@@ -202,19 +208,24 @@ networks:
 
 | 端口 | listener 名 | 谁用 | advertised 地址 |
 |------|------------|------|----------------|
-| `9092` | `PLAINTEXT_HOST` | **你的业务服务、宿主机终端** | `host.docker.internal:9092` |
+| `9092` | `PLAINTEXT_HOST` | **宿主机本地跑的代码/终端** | `localhost:9092` |
 | `29092` | `PLAINTEXT` | **Conduktor 等容器**（同一 Docker 网络） | `kafka:29092` |
 
-Kafka 的 `advertised.listeners` 决定了"客户端连上来后，Kafka 告诉客户端接下来去哪连"。如果只配一个、且 advertised 成 `localhost`，就会出现：
+Kafka 的 `advertised.listeners` 决定了"客户端连上来后，Kafka 告诉客户端接下来去哪连"。如果只配一个，就必然有一边连不上：
 
-- 宿主机能连，Conduktor 容器连不上（`localhost` 在容器里指向它自己）；
-- 或者 Conduktor 连上了，但 metadata 返回 `localhost`，后续又断了。
+- advertised 成 `localhost` → 只有宿主机本地能连，Conduktor 容器连不上；
+- advertised 成 `host.docker.internal` → 容器勉强能连，但宿主机代码被逼着也用 `host.docker.internal`（且宿主机经常解析不了这个域名）；
+- advertised 成 `kafka` → 只有容器能连，宿主机代码连不上。
 
-**两个 listener 各管一边，互不干扰**——这是工业界标准做法。
+**两个 listener 各管一边**——宿主机走 9092、容器走 29092，互不干扰。
 
-**② 为什么 `PLAINTEXT_HOST` 的 advertised 用 `host.docker.internal`？**
+**② 为什么 `PLAINTEXT_HOST` 的 advertised 用 `localhost`？**
 
-`host.docker.internal` 是 Docker Desktop（Mac/Windows）提供的特殊域名，**指向宿主机**。这样你的业务服务（不管跑在宿主机还是别的容器）都能稳定通过 `host.docker.internal:9092` 连到 Kafka。如果写成 `localhost`，只有宿主机本地能连。
+宿主机代码用 `localhost:9092` 连上后，Kafka 会把 advertised 地址回传给它，客户端必须再连到那个地址。所以 **advertised 必须和客户端预想的一致**——代码里写 `localhost:9092`，advertised 就得是 `localhost:9092`，连接才闭环。
+
+那能不能 advertised 成 `host.docker.internal:9092`、代码里还写 `localhost`？不能。`host.docker.internal` 是 Docker Desktop 在**容器内部**提供的域名，宿主机上经常解析不了（典型报错 `UnknownHostException: host.docker.internal`，见 6.1.6）。宿主机代码连上 9092 后，会被回传 `host.docker.internal:9092`，而它解析不了这个域名 → 直接连不上。所以干脆 advertised 成 `localhost:9092`，让宿主机这条路彻底不依赖任何环境前提。
+
+> ⚠️ **代价 / 约定**：advertised 是 `localhost`，意味着 **9092 这个口只有宿主机本地的客户端能用**。任何容器里的客户端（Conduktor、以后容器化的业务服务）都不能走宿主映射的 9092 口——连上后会被回传 `localhost`（指向它自己）而断开。容器里的客户端一律走 `kafka:29092`（前提：加入 `kafka-net`）。
 
 **③ `networks.kafka-net` 为什么是 `external: true`？**
 
@@ -257,7 +268,7 @@ docker exec -it kafka kafka-console-consumer \
 
 在终端 A 输入几行回车，终端 B 能看到 → Kafka 部署成功 ✅
 
-> 💡 至此 Kafka 完全独立可用。你的业务服务（Spring Boot 等）连接地址用 `host.docker.internal:9092`（宿主机跑的服务）或 `kafka:29092`（容器内跑的服务）。
+> 💡 至此 Kafka 完全独立可用。你的业务服务（Spring Boot 等）连接地址用 `localhost:9092`（宿主机跑的服务）或 `kafka:29092`（容器内跑的服务，需加入 `kafka-net`）。**记住约定：容器里的客户端不能走 9092 这个口。**
 
 ---
 
@@ -283,7 +294,7 @@ services:
     container_name: conduktor-console
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "38080:8080"
     environment:
       # ===== 连接本地 Postgres =====
       # host.docker.internal = 你的 Mac；账号 postgres/postgres
@@ -353,7 +364,7 @@ docker compose logs -f conduktor-console
 
 > ⚠️ 如果日志报数据库连不上（`Connection refused`），多半是你本地 Postgres 只监听 `127.0.0.1`。排查见第 6 章。
 
-浏览器访问：**http://localhost:8080**
+浏览器访问：**http://localhost:38080**
 
 - 首次登录：账号 **admin** / 密码 **admin**
 - 按引导选择 **Community Edition**（免费），填邮箱拿免费 license key 填入即可。
@@ -382,7 +393,7 @@ docker exec conduktor-console nc -vz kafka 29092
 
 ### 4.2 首次登录并激活免费版
 
-1. 浏览器打开 **http://localhost:8080**。
+1. 浏览器打开 **http://localhost:38080**。
 2. 首次登录，账号 **admin** / 密码 **admin**。
 3. 进入后会弹出 **License（许可证）** 引导，选择 **Community Edition**（社区版，免费）。
 4. 按提示填一个邮箱，获取免费 license key，粘贴进去激活即可（不扣费，只是登记）。
@@ -527,7 +538,7 @@ ERROR i.c.m.indexer.core.TopicIndexingTask - Topic indexing failed for cluster '
 
 **原因**：Conduktor 启动时自带了一个**演示集群**（名叫 `billowing-protector` 之类），它的 Bootstrap Servers 写死成 `localhost:9092`。而 Conduktor 自己在容器里，`localhost` 指向它自己，连不到 Kafka → 报 Connection refused。
 
-**重要**：这个报错**不影响 Conduktor 本身启动和使用**——数据库正常、Web UI 正常（能打开 `http://localhost:8080` 登录）。只是那个 demo 集群连不上、Topic 索引失败。你后面手动加自己的集群（第 4 章，填 `kafka:29092`）完全不受影响。
+**重要**：这个报错**不影响 Conduktor 本身启动和使用**——数据库正常、Web UI 正常（能打开 `http://localhost:38080` 登录）。只是那个 demo 集群连不上、Topic 索引失败。你后面手动加自己的集群（第 4 章，填 `kafka:29092`）完全不受影响。
 
 **消除报错（禁用 demo 集群）**：在 Conduktor 的 `docker-compose.yml` 里加一个环境变量：
 
@@ -601,6 +612,23 @@ docker exec -it postgres psql -U postgres -d conduktor \
 
 > 💡 顺手把没用的 demo 集群删掉：Clusters 列表里点 `billowing-protector` 的 **⋯ → Delete**，列表只剩你自己的集群，就不会误点。
 
+### ❓ 6.1.6 宿主机代码报 "UnknownHostException: host.docker.internal"
+
+**典型报错（宿主机跑的 Spring Boot 连 Kafka 时，kafka-clients 栈里）：**
+
+```
+java.net.UnknownHostException: host.docker.internal
+	at java.base/java.net.InetAddress.getAllByName0(...)
+	at org.apache.kafka.clients.DefaultHostResolver.resolve(...)
+	... (NetworkClient / ConsumerCoordinator 连 broker 时)
+```
+
+**原因**：Kafka 的 `advertised.listeners` 里 `PLAINTEXT_HOST` 配的是 `host.docker.internal:9092`（旧配置，或别人搭的 Kafka）。`host.docker.internal` 这个域名 **Docker Desktop 只在容器内部提供**，宿主机上经常解析不了（`/etc/hosts` 里没有、DNS 也查不到）。宿主机代码连上 `localhost:9092` 后，被回传 `host.docker.internal:9092`，一解析就 `UnknownHostException`。
+
+**解决（对应本手册 2.2 的配置）**：把 `KAFKA_ADVERTISED_LISTENERS` 里 `PLAINTEXT_HOST` 的地址改成 `localhost:9092`，再按第 8 章"改配置后的标准流程"重建容器。宿主机代码收到的回传地址就是 `localhost:9092`，不再依赖 `host.docker.internal`。
+
+**备选**：如果 Kafka 不在你掌控中、改不了 advertised，可以在宿主机 `/etc/hosts` 加一行 `127.0.0.1 host.docker.internal`，让宿主机也能解析它（需要 sudo）。但本手册不推荐——换台机器或上 Linux 又得再配一遍，不如直接按 2.2 用 `localhost`。
+
 ### ❓ 6.2 Conduktor 启动报"Missing database configuration" 或 "database does not exist"
 
 新版 Conduktor（1.44+）**必须配数据库**。确认 compose 里 `CDK_DATABASE_URL` 已正确指向独立的 `conduktor` 库，格式为：
@@ -653,7 +681,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "38080:8080"
     environment:
       CDK_DATABASE_URL: "jdbc:postgresql://conduktor:conduktor@conduktor-postgres:5432/conduktor"
       CDK_ENTERPRISE: "false"
@@ -686,7 +714,7 @@ networks:
 2. 每个 broker 的 `advertised.listeners` 中 `PLAINTEXT` 的地址用各自的容器名（不能是 `localhost`）；
 3. Conduktor 里 Bootstrap Servers 填全部：`kafka-1:29092,kafka-2:29092,kafka-3:29092`。
 
-> **关键**：集群里任何一个 broker 的 advertised 地址都不能是 `127.0.0.1`/`localhost`，否则 metadata 返回后会连不上。
+> **关键**：多 broker 集群里，broker 间互连、以及容器内通信用的 `PLAINTEXT` listener，advertised 地址必须用各自的容器名，绝不能是 `127.0.0.1`/`localhost`，否则 metadata 返回后会连不上。（单节点场景下，仅面向宿主机客户端的 `PLAINTEXT_HOST` 用 `localhost` 是本手册刻意允许的例外，见 2.2 关键点 ②。）
 
 ---
 
@@ -800,6 +828,8 @@ docker exec -it <pg容器名> psql -U postgres -d conduktor -c "\dt"
 
 > 🔑 记住：**宿主机代码 → `localhost:9092`；容器代码 → `kafka:29092`。** 这是整个手册对你写代码最有用的一句话。
 
+> ⚠️ **容器里的代码绝不能走宿主映射的 9092 口**（比如从容器里填 `host.docker.internal:9092` 或 `localhost:9092`）。因为 9092 的 advertised 是 `localhost`，容器连上后会被回传 `localhost`（指向它自己）而断开。原理见 0.5 章和 2.2 关键点 ②。
+
 ### 9.2 场景一：Spring Boot 代码跑在宿主机（最常见）
 
 #### 依赖（`pom.xml`）
@@ -809,6 +839,19 @@ docker exec -it <pg容器名> psql -U postgres -d conduktor -c "\dt"
     <groupId>org.springframework.kafka</groupId>
     <artifactId>spring-boot-starter-kafka</artifactId>
     <version>3.2.x</version>
+</dependency>
+```
+
+> 💡 上面是 **Spring Boot 3.x** 的写法。**Spring Boot 4.x 起，Kafka 的自动配置从 `spring-boot-autoconfigure` 拆到了独立的 `spring-boot-kafka` 模块**——只加 `spring-kafka` 会导致 `@KafkaListener` 静默不生效（应用照常启动，但没有消费者线程、Kafka 里也看不到消费组）。Boot 4 项目要这样加：
+
+```xml
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-kafka</artifactId>
 </dependency>
 ```
 
@@ -876,7 +919,7 @@ public class MyConsumer {
 #### 跑起来后怎么验证连上了？
 
 1. 代码里发一条消息；
-2. 打开 Conduktor（`http://localhost:8080`）→ 进 **Local Kafka** → **Topics** → 对应 topic → **Messages**，能实时看到刚发的消息；
+2. 打开 Conduktor（`http://localhost:38080`）→ 进 **Local Kafka** → **Topics** → 对应 topic → **Messages**，能实时看到刚发的消息；
 3. 同理，在 Conduktor 里手动 produce 一条，代码的消费者也能收到。
 
 > 💡 **Conduktor 在这里的作用**：它是你代码的"可视化调试台"——代码发了什么、消费到哪了、有没有积压，全在 Conduktor 里直观看到，不用盯日志。
@@ -903,6 +946,8 @@ networks:
 ```
 
 > ⚠️ 如果不把 `my-app` 挂到 `kafka-net`，它解析不了 `kafka` 这个容器名，照样 `Connection refused`。挂上之后用 `docker exec my-app nc -vz kafka 29092` 验证通了再起服务。
+>
+> ⚠️ 同理，容器化服务**不要**偷懒走宿主映射的 `localhost:9092` / `host.docker.internal:9092` 去连 Kafka——9092 的 advertised 是 `localhost`，容器里连上后会被回传 `localhost` 而断开。容器一律走 `kafka:29092`。
 
 ### 9.4 三个角色的连接地址总表（贴墙上的那种）
 
@@ -914,6 +959,8 @@ networks:
 | **宿主机终端 / kcat 等工具** | 宿主机 | `localhost:9092` |
 
 只要记住"**宿主机用 9092，容器用 29092**"，任何场景都不会配错。
+
+> ⚠️ 这句话的完整版是：**宿主机用 `9092`、容器用 `29092`，且容器绝不碰宿主映射的 `9092`。** 因为 `9092` 的 advertised 是 `localhost`，只有宿主机本地的客户端能用（见 2.2 关键点 ②）。
 
 
 ---
@@ -928,16 +975,16 @@ networks:
 │   ┌─────────────┐              ┌──────────────────────┐      │
 │   │   kafka     │  29092 容器间  │  conduktor-console   │      │
 │   │  (9092对外) │ ◄──────────► │   纳管 kafka:29092    │      │
-│   │  (9999 JMX) │   9999 JMX   │   8080 Web UI         │      │
+│   │  (9999 JMX) │   9999 JMX   │   38080 Web UI        │      │
 │   └─────────────┘              └──────────┬───────────┘      │
 │          │                                │                  │
 └──────────┼────────────────────────────────┼──────────────────┘
-           │ host.docker.internal           │ host.docker.internal
+           │ localhost:9092                │ host.docker.internal
            ▼                                ▼
-   ┌──────────────┐                 ┌────────────────┐
-   │ 业务服务/终端  │                 │ 本地 PostgreSQL │
-   │ :9092 连 Kafka │                 │ 库 conduktor    │
-   └──────────────┘                 │ (独立库, public)│
+   ┌────────────────┐               ┌────────────────┐
+   │  业务服务 / 终端  │               │ 本地 PostgreSQL │
+   │  localhost:9092 │               │  库 conduktor   │
+   └────────────────┘               │ (独立库, public)│
                                     └────────────────┘
 
   独立容器①: /Volumes/data/software/docker/containers/kafka/
@@ -947,7 +994,7 @@ networks:
 **特点回顾：**
 - 两个容器各自独立 compose，互不依赖生命周期
 - 共享 `kafka-net` 网络，用容器名通信
-- Kafka 对外用 `host.docker.internal:9092`，业务服务直连
+- Kafka 宿主机侧用 `localhost:9092`（业务服务直连），容器侧用 `kafka:29092`（Conduktor 纳管）
 - Conduktor 复用本地 Postgres，用独立的 `conduktor` 库，数据挂载到指定目录
 - 任一容器单独停启，不影响另一个
 
