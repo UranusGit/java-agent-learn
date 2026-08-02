@@ -38,6 +38,15 @@ public Sentiment analyze(@RequestParam String text) {
 2. LLM 返回 JSON 字符串
 3. Spring AI 用 Jackson 反序列化成 `Sentiment`
 
+**`.entity()` 内部流程**：
+
+```mermaid
+flowchart TD
+    prompt["chatClient.prompt()<br/>system 指定返回 JSON：{emotion, score, reason}"] --> llm["LLM 返回符合 schema 的 JSON 字符串"]
+    llm --> jackson["Spring AI 用 Jackson 反序列化"]
+    jackson --> entity["entity(Sentiment.class)<br/>得到 Java 对象"]
+```
+
 ### 1.3 LangChain4j 对比
 
 ```java
@@ -101,6 +110,16 @@ Prompt prompt = template.create(Map.of(
 ));
 
 String answer = chatClient.prompt(prompt).call().content();
+```
+
+**模板渲染流程**：
+
+```mermaid
+flowchart TD
+    tpl["PromptTemplate<br/>'你是 {role}。请回答：{question}'"] --> create["template.create(Map.of('role',..., 'question',...))"]
+    create --> prompt["Prompt（变量已替换）"]
+    prompt --> client["chatClient.prompt(prompt).call()"]
+    client --> answer["content() 得到回答"]
 ```
 
 ### 3.2 与 LangChain4j `@UserMessage` 对比
@@ -297,6 +316,16 @@ prompts/
 ```
 
 通过 `@Profile` 或配置切换版本，AB 测试时方便。
+
+**版本切换**：
+
+```mermaid
+flowchart TD
+    cfg["@Profile / 配置切换版本"] --> v1["prompts/v1/<br/>translate.st + sentiment.st"]
+    cfg --> v2["prompts/v2/<br/>sentiment.st（改进版）"]
+    v1 --> ab["AB 测试：对比两版效果"]
+    v2 --> ab
+```
 
 ### 8.3 几条铁律
 

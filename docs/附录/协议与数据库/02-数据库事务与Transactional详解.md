@@ -34,6 +34,18 @@ UPDATE account SET balance = balance + 100 WHERE id = 'B';   -- 第2步：B 加�
   B 加 100  💥   → 有失败 → 回滚（rollback），A 的扣款也撤销，回到初始状态
 ```
 
+**转账事务的提交与回滚**：
+
+```mermaid
+flowchart TD
+    START(("转账：A 扣 100 + B 加 100"))
+    START --> OP1["第1步：A 扣 100"]
+    OP1 --> OP2["第2步：B 加 100"]
+    OP2 --> C{"第2步成功?"}
+    C -->|"成功"| COMMIT["提交 commit<br/>A、B 变更永久生效"]
+    C -->|"失败（程序崩溃）"| ROLLBACK["回滚 rollback<br/>A 的扣款也撤销，回到初始状态"]
+```
+
 > 一句话：**事务 = 要么全做、要么全不做的一组操作。**
 
 ### 1.3 ACID——事务的四大特性（面试必背）
@@ -188,6 +200,27 @@ public class B {
 
 **典型用途**：**日志/审计记录**——即使主业务失败回滚，日志也要保留。用 `REQUIRES_NEW` 让日志独立提交。
 
+**REQUIRED vs REQUIRES_NEW 对比时序**：
+
+```mermaid
+sequenceDiagram
+    participant A as 服务A（doA）
+    participant B as 服务B（doB）
+    Note over A,B: 场景1 REQUIRED（默认）：B 加入现有事务 T1
+    A->>A: doA() 开启事务 T1
+    A->>A: dao.update1()（A 扣钱）
+    A->>B: b.doB()（默认 REQUIRED，加入 T1）
+    B->>B: dao.update2() 抛 RuntimeException
+    Note over A,B: T1 回滚 → update1 和 update2 都撤销
+    Note over A,B: 场景2 REQUIRES_NEW：B 另开独立事务 T2
+    A->>A: doA() 开启事务 T1
+    A->>A: dao.update1()
+    A->>B: b.doB()（REQUIRES_NEW，挂起 T1）
+    B->>B: 新开独立事务 T2 → logDao.insert（写日志）
+    B-->>A: T2 独立提交，日志已存
+    Note over A: doA 后续失败 → T1 回滚<br/>但 B 的 T2 已提交，不撤销
+```
+
 ### 4.4 例子：NESTED（嵌套，部分回滚）
 
 `doB` 内部失败可单独回滚（回到保存点），不影响外层 `doA`。较少用，了解即可。
@@ -327,6 +360,22 @@ public void createOrder(Long userId) {
 | **数据库唯一约束** | 并发插入重复 | `UNIQUE(userId, orderNo)` 让重复插入直接报错 |
 | **分布式锁** | 跨实例/跨节点的互斥 | 多台机器只有一个能执行临界区（见分布式锁附录） |
 | **业务幂等** | 重复请求/重复消费不出错 | 同一消息被 Kafka 投递多次，只生效一次（见 Kafka 附录） |
+
+**四层防护各管什么**：
+
+```mermaid
+flowchart LR
+    subgraph RISK["风险（要防的问题）"]
+        R1["单次操作中途失败<br/>（转账扣款后程序崩溃）"]
+        R2["并发插入重复<br/>（同用户连点两次下单）"]
+        R3["跨实例同时执行临界区<br/>（多台机器争一把锁）"]
+        R4["重复请求 / 重复消费<br/>（Kafka 同一消息投递多次）"]
+    end
+    R1 -->|"管"| T["事务 @Transactional<br/>单次操作原子性"]
+    R2 -->|"管"| U["数据库唯一约束<br/>UNIQUE(userId, orderNo)"]
+    R3 -->|"管"| L["分布式锁<br/>跨节点互斥"]
+    R4 -->|"管"| I["业务幂等<br/>重复只生效一次"]
+```
 
 > **回扣分布式锁附录**：那篇结尾说"分布式锁保证互斥，不保证业务正确，要靠业务幂等 + 存储层防护"。**事务 + 唯一约束就是"存储层防护"**。锁挡住了"同时进入"，但万一锁失效/重复投递，最后还得靠数据库唯一约束和幂等兜底。
 

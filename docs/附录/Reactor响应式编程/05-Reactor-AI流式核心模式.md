@@ -115,6 +115,24 @@ SSE 长连接总要有个关闭信号。我们用 `__END__` 这个特殊标记�
 消费者：chunk1 → chunk2 → chunk3 → [takeUntil 触发] → 完成 → SSE 关闭
 ```
 
+**订阅时序**：
+
+```mermaid
+sequenceDiagram
+    participant P as 生产者
+    participant S as 订阅流takeUntil
+    participant C as 前端SSE
+    P->>S: chunk1
+    S->>C: chunk1
+    P->>S: chunk2
+    S->>C: chunk2
+    P->>S: chunk3
+    S->>C: chunk3
+    P->>S: __END__
+    Note over S: takeUntil 命中终止标记
+    S-->>C: onComplete，SSE 正常关闭
+```
+
 ### 4.2 如果 `__END__` 永远不来会怎样
 
 生产者崩了（LLM 超时、网络断）→ `__END__` 没写 → `takeUntil` 永不满足 → Flux 永不 complete → **SSE 连接永久挂死**。
@@ -144,6 +162,24 @@ Flux<String> history = range(key).map(this::chunkOf)
 Flux<String> live = Flux.defer(() -> ended.get()
         ? Flux.empty()                                                   // 已结束，不用连
         : listener.receive(ChannelTopic.of(channel)).map(Message::getMessage)); // 没结束，连
+```
+
+**竞态与修复对比**：
+
+```mermaid
+flowchart TD
+    subgraph RACE["竞态：不看 ended 直接订阅 live"]
+        H1["history 回放完毕"] --> C1["concatWith 去订阅 live"]
+        C1 --> L1["不管 history 里是否已有 __END__<br/>都建立 Pub/Sub 连接"]
+        L1 --> W1["永远不会收到消息的<br/>幽灵连接"]
+    end
+    subgraph FIX["修复：ended + Flux.defer"]
+        H2["history 回放，碰到 __END__"] --> E2["ended.set(true)"]
+        E2 --> C2["history 回放完毕"]
+        C2 -->|"订阅 live 时才判断"| D2{"ended.get()?"}
+        D2 -->|"已结束"| EMPTY["Flux.empty<br/>不用连 Pub/Sub"]
+        D2 -->|"没结束"| CONN["连接 Pub/Sub<br/>正常收实时"]
+    end
 ```
 
 **关键**：`Flux.defer` 保证 `ended.get()` 的判断发生在 `live` 被订阅时——此时 history 已回放完毕，`ended` 的值是准的。
@@ -188,6 +224,28 @@ generate(prompt, sessionId)
 ---
 
 ## 第 7 章：五个模式串起来的完整数据流
+
+**整体数据流**：
+
+```mermaid
+flowchart TD
+    POST["POST /chat"] --> TRIGGER["trigger()"]
+    TRIGGER --> GEN["generate() 创建 Flux<br/>冷流，未订阅"]
+    GEN --> DEFER["Flux.defer 包裹<br/>副作用推迟到订阅时（模式一）"]
+    DEFER --> SUB1["subscribe() → 生成开始"]
+    SUB1 --> WRITE["chunk → bus.write()<br/>XADD Stream + PUBLISH Pub/Sub"]
+    SUB1 --> WRITEEND["完成/失败 → bus.writeEnd()<br/>写 __END__（模式五）"]
+
+    GET["GET /stream"] --> BUSSUB["bus.subscribe(token)"]
+    BUSSUB --> HIST["history = range(key)<br/>回放 Stream（过去的 chunk）"]
+    HIST --> ENDED["碰到 __END__ → ended.set(true)"]
+    BUSSUB --> LIVE["live = Flux.defer(ended 检查)<br/>没结束才连 Pub/Sub（模式四）"]
+    HIST --> CC["history.concatWith(live)（模式二）"]
+    LIVE --> CC
+    CC --> TU["takeUntil(__END__)（模式三）"]
+    TU --> FILT["filter(不是 __END__)"]
+    FILT --> SSE["SSE 推给前端"]
+```
 
 ```
 POST /chat → trigger()

@@ -74,6 +74,28 @@
        LLM 生成答案
 ```
 
+**RAG 全链路图**：
+
+```mermaid
+flowchart TD
+    subgraph OFF["离线索引阶段（一次性，文档更新时重做）"]
+        D1["原始文档（PDF/Markdown/HTML）"] --> D2["DocumentReader 解析"]
+        D2 --> D3["Document 统一中间格式"]
+        D3 --> D4["DocumentSplitter 分块"]
+        D4 --> D5["List of TextSegment 文本片段"]
+        D5 --> D6["EmbeddingModel 向量化"]
+        D6 --> D7["EmbeddingStore 入库"]
+    end
+    subgraph ON["在线问答阶段（每次用户提问）"]
+        Q1["用户问题"] --> Q2["EmbeddingModel 向量化"]
+        Q2 --> Q3["EmbeddingStore.search 相似度检索"]
+        Q3 --> Q4["最相关的 K 个片段"]
+        Q4 --> Q5["拼接进 prompt<br/>context + question"]
+        Q5 --> Q6["LLM 生成答案"]
+    end
+    D7 -.->|"向量库跨阶段复用"| Q3
+```
+
 ### 2.1 五个核心组件
 
 | 组件 | 作用 | LangChain4j 接口 |
@@ -99,6 +121,21 @@
 | **Chroma** | 单机原型 | ⚠️ `langchain4j-chroma:1.0.1-beta6` 有兼容性 bug，暂不推荐 |
 
 > **本教程选 InMemoryEmbeddingStore**：`langchain4j` 主包自带、零依赖、`serializeToJson()` 持久化。学习 RAG 全链路完全够用，做项目时换 Qdrant/Milvus 即可（都实现同一个 `EmbeddingStore` 接口，业务代码不变）。
+
+**向量库选型决策**：
+
+```mermaid
+flowchart TD
+    Q{"你的场景?"} -->|"学习/原型/临时跑"| A["InMemoryEmbeddingStore<br/>本教程默认，零依赖 + JSON 持久化"]
+    Q -->|"生产单机/小集群"| B["Qdrant<br/>Docker 一行启动"]
+    Q -->|"已有 Postgres"| C["pgvector<br/>装扩展"]
+    Q -->|"大规模生产"| D["Milvus<br/>完整集群部署"]
+    Q -->|"单机原型想用 Chroma"| E["Chroma<br/>⚠️ 1.0.1-beta6 有兼容性 bug，暂不推荐"]
+    A --> ALL["都实现 EmbeddingStore 接口<br/>业务代码不变"]
+    B --> ALL
+    C --> ALL
+    D --> ALL
+```
 
 ### 3.2（可选）启动 Chroma
 
@@ -387,6 +424,28 @@ LangChain4j 自动把检索结果拼到 prompt：
 发给 LLM 生成答案
 ```
 
+**检索时序**：
+
+```mermaid
+sequenceDiagram
+    participant App as 你的应用
+    participant AS as AiServices
+    participant CR as ContentRetriever
+    participant EM as EmbeddingModel
+    participant ST as EmbeddingStore
+    participant LLM as LLM
+    App->>AS: agent.chat("退货政策是什么？")
+    AS->>CR: retriever.retrieve(query)
+    CR->>EM: embed("退货政策是什么？")
+    EM-->>CR: 问题向量
+    CR->>ST: store.search(向量, topK=5)
+    ST-->>CR: 最相关的 5 个片段
+    CR-->>AS: List of Content
+    AS->>LLM: prompt = 上下文片段 + 问题
+    LLM-->>AS: 基于上下文的答案
+    AS-->>App: 回答
+```
+
 **关键认知**：你**完全不需要手动拼 prompt**，`AiServices` 自动处理。
 
 ---
@@ -489,6 +548,21 @@ segment.metadata().put("updated_at", "2026-07-01");
 3. 优化分块策略（chunk size、overlap）
 4. 引入 Query Rewriting
 5. 引入重排序（rerank，详见 `reference/理论基础/02-RAG深度优化.md`）
+
+**检索不准诊断决策**：
+
+```mermaid
+flowchart TD
+    S["症状: 用户问 A，检索到的片段讲 B"] --> L["开 logRequests(true)"]
+    L --> V["看拼进 prompt 的实际内容"]
+    V --> R{"片段与问题相关?"}
+    R -->|"不相关 → 检索环节问题"| F1["检查 embedding 是否适配中文<br/>中文必须用中文友好模型"]
+    F1 --> F2["调整 maxResults / minScore"]
+    F2 --> F3["优化分块策略<br/>chunk size、overlap"]
+    F3 --> F4["引入 Query Rewriting"]
+    F4 --> F5["引入 rerank 重排序"]
+    R -->|"相关但答案错 → 幻觉"| OTHER["见 7.2<br/>加强 system prompt 只基于上下文"]
+```
 
 ### 7.2 答案不忠实上下文（幻觉）
 

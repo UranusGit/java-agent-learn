@@ -50,6 +50,16 @@ userDao.findByIdReactive(id)        // 源：发起异步查询
 源(起跑) ──(parallel-1 接棒)──> map1 ──(parallel-1 接棒)──> map2 ──(boundedElastic-1 接棒)──> map3 ──> 终点(println)
 ```
 
+**接力示意**：
+
+```mermaid
+flowchart LR
+    SRC["源<br/>起跑"] -->|"parallel-1 接棒"| M1["map1"]
+    M1 -->|"parallel-1 接棒"| M2["map2"]
+    M2 -->|"boundedElastic-1 接棒"| M3["map3"]
+    M3 -->|"接棒"| FIN["终点 println"]
+```
+
 - **每一棒（每个操作符）由谁跑，取决于上一棒把"棒"（数据）递到了哪个线程上**。
 - 默认情况下没人干预，所有棒都在**起跑线程**（订阅者所在线程）上跑；
 - 但数据源的**异步回调**、以及我们主动放的 `subscribeOn`/`publishOn`，会让某一段**换到别的线程去跑**。
@@ -243,6 +253,22 @@ Scheduler myCpu = Schedulers.newParallel("myCpu", 4);
  源往下的"棒"：parallel-N ── 递到 publishOn 时被"截断" ──> 换成 boundedElastic-N
 ```
 
+**线程分段图**：
+
+```mermaid
+flowchart TD
+    subgraph Z1["parallel-N 线程段"]
+        S["Flux.just A/B/C"] --> M1["map1"]
+        M1 --> SO["subscribeOn(parallel)<br/>源在这起跑"]
+        SO --> M2["map2"]
+    end
+    subgraph Z2["boundedElastic-N 线程段"]
+        M2 --> PO["publishOn(boundedElastic)<br/>一道闸门"]
+        PO --> M3["map3"]
+        M3 --> SUBS["subscribe(println)"]
+    end
+```
+
 **核心机制**：
 - `subscribeOn` 决定**源在哪起跑**，源发出的数据一路往下传时，**沿途操作符都在这个线程上**——直到遇到第一个 `publishOn` 才被截断换线程。
 - `publishOn` 是一道"闸门"：数据流经它时，被排队并**转交给它指定的线程**去执行**它之后**的链。
@@ -404,6 +430,25 @@ public class MultipleSwitchDemo {
 | 多个 `publishOn` | **每个都生效**，各自把"它之后"切到对应线程（位置决定切哪段） |
 | `publishOn` 在前、`subscribeOn` 在后 | 源还是被 `subscribeOn` 影响；`publishOn` 之后照常切 |
 
+**规则速览**：
+
+```mermaid
+flowchart TD
+    subgraph R1["多个 subscribeOn：离源最近者生效"]
+        S1["Flux.just X"] --> S2["subscribeOn(single)<br/>离源最近 → 生效"]
+        S2 --> S3["subscribeOn(parallel)<br/>离源更远 → 无效"]
+        S3 --> M1["map → 跑在 single-1"]
+    end
+    subgraph R2["多个 publishOn：每个都生效，各切一段"]
+        A1["Flux.just A/B"] --> MA1["map1 → main"]
+        MA1 --> P1["publishOn(parallel)<br/>第一个闸门"]
+        P1 --> MA2["map2 → parallel-1"]
+        MA2 --> P2["publishOn(single)<br/>第二个闸门"]
+        P2 --> MA3["map3 → single-1"]
+        MA3 --> SU1["subscribe → single-1"]
+    end
+```
+
 > **一句话**：`subscribeOn` 管"源"，重复放没意义（最近源者赢）；`publishOn` 管"闸门后"，放几个就切几段。
 
 ### 3.7 常见误区（新手三连）
@@ -444,6 +489,19 @@ WebFlux 底层是 Netty，而 **Netty 只有很少几个事件循环线程**（�
 
 ```
 netty-thread-N: [发起请求1] → [JDBC 阻塞等待...50ms...] → [等待期间，请求2/3/4 全部没人处理！]
+```
+
+**阻塞现场的线程时间线**：
+
+```mermaid
+flowchart LR
+    NT["netty-thread-N<br/>事件循环线程"] --> REQ1["发起请求1"]
+    REQ1 --> JDBC["JDBC 阻塞等待 50ms"]
+    JDBC --> STALL["等待期间"]
+    STALL --> Q2["请求2 没人处理"]
+    STALL --> Q3["请求3 没人处理"]
+    STALL --> Q4["请求4 没人处理"]
+    Q4 --> TO["全部排队超时"]
 ```
 
 **一个线程被卡住 = 一批请求排队超时。** 线程越少，越不能容忍阻塞。这就是 [01-入门](./01-Reactor响应式入门.md) 第 1 章讲的"线程干等"老问题，在响应式世界里直接表现为**请求大面积超时**。

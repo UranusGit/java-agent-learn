@@ -53,6 +53,31 @@
 
 > 你需要在 ai-serving 那边部署 / 调通这些接口；本章只覆盖 web-claude 这边的接入。
 
+**集成架构**：
+
+```mermaid
+flowchart LR
+    subgraph WEB[web-claude]
+        JF["JwtFilter<br/>解析 JWT → TenantContext"]
+        IC["InferenceClient<br/>streamChat 流式推理"]
+        UR["UsageReporter<br/>每分钟汇总上报用量"]
+        TRL["TenantRateLimiter<br/>Redis 限流 1000 token/分"]
+        OT["OTel @Observed<br/>agent.run / tool.apply"]
+    end
+    subgraph AIS[ai-serving 推理网关]
+        CHAT["POST /v1/chat/completions<br/>OpenAI 兼容"]
+        USAGE["POST /v1/tenants/{id}/usage"]
+        TR["POST /v1/traces"]
+        QUOTA["GET /v1/tenants/{id}/quota"]
+    end
+
+    JF -->|"tenantId 注入"| IC
+    IC -->|"Bearer + X-Tenant-Key<br/>流式 chunk"| CHAT
+    TRL -->|"限流检查"| IC
+    UR -->|"token 用量"| USAGE
+    OT -->|"trace / span"| TR
+```
+
 ---
 
 ## 3. 多租户上下文
@@ -136,6 +161,26 @@ public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
             }
         });
 }
+```
+
+**多租户上下文注入流程**：
+
+```mermaid
+flowchart TD
+    REQ["HTTP 请求<br/>Authorization: Bearer {JWT}"] --> JF["JwtFilter (WebFilter)"]
+    JF --> HAS{"有 Bearer token ?"}
+    HAS -->|"无"| ANON["放行（匿名）"]
+    HAS -->|"有"| PARSE["Jwts.parserBuilder 验签<br/>HmacSHA256"]
+    PARSE --> OK{"验签成功?"}
+    OK -->|"成功"| CTX["TenantContext<br/>tenantId / userId / role"]
+    CTX --> SEC["contextWrite 写入<br/>ReactiveSecurityContextHolder"]
+    SEC --> DOWN["下游业务从 TenantContext 取租户"]
+    OK -->|"失败"| ANON2["放行（匿名）"]
+
+    subgraph WS_AUTH[WebSocket 握手]
+        H1["beforeHandshake<br/>从 query / subprotocol 取 token"]
+        H1 --> H2["解析 → attributes 放 tenantId / userId"]
+    end
 ```
 
 ---
@@ -257,6 +302,17 @@ public Flux<State> run(...) { ... }
 public CompletableFuture<ToolResult> apply(...) { ... }
 ```
 
+**Trace 传播**：
+
+```mermaid
+flowchart TD
+    SUB["用户请求"] --> S1["span: agent.run<br/>AgentLoopV2.run"]
+    S1 --> S2["span: tool.apply<br/>工具执行"]
+    S2 --> S3["span: 推理网关调用<br/>InferenceClient.streamChat"]
+    S3 -->|"W3C Trace Context + traceparent 透传"| AIS["ai-serving / /v1/traces"]
+    AIS --> JA["Jaeger 全链路可见"]
+```
+
 ---
 
 ## 8. 限流与配额
@@ -286,6 +342,20 @@ public class TenantRateLimiter {
         return current <= 1000;  // 每分钟 1000 tokens
     }
 }
+```
+
+**限流决策**：
+
+```mermaid
+flowchart TD
+    IN(("tryAcquire(tenantId, cost)")) --> INCR["redis INCR<br/>key = rate:{tenantId}"]
+    INCR --> FIRST{"current == cost ?<br/>（本分钟首次计数）"}
+    FIRST -->|"是"| EXP["expire 1 分钟"]
+    FIRST -->|"否"| SK["跳过"]
+    EXP --> CHK{"current <= 1000 ?"}
+    SK --> CHK
+    CHK -->|"是"| OK["允许<br/>返回 true"]
+    CHK -->|"否"| REJ["拒绝<br/>返回 false"]
 ```
 
 ---

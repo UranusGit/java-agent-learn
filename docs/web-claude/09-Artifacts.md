@@ -48,6 +48,31 @@
 - 捕获：Write/Edit 工具完成后 → 检测文件类型 → 上传 S3 → 推送 artifact 事件；
 - 渲染：iframe 沙箱（HTML）、Monaco（code）、react-markdown（MD）。
 
+**核心时序**：
+
+```mermaid
+sequenceDiagram
+    participant W as WriteTool / EditTool
+    participant A as ArtifactService
+    participant S3 as S3 对象存储
+    participant WS as WSBroadcaster
+    participant FE as 前端 ArtifactPanel
+    participant C as ArtifactController
+
+    W->>A: capture(sessionId, taskId, path, type)
+    A->>S3: putObject(storageKey, contentType=mime)
+    S3-->>A: ok
+    A-->>W: Artifact(id, storageKey, mime, size, version)
+    W->>WS: broadcastArtifact(sessionId, art)
+    WS->>FE: WS 消息 type=artifact（id/type/title/url）
+    FE->>C: GET /api/artifacts/{id}/content
+    C->>S3: signedUrl(storageKey, ttl=3600)
+    C-->>FE: 302 → S3 签名 URL
+    FE->>S3: fetch 文件内容
+    S3-->>FE: 内容
+    FE->>FE: renderByType<br/>Monaco / iframe / markdown / img / mermaid
+```
+
 ---
 
 ## 3. 后端：ArtifactService
@@ -316,6 +341,18 @@ function guessLang(name: string): string {
 
 > Monaco 编辑器要在线拉内容，需要再封一个 PromiseEditor，思路同 PromiseText。
 
+**渲染分发**：
+
+```mermaid
+flowchart TD
+    ART["ArtifactWire<br/>type / title / url"] --> SW{"renderByType(type)"}
+    SW -->|"code"| MON["Monaco Editor<br/>guessLang 高亮"]
+    SW -->|"markdown"| MD["react-markdown<br/>+ remarkGfm"]
+    SW -->|"html"| IF["iframe<br/>sandbox=allow-scripts"]
+    SW -->|"svg / image"| IMG["img src=url"]
+    SW -->|"mermaid"| MER["mermaid.js 渲染<br/>securityLevel: strict"]
+```
+
 ### 4.2 接入 App
 
 修改 `App.tsx`：
@@ -405,6 +442,15 @@ return (
 - React 组件实时渲染（沙箱执行）：用 Sandpack 或自研 iframe + esbuild.wasm；
 - 多版本 diff（同一逻辑 artifact 的不同版本）；
 - 协同编辑（接入 Yjs）：[22 章 §6](./22-跨标签页与实时协作.md) 给出基础接入示例。
+
+**v2 升级路线**：
+
+```mermaid
+flowchart LR
+    V1["v1 现状<br/>只读渲染 + version 字段"] --> R1["React 组件实时渲染<br/>Sandpack / 自研 iframe + esbuild.wasm"]
+    V1 --> R2["多版本 diff<br/>同一 artifact 的不同版本对比"]
+    V1 --> R3["协同编辑<br/>Yjs 接入（22 章 §6）"]
+```
 
 ---
 

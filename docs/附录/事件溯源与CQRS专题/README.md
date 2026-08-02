@@ -9,3 +9,12 @@
 > **前置**：先学完 [Spring Cloud Stream 专题](../Kafka消息队列实战专题/README.md)（事件溯源的事件常通过 Stream 分发）。
 >
 > **适合谁**：做金融/审计/电商，需要完整历史、时间旅行、读写分离的场景。简单 CRUD 不需要。
+
+**本专题定位**：
+
+```mermaid
+flowchart LR
+    PRE["Kafka 消息队列专题<br/>（事件常通过 Stream 分发）"] --> ES["事件溯源与 CQRS 实战<br/>聚合 / 事件存储 / 投影 / 快照<br/>Spring Boot + PG 完整实现"]
+    ES --> USE["适合：金融 / 审计 / 电商<br/>需要完整历史、时间旅行、读写分离"]
+    ES -.-> NO["简单 CRUD：不需要"]
+```

@@ -39,6 +39,16 @@ kafkaTemplate.send("order-created", orderId, eventJson); // ② 发事件到 Kaf
 2. **① 成功、② 之前崩溃**（进程突然挂）→ 同上,事件丢了。
 3. **② 成功、① 回滚**（事务回滚但事件已发）→ 库存扣了库存,但订单其实没创建 → **更糟**。
 
+**双写（dual-write）的三种出错场景**：
+
+```mermaid
+flowchart TD
+    A["① 写 orders 表(DB)"] --> B["② 发事件到 Kafka"]
+    B -->|"① 成功、② 失败<br/>(Kafka 连不上)"| F1["订单创建了, 事件没发<br/>库存服务永远不知道<br/>→ 数据不一致"]
+    B -->|"① 成功、② 之前崩溃"| F2["事件丢失<br/>→ 数据不一致"]
+    B -->|"② 成功、① 回滚"| F3["事件已发但订单没创建<br/>→ 库存扣了库存, 更糟"]
+```
+
 这就是 **dual-write problem（双写问题）**——往两个独立系统（DB 和 Kafka）写数据,没法保证原子性。**这是事件驱动系统最经典的难题**,所有做这行的人都会撞上。
 
 ### A.2 Outbox 模式的核心思想
@@ -172,6 +182,19 @@ public interface OutboxRepository extends JpaRepository<OutboxEvent, Long> {
 }
 ```
 
+**轮询投递器的一次循环**：
+
+```mermaid
+flowchart TD
+    A(("每 2 秒 @Scheduled 触发")) --> B["findTop100ByProcessedFalseOrderByIdAsc()<br/>取最早 100 条未处理"]
+    B --> C["逐条: 按 event_type 决定 topic<br/>(OrderCreated → order-created)"]
+    C --> D["kafkaTemplate.send(topic, aggregateId, payload)<br/>.get(2, SECONDS) 同步等结果"]
+    D --> E{"发送成功?"}
+    E -->|"成功"| F["setProcessed(true) 标记已处理<br/>(与发送同一事务)"]
+    E -->|"失败抛异常"| G["事务回滚<br/>processed 不落库<br/>下轮重试"]
+    F --> H["继续下一条 / 结束本轮"]
+```
+
 > **关于同步等待 `.get()`**：`kafkaTemplate.send()` 返回的是 `CompletableFuture`,默认是**异步**的——发送结果走回调,调用处立刻返回。这里用 `.get(2, SECONDS)` 同步等结果,是为了让发送失败能抛异常、触发事务回滚（processed 不落库,下轮重试）。代价是每批最多等 2 秒;要更高吞吐可改成异步 + 回调（`whenComplete`）记录失败,但那要自己管失败补偿,复杂度高。
 
 #### A.3.4 轮询投递的两个坑（必看）
@@ -273,6 +296,25 @@ Debezium 默认会把 outbox 表的整行（含 id/aggregate_id/event_type/paylo
 生产者 ──①注册schema──> [ Schema Registry ]（校验兼容性）
         ──②发消息(带schema ID)──> [ Kafka ]
 消费者 <──③凭ID取schema── [ Schema Registry ] ──反序列化
+```
+
+**Schema 注册与读取的时序**：
+
+```mermaid
+sequenceDiagram
+    participant P as 生产者
+    participant R as Schema Registry
+    participant K as Kafka
+    participant C as 消费者
+
+    P->>R: ① 注册 schema(OrderCreated)
+    R->>R: 校验与历史版本兼容性<br/>(只加字段? 兼容; 删字段? 拒绝)
+    R-->>P: 返回 schema ID
+    P->>K: ② 发消息(消息只带 schema ID, 省带宽)
+    K-->>C: 消息(带 schema ID)
+    C->>R: ③ 凭 ID 取对应 schema
+    R-->>C: schema
+    C->>C: 按 schema 反序列化成 OrderCreated
 ```
 
 **Confluent Schema Registry** 是业界标准（和 Kafka 同源）。Schema Registry 不关心你的序列化是 Stream 还是原生 Kafka——它工作在序列化器这一层,所以 **`spring-boot-starter-kafka` 原生支持**。
@@ -446,6 +488,16 @@ public class ProcessConsumer {
 | 2 实例 × concurrency 3 | 6 | 两实例共 6 线程,各 1 分区,满载 |
 
 > **铁律(官方校验)**:`实例数 × concurrency > 分区数` 时,**多余的线程完全空闲**。所以设 concurrency 前先看分区数,别盲目调大。
+
+**6 分区 topic 的有效并行度**：
+
+```mermaid
+flowchart TD
+    A["topic 有 6 个分区"] --> B{"实例数 × concurrency"}
+    B -->|"= 6"| F["满载<br/>6 个线程各占 1 个分区"]
+    B -->|"< 6(如 3)"| W["部分利用<br/>3 个线程各占 2 个分区, 有浪费"]
+    B -->|"> 6(如 10)"| O["多余线程完全空闲<br/>有效并行度仍是 6"]
+```
 
 ### C.4 单分区 topic 的陷阱(官方 issue #2645)
 

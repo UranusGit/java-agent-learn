@@ -59,6 +59,18 @@ public class ChainingService {
 }
 ```
 
+**模式流程**：
+
+```mermaid
+flowchart TD
+    topic["话题 topic"] --> draft["步骤 1：写初稿<br/>client.prompt().user(200 字短文)"]
+    draft --> review["步骤 2：校对<br/>修正语法和逻辑问题"]
+    review --> gate{"质量达标?<br/>（gate 可回到上一步）"}
+    gate -->|"不达标"| draft
+    gate -->|"达标"| translate["步骤 3：翻译成英文"]
+    translate --> out["最终输出"]
+```
+
 ### 1.3 适用场景
 
 - 文档生成 + 润色 + 翻译
@@ -77,6 +89,25 @@ public class ChainingService {
 
 - **Sectioning（分段）**：把大任务拆成独立子任务并行执行
 - **Voting（投票）**：同一任务跑多次/多模型，投票决定结果
+
+**两种子模式**：
+
+```mermaid
+flowchart TD
+    subgraph sectioning["Sectioning（分段）"]
+        doc["长文档"] --> split["splitInto(doc, 3)<br/>拆成 3 段"]
+        split --> p1["并行总结段 1"]
+        split --> p2["并行总结段 2"]
+        split --> p3["并行总结段 3"]
+        p1 --> merge["汇总完整总结"]
+        p2 --> merge
+        p3 --> merge
+    end
+    subgraph voting["Voting（投票）"]
+        code["同一任务"] --> runs["不同 temperature<br/>并行跑 N 次"]
+        runs --> vote["投票汇总<br/>找出共识问题"]
+    end
+```
 
 ### 2.2 Sectioning 实现
 
@@ -181,6 +212,20 @@ public class RoutingService {
 }
 ```
 
+**模式流程**：
+
+```mermaid
+flowchart TD
+    q["用户问题"] --> classify["步骤 1：分类<br/>.entity(Category.class)<br/>TECHNICAL / BILLING / GENERAL"]
+    classify --> cat{"Category?"}
+    cat -->|"TECHNICAL"| tech["技术支持 handler<br/>.tools(kbTool, logTool)"]
+    cat -->|"BILLING"| bill["财务 handler"]
+    cat -->|"GENERAL"| gen["通用 handler"]
+    tech --> ans["回答"]
+    bill --> ans
+    gen --> ans
+```
+
 ### 3.3 适用场景
 
 - 客服分流
@@ -229,6 +274,20 @@ public class OrchestratorService {
             .call().content();
     }
 }
+```
+
+**模式流程**：
+
+```mermaid
+flowchart TD
+    req["需求 requirement"] --> orch["Orchestrator 编排者<br/>拆成子任务 List<br/>targetFile + instruction"]
+    orch --> w1["Worker 1<br/>修改文件 A"]
+    orch --> w2["Worker 2<br/>修改文件 B"]
+    orch --> w3["Worker 3<br/>修改文件 C"]
+    w1 --> sum["汇总修改结果"]
+    w2 --> sum
+    w3 --> sum
+    sum --> out["最终回答"]
 ```
 
 ### 4.3 适用场景
@@ -287,6 +346,19 @@ public class EvaluatorOptimizerService {
         return current; // 超过 maxIter，返回最后版本
     }
 }
+```
+
+**模式流程**：
+
+```mermaid
+flowchart TD
+    gen["初稿生成器<br/>生成 current"] --> eval["Evaluator 评估<br/>.entity(EvalResult.class)"]
+    eval --> pass{"eval.passed()?"}
+    pass -->|"是"| done["返回 current"]
+    pass -->|"否"| check{"已达 maxIter?"}
+    check -->|"否"| opt["Optimizer 优化器<br/>根据反馈改进 current"]
+    opt --> eval
+    check -->|"是"| done2["超过 maxIter，返回最后版本"]
 ```
 
 ### 5.3 适用场景

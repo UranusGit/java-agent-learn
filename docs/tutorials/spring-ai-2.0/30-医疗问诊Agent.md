@@ -72,6 +72,20 @@
 
 ### 2.2 架构
 
+**分诊流程**：
+
+```mermaid
+flowchart TD
+    IN["患者输入"] --> CHK["输入校验<br/>长度 / 敏感词 / 注入检测"]
+    CHK --> RAG["RAG<br/>检索权威医学指南(如《默沙东诊疗手册》)"]
+    RAG --> LLM["LLM<br/>推理 + 输出结构化建议"]
+    LLM --> RE{"规则引擎红线检查<br/>命中紧急关键词?"}
+    RE -->|"命中(胸痛 / 呼吸困难 / 意识模糊等)"| ER["紧急度 = EMERGENCY<br/>建议立即拨打 120 或前往急诊"]
+    RE -->|"未命中"| RT["按 LLM 推荐紧急度"]
+    ER --> AUD["审计 + 持证医生 review 异常 case"]
+    RT --> AUD
+```
+
 ```
 患者输入
     ↓
@@ -215,6 +229,17 @@ public DifferentialDiagnosis diagnose(String caseText) {
 签字 + 病历
 ```
 
+**医生在回路流程**：
+
+```mermaid
+flowchart TD
+    AG["Agent 输出"] --> DOC{"医生操作<br/>采纳 / 排除 / 修改"}
+    AG -.->|"全部记录但不入病历"| AUD["审计记录"]
+    DOC -->|"✓ 采纳 / ✏️ 修改"| SIGN["医生签字"]
+    DOC -->|"✗ 排除(仅记录)"| AUD
+    SIGN -->|"只有医生签字内容才进"| EMR["电子病历"]
+```
+
 所有 Agent 建议都被记录但**不**进入病历，只有医生签字的内容才进。
 
 ### 3.4 评估
@@ -305,6 +330,21 @@ public StructuredEmr validate(StructuredEmr e, String original) {
     
     return e;
 }
+```
+
+**结构化校验流程**：
+
+```mermaid
+flowchart TD
+    EMR["自由文本病历"] --> LLM["LLM 结构化<br/>FHIR R4 + ICD-10 + ATC 编码"]
+    LLM --> V1{"ICD-10 编码合法?"}
+    V1 -->|"否"| ERR1["抛 ValidationException<br/>Invalid ICD-10"]
+    V1 -->|"是"| V2{"关键字段非空?<br/>patient / diagnoses"}
+    V2 -->|"否"| ERR2["抛 ValidationException<br/>Missing required fields"]
+    V2 -->|"是"| V3{"faithfulness ≥ 0.9?<br/>(与原文对照)"}
+    V3 -->|"否"| WARN["记录低分警告<br/>不拦截"]
+    V3 -->|"是"| OK["通过校验<br/>结构化 EHR 入库"]
+    WARN --> OK
 ```
 
 ---

@@ -39,6 +39,18 @@
 流处理：[来一条] → [增量更新结果]（持续，毫秒~秒级延迟）
 ```
 
+**批处理 vs 流处理**：
+
+```mermaid
+flowchart TD
+    subgraph batch["批处理：夜里算昨天"]
+        A1["攒一天数据"] --> A2["夜里全量计算"] --> A3["结果<br/>延迟 1 天"]
+    end
+    subgraph stream["流处理：来一条算一条"]
+        B1["来一条事件"] --> B2["增量更新结果"] --> B3["结果<br/>毫秒~秒级延迟"]
+    end
+```
+
 **例子**：
 - 每分钟各商品订单量
 - 实时用户画像（订单流 JOIN 用户流）
@@ -241,6 +253,27 @@ TimeWindows.ofSizeAndGrace(Duration.ofMinutes(5), Duration.ofMinutes(1));
 | **KStream + GlobalKTable** | 流 + 全局表（每个实例有完整副本，无需 co-partition） |
 | **KStream + KStream（windowed）** | 流 + 流（两个流在时间窗口内的关联，如订单流 JOIN 支付流） |
 
+**三种 JOIN 的拓扑**：
+
+```mermaid
+flowchart TD
+    subgraph JOIN1["KStream + KTable"]
+        J1a["订单流 KStream"] --> J1j["join(orders, users)<br/>按 userId"]
+        J1b["用户表 KTable"] --> J1j
+        J1j --> J1o["补全用户信息<br/>前提：co-partition"]
+    end
+    subgraph JOIN2["KStream + GlobalKTable"]
+        J2a["订单流 KStream"] --> J2j["join(orders, users)<br/>按 userId 提取 key"]
+        J2b["用户全局表 GlobalKTable<br/>每实例完整副本"] --> J2j
+        J2j --> J2o["补全用户信息<br/>无需 co-partition<br/>代价：内存大"]
+    end
+    subgraph JOIN3["KStream + KStream（窗口）"]
+        J3a["订单流"] --> J3j["JoinWindows 30 分钟"]
+        J3b["支付流"] --> J3j
+        J3j --> J3o["订单-支付配对结果"]
+    end
+```
+
 ### 3.2 KStream + KTable：给订单补用户信息
 
 场景：订单流（只有 userId）要 JOIN 用户表（userId → 用户信息），输出带完整用户信息的订单。
@@ -410,6 +443,17 @@ public class OrderPaymentTopology {
 
 好处：状态在本地，读写极快，不依赖外部 DB。崩溃后能从 Kafka changelog topic 重建（容错）。
 
+**状态存储与容错**：
+
+```mermaid
+flowchart LR
+    EV["事件流 topic"] --> KS["Kafka Streams"]
+    KS --> SS["本地 state store<br/>RocksDB + 内存缓存"]
+    SS --> IQ["交互式查询<br/>毫秒级读写"]
+    KS -.->|"状态变更写入"| CL["changelog topic"]
+    CL -.->|"崩溃后重建状态"| SS
+```
+
 ### 4.2 交互式查询（Interactive Queries）——直接查状态
 
 State store 不只是中间产物——你可以**直接查它**（Kafka 进阶实战第 3 章提过）。比如统计后，直接查"某商品累计订单量"，不用另存数据库。
@@ -574,6 +618,23 @@ public class RealtimeMetrics {
 
 > **原生 DSL 里"多个算子怎么串联"**：所有东西都发生在同一个 `StreamsBuilder` 里——`builder.stream` 的返回值往下流，最后 `return` 的 `KTable`/`KStream` 会被 spring-kafka 注册进拓扑。**不再有 Binder 的"多个 Function Bean + 通道拼接"**，一个方法就是一条完整的处理管道。
 
+**完整拓扑**：
+
+```mermaid
+flowchart LR
+    ORD["orders topic"] --> OS["KStream 订单流"]
+    USR["users topic"] --> GU["GlobalKTable 用户全局表<br/>无需 co-partition"]
+    OS --> JO["join 按 userId"]
+    GU --> JO
+    JO --> EN["KStream 富订单<br/>EnrichedOrder"]
+    EN --> EOT["enriched-orders topic"]
+    EN --> GB["groupBy productId"]
+    GB --> WIN["TimeWindows 1 分钟滚动"]
+    WIN --> CN["count()<br/>store: orders-per-product"]
+    CN --> OMT["orders-per-min topic"]
+    CN --> IQ["交互式查询<br/>windowStore().fetch()"]
+```
+
 ### 5.2 配置
 
 ```yaml
@@ -697,6 +758,19 @@ curl http://localhost:8080/orders-per-min/p001
 | 复杂 ETL / 大规模批流统一 | ❌ 用 Spark/Flink |
 | 简单消息收发（无状态） | ❌ 用普通 Spring Kafka（@KafkaListener） |
 | 要 exactly-once 强一致 | ⚠️ Kafka Streams 支持但要正确配置 |
+
+**选型决策**：
+
+```mermaid
+flowchart TD
+    D1{"输入输出都是 Kafka topic 吗？"} -->|"是"| D2{"需要持续更新 + 实时查询？"}
+    D1 -->|"否"| SPARK["Spark / Flink<br/>复杂 ETL"]
+    D2 -->|"是"| KS["Kafka Streams ✅<br/>含实时仪表盘 / 交互式查询"]
+    D2 -->|"否"| PLAIN["普通 Spring Kafka<br/>@KafkaListener（无状态收发）"]
+    KS --> D3{"要 exactly-once 强一致？"}
+    D3 -->|"是"| WARN["⚠️ 支持但要正确配置"]
+    D3 -->|"否"| USE["直接用"]
+```
 
 ### 6.4 架构师的一句话
 

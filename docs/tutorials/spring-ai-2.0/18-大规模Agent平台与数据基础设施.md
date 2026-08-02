@@ -83,6 +83,21 @@
 └─────────────────────────────────────────────────────┘
 ```
 
+**平台分层**：
+
+```mermaid
+flowchart TD
+    Portal["Self-Service Portal<br/>注册Agent / 查用量 / 管密钥 / 查日志"] --> GW["Gateway 统一入口<br/>鉴权 / 路由 / 限流 / 计费 / 熔断"]
+    GW --> Core["核心服务"]
+    subgraph CORE_SUB["核心服务"]
+        AP["Agent Pool<br/>实例池化 + 调度"]
+        RS["RAG Service<br/>共享知识库 + 隔离索引"]
+        MH["MCP Hub<br/>工具市场 + 鉴权代理"]
+    end
+    Core --> SI["Shared Infrastructure<br/>LLM Gateway / Vector DB / Event Store / Cache"]
+    SI --> OBS["Observability<br/>Metrics / Logs / Traces / Eval / Audit"]
+```
+
 ---
 
 ## 3. 多租户：架构的核心
@@ -364,6 +379,21 @@ public class QuotaGuard {
     → 缓存命中或降级响应
 ```
 
+**Fallback 链**：
+
+```mermaid
+flowchart TD
+    S["请求"] --> M1["主 LLM"]
+    M1 -->|"正常"| RAG["主 RAG"]
+    M1 -->|"挂"| M2["备 LLM(同档不同供应商)"]
+    M2 -->|"正常"| RAG
+    M2 -->|"也挂"| M3["自托管 LLM(Llama 3 / Qwen)"]
+    M3 -->|"正常"| RAG
+    M3 -->|"全挂"| M4["缓存命中或降级响应"]
+    RAG --> VS["主 Vector Store"]
+    VS --> OK["返回结果"]
+```
+
 ```java
 public class ResilientChatClient {
     public ChatResponse call(ChatRequest req) {
@@ -630,6 +660,21 @@ Map<String, Object> standardMetadata = Map.of(
         └── 否 → Milvus（大规模纯向量）
 ```
 
+**选型决策树**：
+
+```mermaid
+flowchart TD
+    Q1{"向量规模 < 100 万?"}
+    Q1 -->|"是"| PG1["pgvector<br/>(一个 DB 搞定)"]
+    Q1 -->|"否"| Q2{"向量规模 < 1000 万?"}
+    Q2 -->|"是"| Q3{"有 PostgreSQL 运维经验?"}
+    Q3 -->|"是"| PG2["pgvector<br/>(依然够用)"]
+    Q3 -->|"否"| QD["Qdrant<br/>(独立但简单)"]
+    Q2 -->|"否"| Q4{"需要 hybrid search<br/>(向量 + BM25)?"}
+    Q4 -->|"是"| WE["Weaviate / Elasticsearch"]
+    Q4 -->|"否"| MV["Milvus<br/>(大规模纯向量)"]
+```
+
 ### 12.3 Spring AI 接入
 
 ```java
@@ -679,6 +724,14 @@ Hot Memory（Redis）：当前活跃会话，TTL 1 小时
 Warm Memory（PostgreSQL）：30 天内的会话，可查
     ↓ 过期
 Cold Memory（对象存储）：归档，长期保留
+```
+
+**Memory 分层**：
+
+```mermaid
+flowchart TD
+    HOT["Hot Memory(Redis)<br/>当前活跃会话, TTL 1 小时"] -->|"不活跃"| WARM["Warm Memory(PostgreSQL)<br/>30 天内会话, 可查"]
+    WARM -->|"过期"| COLD["Cold Memory(对象存储)<br/>归档, 长期保留"]
 ```
 
 ### 13.2 ChatMemory JDBC 持久化
@@ -797,6 +850,17 @@ public class ImplicitFeedbackTracker {
 1. **构造评估集**：DISLIKE 的 case 加入评估集做回归。
 2. **Few-shot 优化**：LIKE 的 case 加入 prompt 的 few-shot。
 3. **模型微调**：（高级）收集 pair（差答案 → 好答案）做 RLHF。
+
+**反馈管道**：
+
+```mermaid
+flowchart TD
+    EX["显式反馈<br/>LIKE / DISLIKE / REPORT / REWRITE"] --> FB["FeedbackEvent<br/>FeedbackController → Kafka"]
+    IM["隐式反馈<br/>复制 / 重新生成 / 停留时间"] --> FB
+    FB --> T1["构造评估集<br/>DISLIKE 加入回归"]
+    FB --> T2["Few-shot 优化<br/>LIKE 加入 prompt"]
+    FB --> T3["模型微调<br/>pair 做 RLHF"]
+```
 
 ---
 

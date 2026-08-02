@@ -50,6 +50,30 @@
 8. 返回给用户
 ```
 
+**核心时序**：上面是流程图视角，下面用时序图展示同一协议的三方往返——"LLM 决策 → 框架反射执行 → 结果回填 → 再次推理"：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as LangChain4j<br/>Agent
+    participant L as LLM
+    participant T as Java Tool 方法
+
+    U->>A: user query（"现在几点？"）
+    Note over A: 加载已注册的 Tool 列表<br/>（@Tool 描述 + 参数 JSON Schema）
+    A->>L: user query + Tool 描述
+    alt LLM 决定调用 Tool
+        L-->>A: 返回 tool_calls JSON<br/>{"name":"getCurrentTime","arguments":"{}"}
+        A->>T: 反射执行 getCurrentTime()
+        T-->>A: 返回值序列化成 Observation
+        A->>L: 把 Observation 回填给 LLM
+        L-->>A: 看到 Observation，生成最终回复
+    else LLM 决定不调用
+        L-->>A: 直接返回文本答案
+    end
+    A-->>U: 返回最终回复
+```
+
 ### 2.2 关键认知
 
 **LLM 不直接执行你的 Java 代码**。它只是输出"我想调 X 工具，参数是 Y"的 JSON，由 Java 端反射执行后把结果回传。这就是为什么叫 **Function "Calling"** 而非 "Execution"。
@@ -200,6 +224,32 @@ LLM 推理：
   Final Answer: 张三在 5 楼 A 区 03 工位
 ```
 
+**串联调用时序**：时序图视角展示 LLM 如何"想一步、调一步"，把两个工具串起来完成任务：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as LangChain4j<br/>Agent
+    participant L as LLM
+    participant T1 as queryEmployee 工具
+    participant T2 as queryWorkstation 工具
+
+    U->>A: 张三工位在几楼？
+    A->>L: user query + 两个 Tool 描述
+    Note over L: Thought：先查张三的工号
+    L->>A: 调用 queryEmployee<br/>{"name":"张三"}
+    A->>T1: 反射执行 queryEmployee("张三")
+    T1-->>A: {"id":"10086","name":"张三","dept":"研发"}
+    A->>L: 把 Observation 回填
+    Note over L: Thought：用 10086 查工位
+    L->>A: 调用 queryWorkstation<br/>{"employeeId":"10086"}
+    A->>T2: 反射执行 queryWorkstation("10086")
+    T2-->>A: 5 楼 A 区 03 工位
+    A->>L: 把 Observation 回填
+    L-->>A: 生成最终回复
+    A-->>U: 张三在 5 楼 A 区 03 工位
+```
+
 **这就是 Agent 的本质** —— LLM 自主决策、串联多个工具完成任务。
 
 ---
@@ -293,6 +343,28 @@ LLM 收到 Observation: "Tool execution failed: Connection refused"
 ```
 
 LLM 会自己决定：重试？换工具？告知用户？
+
+**异常处理决策**：
+
+```mermaid
+flowchart TD
+    E["Tool 抛异常<br/>Connection refused"]
+    C["LangChain4j 捕获异常"]
+    O["转成 Observation<br/>Tool execution failed: Connection refused"]
+    F["把 Observation 喂回 LLM"]
+    D{"LLM 自己决策"}
+    R["重试"]
+    S["换一个 Tool"]
+    I["告知用户"]
+
+    E --> C
+    C --> O
+    O --> F
+    F --> D
+    D -->|"重试"| R
+    D -->|"换工具"| S
+    D -->|"告知用户"| I
+```
 
 ### 8.2 生产实践
 

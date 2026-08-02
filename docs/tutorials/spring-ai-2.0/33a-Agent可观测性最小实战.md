@@ -25,6 +25,20 @@
 
 > 每步的固定结构：**① 这步解决什么问题 → ② 改/加什么代码 → ③ 跑起来你会看到 → （需要时）④ 内部怎么流转**。
 
+**8 步演进路线**（每步引入一个新概念，始终在「跑得起来的代码」上前进）：
+
+```mermaid
+flowchart LR
+    S1[Step1<br/>项目骨架+WebFlux] --> S2[Step2<br/>ChatClient 最小闭环]
+    S2 --> S3[Step3<br/>流式 stream 逐字]
+    S3 --> S4[Step4<br/>工具 @Tool]
+    S4 --> S5[Step5<br/>Observation 打开黑盒]
+    S5 --> S6[Step6<br/>事件总线+SSE]
+    S6 --> S7[Step7<br/>会话隔离 ContextPropagation]
+    S7 --> S8[Step8<br/>多轮记忆 ChatMemory]
+    S8 --> DONE[记得上文、能自主调工具、<br/>全过程实时可见的 demo07]
+```
+
 ---
 
 ## Step 1：项目骨架——先跑起来（不接 LLM）
@@ -464,6 +478,32 @@ curl -N "http://localhost:8080/demo07/obs/chat?prompt=现在几点了"
 这里要做一个**架构决策**：为什么要拆成「`/chat` 触发 + `/sse` 订阅」两个接口，而不是一个？
 
 > 因为一次请求里有**两种事件**要观测：工具调用（ToolObservationHandler 发）和 LLM 流式正文（Controller 里的流）。两者来自不同地方，需要一个**公共总线**汇合，再用一个 `/sse` 接口订阅。如果只用 Step 3 那种「`/chat` 直接返回 Flux」，工具事件就没地方塞进去了。
+
+**双接口 + 就绪握手时序**：
+
+```mermaid
+sequenceDiagram
+    participant FE as 前端/页面
+    participant SSE as /demo07/obs/sse
+    participant BUS as AgentEventBus 总线
+    participant H as ToolObservationHandler
+    participant CH as /demo07/obs/chat
+    FE->>SSE: fetch /sse (header sessionId=s1)
+    SSE->>BUS: bus.flux(s1) 订阅总线
+    BUS-->>SSE: 订阅就绪
+    SSE-->>FE: startWith(READY) 先发 READY 帧
+    Note over FE,CH: 前端收到 READY 才触发 /chat(消除竞态, 防漏 SESSION_STARTED)
+    FE->>CH: GET /chat?prompt=... (header sessionId=s1)
+    CH->>BUS: agent.run().subscribe() 异步触发
+    CH-->>FE: 返回 sessionId
+    CH->>BUS: emit SESSION_STARTED
+    CH->>BUS: emit CONTENT_DELTA (逐字正文)
+    H->>BUS: emit TOOL_CALL (工具返回值, 实时到达)
+    BUS-->>SSE: filter(sessionId=s1) 过滤后下发
+    SSE-->>FE: data: TOOL_CALL / CONTENT_DELTA ...
+    BUS-->>SSE: SESSION_COMPLETED
+    SSE-->>FE: takeUntil(SESSION_COMPLETED) 结束流
+```
 
 **② 代码**
 
@@ -959,6 +999,27 @@ Hooks.enableAutomaticContextPropagation() + 已注册的 accessor
    ↓ 框架自动：离开时 clear（防线程池复用串会话）
 ToolObservationHandler.onStop: AppContextKeys.SESSION_ID.get() → 读到 s1
    ↓ TOOL_CALL 带上 s1
+```
+
+**时序图**（sessionId 从 Controller 一路传到工具线程）：
+
+```mermaid
+sequenceDiagram
+    participant CTRL as ObsController
+    participant CTX as Reactor Context
+    participant AG as ObservableAgent.run
+    participant LLM as ChatClient.stream
+    participant T as boundedElastic 工具线程
+    participant H as ToolObservationHandler
+    CTRL->>CTX: contextWrite(sessionId=s1) 写入 Reactor Context
+    CTX->>AG: deferContextual 读出 s1(不 set ThreadLocal)
+    AG->>LLM: ChatClient.stream() 调用, LLM 决定调工具
+    LLM->>T: 工具执行切到 boundedElastic 线程
+    Note over CTX,T: Hooks.enableAutomaticContextPropagation()<br/>+ 已注册 accessor: 自动把 Context 的 sessionId 灌入工具线程 ThreadLocal
+    T->>H: onStop(ToolCallingObservationContext)
+    H->>H: AppContextKeys.SESSION_ID.get() 读到 s1
+    Note over H: emit TOOL_CALL(sessionId=s1), 不再 unknown
+    Note over T: 离开时框架自动 clear, 防线程池复用串会话
 ```
 
 > **这套封装解决了什么**（企业级 vs 裸 SessionIdHolder）：

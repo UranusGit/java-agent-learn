@@ -47,6 +47,27 @@
 - **双写**：JSONL 落对象存储 + DB 索引（用于查询）；
 - **批量写入**：用队列减少 IO 次数。
 
+**双写架构**：
+
+```mermaid
+flowchart LR
+    subgraph RUN[运行期]
+        WS["WS 消息到达<br/>doOnNext 取最后一条消息"]
+        SVC["SessionService"]
+    end
+    subgraph STORE[存储双写]
+        DB[("PostgreSQL<br/>messages 索引（查询用）")]
+        Q["写队列<br/>每 1s 批量 flush"]
+        S3[("S3 对象存储<br/>main.jsonl 全量历史")]
+    end
+
+    WS -->|"appendMessage"| SVC
+    SVC -->|"双写 ① DB 索引"| DB
+    SVC -->|"双写 ② JSONL"| Q
+    Q -->|"定时 flush"| S3
+    SVC -->|"loadHistory<br/>loadLinearChain 优先读 JSONL"| S3
+```
+
 ---
 
 ## 3. 存储路径设计
@@ -63,6 +84,30 @@ S3 bucket:
         sidecar/
           index.json            ← 偏移量索引（uuid → byte offset）
           counters.json         ← 统计计数
+```
+
+**存储目录树**：
+
+```mermaid
+flowchart TD
+    B["web-claude bucket"]
+    S["sessions/"]
+    T["{tenant_id}/"]
+    SS["{session_id}/"]
+    MAIN["main.jsonl<br/>消息流 append-only"]
+    META["meta.json<br/>session 元数据"]
+    COMP["compactions/"]
+    CID["{compact_id}.jsonl<br/>压缩快照"]
+    SIDE["sidecar/"]
+    IDX["index.json<br/>uuid → byte offset"]
+    CNT["counters.json<br/>统计计数"]
+
+    B --> S --> T --> SS
+    SS --> MAIN
+    SS --> META
+    SS --> COMP --> CID
+    SS --> SIDE --> IDX
+    SIDE --> CNT
 ```
 
 ---
@@ -183,6 +228,28 @@ public class JsonlSessionStore {
 }
 ```
 
+**写入与读取流程**：
+
+```mermaid
+flowchart TD
+    subgraph WRITE[写入侧]
+        APP["append(tenantId, sessionId, m)<br/>入写队列"]
+        FL["flush(tenantId, sessionId)<br/>@Scheduled 每 1s"]
+        COL["收集队列 batch"]
+        RD["读现有 main.jsonl"]
+        APD["追加新消息为 JSON 行"]
+        UP["putObject 上传回 S3"]
+    end
+    subgraph READ[读取侧]
+        LA["loadAll<br/>逐行反序列化"]
+        LC["loadLinearChain<br/>从尾部按 parentUuid 反向回溯"]
+    end
+
+    APP --> FL --> COL --> RD --> APD --> UP
+    LA --> LC
+    LC -->|"得到线性链"| HIST["恢复对话历史"]
+```
+
 ---
 
 ## 5. Compact Boundary
@@ -241,6 +308,21 @@ public class CompactBoundary {
         return parts;
     }
 }
+```
+
+**DAG 与 Compact Boundary**：
+
+```mermaid
+flowchart TD
+    A["消息 A<br/>parentUuid = null"] --> B["消息 B<br/>parentUuid = A"]
+    B --> C["消息 C<br/>parentUuid = B"]
+    B -.-> F["fork 分支<br/>parentUuid = B<br/>（重试 / fork）"]
+    C --> S1["compact_start<br/>boundary 标记"]
+    S1 --> SUM["summary 消息<br/>前 N 条压缩"]
+    SUM --> S2["compact_end<br/>boundary 标记"]
+    S2 --> D["消息 D<br/>parentUuid = compact_end"]
+    D -->|"loadLinearChain 反向回溯"| CH["线性链"]
+    CH -->|"splitByBoundary<br/>按 boundary 切段"| SEG["前后段不可拼接"]
 ```
 
 ---

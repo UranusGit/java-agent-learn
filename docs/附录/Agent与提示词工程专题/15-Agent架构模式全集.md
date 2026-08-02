@@ -24,6 +24,15 @@
 
 > 这正好对应 [11 的决策树](./11-Agent系统设计决策框架.md)：**动态 → 单 Agent；固定 → Workflow；复杂到单 Agent 扛不住 → 多 Agent**。
 
+**三层结构总览**：
+
+```mermaid
+flowchart TD
+    Q["问题来了"] --> S1["单个 LLM 搞定<br/>单 Agent 模式<br/>ReAct / Plan-Execute / Reflexion / Self-Consistency / ToT"]
+    Q --> S2["流程固定、可预测<br/>Workflow 模式<br/>串联 / 路由 / 并行 / 编排者 / 评估者"]
+    Q --> S3["需要多个角色协作<br/>多 Agent 模式<br/>层级 / 平级 / 辩论 / 黑板 / 动态"]
+```
+
 ---
 
 ## 2. 单 Agent 模式（5 个）
@@ -153,6 +162,25 @@ Planner: 拆成 N 步 → Executor: 逐步执行 → Replanner: 看结果决定�
 ```
 
 > **选型口诀**：**能单次就不循环，能 Workflow 就不 Agent，能单 Agent 就不多 Agent，能用简单模式就别上复杂模式。**
+
+**选型决策**：
+
+```mermaid
+flowchart TD
+    Q{"任务流程可预测吗？"}
+    Q -->|"是 → Workflow"| WF{"按依赖关系选"}
+    WF -->|"串行依赖"| W1["串联"]
+    WF -->|"输入要分类"| W2["路由"]
+    WF -->|"子任务独立"| W3["并行"]
+    WF -->|"能拆成多 Worker"| W4["编排者-工人"]
+    WF -->|"有评估标准可迭代"| W5["评估者-优化者"]
+    Q -->|"否 → 单 Agent"| SA{"按任务特点选"}
+    SA -->|"短任务"| S1["ReAct（或直接单次调用）"]
+    SA -->|"长任务"| S2["Plan-and-Execute"]
+    SA -->|"高可靠离线"| S3["Reflexion"]
+    SA -->|"有标准答案"| S4["Self-Consistency"]
+    SA -.单 Agent 扛不住？先问"为什么".-> MA["多 Agent<br/>层级 / 平级 / 辩论 / 黑板 / 动态"]
+```
 
 ---
 

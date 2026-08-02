@@ -16,6 +16,15 @@
 七本柱：容量 / 变更 / 行为 / 成本 / 模型漂移 / 安全 / Runbook
 ```
 
+**七本柱构成**：
+
+```mermaid
+flowchart LR
+    T["传统 SRE 四本柱<br/>容量 / 变更 / 预算 / Runbook"] --> S["合并"]
+    L["LLM 特有<br/>行为 / 成本 / 模型漂移"] --> S
+    S --> P["七本柱<br/>容量 / 变更 / 行为 / 成本 / 模型漂移 / 安全 / Runbook"]
+```
+
 ---
 
 ## 1. SLO 与 SLI
@@ -97,6 +106,17 @@ public class LlmGateway {
 }
 ```
 
+**三道闸门**：
+
+```mermaid
+flowchart TD
+    A["请求调用 call(Prompt)"] --> B{"BudgetGuard 日预算<br/>budget.allow()?"}
+    B -- "否" --> C["抛出 BudgetExhausted<br/>(拒绝请求)"]
+    B -- "是" --> D["RateLimiter 限流<br/>(QPS 上限)"]
+    D --> E["Bulkhead 舱壁<br/>(并发上限)"]
+    E --> F["调用上游 LLM client.prompt(p)"]
+```
+
 ### 2.4 弹性扩缩容
 
 - **应用层**：K8s HPA 按 QPS / 并发数扩。
@@ -125,6 +145,15 @@ PR 提交
 [门 2：影子流量]   线上 1% 流量双跑（老 prompt + 新 prompt），人工 spot check
   ↓
 [门 3：渐进发布]   10% → 50% → 100%，每阶段观察 SLO
+```
+
+**Prompt 变更三道门**：
+
+```mermaid
+flowchart TD
+    A["PR 提交"] --> G1["门 1：离线 eval<br/>跑 eval 集，对比 baseline，要求不退步"]
+    G1 --> G2["门 2：影子流量<br/>线上 1% 流量双跑(老 prompt + 新 prompt)，人工 spot check"]
+    G2 --> G3["门 3：渐进发布<br/>10% → 50% → 100%，每阶段观察 SLO"]
 ```
 
 ### 3.3 模型升级的回归测试
@@ -272,6 +301,18 @@ if kl > 0.1:
   ├── 自动回滚 prompt 版本（如果当天有变更）
   ├── 上游模型 fallback 到旧版本
   └── 触发复盘：是新行为还是 bug？
+```
+
+**漂移响应**：
+
+```mermaid
+flowchart TD
+    A["检测到漂移"] --> B{"当天是否有 prompt 变更?"}
+    B -- "是" --> C["自动回滚 prompt 版本"]
+    B -- "否" --> D["不涉及 prompt 回滚"]
+    C --> E["上游模型 fallback 到旧版本"]
+    D --> E
+    E --> F["触发复盘：是新行为还是 bug?"]
 ```
 
 ---

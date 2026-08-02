@@ -56,6 +56,25 @@
 
 ### 2.1 架构（人在回路）
 
+**整体架构**：
+
+```mermaid
+flowchart TD
+    U["用户申请贷款"] --> C["收集材料<br/>身份证 / 收入证明 / 征信报告 / 用途说明"]
+    C --> R{"规则引擎<br/>硬规则(黑名单 / 年龄 / 收入)"}
+    R -->|"命中硬规则"| REJ["直接拒绝"]
+    R -->|"未命中"| SC["评分卡<br/>XGBoost 信用分(主决策)"]
+    SC --> AG["LLM Agent 三类辅助任务"]
+    AG --> T1["材料审核<br/>识别造假 / 缺漏"]
+    AG --> T2["风险解释<br/>评分卡结果翻译成人话"]
+    AG --> T3["异常预警<br/>评分卡未捕获的可疑模式"]
+    SC --> OFF["信贷员 review<br/>人工最终决策(合规必须)"]
+    T1 --> OFF
+    T2 --> OFF
+    T3 --> OFF
+    OFF --> AUD["审计留痕(保留 5-10 年)"]
+```
+
 ```
 用户申请贷款
     ↓
@@ -169,6 +188,27 @@ public List<String> anomalyHints(LoanApplication app) {
 ### 3.2 实时反欺诈（毫秒级）
 
 LLM 调用慢（秒级），**不能放在主链路**。架构：
+
+**主链路与异步分析**：
+
+```mermaid
+flowchart TD
+    TX["交易请求"] -->|"< 100ms"| RE["规则引擎<br/>阻断明显欺诈"]
+    RE -->|"< 500ms"| ML["ML 模型<br/>风险分(XGBoost / GNN)"]
+    ML --> DEC{"决策"}
+    DEC -->|"放行"| OK["放行"]
+    DEC -->|"拦截"| BL["拦截"]
+    DEC -->|"挑战"| CH["挑战(短信验证)"]
+    OK --> LLM
+    BL --> LLM
+    CH --> LLM
+    subgraph OFF["异步事后分析(秒级, 不在主链路)"]
+        LLM["LLM Agent"]
+        LLM --> A1["解释为什么拦截<br/>(用户申诉时用)"]
+        LLM --> A2["关联团伙<br/>(每日 batch)"]
+        LLM --> A3["发现新模式<br/>(每周 spot check)"]
+    end
+```
 
 ```
 交易请求
@@ -328,6 +368,17 @@ public class PiiMasker {
 ```
 
 更严谨的方案：用 NER 模型识别 PII 实体。
+
+**数据进 prompt 的脱敏与留痕流水线**：
+
+```mermaid
+flowchart LR
+    RAW["原始 PII 数据<br/>身份证 / 手机号 / 银行卡 / 邮箱"] --> MASK["PII 脱敏<br/>正则替换或 NER 识别实体"]
+    MASK --> FIELD["LLM 只拿到区间化 / 哈希化字段<br/>(如 user_id / 收入区间化)"]
+    FIELD --> PROMPT["构造 Prompt"]
+    PROMPT --> LLM["LLM 调用"]
+    LLM --> AUDIT["审计日志留痕<br/>prompt_hash + 输出 + 人工决策<br/>保留 5-10 年(银保监要求)"]
+```
 
 ### 5.2 字段级权限
 

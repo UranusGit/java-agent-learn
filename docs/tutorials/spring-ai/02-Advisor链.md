@@ -325,6 +325,16 @@ public class SensitiveWordAdvisor implements CallAdvisor, StreamAdvisor {
 
 **核心**：不调用 `chain.nextCall()` 就能中断整个链。
 
+**决策流程**：
+
+```mermaid
+flowchart TD
+    req["用户消息"] --> check{"包含敏感词?<br/>密码 / 身份证 / 银行卡"}
+    check -->|"是"| reject["直接返回拒绝响应<br/>不调用 chain.nextCall()<br/>中断整个链"]
+    check -->|"否"| next["chain.nextCall(req)<br/>继续走链"]
+    next --> llm["调用 LLM"]
+```
+
 > 📌 上面的 `ChatResponse.builder()` 和 `ChatClientResponse.builder()` 是 1.0.0 新增的 Builder API。`ChatResponse` 仍然支持 `new ChatResponse(List<Generation>)` 构造，二选一即可。
 
 ---
@@ -369,6 +379,16 @@ ChatClient chatClient(ChatClient.Builder builder, VectorStore vectorStore) {
 3. 把片段塞进 prompt（默认追加到 user message 或 system message）
 4. 让 LLM 基于增强后的 prompt 回答
 
+**处理流程**：
+
+```mermaid
+flowchart TD
+    q["用户 query"] --> ret["用 ContentRetriever 检索<br/>top-K 相关片段"]
+    vs["VectorStore"] --> ret
+    ret --> stuff["把片段塞进 prompt<br/>（追加到 user message 或 system message）"]
+    stuff --> llm["LLM 基于增强后的 prompt 回答"]
+```
+
 **对比 LangChain4j**：
 - LangChain4j：`.contentRetriever(retriever)` + `RetrievalAugmentor`
 - Spring AI：`.defaultAdvisors(RetrievalAugmentationAdvisor.builder()...)`
@@ -397,6 +417,18 @@ ChatClient chatClient(ChatClient.Builder builder, VectorStore vectorStore) {
 执行流：
 ```
 A.before → B.before → C.before → LLM → C.after → B.after → A.after
+```
+
+**调用顺序**：
+
+```mermaid
+flowchart TD
+    A["A（order=-100）敏感词"] -->|"before：order 升序"| B["B（order=0）日志"]
+    B -->|"before：order 升序"| C["C（order=100）Memory"]
+    C --> LLM["调用 LLM"]
+    LLM -->|"after：order 降序"| CA["C.after"]
+    CA --> BA["B.after"]
+    BA --> AA["A.after"]
 ```
 
 ### 8.4 推荐顺序约定

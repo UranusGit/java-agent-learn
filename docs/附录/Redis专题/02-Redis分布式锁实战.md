@@ -81,6 +81,26 @@ T5: 实例C 抢到锁，现在 A 和 C 都以为自己是持有者 → 灾难
 
 **所以释放前必须确认"这把锁确实是我的"**。owner（通常用实例ID/UUID）就是干这个的。
 
+**误删时序（为什么必须检查 owner）**：
+
+```mermaid
+sequenceDiagram
+    participant A as 实例A
+    participant R as Redis（锁）
+    participant B as 实例B
+    participant C as 实例C
+
+    Note over A,R: T1 实例A 抢到锁（EX 30s）
+    A->>R: SET lock "instance-A" NX EX 30
+    Note over A: T2 实例A 业务卡住，超过 30s，锁自动过期
+    B->>R: SETNX 成功 → 实例B 抢到锁（新的 30s）
+    Note over A,R: T3 实例B 抢到锁
+    Note over A,R: T4 实例A 终于缓过来，执行 DEL
+    A->>R: DEL lock（把实例B 的锁删了！）
+    C->>R: SETNX 成功 → 实例C 抢到锁
+    Note over A,C: T5 现在 A 和 C 都以为自己是持有者 → 灾难
+```
+
 ---
 
 ## 第 3 章：SETNX 的致命缺陷——释放不是原子的
@@ -96,6 +116,20 @@ T5: 实例C 抢到锁，现在 A 和 C 都以为自己是持有者 → 灾难
 ```
 
 虽然概率低，但在高并发下真实存在。
+
+**GET-then-DEL 竞态**：
+
+```mermaid
+sequenceDiagram
+    participant A as 实例A
+    participant R as Redis
+    participant B as 实例B
+
+    A->>R: GET lock → "instance-A"（确认是自己的）
+    Note over R: 此时锁恰好过期
+    B->>R: SETNX 成功（实例B 抢到锁）
+    A->>R: DEL lock（把实例B 的锁删了！）
+```
 
 ### 3.2 用 Lua 脚本让"判断+删除"原子化
 
@@ -138,6 +172,25 @@ public Mono<Boolean> unlockSafe(String lockKey, String owner) {
 - 业务跑完主动释放，或实例崩溃后看门狗也死了，锁 30s 后自动过期。
 
 这样业务跑多久都不怕过期，崩溃了也能自动释放。
+
+**看门狗自动续期机制**：
+
+```mermaid
+sequenceDiagram
+    participant Biz as 业务线程
+    participant WD as 看门狗后台线程
+    participant R as Redis（锁）
+
+    Biz->>R: 抢锁成功（默认过期 30s）
+    loop 业务运行中，每隔 1/3 过期时间（10s）
+        WD->>R: 锁还被我持有？是 → 续期到 30s
+    end
+    alt 业务跑完
+        Biz->>R: 主动 unlock() 释放
+    else 实例崩溃
+        Note over WD,R: 看门狗也随之死去<br/>锁 30s 后自动过期释放
+    end
+```
 
 ### 4.3 Redisson 用法
 
@@ -204,6 +257,24 @@ T6: 数据库检查：100 < 101（当前记录），拒绝写入！
 ```
 
 **核心**：存储层（数据库/Redis）拒绝"旧 token"的写。这样即使锁持有者拿着过期的锁，存储层也能挡住它的陈旧写入。
+
+**fencing token 拦截陈旧写入**：
+
+```mermaid
+sequenceDiagram
+    participant A as 实例A（token=100）
+    participant B as 实例B（token=101）
+    participant DB as 存储层（数据库/Redis）
+
+    Note over A,DB: T1 实例A 抢到锁，token=100
+    Note over A: T2 实例A GC 停顿（STW 冻结）
+    Note over B,DB: T3 锁过期，实例B 抢到锁，token=101
+    B->>DB: 写数据，附 token=101
+    Note over DB: 记录"已见最大 token=101"
+    Note over A: T5 实例A 醒来，继续写数据
+    A->>DB: 写数据，附 token=100
+    DB-->>A: 校验 100 < 101 → 拒绝写入！
+```
 
 ### 5.3 Redisson 支持吗
 

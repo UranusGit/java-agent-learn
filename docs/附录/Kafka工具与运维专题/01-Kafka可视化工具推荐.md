@@ -51,6 +51,28 @@
 | **Confluent Control Center** | Web（企业） | 精致商务深蓝 | 吞吐量、延迟实时监控仪表盘 | 企业 Confluent Platform 用户 | ⭐⭐⭐ 中等 | 需付费 License |
 | **IntelliJ 的 Kafka 插件** | IDE 插件 | 与 IDE 完全统一 | 侧边栏直接浏览 Topic/消息/消费组 | 用 JetBrains 系 IDE 的开发者 | ⭐ 最简单 | 免费 |
 
+**13 个工具按类型分组**：
+
+```mermaid
+flowchart TD
+    TOOLS["Kafka 可视化工具（13 个）"] --> WEB["Web 面板"]
+    TOOLS --> DESK["桌面应用"]
+    TOOLS --> IDE["IDE 插件"]
+    WEB --> W1["Redpanda Console<br/>颜值天花板"]
+    WEB --> W2["Kafka UI<br/>功能最全 · Apache 2.0"]
+    WEB --> W3["Kafdrop<br/>最轻量"]
+    WEB --> W4["AKHQ"]
+    WEB --> W5["kafka-map<br/>中文"]
+    WEB --> W6["kafka-console-ui<br/>中文"]
+    WEB --> W7["Confluent Control Center<br/>企业付费"]
+    DESK --> D1["Conduktor<br/>桌面 + Web"]
+    DESK --> D2["Offset Explorer<br/>功能最全"]
+    DESK --> D3["Kafka-King<br/>中文"]
+    DESK --> D4["KafkaLens<br/>收费"]
+    DESK --> D5["Kafka Assistant<br/>中文"]
+    IDE --> I1["IntelliJ Kafka 插件"]
+```
+
 ---
 
 ## 怎么选
@@ -96,6 +118,22 @@
 ### 场景六：要 100% 纯开源、零商业顾虑
 
 选 **Kafka UI** 或 **Kafdrop**——都是 Apache 2.0 许可证，个人/商用都免费。
+
+**怎么选——按场景对号入座**：
+
+```mermaid
+flowchart TD
+    Q{"你的使用场景？"} -->|"本地调试 / 开发排障"| S1["Web 面板"]
+    S1 --> S1A["首选 Kafka UI"]
+    S1 --> S1B["要更漂亮：Redpanda Console"]
+    S1 --> S1C["只瞄一眼：Kafdrop"]
+    Q -->|"生产运维 / 团队"| S2["Kafka UI（开源首选）"]
+    S2 --> S2A["企业级：Conduktor 付费版<br/>或 Confluent Control Center"]
+    Q -->|"学习入门"| S3["Redpanda Console（一条命令）<br/>或 Kafka UI"]
+    Q -->|"桌面党"| S4["Conduktor 桌面版 / Kafka-King / Offset Explorer"]
+    Q -->|"必须要中文"| S5["kafka-map（Web）<br/>Kafka-King / Kafka Assistant（桌面）"]
+    Q -->|"100% 纯开源"| S6["Kafka UI 或 Kafdrop<br/>（Apache 2.0）"]
+```
 
 ---
 
@@ -733,6 +771,20 @@ docker compose ps
 - `PLAINTEXT_HOST://0.0.0.0:9092` → 映射到**宿主机**，给宿主机上的工具/程序连。
 
 **解决**：容器内的工具填 `kafka:29092`（或 `kafka1:29092,kafka2:29092`），宿主机上的工具填 `localhost:9092`。多 broker 集群时，**每个 broker 地址都不能是 `localhost`**，否则 metadata 里返回的地址工具连不上。
+
+**谁连哪个端口**：
+
+```mermaid
+flowchart TD
+    subgraph HOST["宿主机"]
+        HC["本地程序 / 终端"] -->|"localhost:9092<br/>PLAINTEXT_HOST"| H9092["9092"]
+    end
+    subgraph NET["Docker 网络"]
+        CC["容器内工具（Conduktor 等）"] -->|"kafka:29092<br/>PLAINTEXT"| C29092["29092"]
+    end
+    H9092 --> K["Kafka 容器"]
+    C29092 --> K
+```
 
 ---
 

@@ -59,6 +59,20 @@ public class OrderTools {
 
 > 关键认知：**对 Agent 而言，MCP 工具和本地 `@Tool` 没有区别**——它看到的是同样的"工具名 + 描述 + 参数"。MCP 只是让这些工具可以来自"别处"。
 
+**调用流程**（协议核心就两步：发现 + 调用）：
+
+```mermaid
+sequenceDiagram
+    participant C as MCP Client<br/>（你的 Spring AI 应用）
+    participant S as MCP Server<br/>（工具服务的提供方）
+    Note over C,S: 传输走 stdio 或 HTTP
+    C->>S: ① listTools（发现有哪些工具）
+    S-->>C: 工具清单：getOrder / searchX + 描述 + 参数
+    C->>S: ② callTool getOrder(orderId)
+    S-->>C: 工具结果
+    Note over C: Agent 循环拿到结果，回传给模型
+```
+
 ### 2.1 MCP 工具在模型眼里长什么样（本质也是"提示词"）
 
 MCP Client 把 Server 的 `listTools` 结果转成模型能读的格式——这段"工具描述"就是 MCP 场景下的提示词：
@@ -83,6 +97,17 @@ MCP Client 把 Server 的 `listTools` 结果转成模型能读的格式——这
 | 做公司级"工具资产"：一处实现，多个 Agent 复用 | **MCP Server** |
 
 > 一句话：**先直接写 `@Tool`，等"工具要出进程了"（共享 / 跨语言 / 独立部署）再上 MCP。** 别为了用 MCP 而用 MCP。
+
+**选型决策**：
+
+```mermaid
+flowchart TD
+    Q{"工具要不要出进程？"}
+    Q -->|"工具就在自己应用里<br/>不共享、不跨语言"| A["直接 @Tool<br/>最省事"]
+    Q -->|"要给别的团队 / 产品 / 外部 Agent 用"| B["MCP Server<br/>暴露出来就能用"]
+    Q -->|"工具是别的团队维护的<br/>你已经调不动代码"| C["用 MCP Client<br/>接它的 Server"]
+    Q -->|"做公司级工具资产<br/>一处实现，多个 Agent 复用"| D["MCP Server"]
+```
 
 ---
 

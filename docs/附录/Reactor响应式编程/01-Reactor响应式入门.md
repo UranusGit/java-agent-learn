@@ -118,6 +118,23 @@ u.subscribe(user -> System.out.println(user)); // ② 这里才真正开始执�
 
 > **铁律**：一个 `Mono`/`Flux` 如果**没人 subscribe 它，它就永远不会执行**。这是初学者最常踩的坑——辛辛苦苦写了一串 `.map().flatMap()`，发现"没生效"，因为忘了 subscribe（或忘了 return 让框架去 subscribe）。
 
+**核心时序**：
+
+```mermaid
+sequenceDiagram
+    participant Dev as 业务代码
+    participant Mono as Mono 菜谱（还没查库）
+    participant DB as 数据库
+    Dev->>Mono: ① findByIdReactive(1)<br/>只声明一个"将来要查库"的描述
+    Note over Dev,Mono: 构建流几乎不耗时，线程立刻返回去干别的
+    Dev->>Mono: ② subscribe(...) 此时才开始执行
+    activate Mono
+    Mono->>DB: 发起查询（线程不等 I/O 完成）
+    DB-->>Mono: 结果通过回调通知
+    Mono-->>Dev: onNext(user) 继续处理
+    deactivate Mono
+```
+
 ---
 
 ## 第 3 章：写法对比——把命令式脑子切换过来
@@ -178,6 +195,17 @@ orderDao.findById(id)
 - 里面写的是 `x -> 某个异步操作（返回 Mono/Flux）` → 用 `flatMap`
 
 > 更多操作符（filter、doOnNext、onErrorResume……）见 [Flux方法速查](./02-Flux方法速查.md)，那篇有 73 个方法的逐个示例。
+
+**选型决策**：
+
+```mermaid
+flowchart TD
+    A["数据进来"] --> B{"箭头函数返回什么?"}
+    B -->|"普通值 T -> R"| C["map<br/>同步、一对一"]
+    B -->|"另一个 Mono 或 Flux"| D["flatMap<br/>异步、一对多（展开）"]
+    E["在 map 里调用返回 Mono 的方法"] --> F["Mono 嵌套 Mono，错误写法"]
+    F -.->|"应改用"| D
+```
 
 ---
 
@@ -295,6 +323,16 @@ Reactor 在 Future 基础上，把"异步 + 流式 + 背压 + 可组合"做完�
 
 > **Reactor = 异步 + 流式 + 可组合 + 背压的完整方案。** 它是 Java 响应式流规范（Reactive Streams）的实现，WebFlux 建立在它之上。
 
+**演进路线**：
+
+```mermaid
+timeline
+    title Java 异步编程演进：从回调到响应式
+    第一代 回调 Callback : Callback Hell 层层嵌套 : 错误处理与顺序控制极痛苦
+    第二代 Future : CompletableFuture 链式调用 : 多值、背压、取消、流式支持弱
+    第三代 Reactor : 异步 + 流式 + 可组合 + 背压 : WebFlux 建立在它之上
+```
+
 ---
 
 ## 第 6 章：常见坑（初学者必看）
@@ -356,6 +394,17 @@ return userDao.findByIdReactive(id)
 3. **要做事件总线/广播** → [Reactor Sinks入门](./03-Reactor-Sinks入门.md)——从外部塞数据进响应式世界。
 4. **遇到快生产慢消费/OOM** → [Reactor背压详解](./04-Reactor背压详解.md)。
 5. **遇到具体问题** → 回来查操作符速查表。
+
+**学习路线**：
+
+```mermaid
+flowchart LR
+    A["1. 先吃透本篇<br/>菜谱不是结果 / 永不 block / subscribe 才执行"] --> B["2. Flux 方法速查<br/>熟悉常用操作符"]
+    B --> C["3. 要做事件总线 / 广播<br/>读 Reactor Sinks 入门"]
+    B --> D["4. 遇到快生产慢消费 / OOM<br/>读 Reactor 背压详解"]
+    C --> E["5. 遇到具体问题<br/>回来查操作符速查表"]
+    D --> E
+```
 
 ---
 

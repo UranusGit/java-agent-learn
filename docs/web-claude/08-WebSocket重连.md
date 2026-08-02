@@ -52,6 +52,37 @@
 - 服务端把每个 seq 对应的 state 落地（DB 索引 + JSONL）；
 - 前端重连时带上 `last_seq`，服务端重放 `seq > last_seq` 的所有 state。
 
+**整体机制**：
+
+```mermaid
+flowchart TD
+    subgraph FE_SIDE[前端]
+        SW["SessionWS<br/>lastSeq 记录"]
+        LS["localStorage<br/>持久化 last_seq"]
+    end
+
+    subgraph BE_SIDE[服务端]
+        ALLOC["SessionSeqAllocator<br/>Redis INCR 分配 seq"]
+        HND["SessionWebSocketHandler"]
+        REPLAY["重放 seq > last_seq"]
+    end
+
+    subgraph STORE[存储]
+        RD[("Redis<br/>seq:sessionId")]
+        DB[("PostgreSQL<br/>messages.seq 索引")]
+    end
+
+    HND -->|"分配单调递增 seq"| ALLOC
+    ALLOC --> RD
+    HND -->|"state 落地 DB + JSONL"| DB
+    HND -->|"推送 state(seq)"| SW
+    SW -->|"每次收到更新"| LS
+    SW -->|"连接带上 last_seq"| HND
+    HND -->|"重连时查询"| REPLAY
+    REPLAY --> DB
+    REPLAY -->|"逐条重放"| SW
+```
+
 ---
 
 ## 3. 后端：Seq 落地
@@ -204,6 +235,19 @@ export class SessionWS {
 }
 ```
 
+**连接状态机**：
+
+```mermaid
+stateDiagram-v2
+    [*] --> CONNECTING: new WebSocket 带上 last_seq
+    CONNECTING --> OPEN: onopen 连接成功<br/>重连次数清零
+    OPEN --> CLOSING: onerror 触发 ws.close
+    CLOSING --> CLOSED: 连接关闭
+    OPEN --> CLOSED: 网络抖动、iOS 后台冻结、服务端重启
+    CLOSED --> CONNECTING: 指数退避重连<br/>delay=1000×2^n 上限 30000
+    CLOSED --> [*]: 页面关闭
+```
+
 ### 5.2 状态持久化
 
 ```typescript
@@ -229,6 +273,28 @@ const loadSeq = (sessionId: string): number => {
 2. 在对话过程中关掉 Wi-Fi（或用 Chrome DevTools 的 "Offline"）；
 3. 等几秒，重新联网；
 4. 浏览器自动重连，从断点继续。
+
+**重连时序**：
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant FE as 前端 SessionWS
+    participant BE as 服务端 Handler
+    participant DB as PostgreSQL messages
+
+    User->>FE: 打开浏览器开始对话
+    FE->>BE: WebSocket 连接 session_id + last_seq
+    BE-->>FE: 实时推送 state(seq)
+    User->>FE: 断网(拔网线 / DevTools Offline)
+    Note over FE: onclose 触发<br/>指数退避等待重连
+    User->>FE: 等几秒后重新联网
+    FE->>BE: 自动重连 session_id + last_seq
+    BE->>DB: 查询 seq > last_seq
+    DB-->>BE: 断网期间错过的消息
+    BE-->>FE: 重放 missed states
+    FE-->>User: 从断点继续对话
+```
 
 **检查点 08-1**：断网期间发的消息，重连后能恢复。
 

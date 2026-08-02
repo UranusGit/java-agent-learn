@@ -47,6 +47,20 @@ agent：我需要确认几点：
 agent：明白了。开始。
 ```
 
+**单向 vs 收敛**：
+
+```mermaid
+flowchart TD
+    subgraph WRONG["错误（单向）"]
+        direction TB
+        W1["用户：做个 todo app"] --> W2["agent：闷头做了 5 分钟，方向错了"] --> W3["agent：完成了！"] --> W4["用户：这不是我要的"]
+    end
+    subgraph RIGHT["正确（收敛）"]
+        direction TB
+        R1["用户：做个 todo app"] --> R2["agent：确认技术栈 / 存储 / 用户系统"] --> R3["用户：React + 后端 + 登录"] --> R4["agent：明白了。开始。"]
+    end
+```
+
 ### 0.2 设计目标
 
 | 目标 | 实现 |
@@ -374,6 +388,30 @@ private void executeNextTool(List<ToolUse> uses, int idx, State state, FluxSink<
 }
 ```
 
+**AskUser 挂起-恢复时序**：question 作为一个特殊 end_turn 挂起，答完注入 tool_result 继续。
+
+```mermaid
+sequenceDiagram
+    participant AL as Agent Loop
+    participant AU as AskUserTool
+    participant QB as QuestionBus
+    participant DBT as pending_questions 表
+    participant FE as 前端 QuestionCard
+    participant US as 用户
+    AL->>AU: 调用 AskUser 工具
+    AU->>QB: persist(q)
+    QB->>DBT: 保存 pending question
+    QB->>FE: emit decision/requested<br/>推送 QuestionCard
+    FE->>US: 展示问题（5 种 kind）
+    US->>FE: 提交答案
+    FE->>QB: submitAnswer(qid, answer)
+    QB->>DBT: markAnswered + 持久化答案
+    QB-->>AU: future.complete(answer)
+    QB->>FE: emit decision/made
+    AU-->>AL: ToolResult（用户回答内容）
+    AL->>AL: 注入 tool_result<br/>继续后续工具执行
+```
+
 ### 4.2 进程重启后的恢复
 
 如果服务在 question 挂起时崩溃：
@@ -643,6 +681,20 @@ agent 没设 defaultDecision：
 if (ctx.isTaskMode() && defaultDecision == null) {
     return ToolResult.error("长程任务必须配置 defaultDecision");
 }
+```
+
+**超时降级流程**：
+
+```mermaid
+flowchart TD
+    ST(("AskUser 挂起")) --> T{"timeoutSec 内<br/>用户是否回答?"}
+    T -->|"是"| A["收到用户答案<br/>继续执行"]
+    T -->|"超时"| D{"是否配置了<br/>defaultDecision?"}
+    D -->|"是"| D1["Answer.defaulted<br/>采用默认答案继续"]
+    D -->|"否"| D2["Answer.timeout<br/>agent 决定：换方案 / 求助 / 用合理默认"]
+    A --> EN(("结束"))
+    D1 --> EN
+    D2 --> EN
 ```
 
 ---

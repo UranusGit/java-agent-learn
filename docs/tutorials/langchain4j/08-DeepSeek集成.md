@@ -175,6 +175,17 @@ ChatModel bigModel = OpenAiChatModel.builder()
 // 详见第 6 节
 ```
 
+**成本控制路径**：
+
+```mermaid
+flowchart TD
+    A["每次调用<br/>TokenUsage 打印用量"] --> B{"如何降低成本?"}
+    B -->|"铁律1"| C["控制 prompt 长度<br/>maxMessages(10) 而非 100"]
+    B -->|"铁律2"| D["用便宜模型做简单事<br/>maxOutputTokens(50) 短输出"]
+    B -->|"铁律3"| E["实现缓存<br/>相同 prompt 直接返回"]
+    B -->|"兜底"| F["设 ¥10 预算告警<br/>每天看用量"]
+```
+
 ### 4.3 预算告警
 
 DeepSeek 后台可设置余额告警。**学习期建议**：
@@ -330,6 +341,20 @@ RetryConfig config = RetryConfig.custom()
 | Embedding 向量化 | LM Studio（免费，调用量大） |
 | 完全离线场景 | LM Studio |
 
+**选型决策**：
+
+```mermaid
+flowchart TD
+    Q{"场景?"} -->|"学习新概念/跑 Demo"| DS["DeepSeek"]
+    Q -->|"评估生产效果"| DS
+    Q -->|"Function Calling 测试"| DS
+    Q -->|"长上下文任务"| DS
+    Q -->|"写测试用例"| DS
+    Q -->|"处理隐私数据"| LMS["LM Studio"]
+    Q -->|"Embedding 向量化（调用量大）"| LMS
+    Q -->|"完全离线场景"| LMS
+```
+
 ### 8.1 推荐组合：DeepSeek Chat + LM Studio Embedding
 
 这是本教程系列的默认组合，性价比最高：
@@ -360,6 +385,17 @@ class AiConfig {
                 .build();
     }
 }
+```
+
+**推荐组合架构**：
+
+```mermaid
+flowchart TD
+    App["应用（@Autowired ChatModel / EmbeddingModel）"] --> Config["AiConfig 双 @Bean"]
+    Config --> CM["ChatModel<br/>DeepSeek 远端<br/>api.deepseek.com"]
+    Config --> EM["EmbeddingModel<br/>LM Studio 本地<br/>127.0.0.1:1234"]
+    CM --> DS["deepseek-chat<br/>对话/生成"]
+    EM --> LB["text-embedding-bge-large-zh-v1.5<br/>向量化"]
 ```
 
 ### 8.2 可选：完全本地（不依赖 DeepSeek）
@@ -399,6 +435,14 @@ ChatModel reasoner = OpenAiChatModel.builder()
 | 成本 | 低 | 高 4-8 倍 |
 | 推理质量 | 一般 | 强 |
 | 适合 | 日常对话 | 数学、逻辑、代码 |
+
+**模型选择**：
+
+```mermaid
+flowchart TD
+    Q{"任务类型?"} -->|"日常对话 / Tool 调用"| C["deepseek-chat<br/>快、便宜"]
+    Q -->|"数学 / 逻辑 / 复杂业务决策 / 深度代码评审"| R["deepseek-reasoner<br/>显式思考，慢 5-10 倍，贵 4-8 倍"]
+```
 
 ### 9.2 使用建议
 

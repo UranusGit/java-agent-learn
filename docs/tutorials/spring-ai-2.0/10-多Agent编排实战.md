@@ -25,6 +25,19 @@
     └── 监督模式（Supervisor）
 ```
 
+**认知地图（Mermaid 版）**：
+
+```mermaid
+flowchart TD
+    SA["单 Agent<br/>一个 ChatClient + N 个 Tool"]
+    SA -->|"工具数量爆炸(10+) · prompt 太长 · 上下文炸"| WALL["能力边界"]
+    WALL --> MA["多 Agent<br/>按职责拆分，互相协作"]
+    MA --> R1["路由模式 Router"]
+    MA --> P1["管道模式 Pipeline"]
+    MA --> C1["协作模式 Collaborator"]
+    MA --> S1["监督模式 Supervisor"]
+```
+
 ---
 
 ## 1. 什么时候需要多 Agent
@@ -113,6 +126,19 @@ Supervisor 是大脑，动态分配任务给 Worker，收集结果再决策下�
 **适用**：复杂任务（如多源数据采集 + 综合）。
 
 **陷阱**：Supervisor 自己也是 LLM，可能做出离谱决策。
+
+**Supervisor 模式（Mermaid 版）**：
+
+```mermaid
+flowchart TD
+    SUP["Supervisor<br/>大脑 · 动态分配任务"] --> W1["Worker 1"]
+    SUP --> W2["Worker 2"]
+    SUP --> W3["Worker 3"]
+    W1 -->|"结果"| SUP
+    W2 -->|"结果"| SUP
+    W3 -->|"结果"| SUP
+    SUP -->|"收集结果后决策下一步"| NEXT["下一步"]
+```
 
 ---
 
@@ -486,6 +512,22 @@ System.out.println(mermaid);
                               END
 ```
 
+**报告生成 Pipeline（Mermaid 版）**：
+
+```mermaid
+flowchart TD
+    ST(("START")) --> OUT["outliner<br/>生成章节大纲 JSON"]
+    OUT --> WR["writer<br/>写第 current_chapter 章"]
+    WR --> D{"所有章节写完?<br/>all_chapters_done"}
+    D -->|"未完成"| WR
+    D -->|"完成"| RV["reviewer<br/>审稿 pass? / 失败次数"]
+    RV --> P{"pass 或<br/>iteration >= 3?"}
+    P -->|"否"| RS["writer_reset<br/>重置 current_chapter + 清空章节"]
+    RS --> WR
+    P -->|"是"| FM["formatter<br/>Markdown 输出"]
+    FM --> EN(("END"))
+```
+
 ### 4.2 完整代码
 
 ```java
@@ -783,6 +825,16 @@ EdgeAction afterSafeNode = state -> {
 阶段 4：Pipeline 模式
         ↓ 需要反馈循环
 阶段 5：Collaborator / Supervisor 模式
+```
+
+**渐进式升级路径（Mermaid 版）**：
+
+```mermaid
+flowchart LR
+    S1["阶段 1<br/>单 Agent + 5 个 Tool"] -->|"工具膨胀到 15"| S2["阶段 2<br/>单 Agent + ToolSearch<br/>自动检索相关工具"]
+    S2 -->|"领域分明仍不够"| S3["阶段 3<br/>Router 模式 · 3 个领域 Agent"]
+    S3 -->|"流程复杂需多步"| S4["阶段 4<br/>Pipeline 模式"]
+    S4 -->|"需要反馈循环"| S5["阶段 5<br/>Collaborator / Supervisor 模式"]
 ```
 
 ### 6.2 不要一上来就上多 Agent

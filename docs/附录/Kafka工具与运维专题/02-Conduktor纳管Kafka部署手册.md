@@ -40,6 +40,19 @@
 
 所以当 Conduktor 容器去连 `localhost:9092` 时，它在**自己肚子里**找 9092，自然找不到 → `Connection refused`。`127.0.0.1` 是 `localhost` 的 IP 写法，同理一样不通。
 
+**为什么 `localhost` 在容器里不通**：
+
+```mermaid
+flowchart TD
+    K["Kafka 容器<br/>9092 映射到宿主机"]
+    subgraph HOST["宿主机"]
+        HC["宿主机代码 / 终端"] -->|"localhost:9092 ✅ 能连到 Kafka"| K
+    end
+    subgraph CD["Conduktor 容器（隔离的小房间）"]
+        CC["localhost:9092 ❌"] -->|"指向容器自己"| CDI["容器内部<br/>没有 Kafka"]
+    end
+```
+
 ### 结论：容器之间连 Kafka，可靠的方式只有一种
 
 | 方式 | 地址 | 前提 |
@@ -69,6 +82,22 @@
 | `29092`（PLAINTEXT） | **容器之间**（Conduktor、容器化的业务服务） | `kafka:29092` |
 
 **两条路用哪种，取决于代码跑在哪：宿主机代码 → `localhost:9092`；容器代码 → `kafka:29092`。** 互不干扰。**这也是后续第 9 章代码能直连的关键。**
+
+**双 listener，各管一边**：
+
+```mermaid
+flowchart LR
+    subgraph HOST["宿主机"]
+        H1["宿主机代码 / 终端<br/>Spring Boot、java -jar"]
+    end
+    subgraph NET["Docker 网络 kafka-net"]
+        K["Kafka<br/>9092（PLAINTEXT_HOST）<br/>29092（PLAINTEXT）<br/>9999（JMX）"]
+        C["Conduktor 等容器"]
+    end
+    H1 -- "9092<br/>advertised localhost:9092" --> K
+    C -- "29092<br/>advertised kafka:29092" --> K
+    C -- "9999 JMX 监控" --> K
+```
 
 > ⚠️ 这条约定务必守住：`9092` 的 advertised 是 `localhost`，所以**只有宿主机本地的客户端能用 9092**；任何容器里的客户端（Conduktor、以后容器化的业务服务）都必须走 `kafka:29092`，否则连上后会被回传 `localhost` 而断开。
 
@@ -444,6 +473,22 @@ docker exec conduktor-console nc -vz kafka 29092
 | **Monitoring** | 吞吐量、broker 图表（需配 JMX，见第 5 章） | 监控 |
 
 只要 **Topics** 里能看到你 Kafka 的 topic，就说明 **Kafka 已被 Conduktor 成功纳管** ✅
+
+**纳管操作流程**：
+
+```mermaid
+flowchart TD
+    P1["预检：两容器都在 kafka-net？<br/>docker exec conduktor-console nc -vz kafka 29092"] --> P2["浏览器打开 http://localhost:38080"]
+    P2 --> P3["登录 admin / admin"]
+    P3 --> P4["激活 Community Edition<br/>填邮箱拿免费 license key"]
+    P4 --> P5["Clusters → + Add a cluster<br/>选择 Apache Kafka"]
+    P5 --> P6["Bootstrap Servers 填 kafka:29092<br/>Protocol: PLAINTEXT"]
+    P6 --> P7["Test connection"]
+    P7 -->|"绿色 Connected"| P8["Save / Create"]
+    P7 -->|"红色 Connection refused"| P9["回到预检排查<br/>（第 6.1 节）"]
+    P8 --> P10["刷新页面（F5）<br/>避免缺 clusterId 报错"]
+    P10 --> P11["点进 Local Kafka 卡片<br/>验证 Topics / Messages / Consumer Groups"]
+```
 
 ### 4.5 纳管之后能做什么（常用操作速览）
 
@@ -997,6 +1042,20 @@ networks:
 - Kafka 宿主机侧用 `localhost:9092`（业务服务直连），容器侧用 `kafka:29092`（Conduktor 纳管）
 - Conduktor 复用本地 Postgres，用独立的 `conduktor` 库，数据挂载到指定目录
 - 任一容器单独停启，不影响另一个
+
+**架构总览（Mermaid 版）**：
+
+```mermaid
+flowchart TD
+    subgraph NET["Docker 网络 kafka-net（external，共享）"]
+        K["Kafka 容器<br/>9092 对外 · 29092 容器间 · 9999 JMX"]
+        C["Conduktor Console 容器<br/>38080 Web UI"]
+        C -->|"kafka:29092 纳管"| K
+        C -->|"9999 JMX 监控"| K
+    end
+    BIZ["业务服务 / 终端（宿主机）"] -->|"localhost:9092"| K
+    C -->|"host.docker.internal:5432"| PG["本地 PostgreSQL<br/>conduktor 库（独立）"]
+```
 
 ---
 

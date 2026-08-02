@@ -53,6 +53,20 @@ git tag v1.0-baseline
 
 ## 2. 升级步骤
 
+**升级路线**：
+
+```mermaid
+flowchart TD
+    s1["Step 1 pom.xml<br/>Spring Boot 3.5.10 → 4.0.x<br/>Spring AI 1.0.0 → 2.0.0"]
+    s2["Step 2 Jackson 2 → 3"]
+    s3["Step 3 JSpecify null-safety"]
+    s4["Step 4 Tool Calling<br/>手写 AgentLoop → ToolCallingAdvisor"]
+    s5["Step 5 结构化输出<br/>BeanOutputConverter → ValidationAdvisor"]
+    s6["Step 6 MCP 接入"]
+    s1 --> s2 --> s3 --> s4 --> s5 --> s6
+    s6 --> reg["回归测试"]
+```
+
 ### 2.1 Step 1：pom.xml 依赖升级
 
 ```xml
@@ -147,6 +161,29 @@ String result = client.prompt().user(question).call().content();
 ```
 
 **关键变化**：你的阶段 4 自研 `AgentLoop` **可以删除**，或保留为"终止条件 + 预算控制"的薄壳。
+
+**ToolCallingAdvisor 自动迭代**：
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant CC as ChatClient
+    participant Adv as ToolCallingAdvisor
+    participant LLM
+    participant Tool as Tool Bean
+    App->>CC: client.prompt().user(question).call()
+    CC->>Adv: 递归迭代开始（自动注册，无需声明）
+    Adv->>LLM: 请求（含工具定义）
+    LLM-->>Adv: 返回 toolCall
+    alt 还有工具调用
+        Adv->>Tool: 执行 myToolBean
+        Tool-->>Adv: 结果塞回上下文
+        Adv->>LLM: 再次请求
+    else 无工具调用（收敛）
+        Adv-->>CC: 返回最终结果
+        CC-->>App: content()
+    end
+```
 
 ### 2.5 Step 5：结构化输出迁移
 

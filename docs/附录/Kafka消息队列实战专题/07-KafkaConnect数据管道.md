@@ -81,6 +81,24 @@
 | **Converter** | 序列化/反序列化插件 | 把 Connect 内部数据模型（带 schema）和 Kafka 里的 bytes 互转（JSON/AVRO） |
 | **Schema** | 数据类型的描述 | Connect 内部每条记录都带 schema（`Schema` 接口），converter 靠它决定怎么序列化 |
 
+**架构总览（Mermaid 版）**：六个角色如何协作把数据搬进/搬出 Kafka：
+
+```mermaid
+flowchart TD
+    subgraph Cluster["Kafka Connect 集群（多个 worker）"]
+        SW["Worker：Source Task<br/>poll() 读源数据"]
+        SK["Worker：Sink Task<br/>put() 写目标"]
+        CV["Converter：Connect 对象 ↔ Kafka bytes<br/>Schema 描述数据类型"]
+    end
+    Src["数据源：DB / 文件 / HTTP / NoSQL"] -->|"Source：搬进 Kafka"| SW
+    SW -->|"SourceRecord（带 schema）序列化"| CV
+    CV -->|"bytes"| Kafka["Kafka"]
+    Kafka -->|"bytes"| CV
+    CV -->|"SinkRecord 反序列化"| SK
+    SK -->|"Sink：搬出 Kafka"| Tgt["目标：ES / DB / 文件"]
+    Rest["REST API<br/>http://worker:8083<br/>注册/管理 connector"] -.->|"配置与状态"| Cluster
+```
+
 另外还有个**隐藏角色 SMT**（Single Message Transform，单消息转换）：在 Source/Sink 的 task 和 converter 之间**改写每条消息**（比如 Debezium 那篇的 `ExtractNewRecordState` 把 `after` 字段抽出来）。它不是本篇重点，但你在配 Debezium connector 时见过它（[Debezium-CDC 专题](../Debezium-CDC实战/README.md) 第 4 章）。
 
 ### 1.3 Source vs Sink
@@ -298,6 +316,14 @@ cat /tmp/output.txt                       # ▼ 链路全通：文件 → Kafka 
 ```
 
 > **验证点**：一条 `echo` 触发 源文件 → Kafka → 目标文件 的完整闭环，这就是 Source + Sink 拼接成的一条数据管道。
+
+**Source + Sink 拼成的管道**：文件 → Kafka → 文件，一条 `echo` 全链路流动：
+
+```mermaid
+flowchart LR
+    F["/tmp/input.txt<br/>源文件"] -->|"FileStreamSourceConnector<br/>持续读新行（不重启）"| K["Kafka topic<br/>demo-file-lines"]
+    K -->|"FileStreamSinkConnector"| O["/tmp/output.txt<br/>目标文件"]
+```
 
 ### 2.5 JDBC connector（异构源的典型）
 
@@ -610,6 +636,20 @@ public class FileLineSourceTask extends SourceTask {
 > - **kafka***：指向 **Kafka 本身**——`SourceRecord` 构造时 kafka 分区可空，由框架分配；`SinkRecord` 里 `kafkaPartition()`/`kafkaOffset()` 是这条消息在 Kafka 里的真实位置。
 >
 > **规律**：`sourcePartition` 必须是**稳定不变**的（同一个文件永远同一个分区键），`sourceOffset` 每次发一条要**前进**一点——这样重启才能精确续传。这也是第 6 章幂等的根基。
+
+**两套 offset 各管各的**：`source*` 指向外部源做断点续传，`kafka*` 指向 Kafka 本身：
+
+```mermaid
+flowchart TD
+    subgraph SourceRec["SourceRecord（Source 端数据载体）"]
+        SP["sourcePartition：数据来自哪条流<br/>文件路径 / 表名 / 分片号"]
+        SO["sourceOffset：源头的断点<br/>行号 / 自增 id / binlog 位点"]
+        TP["topic / kafkaPartition<br/>写进 Kafka 哪个分区"]
+    end
+    SP -->|"存进"| CO["connect-offsets<br/>用于断点续传：重启接着读"]
+    SO --> CO
+    TP -->|"框架分配分区"| Kafka["Kafka 分区<br/>kafkaOffset = 消息真实位置<br/>（Sink 去重的幂等键）"]
+```
 
 ### 3.5 打包成插件 + 注册 + 验证
 
@@ -1155,6 +1195,17 @@ echo 'not-json' | bin/kafka-console-producer.sh --bootstrap-server localhost:909
 bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic demo-connect-dlq --from-beginning
 ```
 
+**错误容忍分支**：`errors.tolerance` 决定坏消息是进 DLQ 还是让管道停摆：
+
+```mermaid
+flowchart TD
+    K["Kafka"] -->|"坏消息 not-json"| Sink["SinkTask.put()"]
+    Sink --> Check{"处理成功?"}
+    Check -->|"成功"| OK["写入目标系统"]
+    Check -->|"失败 + errors.tolerance=all"| DLQ["死信 topic demo-connect-dlq<br/>context.errantRecordReporter().report"]
+    Check -->|"失败 + errors.tolerance=none（默认）"| Stop["任务失败 / 重试<br/>管道停摆"]
+```
+
 ### 6.3 多 worker 扩展（distributed 模式）
 
 生产用 **distributed** 模式：多个 worker 组成集群，connector/task 自动分配、worker 挂掉自动迁移（rebalance）。
@@ -1202,6 +1253,21 @@ curl http://localhost:8083/connectors/my-file-source/status
 ```
 
 > **扩不扩得动，取决于你的 connector 怎么拆 task**。这也是第 3、4 章 `taskConfigs(maxTasks)` 方法的含金量所在——**写 connector 时就在设计并行度**：单一文件只有一个读指针，拆了也白拆；数据库按主键范围分片、Kafka 按分区分配，才是能真正水平扩展的 source/sink。
+
+**distributed 集群形态**：多个 worker 通过三个内部 topic 在 Kafka 里协调，REST 查看状态：
+
+```mermaid
+flowchart TD
+    subgraph Cluster["distributed 集群<br/>group.id=connect-cluster"]
+        W1["Worker 1"]
+        W2["Worker 2"]
+        W3["Worker 3"]
+    end
+    W1 -->|"读写三个内部 topic"| Kafka["Kafka<br/>connect-configs / connect-offsets / connect-status"]
+    W2 --> Kafka
+    W3 --> Kafka
+    Rest["REST API :8083"] -.->|"GET /connectors/[name]/status<br/>看任务落在哪个 worker / 健康与否"| Cluster
+```
 
 ### 6.4 生产检查清单
 

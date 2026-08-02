@@ -368,6 +368,19 @@ public class BillingConsumer {
 }
 ```
 
+**重试 + 死信链路**：
+
+```mermaid
+flowchart TD
+    A(("orders topic 消息")) --> B["@RetryableTopic(attempts=4)<br/>@KafkaListener 处理"]
+    B --> D{"处理成功?"}
+    D -->|"成功"| E["消费完成<br/>提交 offset"]
+    D -->|"失败"| R["自动建重试 topic<br/>SUFFIX_WITH_INDEX_VALUE<br/>重试 3 次"]
+    R --> B
+    R -->|"重试耗尽"| F["进入死信 topic orders-dlt"]
+    F --> G["@DltHandler 兜底<br/>记录异常 / 落库告警 / 人工补偿"]
+```
+
 > **直接 Kafka 的重试/死信就是这一套**：`@RetryableTopic`（自动建重试 topic）+ `@DltHandler`（死信兜底）。相比 Stream 的死信，这里是**注解驱动、零配置绑定**，更贴近 Kafka 本体。
 
 ### 2.7 可观测性（Observability）——别在线上瞎猜
@@ -434,6 +447,22 @@ management:
 **举例**：
 - `KStream<userId, ClickEvent>`：用户每次点击都是一条。点了 10 次有 10 条。
 - `KTable<userId, Balance>`：用户余额。改了 10 次只有最新那 1 条（状态）。
+
+**KStream vs KTable 的对比**：
+
+```mermaid
+flowchart LR
+    subgraph KS["KStream 事件流"]
+        direction LR
+        A1["点击1"] --> A2["点击2"] --> A3["点击3"]
+        A3 --> A4["一条条独立事件<br/>点了 10 次有 10 条"]
+    end
+    subgraph KT["KTable 状态表"]
+        direction LR
+        B1["余额100"] --> B2["余额70"] --> B3["余额50"]
+        B3 --> B4["同 key 新消息覆盖旧消息<br/>只留最新 1 条状态"]
+    end
+```
 
 ### 3.3 第一个 Kafka Streams 程序：词频统计
 
@@ -610,6 +639,19 @@ public class WordCountProcessor {
     │ ③ count（每组计数）
     ▼
 KTable（状态表）：{hello: 2, world: 1}   ← 输出，存在本地 state store
+```
+
+**三步合起来的流水线**：
+
+```mermaid
+flowchart TD
+    A["输入流 text-input<br/>'hello world hello'"] --> B["① flatMapValues 拆词<br/>一条消息变多条单词消息"]
+    B --> C["单词流<br/>hello / world / hello"]
+    C --> D["② groupBy 按单词分组<br/>单词设为 key"]
+    D --> E["分组<br/>{hello:[hello,hello], world:[world]}"]
+    E --> F["③ count 每组计数<br/>Materialized.as('word-counts')"]
+    F --> G["KTable 状态表<br/>{hello:2, world:1}<br/>存本地 state store"]
+    G --> H["toStream().to()<br/>写回 word-counts-output"]
 ```
 
 **两个新手必须懂的新东西**：
@@ -825,6 +867,16 @@ public class OrderConsumer {
 }
 ```
 
+**官方推荐模式的结构**：
+
+```mermaid
+flowchart TD
+    A["Kafka 消费线程<br/>@KafkaListener 阻塞拉取到消息"] --> B["Mono.fromRunnable(...)<br/>.subscribeOn(Schedulers.boundedElastic())"]
+    B --> C["boundedElastic 弹性线程池<br/>执行慢 IO(DB / 外部 API)"]
+    B -.-> D["消费线程立刻空闲<br/>回到 poll 拉取下一条"]
+    C -.->|"异步处理完成"| E["可选项: doOnSuccess 里<br/>ack.acknowledge() 再提交 offset"]
+```
+
 **核心思想**：Kafka 消费者用阻塞 listener（`@KafkaListener` 原生方式），**处理逻辑**里如果要用响应式（如调多个响应式服务、想控制并发），用 `Schedulers.boundedElastic()` 把它隔离出去，**Kafka 消费线程只负责"取消息 + 派发"**，很快回到拉取下一条。
 
 > **给你的结论**：
@@ -948,6 +1000,22 @@ kafkaTemplate.send("orders", order.getId(), new OrderCreated(order).toJson());
 正向：CreateOrder → InventoryReserved → PaymentCharged → PointsAdded
          ↑           ↓ 失败                ↓ 失败          ↓ 失败
 补偿：OrderCancelled ← InventoryReleased ← PaymentRefunded ← (无)
+```
+
+**Saga 的正向与补偿**：
+
+```mermaid
+flowchart TD
+    subgraph FWD["正向 Saga(每步本地事务 + 发事件)"]
+        direction LR
+        A["CreateOrder<br/>订单服务"] --> B["InventoryReserved<br/>库存服务"] --> C["PaymentCharged<br/>支付服务"] --> D["PointsAdded<br/>积分服务"]
+    end
+    BC["OrderCancelled<br/>订单服务回滚"]
+    B -->|"失败"| BC
+    C -->|"失败"| CC["PaymentRefunded<br/>支付服务退款"]
+    CC --> CC2["InventoryReleased<br/>库存服务还回库存"]
+    CC2 --> BC
+    D -->|"失败"| DC["无补偿"]
 ```
 
 每步：

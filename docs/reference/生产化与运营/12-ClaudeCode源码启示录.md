@@ -58,6 +58,25 @@ public class AgentLoop {
 }
 ```
 
+**循环终止判定**：每轮先检查硬终止条件再调 LLM，无 `tool_use` 即自然结束。
+
+```mermaid
+flowchart TD
+    Start(("Agent Loop 开始")) --> T1{"turnCount > maxTurns?"}
+    T1 -->|"是"| E1(("终止: maxTurns"))
+    T1 -->|"否"| T2{"costUsd > budgetUsd?"}
+    T2 -->|"是"| E2(("终止: 美元预算超限"))
+    T2 -->|"否"| T3{"transitionReason<br/>连续重复出现?"}
+    T3 -->|"是"| E3(("终止: 死循环检测"))
+    T3 -->|"否"| T4{"用户中断 / error / blocking_limit?"}
+    T4 -->|"是"| E4(("终止"))
+    T4 -->|"否"| LLM["调 ChatClient<br/>执行工具调用"]
+    LLM --> HAS{"返回 tool_use?"}
+    HAS -->|"否"| E5(("自然结束"))
+    HAS -->|"是"| UPD["更新 State<br/>turnCount / transitionReason"]
+    UPD --> T1
+```
+
 **关键点**：`transitionReason` 字段比简单的 `retryCount++` 安全得多——它知道"为什么重试"，能识别"重复犯同一个错"。
 
 ### 1.2 工具错误返回 `ToolResult.error()`，不 throw（ch39）
@@ -84,6 +103,16 @@ public ToolResult executeShell(@ToolParam("cmd") String cmd) {
 ```
 
 **这条不学，Agent 跑两步就崩**。
+
+**错误处理对比**：同一工具失败，两种策略走向截然不同。
+
+```mermaid
+flowchart TD
+    A["工具执行异常"] --> B{"处理策略"}
+    B -->|"throw RuntimeException"| BAD["Agent 崩溃<br/>无法自我修复"]
+    B -->|"返回 ToolResult.error()"| GOOD["LLM 看到 stdout/stderr/exitCode<br/>自主决定: 重试 / 换工具 / 放弃"]
+    GOOD --> NEXT["Agent 继续运行"]
+```
 
 ### 1.3 Anthropic 5 大 Workflow 模式（已在阶段 4 计划里）
 
@@ -137,6 +166,19 @@ public ToolResult executeShell(String cmd) {
 }
 ```
 
+**四道防线**：Shell 命令依次经过元字符拒绝、危险前缀降级、超时、输出三段式四层把关。
+
+```mermaid
+flowchart TD
+    A["Agent 提交 Shell 命令"] --> B{"含危险元字符?<br/>(如分号/管道/重定向/命令替换)"}
+    B -->|"是"| B1["拒绝: forbidden metachar"]
+    B -->|"否"| C{"危险前缀?<br/>(python/node/npx/bash/.../sudo)"}
+    C -->|"是"| C1["降级: 询问用户(needsApproval)"]
+    C -->|"否"| D{"120s 内未完成?"}
+    D -->|"是"| D1["destroyForcibly 超时终止"]
+    D -->|"否"| E["输出三段式<br/>100K 截断 / 超大落盘 / 非零退出码语义"]
+```
+
 ### 1.5 静态/动态边界：Prompt Cache 优化（ch10-11）
 
 **问题**：Spring AI 默认每次请求重新构造 system prompt + tool 列表，**Prompt Cache 命中率低**——Anthropic Prompt Cache 命中是 10 倍成本差异。
@@ -150,6 +192,23 @@ public ToolResult executeShell(String cmd) {
 - 工具列表按名字稳定排序，作为连续前缀
 
 **这条省下的钱，比你优化 prompt 收益大得多**。
+
+**静态/动态边界**：静态前缀打 cache 标记跨请求缓存，动态后缀每请求变化；依赖运行时状态的部分必须放在边界后。
+
+```mermaid
+flowchart LR
+    subgraph ST["静态前缀(跨请求稳定)"]
+        S1["基础指令"]
+        S2["工具说明(按名稳定排序)"]
+    end
+    subgraph DY["动态后缀(每请求变化)"]
+        D1["用户身份"]
+        D2["当前任务"]
+    end
+    ST -->|"打 cache_control 标记, 前缀稳定可缓存"| BND{{"静态/动态边界"}}
+    BND -->|"每请求变化, 不打标记"| DY
+    BND -.->|"命中缓存 0.1x 计费"| PC["Prompt Cache"]
+```
 
 ---
 
@@ -181,6 +240,20 @@ public ToolResult executeShell(String cmd) {
 
 **Java 实现**：用 Resilience4j `CircuitBreaker` 包裹压缩逻辑；9 段摘要 prompt 用结构化模板（Primary Request / Files / Errors / Pending Tasks / Current Work...）。
 
+**触发链**：按上下文占用渐进式压力响应，并配断路器与递归防护。
+
+```mermaid
+flowchart TD
+    P1["上下文占用 ~85%"] --> W["警告"]
+    W --> P2["~90% 自动压缩<br/>结构化记忆文件 / LLM 生成 9 段摘要"]
+    P2 --> P3["~95% 错误"]
+    P3 --> P4["~99% 阻塞"]
+    P2 --> CB{"压缩连续失败 3 次?"}
+    CB -->|"是"| CB1["断路器打开<br/>停止压缩(防烧钱)"]
+    P2 --> REC{"querySource = compact?"}
+    REC -->|"是"| REC1["递归防护<br/>压缩本身不再触发压缩"]
+```
+
 ### 2.4 权限四级模型（ch20-22）
 
 - **Allow / Ask / Deny / Yolo** 四级
@@ -192,6 +265,23 @@ public ToolResult executeShell(String cmd) {
 1. `.env / .git / application.yml / 权限配置`的 bypass-immune 检查
 2. Deny 优先的权限管线（`ToolCallingAdvisor` 拦截）
 3. 操作审计日志（所有 prompt 落库）
+
+**四级决策**：按权限规则路由，Deny 优先，且对权限配置文件不可绕过。
+
+```mermaid
+flowchart TD
+    REQ["Agent 请求工具调用"] --> RULE{"权限规则"}
+    RULE -->|"Deny"| D["拒绝执行"]
+    RULE -->|"Ask"| ASK["弹窗询问用户"]
+    ASK -->|"同意"| GO["执行"]
+    ASK -->|"拒绝"| D
+    RULE -->|"Allow"| GO
+    RULE -->|"Yolo"| Y["跳过所有 Ask(仅本地开发)"]
+    Y --> GO
+    PROT{"目标为 .git / .env / 权限配置文件?"} -->|"是"| FORCE["强制 ASK<br/>bypass 模式也不可绕过"]
+    FORCE -->|"同意"| GO
+    FORCE -->|"拒绝"| D
+```
 
 ### 2.5 后台任务 + Cron Jitter（ch27，Java 强项）
 

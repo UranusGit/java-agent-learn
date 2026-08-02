@@ -42,6 +42,25 @@
 | 5. Rerank & Filter | 重排、去噪、去重 | 第 6 章 |
 | 6. Augmentation & Generation | 拼 prompt + 引用溯源 + 生成 | 第 1 章初识、第 7 章深入 |
 
+**RAG 系统流水线**：
+
+```mermaid
+flowchart LR
+    subgraph offline["离线阶段"]
+        DOC["原始文档"] --> ING["1. Ingestion<br/>切分文档 + 加 metadata"]
+        ING --> EMB["2. Embedding<br/>文本转向量"]
+        EMB --> VS[("向量库<br/>PgVector")]
+    end
+    subgraph online["在线问答"]
+        Q["用户 Query"] --> QP["3. Query Processing<br/>改写 / 扩展 / 路由"]
+        QP --> RT["4. Retrieval<br/>向量 + BM25 + 元数据过滤"]
+        RT --> RF["5. Rerank & Filter<br/>重排 / 去噪 / 去重"]
+        RF --> AG["6. Augmentation & Generation<br/>拼 prompt + 引用溯源"]
+        AG --> LLM["LLM 回答"]
+    end
+    VS --> RT
+```
+
 ---
 
 ## 第 1 章 一键跑通：5 分钟问 PDF 一个问题
@@ -230,6 +249,24 @@ public class RagController {
     }
     // ... /ingest 和 /ask 同上
 }
+```
+
+**第 1 章调用流程**：
+
+```mermaid
+flowchart TD
+    subgraph ING["摄入 /ingest"]
+        PDF["PDF 文件"] --> RD["PagePdfDocumentReader<br/>按页读取"]
+        RD --> SP["TokenTextSplitter<br/>固定 token 切分"]
+        SP --> ADD["vectorStore.add()<br/>向量化 + 入库"]
+        ADD --> MEM[("SimpleVectorStore<br/>内存向量库")]
+    end
+    subgraph ASK["问答 /ask"]
+        Q["用户问题"] --> QA["QuestionAnswerAdvisor<br/>检索 + 拼 prompt 一步到位"]
+        QA <-->|"检索 + 召回 chunks"| MEM
+        QA --> LM["LLM"]
+        LM --> ANS["answer"]
+    end
 ```
 
 ### 1.3 验证
@@ -705,6 +742,25 @@ public class SmartDocumentSplitter {
 }
 ```
 
+**递归切分算法**：
+
+```mermaid
+flowchart TD
+    A(("split(docs)")) --> B["逐文档 splitSingle"]
+    B --> C{"文本 <= targetSize?"}
+    C -->|"是"| D["直接返回"]
+    C -->|"否"| E{"当前层分隔符<br/>切不开或已用尽?"}
+    E -->|"是"| F["chunkByChar<br/>按字符窗口切 + overlap"]
+    E -->|"否"| G["按层分隔符切<br/>片段尽量拼满 targetSize"]
+    G --> H{"有片段超过 targetSize?"}
+    H -->|"是"| I["该片段递归到下一层<br/>sepIdx + 1"]
+    I --> G
+    H -->|"否"| J["生成各 chunk<br/>相邻 chunk 间保留 overlap"]
+    F --> Z(("所有 chunk"))
+    D --> Z
+    J --> Z
+```
+
 ### 3.4 加 Metadata（企业级 RAG 必备）
 
 Metadata 是后续做 **过滤检索** 的关键。比如"只在 2024 年的合同里搜"、"只搜 HR 部门的文档"。
@@ -1162,6 +1218,18 @@ public class HybridDocumentRetriever implements DocumentRetriever {
 }
 ```
 
+**混合检索 + RRF 融合流程**：
+
+```mermaid
+flowchart TD
+    Q["Query"] --> V["向量检索 similaritySearch<br/>topK × 2"]
+    Q --> B["BM25 检索<br/>pg_trgm similarity + ILIKE<br/>topK × 2"]
+    V --> RR["RRF 融合<br/>score = Σ w · 1/(k + rank)"]
+    B --> RR
+    RR --> T["取前 topK 文档"]
+    T --> N["进入后续<br/>去重 / rerank / 拼 prompt"]
+```
+
 ### 5.4 装配到 RagConfig
 
 ```java
@@ -1400,6 +1468,18 @@ public RetrievalAugmentationAdvisor ragAdvisor(
             .documentPostProcessors(dedup, rerank)  // 顺序：先去重再 rerank
             .build();
 }
+```
+
+**第 6 章完整检索链路（先去重再 rerank）**：
+
+```mermaid
+flowchart LR
+    Q["Query"] --> RW["RewriteQueryTransformer<br/>改写 query"]
+    RW --> H["HybridDocumentRetriever<br/>向量 + BM25 · topK = 20"]
+    H --> DD["DeduplicationPostProcessor<br/>去重（先）"]
+    DD --> RK["RerankDocumentPostProcessor<br/>LLM 打分 · topN = 5（后）"]
+    RK --> AG["QueryAugmenter<br/>拼 context"]
+    AG --> LM["LLM 回答"]
 ```
 
 ### 6.5 验证
@@ -1739,6 +1819,18 @@ public record RagMetrics(double faithfulness, double relevance, double contextPr
         return (faithfulness + relevance + contextPrecision) / 3.0;
     }
 }
+```
+
+**LLM-as-Judge 评估闭环**：
+
+```mermaid
+flowchart TD
+    DS["评估数据集<br/>question + 人工标注 ground truth"] --> LP["遍历每个样本"]
+    LP --> RAG["跑 RAG 链路<br/>得到 answer + 检索 context"]
+    RAG --> JD["LLM-as-Judge<br/>更强模型当裁判"]
+    JD --> M["RagMetrics<br/>faithfulness / relevance / contextPrecision"]
+    M --> AVG["取全集平均"]
+    AVG --> CMP["对照实验<br/>对比 chunk size / topK / 检索方式"]
 ```
 
 ### 8.4 评估数据集（必须人工标注）

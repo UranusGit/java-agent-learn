@@ -21,6 +21,16 @@ AI CI/CD 加 3 套
     └── 数据版本：DVC / LakeFS（retrieval corpus / eval set）
 ```
 
+**三套版本化**：
+
+```mermaid
+flowchart LR
+    T["传统 CI/CD<br/>Git + Docker image + Helm/ArgoCD"] --> P["AI CI/CD 管线"]
+    P1["Prompt 版本：PromptRepo + diff eval"] --> P
+    P2["模型版本：model registry<br/>(vLLM / OpenAI snapshot)"] --> P
+    P3["数据版本：DVC / LakeFS<br/>(retrieval corpus / eval set)"] --> P
+```
+
 ---
 
 ## 1. 三套版本化的"为什么"
@@ -170,6 +180,18 @@ eval 任务做：
 1. 对 PR 改动的 prompt 用新版跑 eval 集
 2. 对同一 eval 集用旧版（baseline）跑一遍
 3. 对比，差异超阈值 fail
+
+**diff eval 门禁**：
+
+```mermaid
+flowchart TD
+    A["PR 修改 prompts/**"] --> B["新版 prompt 跑 eval 集"]
+    B --> C["同一 eval 集用旧版 baseline 跑一遍"]
+    C --> D["对比 diff eval 结果"]
+    D --> E{"差异超过阈值?"}
+    E -- "是" --> F["CI fail<br/>(阻断 merge)"]
+    E -- "否" --> G["CI pass，进入部署流程"]
+```
 
 ### 3.4 Deploy：渐进发布
 
@@ -363,6 +385,18 @@ jobs:
       - run: ./scripts/blue-green-switch.sh
 ```
 
+**发布流水线**：
+
+```mermaid
+flowchart TD
+    A["push main"] --> B["1. eval<br/>单元/集成测试 + 全量 eval 集 + 影子流量 A/B 1h"]
+    B --> C["2. build<br/>docker build + push 镜像"]
+    C --> D["3. deploy-staging<br/>helm upgrade -f staging.yaml"]
+    D --> E["4. smoke test<br/>staging.internal 冒烟"]
+    E --> F["5. 手动审批<br/>environment: production-approval"]
+    F --> G["6. deploy-prod<br/>helm upgrade -f prod.yaml + 蓝绿切换"]
+```
+
 ---
 
 ## 7. ArgoCD / Flux GitOps
@@ -404,6 +438,16 @@ spec:
 Prompt 回滚 → FeatureFlag 翻开关（秒级）
 模型回滚 → 更新 models.yaml + ArgoCD 同步（分钟级）
 数据回滚 → DVC/LakeFS 切版本 + reindex（小时级）
+```
+
+**三层回滚**：
+
+```mermaid
+flowchart LR
+    A["应用代码回滚"] --> A1["ArgoCD one-click<br/>秒级"]
+    B["Prompt 回滚"] --> B1["FeatureFlag 翻开关<br/>秒级"]
+    C["模型回滚"] --> C1["更新 models.yaml + ArgoCD 同步<br/>分钟级"]
+    D["数据回滚"] --> D1["DVC / LakeFS 切版本 + reindex<br/>小时级"]
 ```
 
 ### 8.2 不可回滚的变更

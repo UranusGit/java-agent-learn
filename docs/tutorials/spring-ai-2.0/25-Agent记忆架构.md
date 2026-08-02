@@ -19,6 +19,18 @@
 └── 元记忆（Meta）                     ← "我学到了什么"——偏好 / 人格
 ```
 
+**记忆分类**：
+
+```mermaid
+flowchart TD
+    A["人类记忆（认知心理学）"] --> B["短时记忆 Working Memory<br/>← ChatClient 上下文窗口"]
+    A --> C["长时记忆 Long-term"]
+    A --> F["元记忆 Meta<br/>← 偏好 / 人格"]
+    C --> D1["情节记忆 Episodic<br/>“我经历过 X” ← 会话历史"]
+    C --> D2["语义记忆 Semantic<br/>“我知道 X” ← 知识库 / RAG"]
+    C --> D3["程序记忆 Procedural<br/>“我会做 X” ← 工具 / skill"]
+```
+
 Spring AI 2.0 提供的：
 
 | 类型 | Spring AI 设施 | 局限 |
@@ -81,6 +93,18 @@ public class SummarizingMemory implements ChatMemory {
         }
     }
 }
+```
+
+**滚动摘要流程**：
+
+```mermaid
+flowchart TD
+    A["add(convId, msgs)"] --> B["合并 repo 历史 + 新消息得到 all"]
+    B --> C{"all.size > summaryTrigger?"}
+    C -- "否" --> D["repo.saveAll 保存全部消息"]
+    C -- "是" --> E["把最早一半摘要成一条 system message<br/>(“[过往摘要]” 200 字内)"]
+    E --> F["kept = 摘要 + 后半段消息"]
+    F --> G["repo.saveAll(convId, kept)"]
 ```
 
 #### B. token-aware 窗口
@@ -234,6 +258,19 @@ facts.filter(f -> f.confidence() > 0.7)
 - 检索时按时间过滤（默认最新版本）
 - 用户问"以前政策是什么"时， retrieves 历史版本
 
+**冲突处理流程**：
+
+```mermaid
+flowchart TD
+    A["对话产生新事实<br/>(退款政策 7天 → 14天)"] --> B{"与旧事实冲突?"}
+    B -- "否" --> C["直接入库"]
+    B -- "是" --> D["不覆盖，先存新版本<br/>(version=2, valid_from=...)"]
+    D --> E["检索时按时间过滤，默认取最新版本"]
+    E --> F{"用户问“以前政策是什么?”"}
+    F -- "是" --> G["检索历史版本"]
+    F -- "否" --> H["返回最新版本"]
+```
+
 ---
 
 ## 4. 程序记忆：工具 / Skill
@@ -366,6 +403,23 @@ ChatModel.call
     ├── 抽取语义事实 → 入语义记忆
     ├── 抽取偏好 → 更新画像
     └── 写入情节记忆 → 入向量库
+```
+
+**完整调用链**：
+
+```mermaid
+flowchart TD
+    U["用户消息"] --> P["Profile Advisor<br/>注入人格 + 偏好"]
+    P --> E["Episodic Advisor<br/>检索“过去对话”"]
+    E --> S["Semantic Advisor<br/>检索“知识库”(RAG)"]
+    S --> M["Short Memory<br/>滚动窗口 + 摘要"]
+    M --> C["ChatModel.call"]
+    C --> T["Tool Calling<br/>程序记忆（工具）"]
+    T --> R["响应"]
+    R --> A["After 阶段"]
+    A --> F1["抽取语义事实 → 入语义记忆"]
+    A --> F2["抽取偏好 → 更新画像"]
+    A --> F3["写入情节记忆 → 入向量库"]
 ```
 
 每个 advisor 各管一种记忆类型，正交组合。

@@ -23,6 +23,31 @@
 | **Prompt** | 模板库（类似 Thymeleaf），按 ID 取 |
 | **Transport** | stdio / SSE / HTTP，类似 RPC 的协议层 |
 
+**心智模型（USB-C for AI Tools）**：多个 MCP 客户端通过统一协议消费同一批 MCP Server，一次暴露、处处复用。
+
+```mermaid
+flowchart LR
+    subgraph CL["MCP 客户端"]
+        C1["Claude Desktop"]
+        C2["Cursor"]
+        C3["Spring AI"]
+        C4["LangChain4j"]
+    end
+    subgraph PROTO["MCP 统一协议"]
+        P1["Tool(可调用能力)"]
+        P2["Resource(按 URI 读取)"]
+        P3["Prompt(按 ID 取模板)"]
+    end
+    subgraph SRV["MCP Server(独立进程)"]
+        S1["filesystem"]
+        S2["git"]
+        S3["postgres"]
+        S4["slack"]
+    end
+    CL -->|"统一协议"| PROTO
+    PROTO --> SRV
+```
+
 ### 1.3 与传统 Function Calling 的关系
 
 | 维度 | Function Calling（OpenAI 风格） | MCP |
@@ -77,6 +102,18 @@ URI 形式，LLM 通过读 resource 获取上下文。适合大文档/结构化�
 ```
 
 可复用的 prompt 模板，类似 Spring 的 `MessageTemplate`。
+
+**三大能力对照**：Tool 自主调用、Resource 按需读取、Prompt 模板复用。
+
+```mermaid
+flowchart LR
+    LLM["LLM"] --> T["Tool(等价 Function Calling)<br/>看到工具列表自主决定调用"]
+    LLM --> R["Resource(URI 形式)<br/>大文档/结构化数据按需读取"]
+    LLM --> P["Prompt(模板库)<br/>按 ID 取, 类似 MessageTemplate"]
+    T -.-> T2["query_employee"]
+    R -.-> R2["resource://employee/12345"]
+    P -.-> P2["code_review"]
+```
 
 ---
 
@@ -138,6 +175,23 @@ class McpClientConfig {
 // LLM 调用时透明走 MCP 协议
 ```
 
+**核心时序**：LLM 请求经 ChatClient 透明走 MCP 协议调用远程 Server。
+
+```mermaid
+sequenceDiagram
+    participant LLM as LLM
+    participant CC as ChatClient
+    participant MC as MCP Client
+    participant SVR as MCP Server(EmployeeMcpServer)
+    LLM->>CC: 需要调用工具 queryByName
+    CC->>MC: 触发 MCP Tool 调用
+    MC->>SVR: tools/call(stdio 传输)
+    SVR->>SVR: employeeService.findByName(name)
+    SVR-->>MC: ToolResult(Employee)
+    MC-->>CC: 工具结果
+    CC-->>LLM: 结果并入上下文
+```
+
 ---
 
 ## 4. 官方/社区 MCP Server 生态（2026-07 快照）
@@ -193,6 +247,18 @@ class McpClientConfig {
 
 **实战建议**：MCP 现在就投入，A2A 跟进不押注。
 
+**协议边界**：MCP 连接应用与工具，A2A 连接 Agent 与 Agent。
+
+```mermaid
+flowchart LR
+    subgraph MCPG["MCP: 工具级协议(应用 ↔ 工具)"]
+        APP["应用"] <--> TOOL["工具 Server"]
+    end
+    subgraph A2AG["A2A: Agent 级协议(Agent ↔ Agent)"]
+        AG1["Agent A"] <--> AG2["Agent B"]
+    end
+```
+
 ---
 
 ## 7. Java 工程师实战路线
@@ -211,6 +277,14 @@ class McpClientConfig {
 - [ ] 把常用 Tool 都按 MCP 协议重做
 - [ ] 关注 MCP 规范迭代（每季度 review）
 - [ ] 考虑开源自己的 MCP Server（简历加分）
+
+**进阶路径**：从消费方到生产方再到生态参与者，层层递进。
+
+```mermaid
+flowchart LR
+    S1["阶段 1: 消费方(1-2 天)<br/>体验官方 Server / 接入 filesystem"] --> S2["阶段 2: 生产方(3-5 天)<br/>@McpTool 暴露能力 / 自建 Client 闭环"]
+    S2 --> S3["阶段 3: 生态参与者(持续)<br/>工具协议化 / 开源 MCP Server"]
+```
 
 ---
 

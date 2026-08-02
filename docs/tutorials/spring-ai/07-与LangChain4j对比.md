@@ -26,6 +26,16 @@ LangChain Python         Spring Boot / Spring Cloud
 （可单 JVM 跑）          （必须 Spring 容器）
 ```
 
+**设计根源差异**：
+
+```mermaid
+flowchart TD
+    py["LangChain Python<br/>（社区生态）"] --> lc["LangChain4j"]
+    lc --> lcRun["独立运行<br/>（可单 JVM 跑）"]
+    sb["Spring Boot / Spring Cloud<br/>（Spring 官方）"] --> sai["Spring AI"]
+    sai --> saiRun["深度集成 Spring<br/>（必须 Spring 容器）"]
+```
+
 ---
 
 ## 2. 核心抽象对照表
@@ -191,6 +201,19 @@ Spring AI Tool 内部可以用：
                        └── 不需要 → 都行（推荐 Spring AI，统一栈）
 ```
 
+**决策树**：
+
+```mermaid
+flowchart TD
+    q1{"你的项目是 Spring Boot 吗?"}
+    q1 -->|"否"| lc["LangChain4j"]
+    q1 -->|"是"| q2{"团队对 AI 熟悉度?"}
+    q2 -->|"新手"| sai["Spring AI<br/>学习曲线低"]
+    q2 -->|"熟手"| q3{"需要复杂 Advisor 组合?"}
+    q3 -->|"需要"| sai2["Spring AI"]
+    q3 -->|"不需要"| both["都行<br/>推荐 Spring AI，统一栈"]
+```
+
 ---
 
 ## 7. 两个框架可以共存
@@ -309,6 +332,23 @@ Spring AI Tool 内部可以用：
 │  ─ 多 Agent 协作                     │
 │  ─ 自定义推理策略                    │
 └─────────────────────────────────────┘
+```
+
+**各取所长**：
+
+```mermaid
+flowchart TD
+    subgraph spring["Spring AI 层（业务编排）"]
+        ctrl["Controller / Service / Repository"]
+        advisor["Advisor 链<br/>鉴权、限流、审计"]
+        tool["Tool 调用<br/>注入业务 Bean"]
+    end
+    subgraph lc4j["LangChain4j 层（复杂 Agent）"]
+        lg4j["LangGraph4j 状态机"]
+        multi["多 Agent 协作"]
+        reason["自定义推理策略"]
+    end
+    spring --> lc4j
 ```
 
 但**起步阶段不要这么搞**，先用一个框架把项目跑通。

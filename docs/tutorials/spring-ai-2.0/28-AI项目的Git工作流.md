@@ -76,6 +76,20 @@ main
   └── hotfix/crash-fix         ← 紧急修复
 ```
 
+**分支模型**：
+
+```mermaid
+flowchart TD
+    M["main（始终可发布）"]
+    M --> F1["feature/refund-flow<br/>1-3 天合并"]
+    M --> F2["feature/v2-embedding<br/>feature branch"]
+    M --> E1["experiment/qwen2.5-test<br/>throwaway 实验 branch"]
+    M --> H1["hotfix/crash-fix<br/>紧急修复"]
+    F1 -. "合并" .-> M
+    F2 -. "合并" .-> M
+    H1 -. "cherry-pick" .-> M
+```
+
 **原则**：
 
 - main 始终可发布
@@ -101,6 +115,16 @@ experiment/try-new-embedding-bge-m3
 ```
 
 实验 branch 名字以 `experiment/` 开头，CI 不强制跑全量 eval（鼓励尝试）。
+
+**实验 branch 生命周期**：
+
+```mermaid
+flowchart TD
+    A["实验 branch: experiment/..."] --> B{"实验结果显著提升?"}
+    B -- "否" --> C["删掉，不合并<br/>(如 try-cot-on-classifier)"]
+    B -- "是" --> D["改写为 feature/upgrade-xxx<br/>(如 upgrade-embedding-bge-m3)"]
+    D --> E["PR + eval + 合并到 main"]
+```
 
 ---
 
@@ -318,6 +342,20 @@ mlflow artifacts download  # 模型权重
 7. eval 绿才发版
 ```
 
+**数据变更流程**：
+
+```mermaid
+flowchart TD
+    A["1. feature branch 修改 data/..."] --> B["2. dvc add data/..."]
+    B --> C["3. git commit data/... .dvc"]
+    C --> D["4. PR + DBA review"]
+    D --> E["5. merge 触发 reindex CI"]
+    E --> F["6. reindex 完跑 retrieval eval"]
+    F --> G{"7. eval 绿?"}
+    G -- "是" --> H["发版"]
+    G -- "否" --> I["修复数据 / 回滚"]
+```
+
 ### 7.2 大批量数据导入
 
 - **批量任务**：单独的 K8s Job，不阻塞主应用部署。
@@ -382,6 +420,18 @@ git checkout -b hotfix/crash-on-empty-tool-result
 # 3. PR + 紧急 review（1 工程师）
 # 4. 合并后 ArgoCD 自动部署
 # 5. cherry-pick 到当前 release branch（如有）
+```
+
+**Hotfix 流程**：
+
+```mermaid
+flowchart TD
+    A["1. 从 main 切 hotfix<br/>git checkout -b hotfix/crash-..."] --> B["2. 修复 + 单测"]
+    B --> C["3. PR + 紧急 review（1 工程师）"]
+    C --> D["4. 合并后 ArgoCD 自动部署"]
+    D --> E{"5. 存在当前 release branch?"}
+    E -- "是" --> F["cherry-pick 到 release branch"]
+    E -- "否" --> G["hotfix 结束"]
 ```
 
 ### 9.2 Prompt 紧急回滚

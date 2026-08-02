@@ -44,6 +44,18 @@ String answer = chatClient.prompt().user(q).tools(myBean).call().content();
 5. 再次调用 ChatModel（递归下一轮）
 6. 直到 LLM 不再要工具
 
+**Agent Loop 递归循环**：上面 6 步画成一个循环——只要 LLM 还要工具，就反复"执行工具 → 拼回 history → 再调用 ChatModel"，直到它不再要工具。
+
+```mermaid
+flowchart TD
+    A["用户业务代码<br/>chatClient.prompt().user(q).tools(t).call()"] --> B["ChatModel.call(prompt)<br/>ToolCallingAdvisor 监听响应"]
+    B --> C{"resp.hasToolCalls() ?"}
+    C -- "否" --> D["直接返回文本给用户"]
+    C -- "是" --> E["ToolCallingManager.executeToolCalls(prompt, resp)"]
+    E --> F["把工具结果拼进 conversation history"]
+    F --> B
+```
+
 ---
 
 ## 2. ToolCallingAdvisor 的执行图
@@ -162,6 +174,35 @@ public List<Order> myOrders(ToolContext context) {
 ## 4. ToolCallingManager：执行器
 
 `ToolCallingAdvisor` 是**调度者**（管循环），`ToolCallingManager` 是**执行者**（真正调工具方法）。
+
+**调度与执行时序**：Advisor 负责循环与分支判断，真正反射调用工具方法的是 Manager；工具失败时走哪条路由 `alwaysThrow` 决定。
+
+```mermaid
+sequenceDiagram
+    participant Client as 业务代码
+    participant Advisor as "ToolCallingAdvisor(调度者)"
+    participant Manager as "ToolCallingManager(执行者)"
+    participant Tool as "@Tool 方法"
+    participant LLM as ChatModel
+
+    Client->>Advisor: chatClient.call() 请求进入 Advisor 链
+    Advisor->>LLM: ChatModel.call(prompt)
+    LLM-->>Advisor: ChatResponse
+    Advisor->>Advisor: 检测 resp.hasToolCalls()
+    alt 有工具调用
+        Advisor->>Manager: executeToolCalls(prompt, resp)
+        Manager->>Tool: 反射调用工具方法
+        Tool-->>Manager: 工具结果
+        alt alwaysThrow=false（默认）
+            Manager-->>Advisor: 异常作为 tool result 塞回
+            Advisor->>LLM: 再次调用，LLM 自我修复
+        else alwaysThrow=true
+            Manager-->>Advisor: 直接抛异常给调用方 catch
+        end
+    else 无工具调用
+        Advisor-->>Client: 直接返回文本
+    end
+```
 
 ### 4.1 默认实现
 
@@ -321,6 +362,19 @@ ChatClient chatClient(ChatClient.Builder builder) {
 
 **效果**：内部用 embedding 做语义检索，只把最相关的工具 schema 塞进 prompt。
 
+**工具检索流程**：工具超过 10 个时的取舍路径。
+
+```mermaid
+flowchart TD
+    A["工具数量超过 10 个"] --> B["问题：所有工具 schema 都塞进 prompt"]
+    B --> C["token 浪费 + LLM 决策变差"]
+    C --> D["方案：ToolSearchToolCallingAdvisor"]
+    D --> E["每次调用前，根据用户问题做 embedding 语义检索"]
+    E --> F["挑出最相关的 maxResults=5 个工具"]
+    F --> G["只把这 5 个工具的 schema 塞进 prompt"]
+    G --> H["ChatModel 调用"]
+```
+
 > 适合工具数量 10+ 的企业级 Agent。
 
 ---
@@ -436,6 +490,27 @@ LLM：
   Observation: 0.65
 
   Answer: 用户服务 3 个副本全部就绪，CPU 使用率约 65%。
+```
+
+**多工具串联时序**：LLM 自己决定先查 K8s 再查 Prometheus，两轮 Action/Observation 都在 `ToolCallingAdvisor` 的循环里自动完成。
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Agent as "ChatClient(ToolCallingAdvisor)"
+    participant K8s as K8sTools
+    participant Prom as PromTools
+
+    User->>Agent: 用户服务有几个副本？CPU 高不高？
+    loop ToolCallingAdvisor 自动循环
+        Agent->>Agent: LLM 决策 Action: getDeploymentStatus
+        Agent->>K8s: getDeploymentStatus(namespace="default", name="user-service")
+        K8s-->>Agent: Observation: {"desired":3,"ready":3}
+        Agent->>Agent: LLM 决策 Action: queryMetric
+        Agent->>Prom: queryMetric(rate(container_cpu_usage_seconds_total{pod=~"user-service.*"}[5m]))
+        Prom-->>Agent: Observation: 0.65
+    end
+    Agent-->>User: Answer: 3 个副本全部就绪，CPU 使用率约 65%
 ```
 
 整个循环 `ToolCallingAdvisor` 自动处理，业务代码零侵入。

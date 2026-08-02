@@ -29,6 +29,15 @@
 └────────────────┘    └─────────────────────────────────┘
 ```
 
+**整体架构（Mermaid 版）**：
+
+```mermaid
+flowchart TD
+    FE["前端 / 第三方调用方"] -->|"HTTP / WebSocket / SSE"| JAVA["Java 业务编排层（Spring Boot）<br/>- 鉴权 / 限流 / 配额<br/>- 会话管理 / 多租户<br/>- 业务流程编排（RAG → Agent → 后处理）<br/>- 数据持久化（MySQL / Redis / VectorDB）<br/>- 审计 / 监控 / 链路追踪"]
+    JAVA -->|"HTTP/gRPC"| AIA["AI 能力层 A：vLLM 服务（OpenAI 兼容）"]
+    JAVA -->|"HTTP/gRPC"| AIB["AI 能力层 B：Python FastAPI + LangGraph<br/>（复杂 Agent 编排，复用 Python 生态）"]
+```
+
 ---
 
 ## 2. 何时 Python / 何时 Java（关键决策树）
@@ -39,6 +48,20 @@
 | 业务编排、CRUD、鉴权、消息队列、定时任务 | **Java** |
 | 简单 RAG、单 Agent、工具调用 | **纯 Java**（Spring AI / LangChain4j） |
 | 复杂多 Agent 协作 | **Python**，Java 调用结果 |
+
+**选型决策树**：
+
+```mermaid
+flowchart TD
+    REQ(["需求来了"]) --> C1{"需要 LangGraph 复杂状态机、<br/>GraphRAG、微调 pipeline？"}
+    C1 -->|"是"| PY["Python"]
+    C1 -->|"否"| C2{"业务编排、CRUD、鉴权、<br/>消息队列、定时任务？"}
+    C2 -->|"是"| JV["Java"]
+    C2 -->|"否"| C3{"简单 RAG、单 Agent、工具调用？"}
+    C3 -->|"是"| PJ["纯 Java（Spring AI / LangChain4j）"]
+    C3 -->|"否"| CM["复杂多 Agent 协作"]
+    CM --> PYJ["Python，Java 调用结果"]
+```
 
 ---
 
@@ -62,6 +85,24 @@ public Flux<String> chat(@RequestParam String userMsg) {
         .stream()
         .content();
 }
+```
+
+**SSE 流式输出核心时序**：
+
+```mermaid
+sequenceDiagram
+    participant FE as 前端
+    participant CT as Controller
+    participant CC as ChatClient（Spring AI）
+    participant LM as LLM（vLLM / OpenAI 兼容）
+
+    FE->>CT: GET /chat?userMsg=xxx（SSE 长连接）
+    CT->>CC: chatClient.prompt().user(msg).stream()
+    CC->>LM: 请求 token 流
+    LM-->>CC: 逐 token 返回
+    CC-->>CT: Flux（String 流，TEXT_EVENT_STREAM）
+    CT-->>FE: 逐 token 推送
+    Note over FE,LM: 流式响应：无需等全部生成，首包秒回
 ```
 
 ---
@@ -205,3 +246,12 @@ String answer = agent.chat("张三工位在几楼？");
 ## 9. 学习检查点
 
 > 能设计出"用户请求 → Java 网关 → Java Agent → 流式响应"的完整生产架构，并说清楚每一步的工程考虑。
+
+**生产架构请求链路**：
+
+```mermaid
+flowchart LR
+    U["用户请求"] --> GW["Java 网关<br/>（鉴权 / 限流 / 配额）"]
+    GW --> AG["Java Agent<br/>（Spring AI / LangChain4j）"]
+    AG -->|"SSE 流式响应"| U
+```

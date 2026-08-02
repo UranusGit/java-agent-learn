@@ -77,6 +77,29 @@ public class PromptChainingAdvisor implements BaseAdvisor {
 - 多花一次 API 成本
 - 因为子调用 ChatClient 时没传 `CONVERSATION_ID`，触发 `MessageChatMemoryAdvisor` 抛 `IllegalArgumentException: conversationId cannot be null`
 
+**为什么是 N+1 次调用（时序图）**：
+
+```mermaid
+sequenceDiagram
+    participant REQ as 请求
+    participant CH as Advisor 链
+    participant PB as PromptChainingAdvisor.before()
+    participant LM as LLM
+    participant CC as 链终点 ChatClient
+
+    REQ->>CH: 发起请求
+    CH->>PB: 拦截到 before()
+    loop N 次 = steps.size
+        PB->>LM: 第 1..N 次 LLM 调用
+        LM-->>PB: 步骤输出
+    end
+    PB-->>REQ: 把结果塞回 request
+    CH->>CC: 链继续走完
+    CC->>LM: 第 N+1 次（无 system prompt / 无约束）
+    LM-->>CC: 模型自由发挥的内容
+    CC-->>REQ: 覆盖链路结果，业务不可控
+```
+
 ### 0.1.4 正确形态：Service 编排
 
 ```java
@@ -236,6 +259,20 @@ public class TestController {
 }
 ```
 
+**Prompt Chaining 链路 + gate check 提前终止**：
+
+```mermaid
+flowchart TD
+    IN["输入 input"] --> S1["Step 1<br/>生成大纲"]
+    S1 --> G1{"gate check<br/>质量够继续?"}
+    G1 -->|"否"| TM["[CHAIN TERMINATED]<br/>提前终止"]
+    G1 -->|"是"| S2["Step 2<br/>生成草稿"]
+    S2 --> G2{"gate check<br/>质量够继续?"}
+    G2 -->|"否"| TM
+    G2 -->|"是"| S3["Step 3<br/>润色"]
+    S3 --> OUT["最终输出"]
+```
+
 ### 1.7 Postman 测试用例
 
 为方便测试，controller 已经在上文给出。
@@ -295,6 +332,30 @@ Input → ┌─ Subtask A ─┐
 Input → ┌─ LLM Run 1 ─┐
         ├─ LLM Run 2 ─┤→ Vote → Output
         └─ LLM Run 3 ─┘
+```
+
+**两种子模式（Mermaid 版）**：
+
+```mermaid
+flowchart LR
+    subgraph sec["Sectioning"]
+        IN1["Input"] --> A1["Subtask A<br/>bug 风险"]
+        IN1 --> A2["Subtask B<br/>代码风格"]
+        IN1 --> A3["Subtask C<br/>安全漏洞"]
+        A1 --> AG1["Aggregate<br/>String.join(---)"]
+        A2 --> AG1
+        A3 --> AG1
+        AG1 --> O1["Output"]
+    end
+    subgraph vot["Voting"]
+        IN2["Input"] --> V1["LLM Run 1"]
+        IN2 --> V2["LLM Run 2"]
+        IN2 --> V3["LLM Run 3"]
+        V1 --> VD["Vote<br/>取中位数"]
+        V2 --> VD
+        V3 --> VD
+        VD --> O2["Output"]
+    end
 ```
 
 ### 2.2 抽象类：ParallelizationService
@@ -667,6 +728,20 @@ Input → [Orchestrator LLM]
          Output
 ```
 
+**Orchestrator-Workers 流程（Mermaid 版）**：
+
+```mermaid
+flowchart TD
+    IN["Input"] --> ORC["Orchestrator LLM<br/>决定子任务列表<br/>{subtasks: [...]}"]
+    ORC --> W1["Worker 1"]
+    ORC --> W2["Worker 2"]
+    ORC --> W3["Worker ... 动态数量"]
+    W1 --> AG["Aggregator<br/>整合为完整报告"]
+    W2 --> AG
+    W3 --> AG
+    AG --> OUT["Output"]
+```
+
 ### 4.2 抽象类：OrchestratorService
 
 ```java
@@ -853,6 +928,19 @@ LLM 生成 → 评估 → 不合格则反馈给 LLM 重做，直到合格或达�
 Input → [Generator] → Output → [Evaluator] → pass?
                                             ├ yes → return
                                             └ no  → feedback → loop back
+```
+
+**Evaluator-Optimizer 反馈循环**：
+
+```mermaid
+flowchart TD
+    IN["Input 需求"] --> GEN["Generator<br/>生成结果"]
+    GEN --> EV{"Evaluator<br/>pass?"}
+    EV -->|"是"| RET["返回结果"]
+    EV -->|"否"| CNT{"已达<br/>maxIterations?"}
+    CNT -->|"否"| FB["携 feedback 重新生成"]
+    FB --> GEN
+    CNT -->|"是"| RET2["强制返回当前结果"]
 ```
 
 ### 5.2 抽象类：EvaluatorOptimizerService
@@ -1107,6 +1195,18 @@ public class CodeReviewService {
         return report;
     }
 }
+```
+
+**代码评审助手：五大模式组合流程**：
+
+```mermaid
+flowchart TD
+    CODE["Java 代码文件"] --> R1["Step 1: Routing<br/>按类型路由评审<br/>CodeRouterService"]
+    R1 --> R2["Step 2: Orchestrator-Workers<br/>大文件按方法拆分"]
+    R2 --> R3["Step 3: Parallelization<br/>bug / 风格 / 安全 三视角并行<br/>MultiAngleAnalysisService"]
+    R3 --> R4["Step 4: Aggregation<br/>合并类型评审 + 三视角评审"]
+    R4 --> R5["Step 5: Evaluator-Optimizer<br/>refine 报告质量（最多 3 轮）"]
+    R5 --> OUT2["专业评审报告"]
 ```
 
 ### 6.5 Controller

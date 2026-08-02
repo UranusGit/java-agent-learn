@@ -31,6 +31,38 @@
 
 Spring AI 负责**把 LLM 能力接入到 Spring 业务系统**：
 
+**接入链路**：
+
+```mermaid
+flowchart TD
+    HTTP["HTTP 请求"]
+    SEC["Spring Security<br/>（鉴权）"]
+    CTL["Controller<br/>（Spring AI ChatClient）"]
+    ADV["Advisor 链"]
+    RL["限流 Advisor<br/>（Bucket4j + Redis）"]
+    AU["审计 Advisor<br/>（落库 prompt/response）"]
+    MT["多租户 Advisor<br/>（选知识库）"]
+    RAG["RAG Advisor<br/>（QuestionAnswerAdvisor）"]
+    MEM["Memory Advisor<br/>（会话记忆）"]
+    LLM["ChatModel<br/>（调用 LLM）"]
+    FLUX["Flux&lt;String&gt; 流式返回"]
+
+    HTTP --> SEC
+    SEC --> CTL
+    CTL --> ADV
+    ADV --> RL
+    ADV --> AU
+    ADV --> MT
+    ADV --> RAG
+    ADV --> MEM
+    RL --> LLM
+    AU --> LLM
+    MT --> LLM
+    RAG --> LLM
+    MEM --> LLM
+    LLM --> FLUX
+```
+
 ```
 HTTP 请求
   ↓
@@ -115,6 +147,24 @@ LangChain4j 编排流程：
   └─ 状态机：控制 Agent 之间的跳转
 ```
 
+**编排流程**：
+
+```mermaid
+flowchart TD
+    USER["用户：帮我分析上周销售数据并生成报告"]
+    A["Agent A 数据查询<br/>调 Tool 取数据"]
+    B["Agent B 数据分析<br/>ReAct 循环算指标"]
+    C["Agent C 报告生成<br/>汇总 + 写报告"]
+    SM["状态机<br/>控制 Agent 之间的跳转"]
+
+    USER --> A
+    A --> B
+    B --> C
+    SM -.-> A
+    SM -.-> B
+    SM -.-> C
+```
+
 **核心工具**：
 - **LangGraph4j**（`langchain4j-graph`）：状态机式多 Agent 编排
 - **ReAct 循环**：思考 → 行动 → 观察 → 再思考
@@ -126,6 +176,33 @@ LangChain4j 编排流程：
 ---
 
 ## 4. 分工模型架构图
+
+**分工模型架构**：
+
+```mermaid
+flowchart TD
+    FE["前端 / 第三方"]
+    subgraph SA["Spring AI 层 —— 接入 + 兜底"]
+        CTL["Controller<br/>（Web）"]
+        ADV["Advisor 链<br/>鉴权 · 限流 · 审计<br/>多租户 · 降级"]
+        CC["ChatClient<br/>（统一入口）"]
+        SIMPLE["简单请求直接处理<br/>（单轮 RAG + Tool）"]
+        CTL --> ADV
+        ADV --> CC
+        CC --> SIMPLE
+    end
+    subgraph L4J["LangChain4j 层 —— 思考 + 编排"]
+        AS["AiServices<br/>（声明式 Agent）"]
+        LG["LangGraph4j<br/>（状态机编排）"]
+        RE["ReAct<br/>（思考循环）"]
+        CM["ChatMemory +<br/>ContentRetriever"]
+        AS --> LG
+        RE --> LG
+        LG --> CM
+    end
+    FE -->|"HTTP / SSE"| CTL
+    CC -->|"复杂请求"| AS
+```
 
 ```
 ┌──────────────────────────────────────────────────────────┐

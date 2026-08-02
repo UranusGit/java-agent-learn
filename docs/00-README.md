@@ -102,11 +102,40 @@ desc/
 | **tutorials/** | 代码级教程，API 细节 + 完整示例 + 报错排查 | **写代码时**对照手搓 |
 | **reference/** | 概念、原理、架构、决策树 | **遇到概念不懂时**查阅 |
 
+**使用流程**：
+
+```mermaid
+flowchart TD
+    Daily["每天"] --> Plan["plan/<br/>路线 · 任务清单 · 进度"]
+    Code["写代码时"] --> Tut["tutorials/<br/>代码教程 · API · 报错排查"]
+    Concept["遇到概念不懂时"] --> Ref["reference/<br/>概念 · 原理 · 架构 · 决策树"]
+    Concept --> App["附录专题<br/>Reactor · Redis · Kafka · SSE · 事务"]
+```
+
 ---
 
 ## 核心心智模型（一图记住）
 
 **把"模型推理"看作一个特殊的微服务**：高延迟、不稳定、有概率出错。
+
+**心智模型**：
+
+```mermaid
+flowchart LR
+    subgraph RPC["RPC 心智模型"]
+        Prompt["Prompt<br/>(请求参数模板)"] --> LLM["LLM API<br/>(有概率出错的远程 RPC)"]
+        LLM -->|"高延迟 / 不稳定 / 有概率出错"| Reply["回复"]
+        LLM -.->|"返回工具调用 JSON"| Tool["Tool<br/>(注解声明的 RPC)"]
+        Tool -->|"Java 执行"| LLM
+        LLM -.->|"按相似度检索"| VecDB["向量库<br/>(特殊 B+ 树索引)"]
+    end
+    subgraph AGENT["Agent 循环 (while true)"]
+        D["decide()"] --> A["act()"]
+        A --> O["observe()"]
+        O --> D
+    end
+    FW["LangChain4j / Spring AI<br/>(AI 版 Spring Framework)"] -.-> LLM
+```
 
 - LLM API = 一个有概率出错的远程 RPC
 - Prompt = RPC 的请求参数模板

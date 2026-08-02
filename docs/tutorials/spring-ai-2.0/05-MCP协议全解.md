@@ -73,6 +73,24 @@ public class TimeTools {
 └──────────────────────┘                    └──────────────────────┘
 ```
 
+**Mermaid 版心智模型**：
+
+```mermaid
+flowchart LR
+    subgraph C["MCP Client 进程（你的 Spring AI App）"]
+        CC["ChatClient"]
+        CM["ToolCallingManager"]
+        MS["McpSyncClient"]
+        CC --> CM --> MS
+    end
+    subgraph S["MCP Server 进程（工具服务的提供方）"]
+        MT1["@McpTool getEmployee"]
+        MT2["@McpTool searchOrders"]
+        MR1["@McpResource company://..."]
+    end
+    MS <-->|"stdio / Streamable HTTP<br/>JSON-RPC 2.0 消息"| MT1
+```
+
 关键点：
 - Client 和 Server 是**两个独立进程**（要么 stdio 子进程，要么 HTTP 服务）
 - 通信内容是 JSON-RPC 2.0 消息
@@ -125,6 +143,22 @@ Client                                    Server
   │   (LLM 拿到结果，组织自然语言返回给用户)   │
 ```
 
+**Mermaid 版协议一次调用时序**：
+
+```mermaid
+sequenceDiagram
+    participant C as MCP Client
+    participant S as MCP Server
+    C->>S: initialize（handshake：协议版本、能力协商）
+    S-->>C: capabilities
+    C->>S: tools/list（"你有哪些工具？"）
+    S-->>C: [getEmployee, searchOrders, ...]
+    Note over C,S: 此时 LLM 看到工具列表，决定调用 getEmployee
+    C->>S: tools/call(name=getEmployee, args={id:"E001"})
+    S-->>C: result={name:"张三", dept:"HR"}
+    Note over C,S: LLM 拿到结果，组织自然语言返回给用户
+```
+
 整个过程**你都不用写代码**——Spring AI 的 MCP Client starter 全自动处理。你只需要：配置 Server 地址 + 把工具列表注入 ChatClient。
 
 ---
@@ -140,6 +174,16 @@ Client                                    Server
 用现成 Server           自己造一个 Server       Client 和 Server
 跑通第一次调用          暴露 4 类能力           拼起来跑通
 理解协议                学会鉴权/限流/可观测    多租户/Hub/跨语言
+```
+
+**Mermaid 版三部曲路线**：
+
+```mermaid
+flowchart LR
+    A["05 入门 + 当 Client<br/>用现成 Server 跑通第一次调用，理解协议"]
+    B["06 当 Server 作者<br/>自己造一个 Server，暴露 4 类能力<br/>学会鉴权/限流/可观测"]
+    C["07 端到端 + 进阶<br/>Client 和 Server 拼起来跑通<br/>多租户 / Hub / 跨语言"]
+    A --> B --> C
 ```
 
 **为什么不先学 Server**：先当用户再当作者，能更快建立"这玩意能干啥"的直觉。等自己造 Server 时，知道每一步对应的 Client 行为是什么。
@@ -519,6 +563,30 @@ McpToolFilter filter() {
    LLM 拿到结果 → 组织自然语言 → 返回给用户
 ```
 
+**Mermaid 版完整调用时序**：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant CC as ChatClient
+    participant LLM as LLM
+    participant TM as ToolCallingManager
+    participant MS as McpSyncClient
+    participant SV as MCP Server（另一进程）
+    U->>CC: 输入 "查 E001 员工"
+    CC->>LLM: 把 prompt 发给 LLM，附上工具列表<br/>（来自 defaultTools(all)）
+    LLM-->>CC: 看到 getEmployee(id)，决定调用，返回 tool_call
+    CC->>TM: Spring AI 拦截到 tool_call，路由到对应 Callback
+    Note over TM: 进程内 @Tool → MethodToolCallback<br/>MCP 工具 → SyncMcpToolCallback
+    TM->>MS: SyncMcpToolCallback.call(args)
+    MS->>SV: 通过 Streamable HTTP 发 tools/call
+    SV-->>MS: @McpTool getEmployee 执行，返回 Employee JSON
+    MS-->>TM: 工具结果原路返回
+    TM-->>CC: 结果拼回 conversation history
+    CC->>LLM: 重新调用 LLM，组织自然语言
+    LLM-->>U: 返回最终答案
+```
+
 **关键认知**：
 - LLM **不知道** MCP 协议存在。它只看到"工具列表"（每个工具都有 name + description + JSON Schema），决定调用哪个、传什么参数。
 - "工具是进程内的还是 MCP 的"对 LLM 透明。Spring AI 在 `ToolCallingManager` 里路由。
@@ -583,6 +651,20 @@ chatClient.prompt()
                                                   String uid = (String) meta.get("userId");
                                                   // 用 uid 查询...
                                               }
+```
+
+**Mermaid 版多租户上下文透传时序**：
+
+```mermaid
+sequenceDiagram
+    participant A as Client（你的 Spring AI App）
+    participant CONV as ToolContextToMcpMetaConverter
+    participant SV as MCP Server
+    A->>A: prompt().toolContext(Map.of("userId","u001","tenantId","acme"))
+    A->>CONV: 调用时传 ToolContext（Map）
+    CONV->>SV: 自动转换 → McpMeta {userId, tenantId}<br/>随 tools/call 透传
+    Note over SV: @McpTool myOrders(McpMeta meta)<br/>读取 meta.get("userId") 按租户查询
+    SV-->>A: 返回当前租户的订单
 ```
 
 **关键点**：

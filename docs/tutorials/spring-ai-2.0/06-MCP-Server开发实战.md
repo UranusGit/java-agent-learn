@@ -61,6 +61,20 @@ Spring AI 2.0 提供三种写 MCP Server 的方式，**风格选择决定了项�
 | **B. 显式 Provider**（`ToolCallbackProvider` / `ToolCallback`） | 中 | 高 | 需要动态构造工具、按上下文决定暴露什么（注解扫不到的场景） |
 | **C. 原生 SDK**（`McpServerFeatures.SyncToolSpecification`） | 最多 | 最高 | 协议级控制（自定义 capability、消息拦截） |
 
+**风格选型决策**：
+
+```mermaid
+flowchart TD
+    Start(("开始：写一个 MCP Server")) --> IsDefault{"工具集相对固定<br/>的常规场景？"}
+    IsDefault -->|"是（风格 A）"| StyleA["注解驱动<br/>@McpTool / @McpResource / @McpPrompt<br/>开启 annotation-scanner 自动注册"]
+    IsDefault -->|"否"| IsDynamic{"需要动态构造工具<br/>或按上下文决定暴露？"}
+    IsDynamic -->|"是（风格 B）"| StyleB["显式 Provider<br/>ToolCallbackProvider / ToolCallback"]
+    IsDynamic -->|"否（协议级控制）"| StyleC["原生 SDK<br/>McpServerFeatures.SyncToolSpecification"]
+    StyleA --> Done(("落地"))
+    StyleB --> Done
+    StyleC --> Done
+```
+
 **强烈建议**：从 A 开始。开启 `spring.ai.mcp.server.annotation-scanner.enabled=true` 后，Bean 上的 `@McpTool`/`@McpResource`/`@McpPrompt`/`@McpComplete` 会被自动扫描注册，**不需要手写任何 `ToolCallbackProvider` Bean**。遇到 A 表达不了的再用 B，C 仅用于框架级开发。
 
 ### 1.2 同一个工具的三种写法对比
@@ -368,6 +382,18 @@ curl -i http://localhost:8081/mcp
   → 纯 server starter（stdio）
 ```
 
+**传输 starter 选型决策**：
+
+```mermaid
+flowchart TD
+    Start(("选哪个 starter？")) --> Q1{"你的项目已经<br/>是 Spring MVC？"}
+    Start --> Q2{"已经是 WebFlux<br/>或需要非阻塞？"}
+    Start --> Q3{"只在 Claude Desktop<br/>本地使用？"}
+    Q1 -->|"是"| WebMvc["spring-ai-starter-mcp-server-webmvc<br/>Servlet 栈"]
+    Q2 -->|"是"| WebFlux["spring-ai-starter-mcp-server-webflux<br/>Reactive 栈"]
+    Q3 -->|"是"| Stdio["spring-ai-starter-mcp-server<br/>stdio，无 web"]
+```
+
 ### 3.3 WebFlux 版本关键差异
 
 把 starter 从 `spring-ai-starter-mcp-server-webmvc` 换成 `spring-ai-starter-mcp-server-webflux` 即可，**yaml 里的 `protocol: STREAMABLE` 保持不变**。`type` 仍然按"Server API 类型"选（`SYNC` 或 `ASYNC`），**不是用来切 web 栈的**——web 栈由 starter 决定。
@@ -427,6 +453,20 @@ npx @modelcontextprotocol/inspector -- java -jar target/time-mcp-server.jar
 ## 5. 四类能力深度
 
 MCP Server 可以暴露四类能力，**很多团队只用 Tools**，浪费了协议的价值。
+
+**四类能力概览**：
+
+```mermaid
+flowchart TD
+    Server["MCP Server"] --> Tools["Tools 工具<br/>（@McpTool）"]
+    Server --> Resources["Resources 资源<br/>（@McpResource）"]
+    Server --> Prompts["Prompts 提示模板<br/>（@McpPrompt）"]
+    Server --> Completions["Completions 自动补全<br/>（@McpComplete）"]
+    Tools --> LLM["由 LLM 决策调用<br/>可执行、可写"]
+    Resources --> ClientRead["由 Client 主动读取<br/>只读、适合配置 / 字典 / 文档"]
+    Prompts --> UserCall["由用户一键调用<br/>专家写好的 prompt"]
+    Completions --> Suggest["输入时自动建议<br/>让 Client UI 更智能"]
+```
 
 ### 5.1 Tools：可执行的函数
 
@@ -740,6 +780,16 @@ public void addDynamicTool(ToolCallback tool) {
 3. 数据层：行级权限（同一个工具，不同租户看不同数据）
 ```
 
+**三层鉴权**：
+
+```mermaid
+flowchart TD
+    Layer1["第 1 层：传输层<br/>HTTPS + Bearer Token<br/>确认 Client 身份"]
+    Layer2["第 2 层：工具层<br/>ABAC / RBAC<br/>每个工具内部决定是否允许"]
+    Layer3["第 3 层：数据层<br/>行级权限<br/>同一个工具，不同租户看不同数据"]
+    Layer1 --> Layer2 --> Layer3
+```
+
 ### 8.2 传输层：Bearer Token
 
 ```java
@@ -1051,6 +1101,16 @@ MCP 标准错误码：
 | **A. 抛异常** | Client 收到 error，停止 | 关键写操作（支付、删除） |
 | **B. 返回 error result** | 把错误塞进 tool result，让 LLM 看到 | 大部分场景（参考 Claude Code） |
 | **C. 静默重试** | Server 内部重试，对外透明 | 临时性故障（限流、超时） |
+
+**三种失败传播策略选型**：
+
+```mermaid
+flowchart TD
+    Fail(("工具执行失败")) --> Q{"什么类型的失败？"}
+    Q -->|"关键写操作（支付、删除）"| A["策略 A：抛异常<br/>Client 收到 error 并停止"]
+    Q -->|"大部分场景（参考 Claude Code）"| B["策略 B：返回 error result<br/>错误塞进 tool result 让 LLM 看到"]
+    Q -->|"临时性故障（限流、超时）"| C["策略 C：静默重试<br/>Server 内部重试，对外透明"]
+```
 
 ### 11.3 默认策略：返回 error result（让 LLM 看到）
 

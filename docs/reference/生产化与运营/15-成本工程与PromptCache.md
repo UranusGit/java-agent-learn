@@ -41,6 +41,18 @@ L3: Model Routing（简单→Haiku，复杂→Sonnet/Opus）
 实际 LLM 调用
 ```
 
+**四级路径**：命中即返回，miss 逐级下探，最终才触发真实 LLM 调用。
+
+```mermaid
+flowchart TD
+    REQ["请求"] --> L1["L1: Prompt Cache<br/>(Anthropic/OpenAI 原生, 5min/1hr)"]
+    L1 -->|"命中"| H1["缓存读 0.1x 计费"]
+    L1 -->|"miss"| L2["L2: Semantic Cache<br/>(语义相似复用)"]
+    L2 -->|"命中"| H2["复用缓存响应"]
+    L2 -->|"miss"| L3["L3: Model Routing<br/>(简单→Haiku, 复杂→Sonnet/Opus)"]
+    L3 --> LLM["实际 LLM 调用"]
+```
+
 ### 2.1 L1：Prompt Cache（Anthropic 原生）
 
 **机制**：Anthropic 提供 5 分钟 / 1 小时两种 TTL 的 prompt cache。命中后 input tokens 按 0.1x 计费。
@@ -116,6 +128,18 @@ public class SemanticCacheAdvisor implements BaseAdvisor {
 }
 ```
 
+**语义复用流程**：相似度达阈值直接复用，否则真实调用并回写缓存。
+
+```mermaid
+flowchart TD
+    Q["用户提问"] --> E["Embedding 向量化"]
+    E --> S["向量库相似度检索 top1"]
+    S --> TH{"相似度 ≥ 0.95?"}
+    TH -->|"是"| H["直接返回缓存响应"]
+    TH -->|"否"| CALL["真实调用 LLM"]
+    CALL --> W["写入缓存(含响应)"]
+```
+
 **注意**：缓存不能跨用户（隐私）；高敏感场景禁用。
 
 ### 2.3 L3：Model Routing（按复杂度分流）
@@ -149,6 +173,16 @@ public class RoutingChatService {
 }
 ```
 
+**路由分流**：先用便宜模型分类，再按复杂度分派模型。
+
+```mermaid
+flowchart LR
+    Q["用户 query"] --> CL["便宜模型(Haiku)分类"]
+    CL --> DEC{"SIMPLE or COMPLEX?"}
+    DEC -->|"SIMPLE"| H["Haiku 回答(便宜)"]
+    DEC -->|"COMPLEX"| S["Sonnet/Opus 回答(贵)"]
+```
+
 **收益**：80% 简单请求 + 20% 复杂请求 → 综合成本可降 50-70%。
 
 ### 2.4 L4：Long Context Tradeoff
@@ -163,6 +197,16 @@ public class RoutingChatService {
 - ❌ 不要把所有文档塞进 long context
 - ✅ 用 RAG 精选 top-5 相关片段
 - ✅ Prompt Cache 优化系统提示，但不替代 RAG
+
+**取舍**：长上下文不是 RAG 的替代品，反而要警惕"Lost in the Middle"。
+
+```mermaid
+flowchart LR
+    C["长上下文 200K"] --> DEC{"怎么用?"}
+    DEC -->|"误区: 全塞 prompt"| BAD["中间位置信息召回率显著下降<br/>(Lost in the Middle)"]
+    DEC -->|"正确"| GOOD["RAG 精选 top-5 相关片段"]
+    GOOD --> P["Prompt Cache 优化系统提示<br/>但不替代 RAG"]
+```
 
 ---
 
@@ -228,6 +272,17 @@ public class CostTrackingAdvisor implements BaseAdvisor {
 | < 100M | API（Anthropic/OpenAI） | 按官方价 |
 | 100M - 1B | API + Prompt Cache | 降 50% |
 | > 1B | vLLM 自部署（开源模型） | 降 70-80% |
+
+**决策路径**：按月调用量选择方案，1B 以上才考虑自部署并先确认前提。
+
+```mermaid
+flowchart TD
+    A{"月调用量?"} -->|"低于 1 亿"| B["API(Anthropic/OpenAI) 按官方价"]
+    A -->|"1 亿 - 10 亿"| C["API + Prompt Cache 降 50%"]
+    A -->|"高于 10 亿"| D{"有 GPU 资源?<br/>接受开源模型? 有 DevOps?"}
+    D -->|"是"| E["vLLM 自部署(Llama/Qwen/DeepSeek)<br/>降 70-80%"]
+    D -->|"否"| C
+```
 
 ### 4.2 vLLM 自部署（参考 Stripe 案例）
 

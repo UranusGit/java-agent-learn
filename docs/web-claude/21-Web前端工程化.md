@@ -176,6 +176,34 @@ export const router = createBrowserRouter([
 ]);
 ```
 
+**路由树**：AppShell 为鉴权壳，页面级路由由 Suspense + RouteFallback 包裹懒加载；`/share` 为公共只读、不鉴权。
+
+```mermaid
+flowchart TD
+    Root["/ 根路由<br/>errorElement = RootError"]
+    App["AppShell 路由壳<br/>鉴权：无 token → /login"]
+    Idx["index<br/>Navigate 到 /sessions"]
+    Sess["/sessions"]
+    SessId["/sessions/:sessionId"]
+    Tasks["/tasks"]
+    TaskId["/tasks/:taskId"]
+    Apps["/approvals"]
+    Set["/settings"]
+    Share["/share/:token<br/>公共分享只读<br/>不鉴权"]
+    Login["/login"]
+
+    Root --> App
+    App --> Idx
+    App --> Sess
+    App --> SessId
+    App --> Tasks
+    App --> TaskId
+    App --> Apps
+    App --> Set
+    Root --> Share
+    Root --> Login
+```
+
 ### 3.2 路由级懒加载
 
 `SessionRoute.tsx`、`TaskRoute.tsx`、`ApprovalsRoute.tsx` 都是 chunk 大户（Monaco / mermaid / 复杂表单），通过 `lazy()` 自动分块。
@@ -220,6 +248,20 @@ function AppShell() {
 | **服务端态**（远端数据 + 缓存失效） | React Query | session 列表、task 详情、approvals |
 | **客户端态**（跨组件共享、本地派生） | Zustand | 当前 sessionId、UI 偏好、活动流 events |
 | **组件本地态**（自闭合、不共享） | useState | 输入框文本、临时 hover |
+
+**状态分层**：三类状态按共享范围分层，各自配对应工具与示例，最终都供 React 组件消费。
+
+```mermaid
+flowchart TD
+    S1["服务端态（远端数据 + 缓存失效）<br/>React Query<br/>session 列表 · task 详情 · approvals"]
+    S2["客户端态（跨组件共享、本地派生）<br/>Zustand<br/>sessionId · UI 偏好 · activityStore events"]
+    S3["组件本地态（自闭合、不共享）<br/>useState<br/>输入框文本 · 临时 hover"]
+    Comp["React 组件"]
+
+    S1 -->|"useSession / useApprovals 查询"| Comp
+    S2 -->|"store 快照 subscribe 共享"| Comp
+    S3 -->|"仅组件内部"| Comp
+```
 
 ### 4.2 全局 stores
 
@@ -422,6 +464,26 @@ export function ArtifactBoundary({ children }: { children: React.ReactNode }) {
 
 **关键**：内层边界吃掉错误，外层不白屏。Monaco 抛错时不影响用户继续发消息。
 
+**嵌套错误边界**：错误从内层组件抛向最近的边界兜底，内层吃掉错误后外层不白屏。
+
+```mermaid
+flowchart TD
+    RootEB["RootErrorBoundary<br/>全页崩 → 「出错了，刷新页面」"]
+    RouteEB["RouteErrorBoundary<br/>路由级崩 → 「本页出错了，回首页」"]
+    ArtEB["ArtifactBoundary<br/>单 artifact 崩 → 仅替换该面板"]
+    ActEB["ActivityBoundary<br/>活动流崩 → 仅替换时间线"]
+    M["MonacoEditor"]
+    F["ActivityFeed"]
+
+    RootEB --> RouteEB
+    RouteEB --> ArtEB
+    RouteEB --> ActEB
+    ArtEB --> M
+    ActEB --> F
+    M -.->|"抛错被内层吃掉，不影响继续发消息"| ArtEB
+    F -.->|"抛错被内层吃掉"| ActEB
+```
+
 ### 6.3 路由级 errorElement
 
 ```tsx
@@ -510,6 +572,24 @@ function SessionLayout({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+```
+
+**布局适配**：按断点区分桌面三栏与移动端底部 tab，三栏在窄屏收敛为一栏。
+
+```mermaid
+flowchart TD
+    Q{"useMediaQuery<br/>min-width 1024px?"}
+    Desk["桌面：三栏 grid<br/>280px 侧栏 · 对话 · 360px 活动流"]
+    Mob["移动：底部 tab 切换<br/>三栏变一栏"]
+    T1["chat 对话"]
+    T2["activity 活动"]
+    T3["artifact 产物"]
+
+    Q -->|"是"| Desk
+    Q -->|"否"| Mob
+    Mob --> T1
+    Mob --> T2
+    Mob --> T3
 ```
 
 ### 7.4 触摸优化

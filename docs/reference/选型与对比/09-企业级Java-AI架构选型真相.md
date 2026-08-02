@@ -36,6 +36,28 @@
 | **声明式派** | 部分欧洲企业、原型项目 | LangChain4j + AiServices（无 Spring） | 接口驱动、最接近 Python LangChain |
 | **第三方扩展派** | 复杂 Agent 场景 | Spring AI + LangGraph4j / Alibaba Graph / Embabel | 单一 Web 层框架 + 独立编排引擎 |
 
+**四大阵营**：企业方案按主框架与生态分四派，彼此基本互斥。
+
+```mermaid
+flowchart LR
+    ROOT["企业方案 4 大阵营"] --- SP
+    ROOT --- QK
+    ROOT --- DC
+    ROOT --- TH
+    subgraph SP["Spring 派(VMware/绝大多数企业)"]
+        SP1["Spring AI 2.0<br/>全栈统一 + Advisor 链"]
+    end
+    subgraph QK["Quarkus 派(Red Hat 官方推荐)"]
+        QK1["LangChain4j + Quarkus<br/>云原生 / GraalVM 原生镜像"]
+    end
+    subgraph DC["声明式派(欧洲企业/原型)"]
+        DC1["LangChain4j + AiServices<br/>接口驱动, 最像 Python LangChain"]
+    end
+    subgraph TH["第三方扩展派(复杂 Agent)"]
+        TH1["Spring AI + LangGraph4j / Alibaba Graph / Embabel"]
+    end
+```
+
 ### 2.1 关键证据：Red Hat 官方立场
 
 Red Hat（Quarkus 母公司）的 Quarkus LangChain4j 文档明确表态：
@@ -107,6 +129,18 @@ Spring AI 1.0 GA 已经覆盖了 80% 企业场景：
 
 混用 = 团队每个新人都得问"这个逻辑放 Spring AI 还是 LangChain4j？"，没有清晰答案时就是无尽扯皮。单框架有明确归属。
 
+**三个否决理由**：混用代价集中在这三处，最终导向单框架。
+
+```mermaid
+flowchart TD
+    M["混用 Spring AI + LangChain4j"] --> R1["维护成本翻倍<br/>两套依赖 / 两套 @Tool / 两套 ChatMemory"]
+    M --> R2["收益边际递减<br/>Spring AI 1.0 已覆盖 80% 场景"]
+    M --> R3["团队认知负担<br/>每个新人都要问'放哪边'"]
+    R1 --> C1["结论: 企业不混用<br/>单框架 + Workflow 是主流"]
+    R2 --> C1
+    R3 --> C1
+```
+
 ---
 
 ## 4. Anthropic 5 大 Workflow 模式：企业 Agent 的真实形态
@@ -160,6 +194,33 @@ for (int i = 0; i < maxIter; i++) {
 }
 ```
 
+**五种模式形态**：串联、并行、路由、编排-工人、评估-优化循环，全部可在 Spring AI 单框架内实现。
+
+```mermaid
+flowchart LR
+    subgraph PC["① Prompt Chaining(串联)"]
+        PC1["写初稿"] --> PC2["校对"] --> PC3["翻译成英文"]
+    end
+    subgraph PA["② Parallelization(并行)"]
+        PA1["分段1"] & PA2["分段2"] & PA3["分段3"] --> SUM["汇总结果"]
+    end
+    subgraph RT["③ Routing(路由)"]
+        RT0["分类"] --> RT1["技术 → techAgent"]
+        RT0 --> RT2["账单 → billingAgent"]
+        RT0 --> RT3["其他 → generalAgent"]
+    end
+    subgraph OW["④ Orchestrator-Workers(编排-工人)"]
+        ORC["编排者(决定派发)"] --> W1["Worker1"]
+        ORC --> W2["Worker2"]
+        ORC --> W3["Worker3"]
+    end
+    subgraph EO["⑤ Evaluator-Optimizer(评估-优化)"]
+        G["生成 output"] --> EV{"评估 PASS?"}
+        EV -->|"否"| IMP["根据反馈改进"] --> G
+        EV -->|"是"| DONE["输出"]
+    end
+```
+
 **关键认知**：以上 5 种模式**全部可以用 Spring AI 1.0 单框架实现**，不需要 LangChain4j。
 
 ### 4.3 何时才需要"真正的 Agent"
@@ -190,6 +251,17 @@ for (int i = 0; i < maxIter; i++) {
 | 复杂多 Agent 状态机 | **Spring AI Alibaba Graph** | LangGraph4j |
 | 探索式 Agent（路径无法预知） | **Embabel**（实验性） | Spring AI + 手写 ReAct |
 | 跨语言/跨团队 Agent 通信 | **MCP + A2A 协议** | 各框架原生方案 |
+
+**选型决策**：按你的场景对号入座。
+
+```mermaid
+flowchart TD
+    Q{"你的场景?"} -->|"Spring Boot 企业项目(80%)"| A["Spring AI 1.0<br/>国内可换 Spring AI Alibaba"]
+    Q -->|"Quarkus 云原生"| B["Quarkus LangChain4j"]
+    Q -->|"复杂多 Agent 状态机"| C["Spring AI Alibaba Graph<br/>第二选择: LangGraph4j"]
+    Q -->|"探索式 Agent(路径无法预知)"| D["Embabel(实验性)<br/>或 Spring AI + 手写 ReAct"]
+    Q -->|"跨语言/跨团队通信"| E["MCP + A2A 协议"]
+```
 
 ---
 
@@ -271,6 +343,14 @@ for (int i = 0; i < maxIter; i++) {
 - **适用**：押注未来标准、想做工具/平台层的人
 - **投入**：1 个月（持续跟进）
 - **产出**：成为生态早期玩家，简历有差异化亮点
+
+**ROI 排序**：三条发展方向按投入产出排列。
+
+```mermaid
+flowchart LR
+    D1["方向 1(最高 ROI)<br/>Spring AI 1.0 全栈 + Anthropic Workflow<br/>投入 2-3 个月"] --> D2["方向 2(中 ROI)<br/>编排引擎 Alibaba Graph / LangGraph4j<br/>方向 1 之后 1-2 个月"]
+    D2 --> D3["方向 3(高 ROI 但赌性强)<br/>MCP / A2A 协议生态<br/>1 个月持续跟进"]
+```
 
 ### 不推荐的方向
 

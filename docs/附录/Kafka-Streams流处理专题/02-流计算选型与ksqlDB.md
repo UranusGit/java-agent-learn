@@ -35,6 +35,16 @@
 
 > **关键区分（记住这三个词）**：**库 vs 集群 vs SQL 服务**。Kafka Streams 是"库"，往你现有进程里塞；Flink 是"集群"，你得再部署一套；ksqlDB 是"服务"，你在它上面写 SQL。三者的选型本质是问"**我愿意为计算额外部署和维护什么**"。
 
+**三选手架构对比**：
+
+```mermaid
+flowchart LR
+    KAFKA["Kafka topics"] --> KS["Kafka Streams<br/>Java 库 · 嵌 Spring Boot 进程<br/>零额外部署"]
+    KAFKA --> FLINK["Flink<br/>独立计算集群<br/>JobManager + TaskManager"]
+    KAFKA --> KSQL["ksqlDB<br/>独立服务 + SQL 引擎<br/>cp-ksqldb-server"]
+    KSQL -.->|"底层就是 Kafka Streams"| KS
+```
+
 ### 1.2 Kafka Streams：库（和 01 同一套）
 
 [01 第 1 章](./01-Kafka-Streams流处理实战.md#-第-1-章为什么需要流处理批处理-vs-流处理) 已铺过：`@EnableKafkaStreams` + `StreamsBuilder`，`builder.stream("orders")` 读流 → 算子链 → `to()` 写回。它是**库**意味着：
@@ -94,6 +104,17 @@ ksqlDB 把 Kafka Streams 的 DSL **包成 SQL**——`CREATE STREAM`、`CREATE T
    └─ 不会 / 想用 SQL 快速搞定 → ksqlDB
    规模大、要重 ETL / 批流统一？
    └─ 是 → Flink（哪怕进出都是 Kafka，量级和复杂度到了也得换）
+```
+
+**选型决策树**：
+
+```mermaid
+flowchart TD
+    Q1{"数据输入输出都是 Kafka topic？"} -->|"不是"| R1["Flink（连接器丰富）<br/>或自研消费 + 写库"]
+    Q1 -->|"是"| Q2{"团队会 Java 吗？"}
+    Q2 -->|"会，且要复杂逻辑"| R2["Kafka Streams"]
+    Q2 -->|"不会 / 想用 SQL 快速搞定"| R3["ksqlDB"]
+    Q2 -->|"规模大、要重 ETL / 批流统一"| R4["Flink<br/>（哪怕进出都是 Kafka 也得换）"]
 ```
 
 > **本篇的立场**：主推 **Kafka Streams**（和 01 一致，因为我们的数据源就是 Kafka、团队是 Spring 技术栈），但**用第 2 章把 ksqlDB 也讲透**——很多"临时分析"场景，起一个 ksqlDB 容器比写一整套 Java 拓扑快得多。第 3~5 章则把 Kafka Streams 推到生产级。
@@ -276,6 +297,15 @@ ksqlDB 不是又造了一个轮子，它是 **Kafka Streams 的 SQL 壳**：
 你的 SQL → ksqlDB 编译器 → 生成 Kafka Streams 拓扑 → 同一个 RocksDB + changelog 容错
 ```
 
+**SQL 到状态的链路**：
+
+```mermaid
+flowchart LR
+    SQL["你的 SQL"] --> COMP["ksqlDB 编译器"] --> TOPO["生成 Kafka Streams 拓扑"]
+    TOPO --> ROCK["RocksDB 本地状态存储"]
+    TOPO --> CL["changelog topic 容错"]
+```
+
 - 状态存储：都是本地 RocksDB（01 第 4 章那个概念）。
 - 容错：都靠 Kafka changelog topic 重建状态。
 - 所以 01 学的"窗口/JOIN/状态"概念，在 ksqlDB 里**全部复用**。
@@ -381,6 +411,18 @@ public class CustomStoreTopology {
 ```
 
 > **`process` 与 `transform`**：`process()` 用 `Processor` 接口（上面这种），`transform()` 用 `Transformer` 接口——都要求把 store 名作为最后一个参数传进去。**自定义状态的本质就是：自己 `get`/`put` 这个 store，而不是依赖 DSL 的 `count`/`aggregate` 自动维护。**
+
+**自定义状态存储拓扑**：
+
+```mermaid
+flowchart LR
+    SB["Stores.persistentKeyValueStore<br/>'product-summary'"] --> ADD["builder.addStateStore"]
+    ADD --> PROC["process() 绑定 store"]
+    ORD["orders topic"] --> PROC
+    PROC -->|"手工 get / put 维护"| ST["KeyValueStore<br/>product-summary"]
+    PROC --> OUT["product-summary-output topic"]
+    ST --> IQ["交互式查询<br/>getQueryableStore(...)"]
+```
 
 ### 3.3 验证：交互查询自定义 store
 
@@ -723,6 +765,26 @@ public class DistributedQueryController {
 ```
 
 > **为什么能转发**：`queryMetadataForKey` 返回的 `activeHost` 正是持有该 key 状态的实例的 `application.server` 地址。**REST 化之后，无论打哪个实例，都能拿到正确结果**——这就是"分布式交互查询"。
+
+**核心时序（本机查询 / 异地转发）**：
+
+```mermaid
+sequenceDiagram
+    participant CL as 调用方
+    participant B as 实例 B (8081)
+    participant A as 实例 A (8080)
+    CL->>B: GET /iq/p001（状态在 A）
+    B->>B: queryMetadataForKey('product-total', p001)
+    Note over B: owner = 实例 A
+    alt 本机查询（owner 是自己）
+        B->>B: 直接查本地 store
+    else 异地转发（owner 是 A）
+        B->>A: GET http://A:8080/iq/p001
+        A->>A: 查本地 store
+        A-->>B: 返回 2
+    end
+    B-->>CL: 2（对调用方透明）
+```
 
 ### 5.4 窗口聚合 store 的 REST 化（补全类型）
 

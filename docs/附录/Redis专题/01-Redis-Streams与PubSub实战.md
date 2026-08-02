@@ -23,6 +23,22 @@
 >
 > **Stream 像录播节目库**——每期节目都**存着**，你什么时候来都能从第一期开始补看，也能从第 5 期接着看。
 
+**Pub/Sub 与 Stream 的本质区别**：
+
+```mermaid
+flowchart LR
+    subgraph pub["Pub/Sub 电台广播"]
+        direction TB
+        br["播音员喊一嗓子"] --> r1["当时开着的收音机收到"]
+        br -.->|"没开的（晚加入）听不到<br/>不补播"| r2["晚加入者错过"]
+    end
+    subgraph str["Stream 录播节目库"]
+        direction TB
+        save["每期节目都存着"] --> p1["随时能从第 1 期补看"]
+        save --> p2["也能从第 5 期接着看"]
+    end
+```
+
 这就是为什么管数分离文档里**两个都用**：Stream 管持久回放（晚加入/断线重连能补看前文），Pub/Sub 管实时通知（新 chunk 立刻推给在线订阅者）。**各司其职，不是二选一。**
 
 ---
@@ -187,6 +203,17 @@ Stream (10000 条)
 
 **同一个 group 内**，每条消息只被一个消费者拿到。**不同 group** 各自独立消费全量（一个 group 像一个独立的"读书小组"，各自从头读到尾）。
 
+**消费组分担与独立**：
+
+```mermaid
+flowchart TD
+    S["Stream（10000 条）"] --> G1["消费组 workers<br/>同组内每条消息只被一个消费者处理"]
+    G1 --> CA["消费者 A → 处理 1,4,7,10..."]
+    G1 --> CB["消费者 B → 处理 2,5,8,11..."]
+    G1 --> CC["消费者 C → 处理 3,6,9,12..."]
+    S --> G2["另一消费组<br/>独立消费全量（从头读到尾）"]
+```
+
 ### 4.2 三步走
 
 **① 创建消费组**（只做一次）：
@@ -227,6 +254,21 @@ redis.opsForStream().ack("orders", "workers", record.getId());
 对比 Pub/Sub：消费者崩了，消息直接没了。
 
 > **代价**：at-least-once 意味着**同一条消息可能被处理多次**（处理完了、ACK 之前崩了，重启又处理一遍）。所以消费者代码必须是**幂等**的（重复处理不出错）。这是分布式系统的通用要求。
+
+**消息生命周期（ACK 与 PEL）**：
+
+```mermaid
+stateDiagram-v2
+    state "消息在 Stream 中" as IN_STREAM
+    state "待确认列表 PEL" as PEL
+    state "处理完成已确认" as DONE
+
+    [*] --> IN_STREAM
+    IN_STREAM --> PEL: XREADGROUP 消费者领取
+    PEL --> DONE: XACK 确认处理完
+    PEL --> PEL: 消费者崩溃未 ACK，XAUTOCLAIM/XCLAIM 转给其他消费者重新处理
+    DONE --> [*]
+```
 
 ### 4.4 阻塞式监听（生产推荐用 StreamMessageListenerContainer）
 
@@ -310,6 +352,16 @@ redis.expire("orders", Duration.ofHours(24)).subscribe();
 - **吞吐不高（万级以内）、要低延迟、不想多引中间件、数据保留不需要很久** → **Redis Stream**。比如管数分离的 chunk 流（每次 run 几百条、跑完就清）。
 - **高吞吐、跨多个服务消费、数据要长期保留（审计/回溯）、需要横向扩展** → **Kafka**。比如全站用户行为日志、订单事件总线。
 - **管数分离文档的演进正好体现这个**：第 4-8 章用 Redis Stream（轻量、够用），第 9 章因为"要跨服务消费 + 保留 30 天"才升级 Kafka。
+
+**选型决策**：
+
+```mermaid
+flowchart TD
+    Q{"怎么选？"} --> A["吞吐不高（万级以内）<br/>要低延迟、不想多引中间件<br/>数据保留不需要很久"]
+    Q --> B["高吞吐<br/>跨多个服务消费<br/>数据要长期保留（审计/回溯）<br/>需要横向扩展"]
+    A --> R["Redis Stream<br/>（管数分离第 4-8 章用）"]
+    B --> K["Kafka<br/>（第 9 章升级）"]
+```
 
 > **一句话**：**Redis Stream 是"够用就好"的轻量队列，Kafka 是"为海量而生"的重型平台。** 别一上来就 Kafka——很多场景 Redis Stream 足够，且省一个中间件。
 
@@ -427,6 +479,35 @@ public class StreamBus {
         return String.valueOf(r.getValue().get("chunk"));
     }
 }
+```
+
+**StreamBus 协同流程（写 + 读）**：
+
+```mermaid
+sequenceDiagram
+    participant G as 生产者（trigger）
+    participant SB as StreamBus
+    participant R as Redis（Stream + Pub/Sub）
+    participant C as 消费者（subscribe）
+
+    Note over G,R: 写路径
+    G->>SB: write("你")
+    SB->>R: XADD 持久写入 Stream
+    SB->>R: PUBLISH 广播到频道（在线订阅者立刻收到）
+    G->>SB: writeEnd() 写 __END__
+    SB->>R: XADD + PUBLISH __END__
+
+    Note over SB,C: 读路径（晚加入/断线重连）
+    C->>SB: subscribe(token)
+    SB->>R: range() 回放全部历史
+    R-->>SB: "你","好",...（若含 __END__ 则 ended=true）
+    alt 历史里已有 __END__（生成已完成）
+        SB-->>C: 不连 Pub/Sub，历史回放完即结束
+    else 历史里没有 __END__（生成进行中）
+        SB->>R: listener.receive() 连接 Pub/Sub 接实时
+        R-->>SB: 新 chunk
+    end
+    SB-->>C: concatWith 先过去后未来 → takeUntil("__END__") 关流<br/>filter 掉 __END__ 后推给前端
 ```
 
 ### 8.2 逐行拆解——写（`write`）

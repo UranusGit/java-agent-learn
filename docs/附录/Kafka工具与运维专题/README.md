@@ -7,4 +7,12 @@
 | **01** | [Kafka 可视化工具推荐](./01-Kafka可视化工具推荐.md) | 用图形工具观察消息、调试 topic——开发排障利器 |
 | **02** | [Conduktor 纳管 Kafka 部署手册](./02-Conduktor纳管Kafka部署手册.md) | 用 Conduktor 纳管 Kafka 集群——进阶运维 |
 
+**学习路线**：
+
+```mermaid
+flowchart LR
+    PRE["Kafka 消息队列实战专题 01<br/>（概念 + KafkaTemplate / @KafkaListener）"] --> T01["01 Kafka 可视化工具推荐<br/>看消息 · 调试 topic"]
+    T01 --> T02["02 Conduktor 纳管 Kafka 部署手册<br/>双容器独立部署 · 纳管集群"]
+```
+
 > **建议**：先学 [Kafka 消息队列实战专题](../Kafka消息队列实战专题/) 的 01（概念 + `KafkaTemplate`/`@KafkaListener` 收发），再按需回来读这里的工具/运维。

@@ -34,6 +34,35 @@
 
 **心法**：单租户系统是"做加法"——加功能；多租户系统是"做减法"——把任何会跨租户串数据的代码、任何会让一个租户拖垮全平台的资源都隔离掉。
 
+**平台分层架构**：
+
+```mermaid
+flowchart TD
+    subgraph Iso["隔离层"]
+        ISO1["数据隔离<br/>向量库 / ChatMemory / 文件"]
+        ISO2["资源隔离<br/>quota / rate limit / 并发"]
+        ISO3["模型隔离<br/>per-tenant 模型权限"]
+    end
+    subgraph Orch["编排层"]
+        ORC1["Agent 注册中心"]
+        ORC2["Workflow 引擎"]
+        ORC3["MCP Hub<br/>连接所有工具"]
+    end
+    subgraph Shared["共享层"]
+        SH1["推理网关（01 篇）"]
+        SH2["向量库（02 篇）"]
+        SH3["Tool 仓库"]
+    end
+    subgraph Gov["治理层"]
+        GOV1["配额与计费（04 篇）"]
+        GOV2["监控与告警（05 篇）"]
+        GOV3["租户运营后台"]
+    end
+    Iso --> Orch
+    Orch --> Shared
+    Shared --> Gov
+```
+
 ---
 
 ## 1. 多租户的核心矛盾
@@ -190,6 +219,27 @@ ExecutorService tenantAwareExecutor = new ThreadPoolExecutor(...) {
 };
 ```
 
+**租户上下文传递**：
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant F as TenantContextFilter
+    participant S as 业务 Service
+    participant E as TenantAwareExecutor
+    participant T as 异步线程
+
+    C->>F: HTTP 请求（tenantId 取自 JWT / Header / Path）
+    F->>F: tenantService.loadContext 加载租户上下文
+    F->>F: TenantContext.set(ctx) 写入 ThreadLocal
+    F->>S: chain.doFilter 放行进入业务
+    S->>E: 提交异步任务
+    E->>E: 捕获当前 TenantContext
+    E->>T: 新线程执行（先 set 再 run）
+    T-->>S: 返回结果
+    Note over F: finally 中 TenantContext.clear()<br/>防止线程池串租户
+```
+
 **这是多租户系统最常见的坑**：忘了传 TenantContext，结果异步线程里查到别人的数据。
 
 ---
@@ -204,6 +254,14 @@ ExecutorService tenantAwareExecutor = new ThreadPoolExecutor(...) {
 数据库层（partition / collection）  ← 性能优化，可选
         ↓
 部署层（独立 DB / 独立服务）  ← KA 才上，最重
+```
+
+**三层隔离策略**：
+
+```mermaid
+flowchart TD
+    APP["应用层<br/>强制 filter<br/>第一道防线 · 永远不能省"] --> DB["数据库层<br/>partition / collection<br/>性能优化 · 可选"]
+    DB --> DEP["部署层<br/>独立 DB / 独立服务<br/>KA 才上 · 最重"]
 ```
 
 ### 3.2 关系库隔离
@@ -636,6 +694,30 @@ public class McpProxyRouter {
 - Client 连接池化（避免每次重建）
 - tools/list 结果缓存 60s（很少变）
 
+**MCP 工具调用时序**：
+
+```mermaid
+sequenceDiagram
+    participant A as 平台 Agent
+    participant H as MCP Hub
+    participant Sub as McpSubscriptionService
+    participant Quota as QuotaService
+    participant R as McpProxyRouter
+    participant M as MCP Server
+
+    A->>H: callTool(toolName, args)
+    H->>Sub: subscription.canAccess(tenantId, serverId, toolName)
+    Sub-->>H: 通过（无权限抛 McpForbiddenException）
+    H->>Quota: quota.checkMcpQuota(tenantId, serverId)
+    Quota-->>H: 配额检查通过
+    H->>H: AuditContext.set 审计埋点
+    H->>R: router.forward(server, CallToolRequest)
+    R->>M: 熔断保护下调用 callTool
+    M-->>R: CallToolResult
+    R-->>H: 返回结果
+    H-->>A: 返回 CallToolResult
+```
+
 ### 6.5 租户自建 MCP Server
 
 ```java
@@ -818,6 +900,24 @@ Service     Engine                          (01 篇)      Service
 PostgreSQL    Temporal      MCP Server Pool  Cloud LLM    S3
 + pgvector                                                   ↓
                                                        Redis (cache)
+```
+
+**单机房部署架构**：
+
+```mermaid
+flowchart TD
+    LB["LB / Nginx"] --> GW["API Gateway<br/>多实例"]
+    GW --> AgentSvc["Agent Service"]
+    GW --> WF["Workflow Engine"]
+    GW --> Hub["MCP Hub"]
+    GW --> LLMGW["LLM Gateway（01 篇）"]
+    GW --> Attach["Attachment Service"]
+    AgentSvc --> PG["PostgreSQL + pgvector"]
+    WF --> Temporal["Temporal"]
+    Hub --> Pool["MCP Server Pool"]
+    LLMGW --> Cloud["Cloud LLM"]
+    Attach --> S3["S3"]
+    Attach --> Redis["Redis（cache）"]
 ```
 
 ### 10.2 多机房部署（KA / 合规需求）

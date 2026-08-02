@@ -35,6 +35,21 @@ Action: query_workstation
 ...
 ```
 
+**ReAct 推理循环**：
+
+```mermaid
+flowchart TD
+    START(["用户问题"]) --> TH1["Thought：我需要先查张三的工号"]
+    TH1 --> AC1["Action：query_employee_id"]
+    AC1 --> AI1["Action Input：name=张三"]
+    AI1 --> OB1["Observation：工号是 10086"]
+    OB1 --> TH2["Thought：现在查工位"]
+    TH2 --> AC2["Action：query_workstation"]
+    AC2 --> CHK{"任务未完成？"}
+    CHK -->|"是，继续推理循环"| TH1
+    CHK -->|"否，得到答案"| DONE(("最终回复"))
+```
+
 **演进**：现代主流模型（GPT-4 / Claude / Qwen）已通过 **Function Calling / Tool Use API** 把这种文字格式收敛进 JSON，可靠性大幅提升。**ReAct 思想仍在用，只是不再走文本解析**。
 
 ### 2.2 Plan-and-Execute
@@ -136,6 +151,23 @@ Assistant agent = AiServices.builder(Assistant.class)
 > 用户：帮我查下用户服务有几个副本，CPU 高不高？
 > Agent：① 调 `k8s_get_deploy` → 拿到 replicas=3 ② 调 `prom_query` → CPU 65%
 
+**调用时序**：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as Agent（Java 侧）
+    participant K as K8sClientTool
+    participant P as PromClientTool
+
+    U->>A: 帮我查下用户服务有几个副本，CPU 高不高？
+    A->>K: 调 k8s_get_deploy
+    K-->>A: replicas = 3
+    A->>P: 调 prom_query
+    P-->>A: CPU 65%
+    A-->>U: 汇总回答
+```
+
 ### 架构（强烈建议 Java 侧实现）
 
 ```
@@ -144,6 +176,17 @@ Spring Boot (LangChain4j)
    ├── Tool: PromClientTool（用 WebClient 调 Prometheus HTTP API）
    ├── Tool: LogClientTool（调 Loki API）
    └── ChatMemory: Redis-backed
+```
+
+**运维助手架构**：
+
+```mermaid
+flowchart TD
+    SB["Spring Boot（LangChain4j）"]
+    SB --> K8["Tool: K8sClientTool<br/>fabric8 io.fabric8:kubernetes-client"]
+    SB --> PT["Tool: PromClientTool<br/>WebClient 调 Prometheus HTTP API"]
+    SB --> LT["Tool: LogClientTool<br/>调 Loki API"]
+    SB --> MEM["ChatMemory：Redis-backed"]
 ```
 
 ### 关键收获

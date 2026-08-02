@@ -25,6 +25,19 @@ reactive-stock-quotes/
     └── QuoteController.java               # SSE 接口
 ```
 
+**项目结构**：
+
+```mermaid
+flowchart TD
+    ROOT["reactive-stock-quotes"] --> POM["pom.xml"]
+    ROOT --> SRC["src/main/java/com/example/reactivestocks"]
+    SRC --> APP["ReactiveStocksApplication.java<br/>启动类"]
+    SRC --> QUOTE["Quote.java<br/>报价模型 record"]
+    SRC --> ALERT["Alert.java<br/>告警模型 record"]
+    SRC --> ENGINE["QuoteEngine.java ★<br/>行情引擎：Reactor 流水线的家"]
+    SRC --> CONT["QuoteController.java<br/>SSE 接口"]
+```
+
 > **一句话分工**：`QuoteEngine` 是"发动机"——里面跑着一条 Reactor 流水线，每秒产出一条报价；`QuoteController` 是"仪表盘"——把发动机的数据通过 SSE 推给浏览器。**Reactor 的全部能力几乎都写在 `QuoteEngine` 里**，Controller 只是把 `Flux` return 出去让框架订阅。
 
 ### 1.2 pom 关键依赖
@@ -377,6 +390,21 @@ private Alert evaluateAlert(Quote quote) {
 
 > **验证：** 把完整代码跑起来后（第 5 章），**同时开两个浏览器窗口**访问 `localhost:8080/api/quotes`，两个窗口看到的是**同一份**行情（同一时刻价格一致），而不是各自生成一套——这就是"热流共享"。**能力③ `flatMap`、能力⑧ `Sinks.Many` 落地。**
 
+**热流广播架构**：
+
+```mermaid
+flowchart TD
+    ENG["QuoteEngine 流水线<br/>每秒一条报价"] --> DIS["flatMap: dispatch<br/>异步广播到多路"]
+    DIS -->|"路1"| QB["quoteBus Sinks.Many<Quote><br/>multicast + 背压缓冲 1024 ⑪⑫"]
+    DIS -->|"路2"| EVAL["evaluateAlert<br/>涨跌幅 ≥ 1%?"]
+    EVAL -->|"是"| AB["alertBus Sinks.Many<Alert><br/>背压缓冲 256 ⑪⑫"]
+    EVAL -->|"否"| NONE["空 Mono<br/>不产生告警"]
+    QB --> B1["浏览器1 /api/quotes"]
+    QB --> B2["浏览器2 /api/quotes"]
+    QB --> B3["将来的统计模块"]
+    AB --> A1["/api/quotes/alert 订阅者"]
+```
+
 ### 3.4 第四层：加背压 `onBackpressureBuffer`——慢消费者不丢数据
 
 **为什么加**：假如有个订阅者（比如网络很慢的手机、或正在做繁重计算的统计模块）消费速度跟不上，行情每秒来一条，它消化不完，数据就会积压，最后 OOM 或丢数据。
@@ -428,6 +456,22 @@ Flux.interval(Duration.ofSeconds(1))
 > **SSE 推送在哪个线程？** 请求进来时由 Netty 事件循环线程 `reactor-http-nio-N` 接收；我们 return 的 `Flux` 由 WebFlux 替我们 `subscribe`（[01](./01-Reactor响应式入门.md) 第 4 章）。数据从 `quoteBus` 出来时，业务链跑在 `parallel` 上，WebFlux 把 SSE 帧写回 socket 的动作由事件循环线程完成——**两条线程各司其职，互不阻塞**。第 5 章验证时，你会看到日志里两种线程名同时出现。
 
 > **验证：** 观察日志，行情生成/推送的业务日志线程名都是 `parallel-N`；而在请求日志里能看到 `reactor-http-nio-N`（Netty 事件循环线程）在处理 HTTP 连接。**能力⑥ `subscribeOn`/`publishOn` 落地。**
+
+**QuoteEngine 完整流水线（五层合体）**：
+
+```mermaid
+flowchart TD
+    IV["Flux.interval 每秒 tick ①"] --> SO["subscribeOn(parallel) ⑨<br/>源在 parallel 起跑"]
+    SO --> MAP["map: nextQuote ②<br/>生成报价 / 抛临时故障"]
+    MAP --> FIL["filter: 价格 > 0 ③<br/>挡掉负价格毛刺"]
+    FIL --> DN["doOnNext: 行情日志 ⑤<br/>旁路观察不改数据"]
+    DN --> PO["publishOn(parallel) ⑩<br/>闸门：处理段切 parallel"]
+    PO --> FLAT["flatMap: dispatch ④<br/>塞 quoteBus + 评估告警"]
+    FLAT --> RT["retryWhen ⑧<br/>临时故障指数退避重试"]
+    RT --> DE["doOnError ⑥<br/>重试耗尽，打日志"]
+    DE --> OER["onErrorResume ⑦<br/>切换兜底流 degradedStream"]
+    OER --> SUB["subscribe<br/>告警塞进 alertBus ⑫"]
+```
 
 ---
 
@@ -496,6 +540,23 @@ public class QuoteController {
 ### 4.3 为什么直接 `return Flux` 就行
 
 > **关键认知**（[01](./01-Reactor响应式入门.md) 第 4 章）：Controller 把 `Flux` return 出去，**Spring 框架替我们 `subscribe`**，我们不需要写 `.subscribe()`。框架订阅后，行情才开始真正流动，然后被序列化成 SSE 写回响应。**铁律：WebFlux 里永远不要 `.block()`**——这里我们没有，所以全程非阻塞。
+
+**SSE 推送时序**：
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器
+    participant C as QuoteController
+    participant E as QuoteEngine
+    participant N as Netty事件循环
+    B->>C: GET /api/quotes（SSE 长连接）
+    C->>E: engine.quotes() 取 quoteBus.asFlux()
+    Note over C: return Flux，框架替我们 subscribe
+    loop 每秒
+        E->>N: 报价经 SSE 帧写回 socket<br/>业务链在 parallel-N
+        N-->>B: event:quote + data 报价 JSON
+    end
+```
 
 ### 4.4 验证：curl 两个接口
 
@@ -907,6 +968,17 @@ public Flux<ServerSentEvent<Quote>> top3() {
 | `sort(Comparator...)` | 每个窗口内部排序（有限子流才能排序） | 排序操作符，只对"有限的流"有意义 |
 | `take(3)` | 只取排序后的前 3 个就结束该窗口 | [02](./02-Flux方法速查.md) 里的"取前 N 个" |
 | `flatMap(...)` | 把每个窗口的结果展平回 `Flux<Quote>` | 再次实战 `flatMap` 的"一对多展开" |
+
+**top3 窗口处理流程**：
+
+```mermaid
+flowchart LR
+    INF["无限行情流"] --> WIN["window(10s)<br/>切成一段段有限子流"]
+    WIN --> SORT["sort 涨跌幅降序<br/>窗口内排序"]
+    SORT --> TAKE["take(3)<br/>只取前 3"]
+    TAKE --> FLAT["flatMap 展平回 Flux"]
+    FLAT --> SSE2["SSE 推 top3 事件"]
+```
 
 > **验证：** `curl -N localhost:8080/api/quotes/top3`，每 10 秒"爆发" 3 条报价，且这 3 条是最近 10 秒里涨幅最高的。试着把 `take(3)` 改成 `take(1)`，就是"只推涨幅冠军"。
 

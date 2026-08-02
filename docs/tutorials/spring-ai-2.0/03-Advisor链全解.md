@@ -22,6 +22,17 @@ Spring AI 2.0 的 Advisor 链是一条**双向流水线**：
 请求出去 ←
 ```
 
+**Mermaid 版双向流水线**：
+
+```mermaid
+flowchart TD
+    In["请求进来"]
+    In --> B["before() 按 order 升序执行<br/>（小→大）"]
+    B --> M["ChatModel（真正调 LLM）"]
+    M --> A["after() 按 order 降序执行<br/>（大→小）"]
+    A --> Out["请求出去"]
+```
+
 **记忆口诀**：**"小在外、大在内；外层包内层"**。
 
 ```
@@ -64,6 +75,16 @@ Advisor (extends Ordered)              ← 最顶层，只有 getName() + getOrd
 │   └── 分别 implements CallAdvisor + StreamAdvisor，各写各的
 └── 业务只走一种模式（比如内部 SDK 永远 .call()，从不 .stream()）
     └── 只 implements 你需要的那一个，省代码
+```
+
+**Mermaid 版选型决策树**：
+
+```mermaid
+flowchart TD
+    Q{"call 和 stream 下<br/>业务逻辑一样吗？"}
+    Q -->|"是（90%：改 prompt / 加 system / 记日志）"| A["用 BaseAdvisor<br/>只写 before()/after()，框架自动处理 call/stream"]
+    Q -->|"不一样（流式要聚合才能判断等）"| B["implements CallAdvisor + StreamAdvisor<br/>各写各的，保持逻辑一致"]
+    Q -->|"业务只走一种模式<br/>（如内部 SDK 永远 .call()）"| C["只 implements 需要的那一个<br/>省代码"]
 ```
 
 ### 1.4 BaseAdvisor 用法（推荐）
@@ -187,6 +208,20 @@ Spring AI 设计者预留的"插槽"是 200/300/400/500... 每个 advisor 占一
 用户请求 ──→ A.before ──→ B.before ──→ C.before ──→ ChatModel.call
                                                        │
 用户响应 ←── A.after  ←── B.after  ←── C.after  ←──────┘
+```
+
+**Mermaid 版 before/after 顺序**：
+
+```mermaid
+flowchart LR
+    U["用户请求"] --> AB["A.before<br/>(order=0)"]
+    AB --> BB["B.before<br/>(order=100)"]
+    BB --> CB["C.before<br/>(order=200)"]
+    CB --> CM["ChatModel.call"]
+    CM --> CA["C.after"]
+    CA --> BA["B.after"]
+    BA --> AA["A.after"]
+    AA --> UR["用户响应"]
 ```
 
 **关键事实**：
@@ -360,6 +395,17 @@ Person person = chatClient.prompt()
 2. Advisor 用 validator 校验
 3. 不通过 → 把错误信息 + 原 JSON 喂回 LLM
 4. LLM 修正后重试（最多 3 次）
+
+**校验 + 重试流程图**：
+
+```mermaid
+flowchart TD
+    L["LLM 输出 JSON"]
+    L --> V{"validator 校验通过？"}
+    V -->|"通过"| OK["返回 entity(Person.class)"]
+    V -->|"不通过"| FB["把错误信息 + 原 JSON 喂回 LLM"]
+    FB -->|"修正后重试（最多 3 次）"| L
+```
 
 ### 6.3 自定义校验器
 

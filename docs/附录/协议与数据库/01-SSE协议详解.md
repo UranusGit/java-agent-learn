@@ -35,6 +35,15 @@
 - **LLM 流式输出、通知推送、日志流、股票行情**——服务器单向吐、客户端只读 → **SSE**。这就是为什么 ChatGPT、OpenAI/Anthropic API 都用 SSE。
 - **聊天室、协同编辑、实时游戏**——客户端要中途发消息 → **WebSocket**。
 
+**SSE vs WebSocket 选型决策**：
+
+```mermaid
+flowchart TD
+    Q{"通信需求是什么?"}
+    Q -->|"服务器单向吐、客户端只读<br/>LLM 流式 / 通知 / 日志流 / 行情"| SSE["SSE<br/>HTTP 直通、轻量、浏览器自动重连"]
+    Q -->|"客户端要中途发指令<br/>聊天室 / 协同编辑 / 实时游戏"| WS["WebSocket<br/>双向、需握手升级、自管心跳"]
+```
+
 > **管数分离文档为什么用 SSE**：生成结果是"服务器吐、客户端只读"，中途取消可以用"客户端断连 → 服务端感知"实现，不需要双向。SSE 够用且更轻。文档前言也明确标注了"如果要中途发指令才升级 WebSocket"。
 
 ---
@@ -104,6 +113,23 @@ es.addEventListener("done",  e => console.log("结束了"));
 断网:  连接断开
 重连:  浏览器自动发 GET，带请求头 Last-Event-ID: 15
 服务端: 读这个头，从 id=15 之后继续推
+```
+
+**自动断线重连时序**：
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器 EventSource
+    participant S as 服务端
+    B->>S: GET /stream（建立连接）
+    loop 正常推送
+        S-->>B: id=1, id=2, ..., id=15
+        Note over B: 浏览器自动记录最后 id=15
+    end
+    Note over B,S: 断网：连接断开
+    B->>S: 自动重连 GET + 头 Last-Event-ID: 15
+    S->>S: 读 Last-Event-ID 头，从 id=15 之后续推
+    S-->>B: id=16, id=17, ...（不重复、不漏）
 ```
 
 **前端一行重连代码都不用写**。这是 SSE 相比手撸 WebSocket 流式最大的优势。
@@ -191,6 +217,18 @@ public SseEmitter stream() {
 **适合**：传统 Spring MVC（非 WebFlux）项目。WebFlux 项目不要用 SseEmitter，用 `Flux<ServerSentEvent>`。
 
 > **踩坑提示**：`SseEmitter` 和 `Flux<ServerSentEvent>` **别混用**。WebFlux 用 Flux，传统 MVC 用 SseEmitter。管数分离文档是 WebFlux，全程 Flux。
+
+**三种实现姿势怎么选**：
+
+```mermaid
+flowchart TD
+    Q1{"项目是响应式还是传统 MVC?"}
+    Q1 -->|"WebFlux（响应式）"| Q2{"需要 id / event / retry 控制?"}
+    Q1 -->|"传统 Spring MVC"| M1["SseEmitter<br/>（非响应式）"]
+    Q2 -->|"否：纯数据"| F1["返回 Flux&lt;String&gt;"]
+    Q2 -->|"是：产品级"| F2["返回 Flux&lt;ServerSentEvent&gt;<br/>管数分离文档全程用这种"]
+    M1 -. "别混用" .-> F2
+```
 
 ---
 

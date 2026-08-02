@@ -93,6 +93,26 @@
 └─────────────────────────────────────────────────┘      └──────────────────────────────────┘
 ```
 
+**端到端总体架构**：
+
+```mermaid
+flowchart LR
+    subgraph ProcA["进程 A：Spring AI 应用（Agent / 业务后端）"]
+        FE["HTTP 请求<br/>查询 E001 员工"] --> Ctl["Controller"]
+        Ctl --> CC["ChatClient.prompt()<br/>.toolContext(...).call()"]
+        CC --> LLM["LLM（OpenAI / Anthropic）<br/>看到工具列表并决定调用"]
+        LLM --> TCM["ToolCallingManager<br/>SyncMcpToolCallback.call(args)"]
+        TCM --> Cli["McpSyncClient"]
+    end
+    subgraph ProcB["进程 B：MCP Server（独立部署）"]
+        EP["MCP Server Endpoint<br/>/mcp"] --> Tool["@McpTool<br/>getEmployee(id, McpMeta)"]
+        Tool --> Svc["HrService.findById(...)"]
+        Svc --> DB["DB"]
+    end
+    Cli -->|"Streamable HTTP callTool(getEmployee)"| EP
+    EP -->|"Employee JSON"| Cli
+```
+
 **关键观察**：
 1. **进程 A 同时是 HTTP Server 和 MCP Client**——它对外暴露 HTTP API 给前端，对内通过 MCP Client 调进程 B 的 MCP Server
 2. **进程 B 只关心 MCP 协议**——它不知道也不关心 Client 是 Spring AI 还是 Claude Desktop
@@ -399,6 +419,32 @@ curl -X POST http://localhost:8080/api/chat/ask \
 7. MCP Server 执行 `@McpTool currentTime()` 方法
 8. 结果原路返回 → LLM 组织自然语言 → 返回给 curl
 
+**核心时序**：
+
+```mermaid
+sequenceDiagram
+    participant Curl as curl
+    participant Ctl as ChatController
+    participant CC as ChatClient
+    participant LLM as LLM
+    participant TCM as SyncMcpToolCallback
+    participant Cli as McpSyncClient
+    participant Svr as MCP Server (8081)
+
+    Curl->>Ctl: POST /api/chat/ask
+    Ctl->>CC: prompt().user(现在几点).call()
+    CC->>LLM: prompt + 工具列表（含 currentTime）
+    LLM-->>TCM: 决定调用 currentTime
+    TCM->>Cli: tools/call
+    Cli->>Svr: HTTP POST /mcp（Streamable HTTP）
+    Svr-->>Cli: 工具结果（服务器时间）
+    Cli-->>TCM: 返回结果
+    TCM-->>LLM: 工具结果喂回 LLM
+    LLM-->>CC: 组织自然语言
+    CC-->>Ctl: answer
+    Ctl-->>Curl: 返回 JSON
+```
+
 ---
 
 ## 1.6 多租户上下文透传链路（端到端）
@@ -449,6 +495,32 @@ curl -X POST http://localhost:8080/api/chat/ask \
         │
         ▼
 7. 返回结果："userId=u001, time=2026-07-18T22:23:11+08:00[Asia/Shanghai]"
+```
+
+**上下文透传时序**：
+
+```mermaid
+sequenceDiagram
+    participant Curl as curl
+    participant Ctl as ChatController
+    participant CC as ChatClient
+    participant Conv as ToolContextToMcpMetaConverter
+    participant Cli as McpSyncClient
+    participant Svr as MCP Server
+    participant Tool as currentTimeForUser
+
+    Curl->>Ctl: POST askAsUser，header X-User-Id=u001
+    Ctl->>CC: prompt().toolContext(userId=u001).call()
+    CC->>Cli: SyncMcpToolCallback.call(args)
+    Cli->>Conv: 框架自动转换 toolContext
+    Conv-->>Cli: 得到 McpMeta（userId=u001）
+    Cli->>Svr: POST /mcp tools/call，携带 _meta
+    Svr->>Tool: 反序列化 _meta 注入 McpMeta
+    Tool-->>Svr: 返回 userId=u001, time=...
+    Svr-->>Cli: 工具结果
+    Cli-->>CC: 结果返回
+    CC-->>Ctl: answer
+    Ctl-->>Curl: 返回给前端
 ```
 
 **三个关键节点**：
@@ -591,6 +663,16 @@ curl -X POST http://localhost:8080/api/chat/ask \
 
 **推荐**：核心 API 用 A，长尾 API 用 B，永远不要用 C。
 
+**包装策略选型**：
+
+```mermaid
+flowchart TD
+    Start(("把 HTTP API 包装成 MCP")) --> Q{"API 的定位？"}
+    Q -->|"核心 API"| A["策略 A：手写包装<br/>人话写 description，质量最好<br/>工作量高"]
+    Q -->|"长尾 API"| B["策略 B：OpenAPI → MCP 自动生成<br/>工作量低<br/>生成后必须人工补 description"]
+    Q -->|"所有 API"| C["策略 C：通用 Proxy<br/>❌ 永远不要用<br/>LLM 不知道有哪些端点"]
+```
+
 ### 2.2 策略 A：手写包装的标准模式
 
 ```java
@@ -701,6 +783,19 @@ public class {{classname}}Tools {
   - callOrderAction(action=refund|cancel|return|exchange)
 ```
 
+**工具切分：按业务动作 vs 按 URL**：
+
+```mermaid
+flowchart TD
+    API["原始 REST API：/orders 下的四个动作<br/>refund / cancel / return / exchange"] --> Good["✅ 切法 1：按业务动作<br/>拆成 4 个工具"]
+    API --> Bad["❌ 切法 2：按 URL<br/>1 个工具 + path 参数"]
+    Good --> G1["submitRefund"]
+    Good --> G2["cancelOrder"]
+    Good --> G3["submitReturn"]
+    Good --> G4["submitExchange"]
+    Bad --> B1["callOrderAction<br/>action=refund / cancel / return / exchange"]
+```
+
 **LLM 看不到 URL 表达的业务语义**，按业务动作切，工具名 = 业务动作。
 
 ---
@@ -732,6 +827,17 @@ public class {{classname}}Tools {
 │   只配 Hub 一个连接：https://hub/mcp                         │
 │   自动看到 [hr, erp] 两个 Server 的所有工具                  │
 └─────────────────────────────────────────────────────────────┘
+```
+
+**MCP Hub 架构**：
+
+```mermaid
+flowchart TD
+    subgraph Hub["MCP Hub（注册中心 + 代理网关）"]
+        Reg["Registry 注册中心<br/>hr-mcp v1.2.0 sse<br/>erp-mcp v3.0.1 http<br/>geo-mcp v1.0.0 http<br/>共 20 个"]
+        Sub["Subscription 订阅<br/>tenant=tenantA → hr、erp<br/>tenant=tenantB → hr、geo、marketing"]
+    end
+    Hub -->|"统一端点"| AgentA["Agent（租户 A）<br/>只配 Hub 一个连接 https://hub/mcp<br/>自动看到 hr、erp 的全部工具"]
 ```
 
 ### 3.2 Hub 的核心职责

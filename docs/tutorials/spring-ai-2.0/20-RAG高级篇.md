@@ -170,6 +170,14 @@ public class WeightedFusion {
 
 适合**大规模知识库**（千万级 chunk），单路向量检索成本太高。
 
+**级联检索流程**：
+
+```mermaid
+flowchart TD
+    A["BM25 召回 top100<br/>(精确关键词覆盖)"] --> B["向量精排 top100 → top30<br/>(语义补充)"]
+    B --> C["cross-encoder 精排 top30 → top5<br/>(最终答案)"]
+```
+
 ---
 
 ## 3. Multi-Query：让 LLM 帮你生成多个 query
@@ -181,6 +189,16 @@ public class WeightedFusion {
 **收益**：召回率提升 15-30%（来自 LangChain 实测）。
 
 **成本**：多 4 次 embedding + 4 次向量查询（便宜）+ 1 次 LLM 改写（贵）。
+
+**调用流程**：
+
+```mermaid
+flowchart TD
+    A["原始 query"] --> B["LLM 改写 5 个不同视角<br/>(同义词/具体化/反向/场景化)"]
+    B --> C["同时检索 5 次"]
+    C --> D["top25 候选"]
+    D --> E["RRF 融合 → top5"]
+```
 
 ### 3.2 实现
 
@@ -508,6 +526,32 @@ public class LlmListwiseReranker {
 检索：用 child query → 找到 child → 返回对应的 parent
 ```
 
+**父子分块与检索流程**：
+
+```mermaid
+flowchart TD
+    subgraph IDX["索引阶段"]
+        D["原文档 4000 字"] --> P1["Parent-1 1024 字"]
+        D --> P2["Parent-2 1024 字"]
+        P1 --> C1["Child-1a 256 字"]
+        P1 --> C2["Child-1b 256 字"]
+        P2 --> C3["Child-2a 256 字"]
+        P2 --> C4["Child-2b 256 字"]
+        C1 --> V["向量库（只 embed child）"]
+        C2 --> V
+        C3 --> V
+        C4 --> V
+        P1 --> R["关系库 parent_chunks"]
+        P2 --> R
+    end
+    subgraph RET["检索阶段"]
+        Q["child query"] --> VS["向量检索召回 child"]
+        VS --> PID["取 child 的 parent_id"]
+        PID --> PT["按 parent_id 查 parent 表"]
+        PT --> OUT["返回 parent 原文（上下文充足）"]
+    end
+```
+
 ```java
 // org.demo02.rag.chunk.ParentChildChunker
 // 本代码仅作学习材料参考
@@ -678,6 +722,18 @@ public class AdaptiveRetrievalAdvisor implements BaseAdvisor {
 
 成本翻倍但准确率显著提升。适合**高准确率场景**（医疗、法律）。
 
+**Self-RAG 循环**：
+
+```mermaid
+flowchart TD
+    A["判断：要检索?"] --> B["检索 top5"]
+    B --> C{"召回相关且足够?"}
+    C -->|"是"| D["回答"]
+    C -->|"否"| E["改写 query，再检索"]
+    E --> B
+    B -->|"已 3 轮仍不相关"| F["按最后一轮结果回答"]
+```
+
 ---
 
 ## 8. Graph RAG：用知识图谱增强
@@ -796,6 +852,22 @@ public List<Document> retrieve(String query) {
 1. 调工具 search_kb("2023 中国新能源汽车销量")
 2. 看结果 → 调工具 search_kb("2024 中国新能源汽车销量")
 3. 综合回答
+```
+
+**核心时序**：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as Agent
+    participant KB as 知识库工具 search_kb
+    U->>A: 对比 2023 和 2024 年新能源汽车销量前三
+    A->>A: 思考：需要分两次检索
+    A->>KB: search_kb("2023 中国新能源汽车销量")
+    KB-->>A: 2023 年销量结果
+    A->>KB: search_kb("2024 中国新能源汽车销量")
+    KB-->>A: 2024 年销量结果
+    A->>U: 综合对比后给出回答
 ```
 
 ### 9.2 实现：把检索包装成工具

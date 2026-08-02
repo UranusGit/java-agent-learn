@@ -52,6 +52,15 @@
 工具级错误（ToolResult.error() 不 throw）
 ```
 
+**三层降级路径**：请求从上到下逐层兜底，每层用对应 Spring 组件。
+
+```mermaid
+flowchart TD
+    REQ["请求"] --> SYS["系统级: @CircuitBreaker<br/>Resilience4j 熔断"]
+    SYS --> QRY["查询级: onErrorResume<br/>流式失败切备用模型"]
+    QRY --> TOOL["工具级: ToolResult.error()<br/>不 throw, LLM 自我修复"]
+```
+
 ### 2.1 工具级：返回 `ToolResult.error()` 不 throw
 
 ```java
@@ -152,6 +161,18 @@ public ToolResult sendEmail(
 }
 ```
 
+**幂等写入流程**：先查幂等表，重复 key 直接返回已发送结果。
+
+```mermaid
+flowchart TD
+    A["Agent 调用 sendEmail<br/>(带 idempotencyKey)"] --> B["查幂等表"]
+    B --> C{"记录已存在?"}
+    C -->|"是"| C1["返回 already sent<br/>(幂等返回)"]
+    C -->|"否"| D["实际发送邮件"]
+    D --> E["保存记录<br/>(idempotencyKey UNIQUE 约束)"]
+    E --> F["返回成功"]
+```
+
 ### 3.3 关键约束
 
 - `idempotencyKey` 列必须有 **UNIQUE 约束**
@@ -205,6 +226,22 @@ while (true) {
 }
 ```
 
+**5 个终止条件**：除"无 tool_use 自然结束"外，每轮还检查四个硬条件。
+
+```mermaid
+flowchart TD
+    T1{"1. 无 tool_use?"} -->|"是"| E1(("自然结束"))
+    T1 -->|"否"| T2{"2. turnCount > maxTurns(20)?"}
+    T2 -->|"是"| E2(("终止: maxTurns"))
+    T2 -->|"否"| T3{"3. costUsd > budgetUsd(1.00)?"}
+    T3 -->|"是"| E3(("终止: 预算超限"))
+    T3 -->|"否"| T4{"4. transitionReason 连续重复?"}
+    T4 -->|"是"| E4(("终止: 死循环检测"))
+    T4 -->|"否"| T5{"5. 用户中断 / error?"}
+    T5 -->|"是"| E5(("终止"))
+    T5 -->|"否"| LOOP["继续下一轮迭代"] --> T1
+```
+
 ### 4.2 关键设计：transitionReason 比 retryCount++ 安全
 
 `retryCount++` 只知道"重试了几次"，不知道"为什么重试"。
@@ -223,6 +260,15 @@ while (true) {
 | **会话内** | 单轮 / 短多轮 | `ChatMemory`（默认） |
 | **会话持久化** | 跨重启 | Spring AI 2.0 `spring-ai-session`（event-sourced） |
 | **跨进程持久化** | 长时 Agent / 工作流 | Temporal / Restate（带 Checkpoint） |
+
+**三档持久化**：按会话生命周期选择，耐久度逐级递增。
+
+```mermaid
+flowchart TD
+    ROOT["长时 Agent 状态管理"] --> A["会话内: ChatMemory(默认)"]
+    ROOT --> B["会话持久化: spring-ai-session(事件溯源)"]
+    ROOT --> C["跨进程: Temporal / Restate(Checkpoint)"]
+```
 
 ### 5.2 Temporal 集成示例
 
@@ -301,6 +347,23 @@ public class PermissionAdvisor implements CallAdvisor {
 }
 ```
 
+**四级决策**：Deny 优先短路，Ask 需用户批准，Yolo 仅本地开发跳过询问。
+
+```mermaid
+flowchart TD
+    REQ["Agent 请求工具调用"] --> RULE{"权限规则"}
+    RULE -->|"Deny"| D["拒绝执行"]
+    RULE -->|"Ask"| ASK["询问用户"]
+    ASK -->|"批准"| GO["执行工具"]
+    ASK -->|"拒绝"| D
+    RULE -->|"Allow"| GO
+    RULE -->|"Yolo"| Y["跳过所有 Ask(仅本地开发)"]
+    Y --> GO
+    PROT{"目标为 .git / .env / 权限配置?"} -->|"是"| FORCE["强制 ASK<br/>bypass 也不可绕过"]
+    FORCE -->|"批准"| GO
+    FORCE -->|"拒绝"| D
+```
+
 ### 6.3 Deny 优先 + 不可绕过
 
 即使 bypassPermissions 模式，对 `.git/ / .env / 权限配置文件`的修改仍强制 ASK。
@@ -347,6 +410,19 @@ public String fallback(List<Message> messages, Throwable t) {
 if (req.querySource() == "compact") {
     return false;  // 不递归压缩
 }
+```
+
+**渐进式压力响应**：占用越高响应越激进，断路器与防递归双保险。
+
+```mermaid
+flowchart TD
+    P1["~85% 警告"] --> P2["~90% 自动压缩<br/>(LLM 生成 9 段标准化摘要)"]
+    P2 --> P3["~95% 错误"]
+    P3 --> P4["~99% 阻塞"]
+    P2 --> CB{"压缩连续失败 3 次?"}
+    CB -->|"是"| CBO["断路器打开<br/>退化为简单窗口 trim"]
+    P2 --> REC{"querySource = compact?"}
+    REC -->|"是"| RECO["防递归: 不再触发压缩"]
 ```
 
 ---

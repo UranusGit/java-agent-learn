@@ -46,6 +46,28 @@
 
 v1 实现：command / http / prompt 三种类型 + 核心 8 个事件 + 同步路径 + defer 模式。
 
+**决策合成流程**：
+
+```mermaid
+flowchart TD
+    EV["HookEvent 发生"] --> FE["HookExecutor.fire(event, ctx, blocking)"]
+    FE --> EN["查 enabled hooks<br/>按 tenant_id + event"]
+    EN -->|"无 hook"| ALLOW["直接返回 allow"]
+    EN -->|"有 hook"| SORT["按 priority 升序<br/>同步逐条执行"]
+    SORT --> TY{"hook type?"}
+    TY -->|"http"| H["fireHttp POST config.url<br/>超时 5s"]
+    TY -->|"command"| CM["fireCommand<br/>沙箱内 shell"]
+    TY -->|"prompt"| PR["firePrompt<br/>注入下一轮 system message"]
+    H --> MERGE["逐条合并决策 merge(prev,next)"]
+    CM --> MERGE
+    PR --> MERGE
+    MERGE --> PRI{"优先级<br/>deny > defer > ask > allow"}
+    PRI -->|"任一 deny"| D1["DENY 拒绝"]
+    PRI -->|"无 deny 有 defer"| D2["DEFER 本轮放行<br/>下一轮处理"]
+    PRI -->|"无 defer 有 ask"| D3["ASK 询问用户"]
+    PRI -->|"全 allow"| D4["ALLOW 放行"]
+```
+
 ---
 
 ## 3. 表结构
@@ -235,6 +257,35 @@ public class HookContext {
 
 `PreToolUse` 事件与权限评估结合：
 
+**PreToolUse 时序**：
+
+```mermaid
+sequenceDiagram
+    participant AG as Agent
+    participant PM as PermissionMiddleware
+    participant HE as HookExecutor
+    participant HK as 外部 Hook
+    participant RM as 规则引擎
+    AG->>PM: 请求调用工具(toolName, input, mode)
+    PM->>HE: fire(PreToolUse, ctx, blocking=true)
+    HE->>HK: 执行 hook（http / command / prompt）
+    HK-->>HE: 返回决策(action, reason)
+    alt DENY
+        HE-->>PM: hook denied
+        PM-->>AG: 拒绝（PermissionRule.DENY）
+    else DEFER
+        HE-->>PM: deferred
+        PM-->>AG: 本轮放行，下一轮处理
+    else ASK
+        HE-->>PM: hook asked
+        PM-->>AG: 询问用户
+    else ALLOW
+        PM->>RM: 继续原本权限评估 evaluateRules
+        RM-->>PM: Decision
+        PM-->>AG: 按规则放行 / 拒绝
+    end
+```
+
 ```java
 // 本代码仅作学习材料参考
 public CompletableFuture<Decision> evaluate(String toolName, Map<String, Object> input,
@@ -266,6 +317,19 @@ public CompletableFuture<Decision> evaluate(String toolName, Map<String, Object>
 - hook 返回 ASK → 转成 DEFER（写"待审批"队列）；
 - 下一轮 prompt 注入"上次 defer 了 X，请决定"；
 - 用户上线时审批 UI 显示待审批列表。
+
+**Defer 模式流程**：
+
+```mermaid
+flowchart TD
+    ST["用户离线 / 长任务自动跑"] --> ASK["hook 返回 ASK"]
+    ASK --> DEF["转成 DEFER<br/>不阻塞长任务"]
+    DEF --> QUE["DeferredDecisionQueue.push<br/>redis list: defer:sessionId"]
+    QUE --> NXT["下一轮 prompt 注入<br/>上次 defer 了 X，请决定"]
+    NXT --> UI["用户上线<br/>审批 UI 显示待审批列表"]
+    UI -->|"批准"| EXEC["工具继续执行"]
+    UI -->|"拒绝"| BLK["工具不执行"]
+```
 
 ```java
 // 本代码仅作学习材料参考

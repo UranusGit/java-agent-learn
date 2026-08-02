@@ -73,6 +73,17 @@ Flux.just(1, 2, 0, 4)
 // 订阅者拿到错误：/ by zero   （0 那次出错，前两个 map 都没拦，一路传到订阅者）
 ```
 
+**错误沿链传播示意**：
+
+```mermaid
+flowchart TD
+    SRC["Flux.just(1, 2, 0, 4)"] --> M1["map: 10 / n"]
+    M1 -->|"n=0 时抛 ArithmeticException"| SIG["onError 信号"]
+    SIG --> M2["map: n + 1<br/>原样往下传"]
+    M2 --> SUB["订阅者错误回调<br/>拿到：/ by zero"]
+    M2 -.->|"沿途操作符可拦截"| RESUME["onErrorResume 等<br/>在信号路径上拦截"]
+```
+
 **观察**：错误从 `map` 抛出后，一路穿过第二个 `map`（它什么都没做，只是把信号往下传），最后到订阅者的错误回调。**中间任何一个环节调用 `onErrorResume` 等操作符，就能把它拦下来。**
 
 > **一句话心智模型**：**错误 = 顺着链往下传的 onError 信号；处理错误 = 在链上某个位置把它拦下来，或者让它一路传到订阅者。** 建立这个心智，后面所有操作符就好懂了——它们都是"在信号传送路径上装的各种拦截器/观察窗"。
@@ -283,6 +294,17 @@ public class OnErrorContinueDemo {
 | `onErrorMap` | 换**一种异常**继续抛 | 否 | 底层异常包装成业务异常，保留错误语义 |
 | `onErrorContinue` | **跳过出错元素** | **是** | 批量处理，一个坏元素不拖垮整批 |
 
+**选型决策**：
+
+```mermaid
+flowchart TD
+    Q{"出错后想怎么办?"}
+    Q -->|"换一条流顶上"| RESUME["onErrorResume<br/>查库失败走缓存 / 降级 / 映射响应体"]
+    Q -->|"只给一个默认值"| RETURN["onErrorReturn<br/>拿配置、拿标价"]
+    Q -->|"包装成业务异常继续抛"| MAP["onErrorMap<br/>底层异常 → 业务异常"]
+    Q -->|"批量处理，跳过坏元素"| CONTINUE["onErrorContinue<br/>只跳过错的那条，流继续"]
+```
+
 > **记忆口诀**：**Resume 换流、Return 换值、Map 换异常、Continue 跳过继续**。
 > 前三个的共同点是"错误被我消化，下游看到的是结果"；最后一个是"错误被跳过，流还活着"。
 
@@ -329,6 +351,16 @@ public class RetryDemo {
 - 第 1 次失败 → 重试（已重试 0 次 < 5）
 - 第 2 次失败 → 重试（已重试 1 次 < 5）
 - 第 3 次成功 → 输出 100，结束
+
+**retry 重试机制**：
+
+```mermaid
+flowchart TD
+    RUN["运行链<br/>整个链重新订阅跑一遍"] --> CHK{"收到 onError?"}
+    CHK -->|"是，且已重试次数 < 上限"| RUN
+    CHK -->|"是，达到上限"| FINAL["最终失败"]
+    CHK -->|"否，成功"| DONE["输出结果，结束"]
+```
 
 **什么时候用它**：
 
@@ -475,6 +507,16 @@ public class DoOnErrorVsResumeDemo {
 // [订阅者] 收到 5
 // [doOnError] 我看到了错误：/ by zero      ← 只是看一眼
 // [订阅者] 收到 -1                          ← 错误被 onErrorResume 接管，订阅者拿到的是 -1
+```
+
+**信号路径**：
+
+```mermaid
+flowchart LR
+    SRC["Flux.just(1, 2, 0, 4)"] --> M["map: 10 / n"]
+    M --> DOERR["doOnError<br/>看一眼、打日志，错误继续传"]
+    DOERR --> RESUME["onErrorResume<br/>拦下来换成新流"]
+    RESUME --> SUB["订阅者收到 -1<br/>错误回调一次都不触发"]
 ```
 
 **看输出就懂了两件事**：
@@ -639,6 +681,16 @@ public class GlobalExceptionHandler {
 > 推荐分工：
 > - **业务语义明确、只影响这一个接口的** → 链里 `onErrorResume`（如把 404/409 映射成响应体）。
 > - **跨接口通用、需要统一格式的**（登录失效 401、参数校验 400、兜底 500）→ `@ExceptionHandler`。
+
+**选边决策**：
+
+```mermaid
+flowchart TD
+    EXC["异常发生"] --> Q{"错误处理边界选哪个?"}
+    Q -->|"业务语义明确<br/>只影响这一个接口"| CHAIN["链里 onErrorResume<br/>404/409/500 映射成响应体"]
+    Q -->|"跨接口通用<br/>需要统一格式"| GLOBAL["@ExceptionHandler 全局兜底<br/>401 / 400 / 兜底 500"]
+    Q -->|"两条都写"| BAD["逻辑分叉<br/>谁处理了说不清"]
+```
 
 ### 5.5 流式/SSE 的错误：状态码已经来不及了（不吞错误）
 

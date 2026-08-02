@@ -32,6 +32,17 @@
 1. **延迟**：定时扫表（如每 2 秒），事件最多延迟 2 秒才到 Kafka。延迟敏感场景不够。
 2. **DB 压力**：不停扫表，给数据库增加查询负担。表越大、扫得越频繁，负担越重。
 
+**轮询投递流程**：
+
+```mermaid
+flowchart TD
+    App["业务应用"] -->|"同一事务写入"| DB[("数据库<br/>业务表 + outbox 表")]
+    DB -->|"定时扫 outbox 表<br/>（如每 2 秒）"| Poller["@Scheduled 投递器"]
+    Poller -->|"发事件到"| Kafka["Kafka topic"]
+    Poller -.->|"痛点 1：事件最多延迟 2 秒"| P1["延迟"]
+    Poller -.->|"痛点 2：不停扫表加重 DB 负担"| P2["DB 压力"]
+```
+
 ### 1.2 有没有"事件一来就立刻捕获、还不查表"的办法
 
 有——**CDC（Change Data Capture）**。它不查表，而是**读数据库的变更日志**（binlog/WAL），一旦表有新数据，日志里立刻有，CDC 立刻捕获。**毫秒级延迟、零查询压力**。
@@ -226,6 +237,15 @@ Debezium 默认消息含 `before/after/source/op` 一堆字段，下游消费者
 
 **转换后**：消息从臃肿的 `{op, before, after, source}` 变成干净的 `{id: 1, amount: 99.9}`——下游消费者拿到的是干净数据，不用处理 Debezium 的包装。
 
+**SMT 消息转换**：
+
+```mermaid
+flowchart LR
+    Raw["Debezium 默认消息<br/>op + before + after + source"] -->|"connector 层 SMT<br/>ExtractNewRecordState"| Clean["干净消息：只留 after<br/>{ id: 1, amount: 99.9 }"]
+    Raw -.->|"before / source / op 被丢弃"| Drop["冗余字段"]
+    Clean -.->|"delete.handling.mode=rewrite<br/>DELETE 时保留 after 标记删除"| Del["删除处理"]
+```
+
 ### 4.4 Outbox Event Router SMT（专门给 Outbox 用）
 
 04 方向 A.4 提过，Debezium 有专门给 Outbox 模式的 SMT。它把 outbox 表的行**自动路由**：用 `aggregate_id` 当 Kafka key、`payload` 当消息体、`event_type` 决定 topic。
@@ -271,6 +291,19 @@ Debezium 默认消息含 `before/after/source/op` 一堆字段，下游消费者
 }
 ```
 
+**Outbox + CDC 整体架构**：
+
+```mermaid
+flowchart TD
+    App["业务应用<br/>（事务内写业务数据 + outbox 记录，无 @Scheduled 投递器）"] -->|"同一事务"| DB[("PostgreSQL")]
+    DB -->|"业务数据"| Orders["业务表 orders"]
+    DB -->|"outbox 记录<br/>event_type / payload / aggregate_id"| Outbox["outbox 表"]
+    Outbox -->|"Debezium 监听 WAL"| Conn["outbox-connector<br/>PostgresConnector + OutboxEventRouter SMT"]
+    Conn -->|"payload 当消息体<br/>aggregate_id 当 Kafka key"| Route{"按 event_type 路由 topic"}
+    Route -->|"event_type=OrderCreated"| Topic["OrderCreated topic"]
+    Topic -->|"@KafkaListener 消费"| Down["下游服务"]
+```
+
 ### 5.3 效果对比轮询
 
 | 维度 | 轮询投递（04 A.3） | CDC 投递（本篇） |
@@ -309,6 +342,19 @@ Debezium 默认消息含 `before/after/source/op` 一堆字段，下游消费者
 | 大规模、延迟敏感、多实例 | **CDC**（优雅高效） |
 | 要捕获 UPDATE/DELETE（不只新增） | **CDC**（轮询只能捕获新行） |
 | 不想引入 Kafka Connect 运维 | **轮询** |
+
+**选型决策**：
+
+```mermaid
+flowchart TD
+    S(("Outbox 事件投递选型")) --> Q1{"是否要捕获 UPDATE/DELETE？"}
+    Q1 -->|"是"| C1["CDC<br/>（轮询只能捕获新行）"]
+    Q1 -->|"否"| Q2{"延迟敏感 / 大规模 / 多实例？"}
+    Q2 -->|"否：中小项目、延迟不敏感"| P1["轮询<br/>（简单够用）"]
+    Q2 -->|"是"| Q3{"能否接受 Kafka Connect + Debezium 运维？"}
+    Q3 -->|"能接受"| C2["CDC<br/>（优雅高效）"]
+    Q3 -->|"不想引入运维"| P2["轮询"]
+```
 
 ### 6.4 架构师的一句话
 

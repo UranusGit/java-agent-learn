@@ -126,6 +126,24 @@ redis-cli TTL user:1        # → 600 左右
 > **击穿**：缓存**本来有**，但**恰好过期的那一刻**，并发请求全打 DB。
 > **雪崩**：大量 key **同一时间过期**，DB 被一波并发打垮。
 
+**三兄弟一图区分**：
+
+```mermaid
+flowchart LR
+    subgraph s1["穿透 Cache Penetration"]
+        direction TB
+        p1["缓存和数据库都没有这个数据"] --> p2["每次都穿过缓存直打 DB"] --> p3["缓存空值 + 布隆过滤器"]
+    end
+    subgraph s2["击穿 Cache Breakdown"]
+        direction TB
+        j1["缓存本来有，但恰好过期那一刻"] --> j2["热点 key 并发请求全打 DB"] --> j3["互斥锁重建 / 逻辑过期"]
+    end
+    subgraph s3["雪崩 Cache Avalanche"]
+        direction TB
+        x1["大量 key 同一时间过期"] --> x2["一波请求同时 miss 打垮 DB"] --> x3["TTL 加随机 + 多级缓存"]
+    end
+```
+
 ### 2.1 穿透（Cache Penetration）——查不存在的 key
 
 **现象**：恶意或误操作，疯狂查询一个**不存在的 id**（如 `user:-1`、随机 UUID）。缓存永远 miss（因为没人会回填不存在的值），**每个请求都穿过缓存直打数据库**。攻击者可以靠这个把 DB 打垮——这是缓存最大的安全坑。
@@ -273,6 +291,26 @@ User user = userCacheService.findById(id);
 **解决 ①：互斥锁重建（mutex，只让一个请求去查 DB）**
 
 谁 miss 了先抢一把锁（`SETNX`，见 [02-分布式锁](./02-Redis分布式锁实战.md)），**抢到锁的人去查 DB 回填**，其他人**等一下再读缓存**。这样 DB 最多被"一个请求"打一次。
+
+**互斥锁重建流程**：
+
+```mermaid
+sequenceDiagram
+    participant R1 as 请求 1
+    participant R2 as 请求 2
+    participant C as Redis 缓存
+    participant DB as 数据库
+
+    Note over R1,R2: 热点 key 恰好过期，同时 miss
+    R1->>C: GET → miss
+    R2->>C: GET → miss
+    R1->>C: SETNX lock:rebuild 成功（抢到重建锁）
+    R2->>C: SETNX lock:rebuild 失败（没抢到）
+    R1->>C: 双检 GET（防"抢锁期间别人已重建"）
+    R1->>DB: 查 DB（只有请求 1 打到 DB）
+    R1->>C: 回填缓存 + 释放锁
+    R2->>C: sleep 50ms 后重试 → 命中缓存
+```
 
 ```java
 package com.example.service;
@@ -441,6 +479,18 @@ public class CacheService {
 
 Redis 挂之前，先查**应用进程内的本地缓存**（Caffeine）。本地缓存是"每台机器一份"，天然分散，即使 Redis 整批过期，**本地缓存还能挡一批**，DB 压力大幅下降。代价：本地缓存有**副本不一致**（多实例各一份）。
 
+**多级缓存查询链路**：
+
+```mermaid
+flowchart TD
+    Req["请求"] --> L1["① 本地缓存 Caffeine<br/>（每台机器一份）"]
+    L1 -->|"命中"| Back["直接返回"]
+    L1 -->|"未命中"| R1["② Redis 缓存"]
+    R1 -->|"命中"| L2["③ 回填本地缓存<br/>并返回"]
+    R1 -->|"未命中"| D1["④ 查询数据库"]
+    D1 --> L3["回填本地 + Redis<br/>并返回"]
+```
+
 ```xml
 <!-- Caffeine 本地缓存 -->
 <dependency>
@@ -518,6 +568,23 @@ public class MultiLevelCacheService {
 | `@CachePut` | **总是执行方法**，把返回值写进缓存 | 写：更新缓存（一般配合删除用） |
 | `@CacheEvict` | 执行方法后**删除缓存** | 写：删缓存 |
 | `@CacheConfig` | 类级别的缓存公共配置（cacheNames 等） | 少写重复配置 |
+
+**注解对应的读写流程**：
+
+```mermaid
+flowchart TD
+    subgraph rd["读：@Cacheable"]
+        rq["查询请求"] --> rc["先查缓存"]
+        rc -->|"命中"| rret["直接返回<br/>（方法体不执行）"]
+        rc -->|"未命中"| rdb["执行方法查 DB"]
+        rdb --> rset["把返回值写进缓存"]
+        rset --> rret
+    end
+    subgraph wr["写：@CacheEvict / @CachePut"]
+        wq["写请求"] --> wdb["先写数据库"]
+        wdb --> wdel["@CacheEvict 删缓存<br/>（或 @CachePut 把返回值写进缓存）"]
+    end
+```
 
 ### 3.2 依赖 + 开启注解
 

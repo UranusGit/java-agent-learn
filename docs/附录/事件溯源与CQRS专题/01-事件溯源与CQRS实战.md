@@ -66,6 +66,20 @@ A001  | 150
   [Deposited(存100)]      ← 重放后余额=150  ← 当前状态由这4个事件算出
 ```
 
+**两种存储方式对比**：
+
+```mermaid
+flowchart LR
+    subgraph TRAD["传统：只存当前状态"]
+        T1["account 表"] --> T2["balance = 150<br/>UPDATE 覆盖旧值"]
+        T2 --> T3["旧状态 100、50 被覆盖、消失<br/>历史 / 审计 / 时间旅行无从谈起"]
+    end
+    subgraph ES["事件溯源：存事件，状态靠重放"]
+        E1["account_events 流"] --> E2["Opened(0) → Deposited(100)<br/>→ Withdrew(50) → Deposited(100)"]
+        E2 --> E3["按序 apply 重放<br/>当前状态 balance = 150"]
+    end
+```
+
 要查 A001 当前余额？把这 4 个事件按顺序"重放"（apply），算出来是 150。要查上个月的？重放到上个月那个时间点的事件即可——**时间旅行**。
 
 ### 2.2 关键术语
@@ -100,6 +114,18 @@ A001  | 150
 4. 校验通过 → 产生事件 Deposited(A001, 100)
 5. 事件追加到 event store
 6. （可选）事件发布给读模型/其他服务
+```
+
+**完整写入流程**：
+
+```mermaid
+flowchart TD
+    A["收到命令<br/>Deposit(A001, 100)"] --> B["加载聚合 A001 当前状态<br/>（从事件重放得到）"]
+    B --> C{"校验<br/>amount>0？余额足够？"}
+    C -->|"不通过"| X["拒绝命令（命令是意图，可被拒）"]
+    C -->|"通过"| D["产生事件<br/>Deposited(A001, 100)"]
+    D --> E["事件追加到 event store<br/>（只追加，不改不删）"]
+    E --> F["（可选）事件发布给读模型 / 其他服务"]
 ```
 
 **关键认知**：第 2 步"加载状态"靠重放——这就是事件溯源的标志。
@@ -151,6 +177,17 @@ CQRS：
 - **写侧**：事件溯源（存事件，重放得状态）。
 - **读侧**：CQRS（单独的读库，由投影从事件流增量构建）。
 - 查询永远走读库——快、灵活。
+
+**CQRS + 事件溯源的黄金搭档**：
+
+```mermaid
+flowchart TD
+    CMD["命令 Command"] --> WR["写模型<br/>聚合 + 事件存储（事件溯源）"]
+    WR -->|"发布事件"| PR["读模型投影 Projection<br/>订阅事件"]
+    PR -->|"增量更新"| DB["读库<br/>account_balance_view / Elasticsearch"]
+    QRY["查询 Query"] -->|"只走读库，快、灵活"| DB
+    QRY -. "查询绝不碰写模型" .-> WR
+```
 
 > **CQRS 和事件溯源不是绑定的**。可以只 CQRS 不溯源（写侧存当前状态，读侧单独建读库）；也可以只溯源不 CQRS（读也靠重放，但慢）。**但它们配合最强大**——这就是本篇教的样子。
 
@@ -337,6 +374,31 @@ public double getBalance(String accountId) {
 
 这就是 CQRS——**写走 event store（重放），读走 view 表（直接查）**。
 
+**存款命令的完整调用时序**：
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant SVC as AccountService
+    participant REPO as AccountRepository
+    participant ES as event_store（PG）
+    participant PR as AccountBalanceProjection
+    participant VB as account_balance_view
+    C->>SVC: deposit(A001, 100)
+    SVC->>REPO: load(A001)（重放加载）
+    REPO->>ES: SELECT 事件 ORDER BY id
+    ES-->>REPO: [Opened, Deposited...]
+    REPO->>REPO: 逐个 apply 重放 → balance=150
+    REPO-->>SVC: AccountAggregate
+    SVC->>SVC: handle(cmd) 校验 → 产生 Deposited 事件
+    SVC->>REPO: save(A001, "Account", event)
+    REPO->>ES: INSERT 追加事件
+    SVC->>PR: on(Deposited)
+    PR->>VB: UPDATE balance=balance+100
+    Note over C,VB: 查询余额走读库，不重放
+    C->>VB: getBalance(A001) → 250
+```
+
 ---
 
 ## 第 5 章：聚合重建与快照——性能优化
@@ -382,6 +444,19 @@ public AccountAggregate load(String accountId) {
     events.forEach(agg::apply);
     return agg;
 }
+```
+
+**快照优化后的加载流程**：
+
+```mermaid
+flowchart TD
+    ST["load(accountId)"] --> CHK{"查最近快照"}
+    CHK -->|"有快照"| S1["从快照恢复状态<br/>startVersion = 快照.version"]
+    CHK -->|"无快照"| S2["从空聚合开始<br/>startVersion = 0"]
+    S1 --> P1["只重放 id > 快照版本的事件<br/>（如 100 条，而不是 10000 条）"]
+    S2 --> P2["重放该聚合全部事件"]
+    P1 --> DONE["重建当前状态"]
+    P2 --> DONE
 ```
 
 ### 5.3 快照策略

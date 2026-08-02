@@ -85,6 +85,15 @@ docker run -d --name myredis -p 6379:6379 redis:7
 
 > **为什么教程里 Kafka 用 `-p 9092:9092`**：一样的道理，把容器里 Kafka 的 9092 端口映射到你电脑的 9092。
 
+**端口映射 -p 的原理**：
+
+```mermaid
+flowchart LR
+    Host["宿主机（你的电脑）"] -->|"访问 localhost:6379"| HostPort["宿主机端口 6379"]
+    HostPort -->|"-p 6379:6379<br/>把宿主机端口转发到容器端口"| ConPort["容器内端口 6379"]
+    ConPort --> Redis["容器 myredis<br/>Redis 默认监听 6379"]
+```
+
 ### 2.3 第一次启动会发生什么：自动拉镜像
 
 `docker run redis:7` 如果你本地没有 `redis:7` 这个镜像，Docker 会**自动去仓库拉取**（pull），拉完再启动。第一次会看到一堆下载进度，正常现象。
@@ -155,6 +164,18 @@ docker rmi redis:7         # 删除镜像（删前要先删掉用它的容器）
 docker pull mysql:8        # 单纯拉镜像不启动
 ```
 
+**容器生命周期与常用命令**：
+
+```mermaid
+flowchart LR
+    Pull["docker pull 镜像<br/>拉镜像（run 时本地没有会自动拉）"] --> Run["docker run<br/>启动容器"]
+    Run --> Running["运行中<br/>docker ps 查看<br/>docker exec 进入<br/>docker logs 看日志"]
+    Running -->|"docker stop"| Stopped["已停止<br/>容器还在，数据还在"]
+    Stopped -->|"docker start"| Running
+    Stopped -->|"docker rm"| Deleted["已删除<br/>镜像还在"]
+    Deleted -->|"还能再 docker run"| Run
+```
+
 ---
 
 ## 第 4 章：环境变量（`-e`）——配置容器
@@ -206,6 +227,15 @@ docker run -d --name myredis -v ~/redis-data:/data redis:7
 ```
 
 > **教程里数据库类容器，建议养成习惯加 `-v` 挂卷**，否则删容器等于丢数据。
+
+**挂卷 vs 不挂卷**：
+
+```mermaid
+flowchart TD
+    A["容器 myredis"] -->|"-v redis-data:/data 挂卷<br/>容器内 /data 映射到宿主机磁盘"| V["数据卷 redis-data<br/>数据存在宿主机硬盘"]
+    V -->|"docker rm 删容器"| Keep["数据还在，重建容器数据恢复"]
+    A -.->|"不挂卷时 docker rm"| Lose["容器里的数据随容器一起消失"]
+```
 
 ---
 
@@ -312,6 +342,15 @@ app:
 - `app` 容器里 `localhost:6379` → 连的是自己（没有 Redis）❌
 
 > **你电脑上跑的 Spring Boot（不在容器里）要连容器里的 Redis**：用 `localhost:6379`（因为端口映射到了 localhost）。**只有"容器连容器"才用服务名。**
+
+**容器网络访问**：
+
+```mermaid
+flowchart TD
+    HostApp["你电脑上跑的 Spring Boot<br/>（不在容器里）"] -->|"localhost:6379<br/>端口映射到了宿主机 localhost"| Redis["Redis 容器<br/>端口 6379"]
+    App["app 容器"] -->|"redis:6379<br/>服务名互访（Compose 内部网络）"| Redis
+    App -.->|"localhost:6379<br/>连的是 app 容器自己，没有 Redis"| Self["app 容器自身"]
+```
 
 ---
 

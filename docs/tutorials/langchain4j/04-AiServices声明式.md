@@ -72,6 +72,18 @@ public class Demo {
 接口没有任何实现类，但 `AiServices.builder(Assistant.class).build()` 返回一个能用的实例。
 **底层是 Java 动态代理**（和 Feign、MyBatis Mapper 同一个套路）。
 
+**自动装配原理**：
+
+```mermaid
+flowchart LR
+    Int["声明接口 Assistant<br/>String chat(String userMessage)"] --> B["AiServices.builder(Assistant.class)<br/>.chatModel(model)<br/>.build()"]
+    B --> Proxy["生成动态代理实现<br/>（Java 动态代理）"]
+    App["业务代码<br/>agent.chat(\"你好\")"] --> Proxy
+    Proxy --> Model["ChatModel"]
+    Proxy --> Mem["ChatMemory"]
+    Proxy --> Tools["@Tool 方法"]
+```
+
 ---
 
 ## 3. SystemMessage：定义 AI 的角色
@@ -140,6 +152,22 @@ Sentiment result = analyzer.analyze("这个产品真烂，没法用");
 1. AiServices 在 prompt 里追加"必须返回符合 schema 的 JSON"
 2. LLM 返回 JSON 字符串
 3. AiServices 用 Jackson 反序列化成你的 record
+
+**结构化输出时序**：
+
+```mermaid
+sequenceDiagram
+    participant App as 业务代码
+    participant AS as AiServices
+    participant LLM as LLM
+    participant JS as Jackson
+    App->>AS: analyzer.analyze("这个产品真烂，没法用")
+    AS->>LLM: prompt 追加「必须返回符合 schema 的 JSON」
+    LLM-->>AS: 返回 JSON 字符串
+    AS->>JS: 反序列化
+    JS-->>AS: record Sentiment 对象
+    AS-->>App: result.emotion()="negative"
+```
 
 ### 4.3 注意事项
 
@@ -221,6 +249,23 @@ CustomerService service = AiServices.builder(CustomerService.class)
 // 多用户使用，互不干扰
 service.chat("user-001", "我的订单到哪了？");
 service.chat("user-002", "iPhone 15 多少钱？");
+```
+
+**完整装配架构**：
+
+```mermaid
+flowchart TD
+    SVC["CustomerService 接口<br/>@SystemMessage + @MemoryId String userId + @UserMessage"]
+    SVC --> B["AiServices.builder(CustomerService.class)"]
+    B --> CM["chatModel(model)"]
+    B --> CMP["chatMemoryProvider(userId →<br/>MessageWindowChatMemory 20 条)"]
+    B --> T["tools(OrderTools, ProductTools)"]
+    CM --> Model["ChatModel（DeepSeek）"]
+    CMP --> Mem["按 userId 隔离的 ChatMemory"]
+    T --> O["OrderTools(orderRepo)"]
+    T --> P["ProductTools(productRepo)"]
+    U1["service.chat(\"user-001\", \"我的订单到哪了？\")"] --> SVC
+    U2["service.chat(\"user-002\", \"iPhone 15 多少钱？\")"] --> SVC
 ```
 
 ### 6.1 关键注解

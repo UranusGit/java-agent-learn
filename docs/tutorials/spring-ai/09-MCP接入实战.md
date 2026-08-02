@@ -93,6 +93,30 @@ ls /tmp/ai-workspace/
 # hello.txt
 ```
 
+**核心时序**：filesystem 的 `read_file` / `write_file` / `list_files` 等 tool 自动注入，LLM 决定调用，应用代码无感。
+
+```mermaid
+sequenceDiagram
+    participant Curl as curl
+    participant Ctl as McpController
+    participant CC as ChatClient
+    participant LLM as LLM
+    participant MCP as MCP Client（stdio）
+    participant FS as filesystem Server<br/>npx server-filesystem
+    Curl->>Ctl: POST /mcp-chat 创建 hello.txt
+    Ctl->>CC: prompt().user(question).call()
+    CC->>LLM: 请求（filesystem 工具已自动注入）
+    LLM->>LLM: 决定调用 write_file
+    LLM->>MCP: 调用 write_file 工具
+    MCP->>FS: stdio 进程通信
+    FS-->>FS: 创建 /tmp/ai-workspace/hello.txt
+    FS-->>MCP: 工具结果
+    MCP-->>LLM: tool 结果
+    LLM-->>CC: 最终回答
+    CC-->>Ctl: content()
+    Ctl-->>Curl: 200 响应
+```
+
 ---
 
 ## 2. Part 2：暴露企业内部 MCP Server（1-2 小时）
@@ -180,6 +204,19 @@ public String performanceReview(String employeeName, String quarter) {
 npx @modelcontextprotocol/inspector http://localhost:8080/sse
 ```
 
+**暴露的 MCP Server 架构**：
+
+```mermaid
+flowchart TD
+    svc["EmployeeService<br/>业务数据"] --> server["EmployeeMcpServer<br/>@McpTool 3 个<br/>@McpResource<br/>@McpPrompt"]
+    server --> mcp["MCP Server（SSE）<br/>spring-ai-mcp-server-webmvc-starter"]
+    mcp --> consumers["公司内任意 AI 应用"]
+    consumers --> c1["Claude Desktop"]
+    consumers --> c2["Cursor"]
+    consumers --> c3["Spring AI"]
+    consumers --> c4["LangChain4j"]
+```
+
 ---
 
 ## 3. Part 3：Client + Server 闭环（30 分钟）
@@ -224,6 +261,29 @@ curl -X POST http://localhost:8080/ask \
 ```
 
 LLM 会调用 `queryByName("张三")` 然后返回邮箱。
+
+**Client + Server 闭环**：
+
+```mermaid
+flowchart TD
+    subgraph clientApp["Client 应用（demo 项目）"]
+        ctl["OrchestratorController<br/>POST /ask"]
+        cc["ChatClient"]
+        mc["MCP Client（SSE）<br/>connections: employee-server"]
+        llm["LLM 决定调用工具"]
+        ctl --> cc
+        cc --> mc
+        cc --> llm
+    end
+    subgraph serverApp["employee-mcp-server（:8081）"]
+        srv["MCP Server<br/>/mcp/sse"]
+        tools["自动发现 tools<br/>queryByName / listByDepartment / updateEmail"]
+        srv --> tools
+    end
+    mc -->|"SSE 发现并调用"| srv
+    llm -->|"调用 queryByName('张三')"| tools
+    tools -->|"查询结果返回"| mc
+```
 
 ---
 

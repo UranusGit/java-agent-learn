@@ -189,6 +189,23 @@ question → [CoT run 1] → A
 答案 = A（多数票）
 ```
 
+**投票机制**：
+
+```mermaid
+flowchart TD
+    A["同一问题 question"] --> R1["CoT run 1 → A"]
+    A --> R2["CoT run 2 → B"]
+    A --> R3["CoT run 3 → A"]
+    A --> R4["CoT run 4 → A"]
+    A --> R5["CoT run 5 → C"]
+    R1 --> V["投票统计<br/>(temperature=0.7，K 路并发)"]
+    R2 --> V
+    R3 --> V
+    R4 --> V
+    R5 --> V
+    V --> O["答案 = A（多数票）"]
+```
+
 ### 4.2 落地（temperature=0.7，并发 K 路）
 
 ```java
@@ -264,6 +281,18 @@ public String reflexion(String q, int maxRounds) {
 
 **适用**：写作、代码生成、复杂推理。**不适用**：低延迟对话（一轮变三轮）。
 
+**反思循环**：
+
+```mermaid
+flowchart TD
+    A["question → 生成 answer_v1"] --> B["question + 当前答案 → critique"]
+    B --> C{"critique 无问题?"}
+    C -->|"是"| D["结束，返回当前答案"]
+    C -->|"否"| E["question + 答案 + critique → 生成新答案"]
+    E --> B
+    E -->|"已到 maxRounds 上限"| D
+```
+
 ---
 
 ## 6. ToT（Tree-of-Thoughts）
@@ -282,6 +311,21 @@ CoT 是链（一条路走到底），ToT 是树（多分支探索 + 剪枝）。
 ```
 
 适合：**有明确目标可评估**的问题（24 点游戏、迷宫、复杂规划）。
+
+**树的探索与剪枝**：
+
+```mermaid
+flowchart TD
+    ROOT["根：问题"] --> A["分支 A"]
+    ROOT --> B["分支 B"]
+    ROOT --> C["分支 C"]
+    A --> SA["评估 A ✓"]
+    B --> SB["评估 B ✗"]
+    C --> SC["评估 C ✓"]
+    SB --> X["剪枝"]
+    SA --> A1["继续展开 A1, A2"]
+    SC --> C1["继续展开 C1, C2"]
+```
 
 ### 6.1 简化版 ToT（在 Spring AI 里）
 
@@ -360,6 +404,24 @@ ReAct 的痛点：模型"边走边想"，容易陷入局部最优。Plan-and-Exe
 阶段 1：Planner 一次性生成完整 plan（拆成 N 个子任务）
 阶段 2：Executor 依次执行每个子任务（可调工具）
 阶段 3：Replanner 看执行结果，决定是 replan 还是收尾
+```
+
+**Planner-Executor-Replanner 时序**：
+
+```mermaid
+sequenceDiagram
+    participant P as Planner
+    participant E as Executor
+    participant R as Replanner
+    P->>P: 一次性生成完整 plan（拆成 N 个子任务）
+    loop 依次执行每个子任务（可调工具）
+        P->>E: 派发子任务
+        E->>E: 执行子任务
+        E-->>R: 回报执行结果
+        R->>R: 判断：replan 还是收尾
+    end
+    R->>P: 需要 replan → 生成新 plan
+    R-->>E: 收尾 → 汇总最终答案
 ```
 
 详见 [`./10-多Agent编排实战.md`](./10-多Agent编排实战.md) 的 Planner-Executor 模式。
@@ -514,6 +576,20 @@ BaseAdvisor promptLogger() {
         需要外部数据？
         ├── 是 → ReAct / Plan-Execute（用 ToolCallingAdvisor）
         └── 否 → ToT（多分支探索 + 剪枝）
+```
+
+**选型决策**：
+
+```mermaid
+flowchart TD
+    A{"任务是开放生成<br/>(写作、总结)?"} -->|"是"| B["Zero/Few-shot + Format<br/>可叠 Reflexion（离线）"]
+    A -->|"否"| C{"任务有明确答案?"}
+    C -->|"是"| D{"推理模型?"}
+    D -->|"是"| E["直接问"]
+    D -->|"否"| F["CoT + Self-Consistency（K=5）"]
+    C -->|"否"| G{"需要外部数据?"}
+    G -->|"是"| H["ReAct / Plan-Execute<br/>(用 ToolCallingAdvisor)"]
+    G -->|"否"| I["ToT（多分支探索 + 剪枝）"]
 ```
 
 ---

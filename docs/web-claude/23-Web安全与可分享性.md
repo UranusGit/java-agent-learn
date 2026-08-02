@@ -282,6 +282,31 @@ mermaid.initialize({
 
 ---
 
+**artifact 输出侧防护**：不同渲染类型走不同加固路径，避免脚本执行与父页被操纵。
+
+```mermaid
+flowchart TD
+    Art["artifact 内容"]
+    T{"渲染类型"}
+    SVG["SVG"]
+    HTML["HTML"]
+    MD["Markdown"]
+    MM["Mermaid"]
+
+    Art --> T
+    T -->|"svg"| SVG
+    T -->|"html"| HTML
+    T -->|"markdown"| MD
+    T -->|"mermaid"| MM
+
+    SVG -->|"静态展示"| Img["用 &lt;img&gt; 渲染<br/>浏览器不执行脚本"]
+    SVG -->|"需交互"| Dp["服务端 DOMPurify 净化<br/>禁 script / onload / onerror"]
+    HTML --> Iframe["iframe sandbox=allow-scripts<br/>禁 allow-same-origin / forms / popups / top-navigation"]
+    Iframe --> PM["postMessage 验来源 origin<br/>+ 校验 schema 与 artifactId"]
+    MD --> Safe["rehype-sanitize 白名单<br/>绝不使用 rehype-raw"]
+    MM --> Strict["securityLevel=strict<br/>禁用 htmlLabels / 点击事件"]
+```
+
 ## 3. CORS / Cookie / CSRF
 
 ### 3.1 CORS 严格配置
@@ -401,6 +426,29 @@ public TokenPair refresh(@RequestBody RefreshRequest req) {
 
 ---
 
+**Refresh Token 轮转时序**：401 时自动刷新并重放原请求，旧 refresh 每次失效防重放。
+
+```mermaid
+sequenceDiagram
+    participant FE as 前端（axios）
+    participant BE as 后端
+
+    FE->>BE: 请求业务 API（Authorization: Bearer access）
+    BE-->>FE: 401 Unauthorized
+    FE->>FE: 标记 _retried 后重试
+    FE->>BE: POST /auth/refresh { refresh }
+    BE->>BE: 校验 refresh 未过期
+    alt refresh 有效
+        BE->>BE: 删除旧 refresh（防重放）
+        BE->>BE: 签发新对（access 15min + refresh 7d）
+        BE-->>FE: 新 token 对
+        FE->>BE: 用新 access 重发原请求
+        BE-->>FE: 200 业务数据
+    else refresh 失效 / 已撤销
+        BE-->>FE: 401 invalid refresh token
+    end
+```
+
 ## 4. 公共分享链接
 
 ### 4.1 设计
@@ -470,6 +518,33 @@ public class ShareController {
         return buildShareView(link);
     }
 }
+```
+
+**分享链接验证流程**：依次校验 token、撤销、过期、密码，任一失败即拒绝。
+
+```mermaid
+flowchart TD
+    Start(["GET /api/share/{token}"])
+    F{"按 token 查到链接?"}
+    No["404 链接无效"]
+    R{"已撤销 revoked?"}
+    E{"已过期 expires_at?"}
+    P{"有 password_hash?"}
+    PM{"密码匹配?"}
+    NP["401 需要密码"]
+    OK["buildShareView<br/>ShareRoute 只读视图"]
+
+    Start --> F
+    F -->|"否"| No
+    F -->|"是"| R
+    R -->|"是"| No
+    R -->|"否"| E
+    E -->|"是"| No
+    E -->|"否"| P
+    P -->|"否"| OK
+    P -->|"是"| PM
+    PM -->|"不匹配或缺失"| NP
+    PM -->|"匹配"| OK
 ```
 
 ### 4.5 ShareRoute（只读视图）

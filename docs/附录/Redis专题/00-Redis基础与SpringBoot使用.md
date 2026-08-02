@@ -32,6 +32,20 @@
 2. **数据结构更丰富**：不只是"键→一个值"，还有 List、Set、Hash、ZSet、Stream、HyperLogLog 等，且这些结构**自带原子操作**（如 `INCR` 自增、`LPUSH` 入队）。
 3. **有持久化**：虽然主要靠内存，但可以配 RDB（定期快照）或 AOF（追加日志），重启不丢（视配置）。
 
+**跨进程共享与 HashMap 对比**：
+
+```mermaid
+flowchart LR
+    subgraph p1["Java 进程（单个）"]
+        hm["HashMap 键值表<br/>只在本进程内可见"]
+    end
+    subgraph p2["多实例集群"]
+        a["服务实例 A"] --> redis["Redis 内存键值库"]
+        b["服务实例 B"] --> redis
+        c["服务实例 C"] --> redis
+    end
+```
+
 **单线程**：Redis 的命令执行是**单线程**的——同一时刻只执行一条命令。这反而带来一个巨大好处：**每条命令天然原子**（不会被其他命令打断）。后面 02 分布式锁、Stream 消费组都吃这个特性。
 
 ### 1.2 怎么起（任选其一）
@@ -474,6 +488,37 @@ public class CacheController {
 }
 ```
 
+**核心收发时序**：
+
+```mermaid
+sequenceDiagram
+    participant C as curl
+    participant Ctrl as CacheController
+    participant Svc as ReactiveCacheService
+    participant Tpl as ReactiveRedisTemplate
+    participant R as Redis
+
+    Note over C,R: 写：PUT /cache/hello?value=world
+    C->>Ctrl: PUT 请求
+    Ctrl->>Svc: put("hello", "world")
+    Svc->>Tpl: opsForValue().set(key, value, 10min)
+    Tpl->>R: SET hello world EX 600
+    R-->>Tpl: OK
+    Tpl-->>Svc: 完成信号
+    Svc-->>Ctrl: 完成
+    Ctrl-->>C: 200
+
+    Note over C,R: 读：GET /cache/hello
+    C->>Ctrl: GET 请求
+    Ctrl->>Svc: get("hello")
+    Svc->>Tpl: opsForValue().get(key)
+    Tpl->>R: GET hello
+    R-->>Tpl: "world"
+    Tpl-->>Svc: Mono<String>
+    Svc-->>Ctrl: "world"
+    Ctrl-->>C: 响应体 "world"
+```
+
 > **验证**：
 > ```bash
 > # 写
@@ -495,6 +540,31 @@ public class CacheController {
 传统 MVC（Tomcat）：**一个请求占一个线程**，线程在等待 IO（读数据库、读 Redis）时**干等**。线程数是有限的（默认几百），并发一上来线程池打满就拒绝服务。
 
 WebFlux（Netty）：**少量线程（通常 = CPU 核数）跑一个事件循环**，一个线程**同时处理成千上万个请求**。它的绝招是"**绝不在等待 IO 时卡住线程**"——请求来了登记一下，IO 结果到了再继续往下走。所以 WebFlux 的线程**永远不该被阻塞**。
+
+**线程模型对比**：
+
+```mermaid
+flowchart LR
+    subgraph mvc["传统 MVC（Tomcat）：一请求一线程"]
+        direction TB
+        q1["请求 1"] --> t1["线程 1"]
+        q2["请求 2"] --> t2["线程 2"]
+        qn["请求 N"] --> tn["线程 N（有限）"]
+        t1 --> wait["等待 IO 时干等"]
+        t2 --> wait
+        tn --> wait
+        wait --> full["线程池打满 → 拒绝服务"]
+    end
+    subgraph wf["WebFlux（Netty）：事件循环"]
+        direction TB
+        el["少量线程（通常 = CPU 核数）"] --> h1["同时处理请求 1"]
+        el --> h2["同时处理请求 2"]
+        el --> hn["同时处理成千上万请求"]
+        h1 -.->|"IO 结果到了再继续"| el
+        h2 -.->|"IO 结果到了再继续"| el
+        hn -.->|"IO 结果到了再继续"| el
+    end
+```
 
 ### 5.2 阻塞版 Redis 客户端为什么会榨干事件循环
 

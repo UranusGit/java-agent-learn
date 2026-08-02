@@ -57,6 +57,27 @@ McpClientManager
   (各自作为子进程或 HTTP server)
 ```
 
+**整体架构**：
+
+```mermaid
+flowchart TD
+    AE["Agent Engine"]
+    TR["ToolRegistry<br/>（统一注册）"]
+    MCM["McpClientManager"]
+    GH["GitHub"]
+    FS["Filesystem"]
+    SL["Slack"]
+    DBS["Database"]
+    OTH["..."]
+    AE --> TR
+    TR --> MCM
+    MCM --> GH
+    MCM --> FS
+    MCM --> SL
+    MCM --> DBS
+    MCM --> OTH
+```
+
 MCP server 可以是：
 - **本地子进程**（stdio）：用户机器上的 server；
 - **远程 HTTP/SSE server**：部署在别处；
@@ -189,9 +210,40 @@ public class McpClientManager {
 }
 ```
 
+**连接流程**：`connect(serverId)` 全过程的成功与失败分支。
+
+```mermaid
+flowchart TD
+    ST(("开始")) --> F1["findById(serverId)"]
+    F1 --> B["buildClient(e)<br/>按 transport 选择客户端"]
+    B --> C["client.connect()"]
+    C --> I["client.initialize()"]
+    I --> LT["client.listTools()"]
+    LT --> P["persistTool(serverId, t)"]
+    P --> OK["status=connected<br/>clients.put(serverId, client)"]
+    OK --> EN(("结束"))
+    C -.->|"异常"| ERR["status=error<br/>记录 last_error"]
+    I -.->|"异常"| ERR
+    LT -.->|"异常"| ERR
+    P -.->|"异常"| ERR
+    ERR --> EN
+```
+
 ---
 
 ## 5. 三种 Transport 实现
+
+**Transport 选型**：`transport` 字段决定走哪条客户端实现路径。
+
+```mermaid
+flowchart TD
+    CFG["MCP server 配置<br/>transport 字段"]
+    CFG --> D{"transport?"}
+    D -->|"stdio"| STD["StdioMcpClient<br/>本地子进程<br/>stdin/stdout 收发 JSON-RPC"]
+    D -->|"sse"| SSE["SseMcpClient<br/>远程长连接 + POST 上行"]
+    D -->|"http"| HTTP["HttpMcpClient<br/>streamable HTTP<br/>单次 JSON 或 SSE 流"]
+    D -->|"其他"| UNK["抛 IllegalArgumentException<br/>unknown transport"]
+```
 
 ### 4.1 StdioMcpClient
 
@@ -564,6 +616,26 @@ mcp__*__delete_*(*) DENY  # 禁止所有"删除"类
   "status": "connected",
   "toolsAvailable": ["create_issue", "list_prs", ...]
 }
+```
+
+**一次 MCP 调用的可观测事件时序**：调用前后各产生一个事件。
+
+```mermaid
+sequenceDiagram
+    participant AG as Agent 引擎
+    participant TR as ToolRegistry
+    participant MM as McpClientManager
+    participant MC as MCP server
+    participant EB as AgentEventBus
+    AG->>TR: apply(input, ctx)
+    TR->>MM: callTool(serverId, toolName, input)
+    MM->>EB: emit mcp_call 事件
+    MM->>MC: tools/call
+    MC-->>MM: McpToolResult
+    MM->>EB: emit mcp_result 事件（含 durationMs）
+    MM-->>TR: 返回结果
+    TR-->>AG: ToolResult
+    Note over EB: mcp_server_status 事件记录连接状态<br/>与可用工具列表
 ```
 
 前端专门有"MCP Servers"面板，展示连接状态、工具列表、最近调用。

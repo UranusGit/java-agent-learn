@@ -25,6 +25,16 @@
                   返回 Top-K 文档
 ```
 
+**向量检索基本流程**：
+
+```mermaid
+flowchart TD
+    T["文本"] --> E["Embedding 模型"]
+    E --> V["高维向量（如 768/1536 维）"]
+    V --> S["相似度计算（余弦相似度 / 点积）"]
+    S --> K["返回 Top-K 文档"]
+```
+
 ### 2.2 主流索引算法（了解即可）
 
 | 算法 | 原理 | 特点 |
@@ -50,6 +60,17 @@
 - **Elasticsearch 8.x**：自带 `knn` 查询 + `bool query`，可用 `rrf` 检索器融合。
 - **Weaviate / Qdrant / Milvus**：均内置混合检索，开箱即用。
 
+**混合检索融合流程**：
+
+```mermaid
+flowchart TD
+    Q["用户 Query"] --> B["BM25 检索<br/>词频 + 逆文档频率，精确匹配强"]
+    Q --> V["向量检索<br/>语义匹配，同义 / 近义强"]
+    B --> RRF["RRF 融合<br/>score = Σ 1/(k + rank_i)，k≈60"]
+    V --> RRF
+    RRF --> OUT["融合结果<br/>无需两路分数归一化，比加权平均更鲁棒"]
+```
+
 ---
 
 ### 3.2 重排序 Re-ranking
@@ -71,6 +92,16 @@
 #### Java 集成方式
 - Python 侧起 **Infinity / Text Embeddings Inference (TEI)** 服务，Java 通过 HTTP 调用。
 - 或用 Qdrant 的内置 RBF。
+
+**重排流程**：
+
+```mermaid
+flowchart LR
+    Q["Query"] --> RECALL["双塔召回模型（Embedding）<br/>为速度牺牲精度"]
+    RECALL --> C100["召回 100"]
+    C100 --> CE["Cross-encoder 重排模型<br/>query 与 doc 拼接进 Transformer<br/>精度碾压，但慢、贵"]
+    CE --> T10["重排 Top-10 送入 LLM"]
+```
 
 ---
 
@@ -153,3 +184,14 @@
 ## 7. 学习检查点
 
 > 能画出"用户 Query → 改写 → 混合召回 → 重排 → Prompt 拼接 → LLM"的完整链路，并说清楚每个环节的失败模式。
+
+**RAG 完整链路**：
+
+```mermaid
+flowchart LR
+    U["用户 Query"] --> QW["Query 改写"]
+    QW --> HR["混合召回<br/>BM25 + 向量检索 → RRF"]
+    HR --> RR["重排<br/>召回 100 → 重排 10"]
+    RR --> PP["Prompt 拼接（注入上下文）"]
+    PP --> LLM["LLM 生成答案"]
+```

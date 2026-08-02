@@ -31,6 +31,19 @@ Reactor 是**响应式流（Reactive Streams）规范**的实现。响应式流�
 消费者 ──request(n)──→ 生产者   ← 这就是背压："给我 n 个"
 ```
 
+**推拉结合**：
+
+```mermaid
+sequenceDiagram
+    participant P as 生产者 Producer
+    participant C as 消费者 Consumer
+    C->>P: request(n)：给我 n 个（这就是背压）
+    P->>C: 推 n 个数据
+    C->>P: 处理完再 request(n)
+    P->>C: 按需再推 n 个
+    Note over P,C: 消费者按自己的能力要多少，生产者才推多少
+```
+
 ---
 
 ## 第 2 章：为什么需要背压
@@ -47,6 +60,21 @@ Flux.interval(Duration.ofMillis(1))
 ```
 
 没有背压控制的话，`interval` 会持续高速发，`flatMap` 把它们摊开（默认并发 256），内存里堆满待写的任务，最终 **OOM**。
+
+**有无背压的对比**：
+
+```mermaid
+flowchart LR
+    subgraph NO["没有背压"]
+        A1["interval 每 1ms 高速发"] --> B1["flatMap 摊开，默认并发 256"]
+        B1 --> C1["内存堆满待写的任务"]
+        C1 --> D1["最终 OOM"]
+    end
+    subgraph YES["有背压（request 拉取）"]
+        A2["快速源按需发"] --> B2["消费者告诉生产者能处理多少"]
+        B2 --> C2["生产者被拉慢，不积压"]
+    end
+```
 
 ### 2.2 背压怎么救
 
@@ -125,6 +153,15 @@ Sinks.many().multicast().onBackpressureBuffer();
 
 > **管数分离文档第 3 章为什么用它**：生成器往 Sink 塞字，多个 SSE 订阅者读。某个订阅者（比如网络慢的设备）读得慢，`onBackpressureBuffer` 帮它缓冲，不至于丢字。
 
+**Sinks 的背压**：
+
+```mermaid
+flowchart LR
+    PROD["生成器 tryEmitNext 塞字<br/>命令式，塞多少收多少"] --> SINK["Sinks.Many<br/>multicast + onBackpressureBuffer"]
+    SINK -->|"每个订阅者各自缓冲"| SLOW["慢订阅者（网络慢的设备）<br/>事件被缓冲，不丢字"]
+    SINK -->|"正常消费"| FAST["快订阅者（SSE）<br/>实时读到字"]
+```
+
 ### 4.2 tryEmitNext 的返回值
 
 ```java
@@ -191,6 +228,16 @@ flux.onBackpressureLatest();
 - 生产远慢于消费，不会积压。
 
 **但一旦换成真 LLM**（可能 100ms 吐一个 token，多 run 并发），或下游是慢存储，就要考虑背压了。这时 `onBackpressureBuffer(大小)` + 处理 `FAIL_OVERFLOW` 是正解。
+
+**实战策略决策**：
+
+```mermaid
+flowchart TD
+    Q{"消费者跟不上时怎么处理背压?"} -->|"生产者可拉慢（最根本）"| A["限并发<br/>flatMap(fn, n) 或 limitRate(n)"]
+    Q -->|"偶尔慢但总体能跟上"| B["缓冲<br/>onBackpressureBuffer(1000, 策略)"]
+    Q -->|"数据不重要（心跳 / 采样）"| D["丢弃<br/>onBackpressureDrop(...)"]
+    Q -->|"只要最新值（实时仪表盘）"| L["只留最新<br/>onBackpressureLatest()"]
+```
 
 ---
 

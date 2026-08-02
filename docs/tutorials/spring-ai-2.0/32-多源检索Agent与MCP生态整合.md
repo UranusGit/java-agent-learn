@@ -106,6 +106,27 @@ spring:
 
 ## 2. 整体架构
 
+**整体架构**：
+
+```mermaid
+flowchart TD
+    subgraph AGENT["Agentic Search Agent(业务进程)"]
+        QR["Query Rewriter<br/>问题拆成子查询"] --> FO["Fan-out<br/>(Reactor 并发)"]
+        FO --> MERGE["Result Merger<br/>RRF 融合 + Rerank"]
+        MERGE --> SYN["Synthesizer<br/>+ 引用角标"]
+        SYN --> ANS["带角标最终答案<br/>+ source 列表"]
+    end
+    FO --> CL["MCP Client<br/>(Spring AI 自动装配的 SyncMcpToolCallbackProvider)<br/>统一 search(query, source)"]
+    CL <-->|"MCP 协议<br/>(Streamable HTTP)"| BS["Baidu MCP Server"]
+    CL <-->|"MCP 协议"| BG["Bing MCP Server"]
+    CL <-->|"MCP 协议"| TV["Tavily MCP Server"]
+    CL <-->|"MCP 协议"| KB["Internal KB MCP Server"]
+    BS --> BA["百度 API"]
+    BG --> BI["Bing API"]
+    TV --> TA["Tavily API"]
+    KB --> VEC["内部向量库"]
+```
+
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │ Agentic Search Agent（业务进程）                                │
@@ -211,6 +232,17 @@ if (subQueries.isEmpty()) {
 
 **铁律**：rewrite 是优化，不是必经路径。失败时必须能用原问题继续。
 
+**拆解失败退路**：
+
+```mermaid
+flowchart TD
+    Q["用户问题"] --> RW["QueryRewriter.rewrite(question, sources)"]
+    RW --> OK{"返回非空子查询列表?"}
+    OK -->|"否<br/>(异常 / 空列表)"| FB["退回原问题<br/>new SubQuery(原问题, 全部源, RESEARCH)"]
+    OK -->|"是"| USE["使用拆解后的子查询并发检索"]
+    FB --> USE
+```
+
 ---
 
 ## 4. Fan-out 并发调用多个 MCP Server
@@ -295,6 +327,35 @@ public class AgenticSearchService {
                 .toList();
     }
 }
+```
+
+**Fan-out 并发调用时序**：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant S as AgenticSearchService
+    participant B as Baidu MCP Server
+    participant G as Bing MCP Server
+    participant T as Tavily MCP Server
+    participant K as Internal KB MCP Server
+
+    U->>S: 问题
+    S->>S: rewriter.rewrite 拆成子查询
+    par 并发 fan-out(flatMap 上限 8)
+        S->>B: baidu_search(query, topK=10)
+        S->>G: bing_search(query, topK=10)
+        S->>T: tavily_search(query, topK=10)
+        S->>K: kb_search(query, topK=10)
+    end
+    Note over S,G: 每源 10 秒超时(慢源不阻塞快源)<br/>onErrorResume 失败隔离(一个源挂不影响其他)
+    B-->>S: 结果列表
+    G-->>S: 结果列表
+    T-->>S: 结果列表
+    K-->>S: 结果列表
+    S->>S: RRF 融合 + Rerank
+    S->>S: LLM 综合 + 引用校验
+    S-->>U: 带角标答案 + source 列表
 ```
 
 ### 4.3 关键工程点
@@ -429,6 +490,20 @@ public AgenticAnswer searchAndAnswer(String question) {
     // 7. 引用校验
     return citationValidator.validate(answer, topK);
 }
+```
+
+**完整融合流水线**：
+
+```mermaid
+flowchart TD
+    Q["用户问题"] --> S1["1. 拆查询<br/>rewriter.rewrite"]
+    S1 --> S2["2. 并发 fan-out<br/>fanout(subQueries)"]
+    S2 --> S3["3. RRF 融合<br/>rrfFuse(perSource)"]
+    S3 --> S4["4. 去重<br/>URL + 标题双重去重"]
+    S4 --> S5["5. Rerank 精排 top-5<br/>cross-encoder(bge-reranker-large)"]
+    S5 --> S6["6. LLM 综合<br/>强制 [source:N] 引用"]
+    S6 --> S7["7. 引用校验<br/>citationValidator.validate"]
+    S7 --> ANS["带角标答案 + source 列表"]
 ```
 
 ---
@@ -608,6 +683,16 @@ CREATE TABLE mcp_subscription (
 1. Agent 入口层：per-user rate limit（每分钟 10 query）
 2. 调度层：全局并发上限（同时最多 8 个 fan-out）
 3. MCP Client 层：per-source rate limit（百度 5 QPS，Bing 10 QPS）
+```
+
+**三层防护**：
+
+```mermaid
+flowchart TD
+    U["用户请求"] --> L1["① Agent 入口层<br/>per-user rate limit<br/>每分钟 10 query"]
+    L1 --> L2["② 调度层<br/>全局并发上限<br/>同时最多 8 个 fan-out"]
+    L2 --> L3["③ MCP Client 层<br/>per-source rate limit<br/>百度 5 QPS / Bing 10 QPS"]
+    L3 --> SRC["搜索源"]
 ```
 
 ### 9.2 Resilience4j Bulkhead

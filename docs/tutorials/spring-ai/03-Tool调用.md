@@ -78,6 +78,16 @@ public String chat(@RequestParam String q, CalculatorTools calc) {
 }
 ```
 
+**两种装配方式**：
+
+```mermaid
+flowchart TD
+    start(("装配方式")) --> w1["方式 1：defaultTools(xxx)<br/>作为默认 Tool，全局生效"]
+    start --> w2["方式 2：.tools(xxx)<br/>只本次调用生效"]
+    w1 --> bean["@Bean ChatClient 里配置一次<br/>所有 prompt 都能调用"]
+    w2 --> per["当前请求链里指定<br/>.user(q).tools(calc).call()"]
+```
+
 ---
 
 ## 3. 带参数的 Tool
@@ -197,6 +207,16 @@ public String orders(@RequestParam String q, @RequestParam String userId) {
 ```
 
 **注意**：`ToolContext` 不算 Tool 参数，LLM 看不到它。它是给 Tool 方法运行时用的。
+
+**ToolContext 传递**：
+
+```mermaid
+flowchart TD
+    ctrl["Controller<br/>.toolContext(Map.of('userId', userId))"] --> call["ChatClient 调用"]
+    call --> tool["Tool 方法<br/>queryMyOrders(ToolContext context)"]
+    call -.->|"LLM 看不到 ToolContext"| llm["LLM<br/>只看到 Tool 参数 schema"]
+    tool --> ctx["context.get('userId')<br/>按当前用户过滤订单"]
+```
 
 ---
 
@@ -367,6 +387,23 @@ LLM 推理：
   Observation: 0.65
 
   Answer: 用户服务有 3 个副本，CPU 使用率约 65%
+```
+
+**调用循环**：
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant LLM as 运维 Agent（LLM）
+    participant K8s as K8sTools
+    participant Prom as PromTools
+    User->>LLM: 用户服务有几个副本，CPU 高不高?
+    LLM->>LLM: 推理：需要查 Deployment 状态
+    LLM->>K8s: Action getDeploymentStatus<br/>(namespace=default, name=user-service)
+    K8s-->>LLM: Observation {"ready":3,"desired":3}
+    LLM->>Prom: Action queryMetric<br/>(PromQL rate(...user-service...[5m]))
+    Prom-->>LLM: Observation 0.65
+    LLM-->>User: Answer 用户服务有 3 个副本，CPU 使用率约 65%
 ```
 
 ---

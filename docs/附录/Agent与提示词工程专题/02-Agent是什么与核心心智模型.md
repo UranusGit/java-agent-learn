@@ -37,6 +37,18 @@ LLM 决定："我需要查订单状态"   ← Thought（想）
 LLM 综合 → 输出最终回答        ← 循环结束
 ```
 
+**ReAct 循环**：
+
+```mermaid
+flowchart TD
+    U["用户提问"] --> T["Thought（想）<br/>LLM 决定：我需要查订单状态"]
+    T --> A["Action（做）<br/>宿主程序执行 getOrderStatus(orderId)"]
+    A --> O["Observation（看）<br/>返回：已发货，明天送达"]
+    O --> D{"信息够了吗？"}
+    D -->|"不够，再调工具"| T
+    D -->|"够了"| F["输出最终回答"]
+```
+
 **关键区别**：不是"多调几次模型"，而是**模型在循环里做决策**——每一步它都要判断"我信息够了吗？够就回答；不够就再调哪个工具"。这个思想叫 **ReAct**（Reason + Act），到今天所有 Agent 框架的内核都是它。
 
 ### 1.3 现代实现：Function Calling / Tool Use
@@ -57,6 +69,22 @@ LLM 综合 → 输出最终回答        ← 循环结束
 [assistant tool_call]  调用 getOrderStatus，参数 {"orderId": "ORD-1001"}   ← Thought + Action
 [tool]     返回 {"status": "已发货", "eta": "明天 18:00"}                   ← Observation
 [assistant] 您的订单 ORD-1001 已发货，预计明天 18:00 送达。                ← 循环结束，输出
+```
+
+**核心时序**：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as Agent（LLM 模型）
+    participant H as 宿主程序（JVM）
+    U->>A: 我的订单 ORD-1001 到哪了？
+    Note over A: Thought：需要先查订单状态
+    A->>H: tool_call getOrderStatus<br/>{"orderId": "ORD-1001"}
+    Note over H: Action：解析 JSON，执行真实 Java 方法
+    H-->>A: {"status": "已发货", "eta": "明天 18:00"}
+    Note over A: Observation：信息够了，循环结束
+    A->>U: 您的订单 ORD-1001 已发货，预计明天 18:00 送达
 ```
 
 对照看每一阶段谁在做：
@@ -128,6 +156,17 @@ LLM 综合 → 输出最终回答        ← 循环结束
 └── 否 → 任务需要动态决定"下一步做什么"？
         ├── 是 → 用 Agent（模型在循环里自由决策）
         └── 否 → 单次 LLM 调用就够（别上 Agent！）
+```
+
+**选型决策**：
+
+```mermaid
+flowchart TD
+    Q1{"任务流程是固定的、可预期的？"}
+    Q1 -->|"是"| WF["Workflow<br/>固定步骤：先检索 → 再总结 → 后格式化<br/>用代码编排，LLM 只负责其中某些步骤"]
+    Q1 -->|"否"| Q2{"任务需要动态决定下一步做什么？"}
+    Q2 -->|"是"| AG["Agent<br/>模型在循环里自由决策"]
+    Q2 -->|"否"| SC["单次 LLM 调用就够<br/>别上 Agent！"]
 ```
 
 ### 3.2 经典反模式：把简单任务硬套成 Agent

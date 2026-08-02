@@ -72,6 +72,18 @@ Harness 工程就是为了堵这些漏洞。
 
 每一层都可独立替换、可测试、可观测。本章逐层展开。
 
+**五层模型**：
+
+```mermaid
+flowchart TB
+    L1["Layer 1: Initializer Agent<br/>首次运行的脚手架生成器"]
+    L2["Layer 2: Scaffold Artifacts<br/>feature_list.json / progress.txt / init.sh / git"]
+    L3["Layer 3: Guardrails（强约束）<br/>禁删测试 / 单 session 单 feature / 必须验证"]
+    L4["Layer 4: Session Protocol<br/>起步流程 / 终止流程 / 增量推进规则"]
+    L5["Layer 5: Multi-Agent Topology<br/>Planner / Coder / Tester / Reviewer / Cleaner"]
+    L1 --> L2 --> L3 --> L4 --> L5
+```
+
 ---
 
 ## 3. Layer 1：Initializer Agent
@@ -407,6 +419,24 @@ session.end_turn
 
 每一步都有 timeout（booting 5 分钟、working 30 分钟、verifying 5 分钟）。超时 → abort。
 
+**Session 协议状态机**：
+
+```mermaid
+stateDiagram-v2
+    [*] --> created: "创建 session"
+    created --> booting: "进入 protocol.booting"
+    booting --> ready: "pwd / git status / git log / progress / init.sh"
+    booting --> aborted: "超时(booting 5 分钟) / 步骤失败"
+    ready --> working: "进入 protocol.working"
+    working --> verifying: "实现 + 测试 → verifying"
+    working --> aborted: "超时(working 30 分钟)"
+    verifying --> committing: "TestVerifier.ok → committing"
+    verifying --> aborted: "超时(verifying 5 分钟) / 测试不通过"
+    committing --> end_turn: "git commit + progress + summary"
+    end_turn --> [*]
+    aborted --> [*]
+```
+
 ---
 
 ## 7. Layer 5：Multi-Agent Topology
@@ -432,6 +462,20 @@ session.end_turn
        │ Coder Agent│ │ Tester Agent│ │ Reviewer   │
        │  实现       │ │  自动化测试 │ │  验收 + Lint │
        └────────────┘ └────────────┘ └────────────┘
+```
+
+**三角色拓扑**：
+
+```mermaid
+flowchart TD
+    USR["用户需求"] --> PL["Planner Agent<br/>维护 feature_list / 选 feature / 接收反馈"]
+    PL --> CO["Coder Agent<br/>实现"]
+    PL --> TE["Tester Agent<br/>Playwright e2e / 回归"]
+    PL --> RE["Reviewer Agent<br/>审查 diff / 检查 immutable_paths / 验收"]
+    CO --> TE
+    TE --> RE
+    RE -->|"reject 返工"| PL
+    RE -->|"accept"| NEXT["进入下一个 feature"]
 ```
 
 **Planner Agent 职责**：
@@ -514,6 +558,16 @@ session.end_turn
 2. **v1.3**：加 Tester Agent（自动化 e2e 覆盖）；
 3. **v1.4**：加 Reviewer Agent；
 4. **v2.0**：完整 5 角色 + Planner 维护 feature_list 动态调整。
+
+**升级路线**：
+
+```mermaid
+flowchart LR
+    V11["11 章最简实现<br/>Layer 1-2 + 部分 Layer 4"] --> V12["v1.2<br/>constraints + TestVerifier<br/>+ 协议状态机<br/>单 agent 带护栏"]
+    V12 --> V13["v1.3<br/>+ Tester Agent<br/>自动化 e2e 覆盖"]
+    V13 --> V14["v1.4<br/>+ Reviewer Agent"]
+    V14 --> V20["v2.0<br/>完整 5 角色<br/>+ Planner 动态调整 feature_list"]
+```
 
 ---
 

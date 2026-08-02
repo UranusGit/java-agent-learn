@@ -49,6 +49,16 @@ sink.tryEmitNext("来自命令式世界的数据");
 
 这就是 33b 里 `AgentEventBus.emit()` 的本质——`emit` 内部调 `sink.tryEmitNext(event)`，SseController 订阅 `sink.asFlux()`。**一个塞、一个接，Sink 是中间的桥**。
 
+**整体架构**：
+
+```mermaid
+flowchart LR
+    IMP["命令式世界<br/>eventBus.emit(event)<br/>主动调 tryEmitNext"] -->|"从外面塞数据"| SINK["Sinks.Many<br/>命令式与响应式之间的桥"]
+    SINK -->|"sink.asFlux() 普通 Flux"| S1["订阅者1（SSE 推送）"]
+    SINK -->|"共享同一条流"| S2["订阅者2（日志）"]
+    SINK -->|"共享同一条流"| S3["订阅者N（成本统计）"]
+```
+
 ### 1.3 冷流 vs 热流——Sink 为什么是"热"的
 
 理解 Sink 的关键是理解"热流"：
@@ -63,6 +73,20 @@ sink.tryEmitNext("来自命令式世界的数据");
 `Sinks.Many` 是热流——`emit` 时数据就发出去了，不管有没有人订阅。订阅者订上来时，只能从"订阅那一刻"开始收后面的数据，之前 emit 的历史收不到（除非用了 `replay()`）。
 
 **33b 为什么用热流**：AgentEventBus 要广播事件给多个消费者（SSE、日志、成本统计），而且**写作任务只需执行一次**（冷流的话每多一个消费者就重跑一次 LLM）。热流让"写作执行一次、事件广播给所有人"。
+
+**冷流 vs 热流**：
+
+```mermaid
+flowchart LR
+    subgraph COLD["冷流：有人订阅才执行"]
+        C1["Flux.just / fromIterable / webClient"] --> C2["订阅者1：重新执行一遍数据源逻辑"]
+        C1 --> C3["订阅者2：又重新执行一遍"]
+    end
+    subgraph HOT["热流：不受订阅影响，随时可能 emit"]
+        H1["Sinks.Many emit 时数据即发出"] --> H2["订阅者1：共享同一条流"]
+        H1 --> H3["订阅者2：只收订阅之后的数据"]
+    end
+```
 
 ---
 
@@ -163,6 +187,15 @@ rp.tryEmitNext("C");
 // 输出：收到: A  收到: B  收到: C
 ```
 
+**选型决策**：
+
+```mermaid
+flowchart TD
+    Q{"选哪种变体？<br/>取决于新订阅者能看到多少历史"} -->|"只看订阅之后的事件"| M["multicast()<br/>不缓存历史<br/>33b 的 AgentEventBus 采用"]
+    Q -->|"能看订阅之前的历史"| R["replay()<br/>all() 全量 / limit(5) 最近 5 条"]
+    Q -->|"只允许 1 个订阅者"| U["unicast()<br/>多订阅者会抛异常"]
+```
+
 ### 3.2 autoCancel——没人订阅时怎么办
 
 创建 `multicast` 时最后一个参数是 `autoCancel`：
@@ -257,6 +290,18 @@ EmitResult r = sink.tryEmitNext(event);
 if (r == EmitResult.FAIL_OVERFLOW) {
     log.warn("AgentEventBus 缓冲满，丢弃事件: type={}", event.type());
 }
+```
+
+**流程决策**：
+
+```mermaid
+flowchart TD
+    A["sink.tryEmitNext(event)"] --> B{"EmitResult 返回值是什么?"}
+    B -->|"OK"| C["成功<br/>什么都不用做"]
+    B -->|"FAIL_OVERFLOW"| D["缓冲满了<br/>记录溢出日志（33b 事故 1 的根因）"]
+    B -->|"FAIL_TERMINATED"| E["Sink 已关闭<br/>放弃或重建 Sink"]
+    B -->|"FAIL_CANCELLED"| F["下游取消订阅了<br/>不需要做什么"]
+    B -->|"FAIL_ZERO_SUBSCRIBER"| G["零订阅者 + autoCancel=true<br/>一般忽略"]
 ```
 
 ### 4.2 emitNext——需要自定义失败策略时

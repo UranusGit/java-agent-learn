@@ -41,6 +41,16 @@ Flux<String> flux3 = chatClient.prompt()
         .content();
 ```
 
+**三种粒度关系**：
+
+```mermaid
+flowchart TD
+    S["chatClient.prompt().user(q).stream()"]
+    S --> C1["content()<br/>纯 token（LLM 字面输出）"]
+    S --> C2["chatResponse()<br/>带元数据"]
+    S --> C3["chatClientResponse()<br/>带 Advisor 上下文"]
+```
+
 ### A.2 SSE Controller
 
 ```java
@@ -248,6 +258,18 @@ public ChatClient chatClient(ChatClient.Builder builder,
 )
 ```
 
+**Memory 在外、Tool 在内的嵌套时序**：
+
+```mermaid
+flowchart TD
+    MB["Memory.before<br/>加载 history，注入 CONVERSATION_ID"]
+    TB["Tool.before"]
+    LOOP["Tool 内部多轮 tool call 循环<br/>完整发生在 Memory 的 before/after 之间"]
+    TA["Tool.after"]
+    MA["Memory.after<br/>写回 history，仍持有第一轮 CONVERSATION_ID"]
+    MB --> TB --> LOOP --> TA --> MA
+```
+
 ### C.3 验证结果
 
 修复后，curl 流式调用成功，工具正常被调用：
@@ -317,6 +339,16 @@ chatClient.prompt().user("hi").stream().content()
 
 **关键**：`retryWhen` 的 filter 决定哪些错误才重试 —— 不要 retry 4xx（永久错误）。
 
+**错误处理链**：
+
+```mermaid
+flowchart LR
+    IN["主 LLM 流"] --> T["timeout(30s)<br/>chunk 间隔超时"]
+    T -->|"超时"| R["retryWhen 指数退避（3 次）<br/>filter 只重试 429"]
+    R -->|"仍失败"| E["onErrorResume<br/>切 fallback 流"]
+    E -->|"fallback 也失败"| O["onErrorReturn<br/>返回 服务暂时不可用"]
+```
+
 ### D.5 timeout vs take
 
 ```java
@@ -365,6 +397,21 @@ chunk 1: assistant message，含 toolCalls=[{name:"getWeather", args:"{city:北�
 chunk 2: tool message（工具结果）
     ↓ 重新调用 LLM
 chunk 3+: assistant message，开始流式返回最终答案
+```
+
+**Mermaid 版流式工具调用时序**：
+
+```mermaid
+sequenceDiagram
+    participant LLM as LLM
+    participant ADV as ToolCallingAdvisor
+    participant TOOL as 工具
+    LLM-->>ADV: chunk 1：assistant message<br/>含 toolCalls=[getWeather(city:北京)]
+    Note over ADV: 单看一个 chunk 看不到完整 tool call<br/>先用 ChatClientMessageAggregator 聚合判断
+    ADV->>TOOL: 检测到 toolCalls，触发工具执行
+    TOOL-->>ADV: chunk 2：tool message（工具结果）
+    ADV->>LLM: 工具结果拼回 history，重新调用 LLM
+    LLM-->>ADV: chunk 3+：assistant message<br/>开始流式返回最终答案
 ```
 
 ### E.2 用 ChatClientMessageAggregator 旁路聚合

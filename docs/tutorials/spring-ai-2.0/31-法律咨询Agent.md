@@ -131,6 +131,24 @@ public List<LegalArticle> searchLegal(String query) {
 }
 ```
 
+**检索到引用的完整流水线**：
+
+```mermaid
+flowchart TD
+    Q["用户问题"] --> EXACT["精确匹配<br/>法条编号(如 '民法典 577')"]
+    Q --> DENSE["稠密检索<br/>vectorStore topK=20"]
+    Q --> SPARSE["稀疏检索<br/>BM25 topK=20"]
+    EXACT --> RRF["RRF 融合"]
+    DENSE --> RRF
+    SPARSE --> RRF
+    RRF --> RERANK["Reranker 精排<br/>bge-reranker-large topK=5"]
+    RERANK --> LLM["LLM 重组<br/>每条断言强制 [source:ID] 引用"]
+    LLM --> VAL{"引用校验<br/>source_id 在上下文中?"}
+    VAL -->|"否"| REW["强制重写<br/>根除幻觉"]
+    REW --> LLM
+    VAL -->|"是"| ANS["带引用的答案 + 末尾 disclaimer"]
+```
+
 ### 2.5 LLM 重组（强制引用）
 
 ```java
@@ -265,6 +283,17 @@ Agent 输出后必须律师 review：
     
 [最终意见]
 律师签字 + 出具法律意见书
+```
+
+**律师在回路流程**：
+
+```mermaid
+flowchart TD
+    AG["Agent 输出<br/>风险条款 + 缺漏条款 + 修改建议"] --> UI{"律师 UI"}
+    UI -->|"✓ 采纳"| FINAL["最终意见"]
+    UI -->|"✏️ 修改"| FINAL
+    UI -->|"✗ 不采纳(写理由)"| FINAL
+    FINAL --> SIGN["律师签字 + 出具法律意见书"]
 ```
 
 ---
@@ -437,6 +466,24 @@ if (topSimilarity < 0.5) {
 if (isCriminalCase(question)) {
     return refuse("刑事案件必须由律师代理");
 }
+```
+
+**拒答决策树**：
+
+```mermaid
+flowchart TD
+    Q["用户问题"] --> D1{"top-1 相似度 < 0.5?"}
+    D1 -->|"是"| R1["拒答<br/>未检索到明确适用法条"]
+    D1 -->|"否"| D2{"超出系统知识范围?<br/>(如外国法律)"}
+    D2 -->|"是"| R1
+    D2 -->|"否"| D3{"涉及刑事辩护?"}
+    D3 -->|"是"| R2["拒答<br/>刑事案件必须由律师代理"]
+    D3 -->|"否"| D4{"涉及具体诉讼策略?"}
+    D4 -->|"是"| R2
+    D4 -->|"否"| ANS["正常回答<br/>强制 disclaimer + recommendLawyer"]
+    R1 --> MON["拒答率监控<br/>目标 10-20%<br/>>30% 召回不足 / <5% 可能强答"]
+    R2 --> MON
+    ANS --> MON
 ```
 
 ### 7.3 拒答率监控

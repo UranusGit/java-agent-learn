@@ -452,6 +452,25 @@ git commit -m "第0章：同步黑盒写作助手跑通"
    （采集：run 自身是 Flux<AgentEvent>）        （总线）              （推送）
 ```
 
+**三层采集-总线-SSE 架构**（冷流驱动 + 热流广播，1.1 的地基分工）：
+
+```mermaid
+flowchart LR
+    subgraph CAP["采集层"]
+        WF["ChainingService.run<br/>返回 Flux&lt;AgentEvent&gt; 冷流"]
+    end
+    subgraph BUSG["事件总线"]
+        BUS["AgentEventBus<br/>Sinks.Many 热流广播"]
+    end
+    subgraph CON["消费者"]
+        SSE["SSE 主消费者<br/>订阅 run 冷流,驱动执行"]
+        OTH["日志 / 成本 / 归因<br/>订阅总线,不触发重跑"]
+    end
+    WF -->|"返回冷流 订阅即执行"| SSE
+    WF -.->|"每产出一事件 bus.emit 广播"| BUS
+    BUS -->|"订阅"| OTH
+```
+
 这一步同时做两件事（两个痛点一起解）：
 1. **流式 + 事件化**：`ChainingService.run` 从 `String`（第 0 章同步）升级成 `Flux<AgentEvent>`——正文 chunk 包成 `CONTENT_DELTA` 逐字推（解决"用户干等"），每步前后发 `STEP_START/STEP_END`、整条链发 `SESSION_STARTED/SESSION_COMPLETED`（解决"过程不可见"）。
 2. **总线**：加 AgentEventBus，把事件广播给多个消费者（不止前端 SSE）。
@@ -614,6 +633,25 @@ public class AgentEventBus {
 > **关于 sessionId 的传递**：第 1 章的 `run` 用同步 for 循环，sessionId 直接当方法参数/局部变量传，简单够用。等到第 3 章讲工具调用的会话隔离时，才会遇到"工具执行线程读不到局部变量"的问题，那时再引入 Reactor Context 传播（`PropagatedContextValue`/`AppContextKeys`）。**第 1 章不需要它**——提前引入只会让人困惑"这玩意儿有什么用"。
 
 现在改 `ChainingService`（**这一版是整个改造的核心**）：
+
+**一次写作的事件序列**（流式三步链：正文逐字 + 过程事件交织）：
+
+```mermaid
+flowchart TD
+    SS["SESSION_STARTED<br/>会话开始,带 input"] --> A0["STEP_START(0) 大纲"]
+    A0 --> D0["CONTENT_DELTA×<br/>大纲逐字推送"]
+    D0 --> E0["STEP_END(0)<br/>携带完整 output"]
+    E0 --> A1["STEP_START(1) 草稿"]
+    A1 --> D1["CONTENT_DELTA×<br/>草稿逐字推送"]
+    D1 --> E1["STEP_END(1)"]
+    E1 --> A2["STEP_START(2) 润色"]
+    A2 --> D2["CONTENT_DELTA×<br/>润色逐字推送"]
+    D2 --> E2["STEP_END(2)"]
+    E2 --> SC["SESSION_COMPLETED<br/>会话正常完成"]
+    E0 -.->|"任一步抛错"| SF["SESSION_FAILED<br/>会话失败"]
+    E1 -.-> SF
+    E2 -.-> SF
+```
 
 `src/main/java/com/example/aobs/workflow/ChainingService.java`（重写）：
 
@@ -1402,12 +1440,42 @@ git add -A && git commit -m "第1章：流式Agent+事件总线+SSE+调试页面
 
 > 这里第一次引入 Redis。第 0-1 章项目零外部依赖，可靠性需求出现才引入——这是演进的真实节奏。
 
+**事件分级与落库兜底**（解决"丢失"）：
+
+```mermaid
+flowchart TD
+    EV["emit(事件)"] --> SEQ["分配会话内序号"]
+    SEQ --> CRIT{"按类型分级<br/>defaultCriticality"}
+    CRIT -->|"CRITICAL<br/>SESSION_STARTED/COMPLETED/FAILED"| R["先落 Redis 兜底<br/>CriticalEventStore"]
+    R --> BUS["推总线广播"]
+    CRIT -->|"NORMAL<br/>STEP_START/STEP_END"| BUS
+    CRIT -->|"DISCARDABLE<br/>CONTENT_DELTA"| BUS
+    BUS -->|"缓冲满 tryEmitNext 失败"| LOST["事件被丢弃(静默)<br/>关键事件已落库,重连可回放"]
+```
+
 #### 解决「重连漏」：Last-Event-ID 回放 + 消费端幂等
 
 浏览器 `EventSource` 断线重连会**自动**带 `Last-Event-ID` 头（W3C 标准）。后端读这个头，从 Redis 把断连期间的事件补发。前提是后端每帧设了 `id:`——第 1 章已经设了，这就是「为演进留口子」。
 
 > **⚠️ 回放是 at-least-once，不是 exactly-once——前端必须幂等去重**。
 > 网络抖动可能导致 Last-Event-ID 没对齐（前端实际收到 5 条，但重连时报的 id 是 3），后端会从 3 之后补发——前端会**再次收到 4、5**（重复）。可靠消息的铁律是：**投递端 at-least-once（不丢）+ 消费端幂等去重（不重）**。前端按 `sequence` 去重（已收过的 sequence 丢弃）。具体代码见 2.3 的 reconnect.html。
+
+**重连回放核心时序**（解决"重连漏"）：
+
+```mermaid
+sequenceDiagram
+    participant FE as 前端(浏览器)
+    participant SSE as SseController
+    participant RS as CriticalEventStore(Redis)
+    participant BUS as AgentEventBus
+    FE->>SSE: 断线重连,请求带 Last-Event-ID
+    SSE->>RS: findAfter(sessionId, 时间戳)
+    RS-->>SSE: 断连期间错过的关键事件
+    SSE->>BUS: 订阅该会话后续实时事件
+    BUS-->>SSE: 之后新到达的事件
+    SSE-->>FE: 回放+实时合并推送(concat)
+    Note over FE: 按 sequence 幂等去重<br/>重复帧丢弃
+```
 
 #### 解决「乱序」：会话内序号
 
@@ -1744,7 +1812,6 @@ public class CriticalEventStore {
 ```
 
 `toSse` / `toJson` 不变，沿用第 1 章。
-```
 
 > **为什么重连不能再订阅 run**：run 是冷流、且代表"一次写作的执行"。重连时那次写作已经在第一次请求里触发了（或已结束），再订阅 run 会**重跑一遍 LLM**——既浪费钱、也不是用户想要的（用户要的是"接着看之前那次"）。所以重连走「Redis 回放关键事件 + AgentEventBus 订阅后续」——这是热流广播的价值兑现：写作只执行一次，事件进 AgentEventBus，重连者从总线接续。
 >
@@ -3094,6 +3161,22 @@ public class AgentEventBus {
 
 > **现在 SSE 怎么工作**：用户 SSE 连实例 B，请求落实例 A。A 发事件 → publish 到 Stream → B 的 `subscribeRemote` 拉到 → 回灌 B 的 sink → B 的 SSE 推给用户。跨实例事件通了。
 
+**跨实例事件广播流程**（解决"事件跨实例不通"）：
+
+```mermaid
+flowchart LR
+    subgraph INA["实例 A"]
+        REQ["请求落实在实例 A"] --> BA["AgentEventBus emit<br/>本地 sink + publish"]
+    end
+    subgraph INB["实例 B"]
+        BB["AgentEventBus.subscribeRemote"] --> SINK["回灌本地 sink"] --> SSE["SSE 推给订阅用户"]
+    end
+    BA -->|"XADD 写流"| STREAM["Redis Stream<br/>aobs:events:stream"]
+    STREAM -->|"跳过本实例ID防回环"| BB
+    REDIS["SessionStateStore<br/>序号/会话状态外置 Redis"] -.-> BA
+    REDIS -.-> BB
+```
+
 #### 4.2.3 分片总线：解决吞吐与爆炸半径
 
 单 sink → N 个 sink，按 sessionId hash 路由。
@@ -3469,6 +3552,20 @@ import java.time.LocalDate;
 > **API 核实**：`opsForValue().increment(key, double)`、`opsForZSet().removeRangeByScore/zCard/add` 全部真实存在。
 >
 > **三层配额分工**：per-session 防单次失控（第 3 章的 tokenLimitPerSession）；per-tenant 防租户烧爆总账；per-user 防滥用刷接口。
+
+**三层配额校验流程**（多级配额，都基于 Redis）：
+
+```mermaid
+flowchart TD
+    T["每次烧 token 后<br/>emitTokens 拿到 totalTokens"] --> Q{"QuotaService 三层配额"}
+    Q --> S["session 级<br/>单会话 token 上限"]
+    S --> T2["tenant 级<br/>checkTenantDailyTokens 日上限"]
+    T2 --> U["user 级<br/>checkUserRpm 每分钟限流"]
+    U -->|"全部通过"| OK["继续生成<br/>发 LLM_TOKENS 事件"]
+    S -->|"超限"| EX["发 QUOTA_EXCEEDED<br/>抛异常终止本次生成"]
+    T2 -->|"超限"| EX
+    U -->|"触发限流"| EX
+```
 
 #### 5.2.5 在 ChainingService 里接入配额
 
@@ -4105,6 +4202,17 @@ AgentEventBus.emit 里归档所有事件（和落 Redis 一起）；SseControlle
 | **8.5 治理配套** | 幂等/脱敏/加密/TTL/僵尸回收 | 防重/合规/成本可控 | 要管租户本身 → 8.6 |
 | **8.6 多租户管理** | 租户 CRUD + 配额 + 鉴权 | 租户可建可停 | — |
 
+**第 8 章六阶段依赖链**（每个机制都是被上一阶段痛点逼出来的）：
+
+```mermaid
+flowchart LR
+    A["8.1 最小持久化<br/>会话落库"] -->|"暴露:想看历史事件流"| B["8.2 历史回放<br/>归档重放成 SSE"]
+    B -->|"暴露:回放没鉴权"| C["8.3 列表+鉴权<br/>防越权"]
+    C -->|"暴露:中断会话没法恢复"| D["8.4 断点续传<br/>last_step+runFrom"]
+    D -->|"暴露:续传喂了脱敏输入"| E["8.5 治理配套<br/>脱敏/加密/幂等/TTL/僵尸"]
+    E -->|"暴露:要管租户本身"| F["8.6 多租户管理<br/>CRUD+配额+停用+真鉴权"]
+```
+
 ---
 
 ### 8.1 阶段一：最小持久化——会话能落库
@@ -4599,6 +4707,19 @@ git add -A && git commit -m "第8.3章：会话列表+租户鉴权（防越权�
 2. **拿到上一步的输出** → 第 7 章归档的 STEP_END 事件存了 output（摘要），续传时取它喂下一步。
 
 > **续传只允许 INTERRUPTED/FAILED**：ACTIVE 正在跑（不该续）、COMPLETED 已完成（没意义）。状态机限定续传入口——**状态不只是标签，是行为开关**。
+
+**会话状态机**（第 8.1 章定义，8.4 引入 INTERRUPTED）：
+
+```mermaid
+stateDiagram-v2
+    [*] --> ACTIVE: start 会话开始
+    ACTIVE --> COMPLETED: complete 正常完成
+    ACTIVE --> FAILED: fail 失败
+    ACTIVE --> INTERRUPTED: 停机标记 或 僵尸回收
+    INTERRUPTED --> ACTIVE: resume 断点续传
+    FAILED --> ACTIVE: resume 续传
+    COMPLETED --> [*]
+```
 
 #### 8.4.2 动手
 
@@ -5450,7 +5571,7 @@ ai-writing-assistant/
 
 ### A.4 演进全景图
 
-```
+```mermaid
 flowchart TD
     S0[第0章 同步黑盒 Agent<br/>一次性返回,过程不可见+用户干等] -->|事故: 看不到过程+干等| S1
     S1[第1章 三层骨架<br/>采集-总线-SSE] -->|投诉: 事件丢/乱/漏| S2

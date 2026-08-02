@@ -98,6 +98,26 @@ spring:
 
 ### 4.1 概念
 
+**整体架构**：离线索引把文档向量化入库，在线问答经 `RetrievalAugmentationAdvisor` 检索增强后交给 LLM。
+
+```mermaid
+flowchart TD
+    subgraph offline["离线索引（ETL）"]
+        raw["原始文档<br/>PDF / Word / HTML"] --> reader["Read<br/>DocumentReader"]
+        reader --> splitter["Transform<br/>TokenTextSplitter 分块"]
+        splitter --> vs["VectorStore（向量库）"]
+    end
+    vs -.-> embed["EmbeddingModel.embed()<br/>批量向量化"]
+    subgraph online["在线问答"]
+        q["用户问题"] --> advisor["RetrievalAugmentationAdvisor"]
+        advisor --> retriever["ContentRetriever<br/>VectorStoreContentRetriever"]
+        retriever --> vs
+        retriever --> topk["top-K 相关片段"]
+        topk --> stuff["拼成上下文<br/>替换 {question_answer_context}"]
+        stuff --> llm["LLM 基于上下文回答"]
+    end
+```
+
 ```
 原始文档（PDF/Word/HTML）
     ↓ Read（DocumentReader）
@@ -358,6 +378,17 @@ public class CustomRagAdvisor implements CallAdvisor, StreamAdvisor {
 
 > 📌 `ChatClientRequest` 是 record（不可变），改 prompt 必须通过 `mutate().prompt(...).build()`。这是 1.0.0 和 0.x 的重大差异。
 
+**自定义 RAG Advisor 处理流程**：
+
+```mermaid
+flowchart TD
+    q["用户 query"] --> search["1. vectorStore.similaritySearch<br/>topK 检索"]
+    search --> context["2. 拼接上下文<br/>docs 用 '---' 连接"]
+    context --> mutate["3. mutate() 修改 prompt<br/>把 context 追加到 user message"]
+    mutate --> next["4. chain.nextCall(augmentedReq)<br/>继续链"]
+    next --> llm["LLM 基于增强后的 prompt 回答"]
+```
+
 ---
 
 ## 8. 混合检索（高阶）
@@ -376,6 +407,14 @@ spring:
 ```
 
 Elasticsearch 8+ 自带 `knn` 查询和 `rrf` 融合，**一个查询完成混合检索**。
+
+**混合检索**：
+
+```mermaid
+flowchart TD
+    query["SearchRequest<br/>query=退货政策 topK=5"] --> es["Elasticsearch 8+<br/>knn 向量查询 + rrf 融合"]
+    es --> result["一次查询完成混合检索<br/>返回 topK 结果"]
+```
 
 ### 8.2 Java 侧
 

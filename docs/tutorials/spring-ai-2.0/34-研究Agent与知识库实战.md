@@ -383,6 +383,16 @@ LLM 读到这段"工具清单"，结合用户问题，**自己判断**"该不该
 
 > **为什么要多一步"提炼关键词"**：搜索接口（Bing/DuckDuckGo/Google 都一样）匹配的是关键词，不是自然语言。用户输入往往是问句（"对比 A 和 B 框架的发展"），直接搜命中率低。让 LLM 先把问句压成"最可能搜到资料的关键词"，是低成本提升搜索质量的常用手段——这一步在固定 workflow 里手动串，第 1 章升级自主 Agent 后，LLM 会自己决定要不要、搜什么。
 
+**固定 workflow 调用流程（第 0 章）**：
+
+```mermaid
+flowchart TD
+    U["用户输入研究主题"] --> K["① LLM 提炼搜索关键词<br/>(自然语言 → 关键词)"]
+    K --> S["② WebSearchTool.search<br/>抓 Bing 摘要(前5条)"]
+    S --> G["③ LLM 基于资料<br/>流式生成研究结果"]
+    G --> OUT["SSE 逐字推给前端<br/>(Flux<String>)"]
+```
+
 **【新建文件】** `research-agent/src/main/java/com/example/research/ResearchService.java`：
 
 ```java
@@ -669,6 +679,30 @@ public class ResearchService {
 ... 直到 LLM 不再请求工具，或撞 maxIterations 兜底
 ```javascript
 
+**核心时序（ToolCallingAdvisor 托管的 ReAct 循环）**：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant CC as ChatClient
+    participant LLM as 大模型
+    participant TA as ToolCallingAdvisor
+    participant T as WebSearchTool
+
+    U->>CC: 研究主题
+    CC->>LLM: 组装 prompt<br/>system + user + 工具清单(@Tool description)
+    Note over LLM: 判断"该不该调 search、传什么 query"
+    loop ReAct 循环(框架托管)
+        LLM-->>TA: 输出结构化 tool_call {search, query}
+        TA->>T: 执行 search(query)
+        T-->>TA: 返回网页摘要
+        TA-->>LLM: 把工具结果喂回，再问"还要调吗?"
+        Note over LLM: 资料不够 → 继续输出 tool_call<br/>够了 → 输出最终文本答案
+    end
+    LLM-->>CC: 不再请求工具 → 最终答案
+    CC-->>U: 流式研究结果(Flux<String>)
+```
+
 **三个关键认知**：
 1. **LLM 不是输出文本，是输出结构化的"调用请求"**。底层是 **function calling**——LLM 被训练成能输出 `{"name":"search","arguments":{"query":"XX"}}` 这种结构化 JSON，框架解析它、执行对应方法。这是 Agent 能"自主调工具"的技术基础。
 2. **"自动停"靠的是 LLM 自己判断"够了"**。每轮框架把工具结果喂回 LLM，问"还要调吗"——LLM 觉得信息够了，就不再输出 tool_call，而是输出普通文本（最终答案），循环自然结束。**不是代码判断"够了"，是模型判断**。
@@ -828,6 +862,28 @@ git add -A && git commit -m "第1章：自主Agent循环 + 决策可见 + 流式
 | 向量库 | **pgvector** | 持久化（PG 磁盘存储）、企业级首选、向量+元数据同库可 SQL 联合查 |
 | 接入 | Spring AI `PgVectorStore`（自动装配） | 开箱即用，`add(documents)`/`similaritySearch(query)` |
 | 检索 | 作为 Agent 的**又一个工具** | 和网页搜索并列——LLM 自主决定查网页还是查知识库 |
+
+**RAG 双通道架构**：
+
+```mermaid
+flowchart TD
+    subgraph ING["入库通道 POST /api/kb/ingest"]
+        TXT["文本/文档"] --> SPLIT["切块 每500字符一块"]
+        SPLIT --> EMB["EmbeddingModel 向量化<br/>text-embedding-3-small 1536维"]
+        EMB --> PG[("pgvector 向量表")]
+    end
+    subgraph RET["检索通道 KnowledgeBaseTool"]
+        Q["用户问题 / 子任务"] --> VQ["embedding 向量化"]
+        VQ --> SIM["similaritySearch<br/>topK=3 + 阈值0.6"]
+        PG --> SIM
+        SIM --> HITS["带来源编号片段<br/>[1] 来源:产品白皮书"]
+    end
+    subgraph AGT["LLM 自主决策"]
+        TOOLS["两个工具并列<br/>WebSearchTool / KnowledgeBaseTool"] --> LLM["LLM 生成结果并引用出处"]
+        HITS --> LLM
+        LLM --> OUT["SSE 研究结果"]
+    end
+```
 
 > **为什么 pgvector 不选 Redis/Milvus**：你要"持久化 + 企业级"。pgvector 是 PostgreSQL 扩展——**和数据一起磁盘持久化**，事务/备份/恢复用 PG 成熟体系；元数据（文档来源、权限、时间）和向量同库，能"查某租户的相关文档"（SQL 联合）。这是纯向量库做不到的。代价：起一个 PG（`docker run` 一行）。
 
@@ -1998,6 +2054,24 @@ for (int i = 0; i < subtasks.size(); i++) {
 >
 > 所以并发调研 = `flatMap(fn, concurrency)`——既能并发，又能限速。
 
+**并发编排链路（第 5 章）**：
+
+```mermaid
+flowchart TD
+    TOPIC["研究主题"] --> PLAN["Plan 阶段 planAsync<br/>LLM 拆 2-4 个子任务<br/>.entity() 反序列化 List<String>"]
+    PLAN --> SUB["Flux.fromIterable(subtasks)"]
+    SUB --> FM["flatMap(executeOneReactive,<br/>min(子任务数, MAX_CONCURRENCY=4))"]
+    FM --> W1["Worker1 调研<br/>阻塞切 boundedElastic"]
+    FM --> W2["Worker2 调研"]
+    FM --> W3["Worker3 调研"]
+    W1 --> ER["每个 worker 包 onErrorResume 错误隔离<br/>失败→占位结果, 不连累其他"]
+    W2 --> ER
+    W3 --> ER
+    ER --> CL["collectList 收集全部结果"]
+    CL --> AG["Aggregate 阶段<br/>一次 LLM 调用收口<br/>综合+去重+指出矛盾+标注失败"]
+    AG --> OUT["流式研究报告 Flux<String>"]
+```
+
 #### 原理：`flatMap` 默认会"一个出错全取消"——为什么必须错误隔离
 
 这是 Reactor 并发最容易踩的坑。看默认行为：
@@ -2273,6 +2347,19 @@ git add -A && git commit -m "第5章：多Worker并发(flatMap限流+错误隔�
 | 粒度 | 每个关键步骤一条：`PLAN` / `SUBTASK` / `AGGREGATE` | 既能看全流程，又不细到 token 级（那是可观测系统干的） |
 | 采集 | 关键节点显式调 `AuditLogger.log(...)` | 不靠 AOP/拦截器（拿不到"这是哪个子任务"的业务语义）；手写一行，语义清晰 |
 | 写入方式 | **fire-and-forget**（`.subscribe()` 触发不等完成） | 审计不是关键路径——写库失败不该让问答失败 |
+
+**审计采集链路（第 6 章）**：
+
+```mermaid
+flowchart TD
+    REQ["用户一次问答<br/>session_id + turn_id"] --> PLAN["Plan 阶段<br/>AuditLogger.log<br/>step_type=PLAN"]
+    PLAN --> W["并发 Worker 逐个执行<br/>每完成一个:<br/>step_type=SUBTASK + success/duration"]
+    W --> AG["Aggregate 阶段<br/>step_type=AGGREGATE"]
+    PLAN --> DB[("research_audit 表<br/>session_id+turn_id 串联")]
+    W --> DB
+    AG --> DB
+    DB --> Q["AuditController<br/>按 session_id 查回完整轨迹"]
+```
 
 > **为什么这里才引入 MyBatis-Plus**：第 2 章只有 pgvector——Spring AI 的 `VectorStore` 抽象掌管了向量读写，用户代码只需一行 `vectorStore.add()`，MyBatis-Plus 用不上。`research_audit` 是第一个需要手写 INSERT + 动态 WHERE 的业务表——场景匹配了才引依赖，不是"反正后面要用先加上"。第 8 章 `research_session` 表也能复用同一个 Mapper 模式——引入一次，后续受益。
 >
@@ -3775,6 +3862,34 @@ Instance B:
     1681012345-2: "取得了..."   ← 快速回放
 3. SUBSCRIBE stream:sid → 无缝接入后续实时 chunk
 4. 推给 iPad 的 SSE：历史回放完毕 → 实时推流中
+```
+
+**新设备加入（iPad 晚打开同一会话）核心时序**：
+
+```mermaid
+sequenceDiagram
+    participant iPad
+    participant LB as "负载均衡"
+    participant IA as "Instance A"
+    participant IB as "Instance B"
+    participant RD as "Redis"
+    participant LLM as "LLM"
+
+    Note over IA,RD: 手机先在 Instance A 触发研究
+    IA->>RD: SETNX stream:sid:lock
+    RD-->>IA: 拿到锁(全集群唯一)
+    IA->>LLM: 触发 upstream
+    LLM-->>IA: 产生 chunk
+    IA->>RD: XADD 持久化 + PUBLISH 广播
+    iPad->>LB: GET 同一会话(晚10秒)
+    LB->>IB: 路由到 Instance B
+    IB->>RD: SETNX 锁(已被持有)
+    RD-->>IB: 拿不到锁 → 不触发 LLM
+    IB->>RD: XREAD Streams 全量历史
+    RD-->>IB: 已输出 chunk(快速回放)
+    IB->>RD: SUBSCRIBE 频道(实时)
+    RD-->>IB: 后续新 chunk
+    IB-->>iPad: SSE 历史回放完毕 → 实时推流
 ```
 
 | 决策 | 选择 | 理由 |
@@ -6849,6 +6964,22 @@ PG（单库）                     PG
 | PG（冷） | 全量历史、重启不丢、回溯审计 | 业务核心（异步写入兜底） |
 | Redis（热） | 最近 N 轮、毫秒级读、所有进程共享 | 触发服务、业务核心都直接读 |
 
+**读/写两级存储流程（第 17 章）**：
+
+```mermaid
+flowchart TD
+    TR["触发服务 调 LLM"] --> R["读历史 findByConversationId"]
+    R --> HIT{"Redis 缓存命中?"}
+    HIT -- "是" --> USE["直接用最近 N 轮历史<br/>(毫秒级)"]
+    HIT -- "否 miss" --> PG1["查 PG 全量历史<br/>(JdbcChatMemoryRepository)"]
+    PG1 --> BACK["回灌 Redis 并设 TTL<br/>(缓存 1 天)"]
+    BACK --> USE
+    USE --> GEN["LLM 生成回复"]
+    GEN --> W["写历史 saveAll"]
+    W --> W1["先更 Redis<br/>(同步, 立即可见)"]
+    W1 --> W2["再异步落 PG 兜底<br/>(不等完成)"]
+```
+
 > **缓存一致性**：LLM 回复后，新消息**先写 Redis（同步，热数据立即可见）再异步落 PG（兜底）**。即使 PG 写失败，Redis 里的热数据仍在，短期多轮不受影响；Redis 过期或丢失时，从 PG 回灌。这是经典的"缓存先行、数据库兜底"模式。
 
 ### 17.2 动手
@@ -8015,6 +8146,19 @@ git add -A && git commit -m "第20章：幻觉检测(引用核对)+用户反馈�
 扁平、静态、无分支                                                                ├─→ [对比聚合]
                                                 [查B] ─────────────────────────┘
                                                 有依赖、有条件分支、动态决定走向
+```
+
+**DAG 条件分支示意（对应 21.2.3 研究工作流）**：
+
+```mermaid
+flowchart TD
+    A["查A: vLLM 性能"] --> CONDA{"查A结果含<br/>speculative decoding?"}
+    A --> AGG
+    CONDA -- "是" --> A2["查A特性: 深入查 speculative decoding"]
+    CONDA -- "否(跳过)" --> AGG
+    A2 --> AGG
+    B["查B: TensorRT-LLM 性能"] --> AGG
+    AGG["聚合: 对比三者<br/>(依赖查A/查A特性/查B 全完成)"] --> OUT["研究报告"]
 ```
 
 | 概念 | 说明 |

@@ -684,6 +684,20 @@ Spring AI 2.0 的 `ChatClient` 已经内置了工具调用循环（`ToolCallingA
 
 > **为什么不直接用 Spring AI 的循环还要包一层？** 框架的自动循环适合"标准场景"，但企业级要**可治理**：限制最大轮次（防 token 烧穿）、记录每轮调用（审计）、按租户/预算熔断。这些放在 `ToolCallingLoop` 里集中做，比散落在业务代码里干净。这是"用框架但不被框架绑架"的工程取舍。
 
+**Agent 工具调用循环**：LLM 自主决定"要不要调工具、调几次"，工具循环由 Spring AI 的 `ToolCallingAdvisor` 托管，`ToolCallingLoop` 在循环外面包一层做治理（超时 + `maxIterations` 兜底 + 埋点扩展位）。
+
+```mermaid
+flowchart TD
+    User["用户请求 research(topic)"] --> Loop["ToolCallingLoop 治理层<br/>整体超时 + maxIterations 防烧 token + 埋点扩展位"]
+    Loop --> Call["LlmClient.stream(system, user, history, tools)"]
+    Call --> SpringAI["Spring AI ToolCallingAdvisor 自动托管<br/>调LLM → 解析tool_calls → 执行 → 回传 → 再调"]
+    SpringAI --> Decide{"模型自主决定下一步"}
+    Decide -->|"需要工具"| Exec["执行工具<br/>web_search / knowledge_base（工具名+描述+入口）"]
+    Exec --> Call
+    Decide -->|"无需工具"| Result["流式输出研究结果"]
+    Result --> Audit["第6章审计 / 第20章可观测埋点挂载位"]
+```
+
 ### 1.2 动手（最小版）：把工具注册给 LLM
 
 #### 1.2.1 WebSearchTool.asTool()：把工具描述给 LLM
@@ -1458,6 +1472,18 @@ private List<String> tokenize(String text) {
 
 四步走完，`TfidfIndex` 已经是：**TF-IDF 向量 + 余弦相似度 + 中英混合分词 + topK 过滤**——一个零依赖、纯 Java、对研究问答够用的 RAG 检索器。**它不是一上来就写好的，而是 2.2 朴素版 → 2.6 IDF → 2.7 余弦 → 2.8 2-gram 一步步长出来的**，每步都对应一个真实检索痛点。
 
+**知识库检索四步演进**：每步只解决一个真实检索痛点——文档落 Redis（不依赖数据库），检索纯内存计算（不依赖向量库 / embedding）。
+
+```mermaid
+flowchart TD
+    V1["最朴素版（2.2）<br/>逐词包含匹配，先跑通 RAG 链路"] -->|"痛点：高频词淹没关键词"| V2["升级① IDF（2.6）<br/>词频×idf，高频词权重压低"]
+    V2 -->|"痛点：长短文档不公平"| V3["升级② 余弦归一化（2.7）<br/>夹角余弦，与文档长短无关"]
+    V3 -->|"痛点：中文拆不开"| V4["升级③ 中文 2-gram（2.8）<br/>连续两字当一个词"]
+    V4 --> Final["完整 TF-IDF 检索器<br/>TF-IDF 向量 + 余弦相似度 + 中英混合分词 + topK 过滤"]
+    Redis["文档存 Redis（kb:docs + kb:seq）<br/>不依赖数据库"] -.->|"存储"| V1
+    Mem["检索纯内存计算<br/>不依赖向量库 / embedding"] -.->|"算法"| Final
+```
+
 > **为什么不在这再贴一遍终态完整代码**：把 2.6 + 2.7 + 2.8 的片段合并就是终态。重复贴整文件反而看不出"哪些是哪一步加的"。**演进式文档的价值，就是让你看清能力的生长路径**，而不是面对一个"为什么这么写"的成品。
 
 ### 2.10 checkpoint + 复盘（第 2 章全节）
@@ -1720,6 +1746,25 @@ git add -A && git commit -m "第4章：Plan-Execute-Aggregate（串行起步）"
 - `Flux.fromIterable(subtasks).flatMap(sub -> 调研, concurrency)` 并发跑。
 - `concurrency` 限流（不能无限并发，会把 LLM/Mock 打爆）。
 - 单个子任务出错用 `onErrorResume` 隔离，不拖垮整体。
+
+**Plan-Execute-Aggregate（第 5 章并发版）**：Plan 拆子任务 → `flatMap` 并发调研（`concurrency` 限流 + 单子任务 `onErrorResume` 错误隔离）→ Aggregate 汇总。
+
+```mermaid
+flowchart TD
+    Topic["用户主题（/api/research/deep）"] --> Plan["Plan：LLM 拆成 2-4 个子方向<br/>分号分隔，只输出子方向名称"]
+    Plan --> Subs["子任务列表 subtasks"]
+    Subs --> Concur["flatMap 并发调研<br/>concurrency = min(subtasks, 3) 限流"]
+    Concur --> S1["子任务 A<br/>agentLoop.run(web_search + knowledge_base)"]
+    Concur --> S2["子任务 B<br/>agentLoop.run(web_search + knowledge_base)"]
+    Concur --> S3["子任务 C<br/>agentLoop.run(web_search + knowledge_base)"]
+    S1 -->|"onErrorResume 错误隔离"| R1["结果 A / （失败降级）"]
+    S2 -->|"onErrorResume 错误隔离"| R2["结果 B / （失败降级）"]
+    S3 -->|"onErrorResume 错误隔离"| R3["结果 C / （失败降级）"]
+    R1 --> Reduce["reduce 拼接全部子任务结果"]
+    R2 --> Reduce
+    R3 --> Reduce
+    Reduce --> Agg["Aggregate：LLM 汇总成综合研究报告，流式输出"]
+```
 
 ### 5.2 动手
 
@@ -2419,6 +2464,18 @@ LLM 调用(唯一实例) ──写──→ Redis Stream 持久日志(每条带 
 ```
 
 这是**终态**。但本章**不一次搭成**——先 9.2 给最小版（只做"持久+广播"，让多端看到同一条流），再 9.6-9.9 按"一个痛点 → 一处加固"逐步补上单一写者、seq、Last-Event-ID、MAXLEN/cancel。**每节只引入一个新概念。**
+
+**多端同步终态架构**：单一写者（全集群只有一台实例调 LLM）把每条 chunk 写进 Redis Stream 持久日志（带单调 seq），再多播给各实例各设备；客户端按 seq 去重、断线重连靠 Last-Event-ID 从断点补推。
+
+```mermaid
+flowchart LR
+    Writer["LLM 调用（唯一实例，单一写者）"] -->|"每个 chunk"| Stream["Redis Stream 持久日志<br/>sync:sessionId:chunks，每条带单调 seq"]
+    Stream -->|"XADD 持久"| History["回放：晚加入/断线重连先读历史"]
+    Stream -->|"PUBLISH 多播"| Sub["订阅者：各实例各设备"]
+    Sub -->|"记录最后收到的 id(=seq)"| Resume["断线重连浏览器自动带 Last-Event-ID<br/>服务端从该 seq 之后补推"]
+    Sub -->|"按 seq 幂等去重"| Dedup["丢弃 ≤ 已处理 seq 的 chunk，不重复"]
+    History --> Sub
+```
 
 > **和原版的区别小结**：
 > - 显式区分 SSE/WebSocket 适用边界（不假装 SSE 万能）。
@@ -3261,6 +3318,21 @@ public class ResearchService {
 
 > **这一节是管数分离的最终版**——把"触发"建模成一个有生命周期的 **run 资源**（OpenAI Assistants 式），配 **Idempotency-Key 幂等键**（防同一客户端重试重复提交）+ **SSE 协议级 `id/Last-Event-ID`**（断线重连自动补推）+ **`event: token/done` 分类**。原版/我初稿的 `202+{status}` 太弱；这一版才是真实 AI 平台的标准。补强 B 是这版的详解，本节是可照抄的代码。
 
+**run 状态机**：每次研究是一个有 id、有状态机的异步任务（`queued` → `RUNNING` → `DONE` / `FAILED` / `CANCELLED`），前端靠它轮询"是否完成"。
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: POST /api/runs 幂等创建
+    queued --> RUNNING: 触发，写者抢到 SETNX 锁
+    RUNNING --> DONE: 流完成 doOnComplete
+    RUNNING --> FAILED: 出错 doOnError
+    RUNNING --> CANCELLED: POST /api/runs/{id}/cancel
+    queued --> CANCELLED: POST /api/runs/{id}/cancel
+    DONE --> [*]
+    FAILED --> [*]
+    CANCELLED --> [*]
+```
+
 **【新建文件】** `research-agent/src/main/java/com/example/research/run/RunStore.java`（run 资源 + 幂等映射，落 Redis）：
 
 ```java
@@ -3786,6 +3858,59 @@ tenant (租户)
 ```
 
 **每个箭头对应一个外键**：`chat_message.session_id` → `session.id` → `session.user_id` → `user.id` → `user.tenant_id` → `tenant.id`。
+
+**管理数据归属链（ER 关系）**：从租户一路钻到消息，每个箭头对应一个外键；业务表冗余 `tenant_id` 支撑按租户一跳查询（第 18 章多租户）。
+
+```mermaid
+erDiagram
+    TENANT ||--o{ APP_USER : "归属（tenant_id）"
+    APP_USER ||--o{ APP_SESSION : "归属（user_id）"
+    APP_SESSION ||--o{ CHAT_MESSAGE : "包含（session_id）"
+    APP_SESSION ||--o{ RESEARCH_RUN : "发起（session_id）"
+    RESEARCH_RUN ||--o{ AUDIT_EVENT : "产生（run_id）"
+
+    TENANT {
+        string id PK
+        string name
+        timestamp created_at
+    }
+    APP_USER {
+        string id PK
+        string tenant_id FK
+        string name
+    }
+    APP_SESSION {
+        string id PK
+        string tenant_id FK
+        string user_id FK
+        string title
+        timestamp created_at
+    }
+    CHAT_MESSAGE {
+        bigint id PK
+        string tenant_id FK
+        string session_id FK
+        string role
+        text content
+        timestamp created_at
+    }
+    RESEARCH_RUN {
+        string id PK
+        string tenant_id FK
+        string session_id FK
+        string status
+        timestamp created_at
+    }
+    AUDIT_EVENT {
+        bigint id PK
+        string tenant_id FK
+        string session_id FK
+        string run_id FK
+        string type
+        text detail
+        timestamp created_at
+    }
+```
 
 **所有业务查询都从这条链往下钻**：
 - "某用户的所有会话"：`session WHERE user_id = ?`
@@ -5175,6 +5300,29 @@ t5+ ... 31,32,... 两页逐字相同，都继续流 ✅
     全程只有一次 LLM 调用 ✅(4) B 没重复触发
 ```
 
+**多端同步端到端时序（A 输出 30% 时 B 打开）**：B 加入时不触发 LLM（数据面只读）、先回放前 30% 历史、再接实时，后续两页从同一 Redis 源消费而逐字一致。
+
+```mermaid
+sequenceDiagram
+    participant A as 页面A
+    participant B as 页面B
+    participant W as 写者（唯一实例）
+    participant R as Redis（Stream + 频道）
+
+    A->>W: t0 POST /runs 创建 run_abc
+    W->>W: 抢到 SETNX 锁，成为单一写者
+    A->>R: t1 GET stream 订阅频道 run_abc
+    W->>R: LLM 吐字 → XADD(seq=1..30) + PUBLISH ×30
+    R-->>A: 收到 id:1..30，屏幕显示 30%
+    Note over B: t3 页面B 打开（同 runId）
+    B->>R: GET stream（只读，不触发、不抢锁）
+    R-->>B: readAfter(cursor=0) 回放历史 id:1..30
+    W->>R: t4 吐 id:31 → XADD(31) + PUBLISH
+    R-->>A: 收到通知 → 显示 id:31
+    R-->>B: 收到通知 → readAfter(cursor=30) 读出 31
+    Note over A,B: 31,32,... 两页逐字相同；全程只有一次 LLM 调用
+```
+
 **结论**：你的场景**完全被覆盖**，且每个要求都有明确机制兜底：
 - 前 30% 可见 ← Redis Streams 持久 + range 回放
 - 两页继续一致 ← 单一事件源 + seq 游标增量读
@@ -6524,6 +6672,17 @@ dag.addEdge("researcher", "writer").addEdge("reviewer", "writer");  // 写作依
 ```
 
 > **多 Agent 协作的本质**：把"一个复杂 Agent"拆成"多个专长 Agent + 依赖关系"——每个角色 prompt/工具更聚焦（质量更高），依赖关系由 DAG 编排。**和人类团队分工同构**：研究员、审核员、写作员各司其职，按流程协作。
+
+**多 Agent 协作 DAG**：每个节点是一个专长角色，依赖关系由 DAG 边编排——写作员依赖研究员和审核员的输出。
+
+```mermaid
+flowchart TD
+    Task["task_source（研究任务）"] --> Researcher["researcher 研究员<br/>专查资料（带 researchTools）"]
+    Researcher --> Reviewer["reviewer 审核员<br/>核对研究员结论真实性（接第21章幻觉检测）"]
+    Researcher --> Writer["writer 写作员<br/>基于已核实资料成稿"]
+    Reviewer --> Writer
+    Writer --> Out["最终研究报告"]
+```
 
 ### 22.6 真实工作流引擎的选择（诚实对照）
 

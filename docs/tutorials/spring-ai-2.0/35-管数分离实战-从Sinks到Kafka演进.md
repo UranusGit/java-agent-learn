@@ -73,6 +73,27 @@ POST /runs/{id}/cancel→ 取消任务
 GET  /runs/{id}/stream→ 纯只读地订阅这个任务的输出流
 ```
 
+**管数分离结构**：
+
+```mermaid
+flowchart TD
+    subgraph MG["管理面（写操作）"]
+        M1["POST /runs<br/>触发，返回 run id"]
+        M2["GET /runs/{id}<br/>查任务状态"]
+        M3["POST /runs/{id}/cancel<br/>取消任务"]
+    end
+    subgraph SJ["数据面（只读）"]
+        S1["GET /runs/{id}/stream<br/>只读订阅输出流"]
+    end
+    RUN["run 任务<br/>有 id · 有状态"]
+    M1 -->|"创建"| RUN
+    M2 -->|"查询"| RUN
+    M3 -->|"终止"| RUN
+    RUN -->|"输出流"| S1
+    S1 -->|"同一份流，不重复触发"| P1["手机"]
+    S1 -->|"同一份流，不重复触发"| P2["iPad"]
+```
+
 拆开之后：
 
 - **第二台设备只发 GET stream**——纯只读，不会重复触发生成。
@@ -516,6 +537,24 @@ git add -A && git commit -m "第1章：流式SSE接口(反模式基线)"
 | 任务标识 | 一个随机 token（内存 Map 存） | 先用最简单的内存 Map 保存"生成中的流" |
 | 流的暂存 | 内存（`ConcurrentHashMap<String, Flux<String>>`） | 这一版不持久化，第 4 章上 Redis |
 
+**管数分离最小版调用时序**：
+
+```mermaid
+sequenceDiagram
+    participant FE as 前端
+    participant Ctrl as GenerateController
+    participant Svc as StreamService
+    FE->>Ctrl: POST /generate?prompt=xxx（触发）
+    Ctrl->>Svc: trigger(prompt)
+    Svc-->>Ctrl: token（流暂存内存 Map）
+    Ctrl-->>FE: 202 Accepted + token（不返回流）
+    Note over FE,Svc: 触发与订阅已解耦：触发不返回流
+    FE->>Ctrl: GET /generate/stream?token=xxx（只读订阅）
+    Ctrl->>Svc: subscribe(token)
+    Svc-->>FE: Flux 逐字流（SSE）
+    Note over Svc,FE: 坑：Flux 是冷流，每个订阅者都会重新触发一次生成（第 3 章用 Sinks 解决）
+```
+
 > **为什么 POST 返回 202 而不是 200？** HTTP 语义里，`202 Accepted` 表示"请求已收到、处理中、还没完成"。触发一个异步任务正是这个语义。前端拿到 202 就知道"任务开始了，接下来去订阅或轮询"。**理解 HTTP 状态码语义，是企业级 API 设计的基本功。**
 
 ### 2.2 动手
@@ -686,6 +725,22 @@ Reactor 提供的 **`Sinks.Many`** 正是"广播话筒"：
 | 直接用 `Flux`（冷流） | 每个订阅者重新跑生成器 → 重复触发 ❌ |
 | `Sinks.Many.multicast()` | 一份数据扇出给多个订阅者，生成器只跑一次 ✅ |
 
+**冷流 → 热流**：
+
+```mermaid
+flowchart TD
+    subgraph cold["冷流：直接用 Flux"]
+        CG["生成器 generate()"] -->|"每个订阅者都重新跑一遍"| CS1["订阅者 1"]
+        CG -->|"每个订阅者都重新跑一遍"| CS2["订阅者 2"]
+        CG -.->|"重复触发 → N 次 LLM 调用"| BAD["❌ 烧多次 token，结果可能不同"]
+    end
+    subgraph hot["热流：Sinks.Many 广播"]
+        HG["生成器 generate()"] -->|"subscribe() 只启动一次"| HK["Sinks.Many<br/>multicast + onBackpressureBuffer"]
+        HK -->|"asFlux() 共享同一份数据"| HS1["订阅者 1"]
+        HK -->|"asFlux() 共享同一份数据"| HS2["订阅者 2"]
+    end
+```
+
 > **为什么是 `multicast().onBackpressureBuffer()`？** `multicast` 表示"支持多个订阅者"。`onBackpressureBuffer` 表示"如果某个订阅者消费太慢来不及处理，先把数据缓存起来"——避免慢订阅者拖垮或丢数据。这是 Reactor 官方推荐的多订阅广播写法。
 >
 > 📌 **想深入"消费太慢怎么办"**：这就是响应式编程里的**背压（Backpressure）**概念——消费者反过来控制生产者速率。本章用最简写法，原理详见附录 [Reactor 背压详解](../../附录/Reactor响应式编程/04-Reactor背压详解.md)。
@@ -850,6 +905,21 @@ git add -A && git commit -m "第3章：Sinks广播,一份数据多订阅者"
 | 持久层 | Redis Stream | 任意位置回放，断线续传的基础 |
 | 实时通知 | Redis Pub/Sub | 新 chunk 立刻通知订阅者 |
 | SSE 续传 | 协议级 `id` + `Last-Event-ID` 头 | 浏览器原生支持，重连自动带上 |
+
+**StreamBus 读写路径（持久 + 实时双管齐下）**：
+
+```mermaid
+flowchart TD
+    GEN["生成器逐字吐 chunk"] --> W["bus.write(token, chunk)"]
+    W --> XADD["XADD 写 Redis Stream<br/>（持久追加日志）"]
+    W --> PUB["PUBLISH 到频道<br/>（实时通知）"]
+    SUB["订阅者 subscribe(token)<br/>（晚加入 / 断线重连）"] --> HIST["XRANGE 回放历史"]
+    SUB --> LIVE["listenToChannel 监听频道"]
+    XADD -.->|"持久回放，补齐前文"| HIST
+    PUB -->|"新 chunk 实时推送"| LIVE
+    HIST -->|"先回放历史"| OUT["history.concatWith(live)<br/>完整输出流"]
+    LIVE -->|"再接实时"| OUT
+```
 
 ### 4.2 动手
 
@@ -1266,6 +1336,29 @@ research-stream/src/main/java/com/example/stream/
 
 > **为什么用 INCR 维护 seq，而不是用 Stream 自动 id？** Redis Stream 的自动 id 是个 10 位时间戳+序号的大数字（如 `1719...-0`），用它做 SSE 的 `id` 不直观、客户端不好处理。我们用一个独立的 INCR 计数器，从 1 开始的干净整数，和 SSE `Last-Event-ID`（浏览器要求是字符串，但整数最清晰）配合最自然。
 
+**断线续传核心时序（seq + Last-Event-ID）**：
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器 EventSource
+    participant C as GenerateController
+    participant S as StreamBus
+    participant R as Redis
+    B->>C: GET /generate/stream?token=xxx（首次订阅）
+    C->>S: subscribe(token, lastSeq=0)
+    S->>R: XRANGE 回放 seq>0 的历史
+    R-->>S: chunk(seq=1, 2, 3 ...)
+    S-->>B: SSE id=1 data=字
+    S-->>B: SSE id=2 data=字
+    Note over B: 连接断开（浏览器记录最后收到的 id=2）
+    Note over B,C: 自动重连，请求头自动带上 Last-Event-ID: 2
+    B->>C: GET /generate/stream?token=xxx 头 Last-Event-ID: 2
+    C->>S: subscribe(token, lastSeq=2)
+    S->>R: 只回放 seq>2 的历史
+    R-->>S: chunk(seq=3, 4 ...)
+    S-->>B: SSE id=3 data=字（不重复、不漏）
+```
+
 ### 5.2 动手
 
 #### 5.2.1 StreamBus：seq 化的写与读
@@ -1611,6 +1704,21 @@ git add -A && git commit -m "第5章:seq游标回放+SSE Last-Event-ID续传"
 | **会话级独占** | Redisson 锁 `session:{id}:running` → 同一会话同时只一个 run | 串行化，防并发错乱 |
 | **取消** | `POST /runs/{id}/cancel` | 主动停止（终态，释放会话锁） |
 
+**run 生命周期状态机**：
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: POST 触发创建 run
+    queued --> RUNNING: acquireSession 抢到会话锁，开始生成
+    queued --> CANCELLED: 会话忙被拒（409）
+    RUNNING --> DONE: 生成完成
+    RUNNING --> FAILED: 生成出错
+    RUNNING --> CANCELLED: POST /runs/{id}/cancel
+    DONE --> [*]
+    FAILED --> [*]
+    CANCELLED --> [*]
+```
+
 REST 形态升级：
 
 ```
@@ -1632,6 +1740,19 @@ GET  /api/runs/{runId}/stream        → 只读 SSE（沿用第 5 章）
 > - **任务级单一写者锁**（第 9 章，粒度=runId）：同一任务多实例只跑一个。
 >
 > 三者**并存**，从外到内依次生效。会话级独占挡掉绝大多数并发问题，后两个是兜底。
+
+**三道并发防线（从外到内）**：
+
+```mermaid
+flowchart TD
+    REQ["触发请求 POST /api/runs"] --> G1{"① 会话级独占<br/>acquireSession 抢到会话锁？"}
+    G1 -->|"抢不到（同会话有任务在跑）"| R409["返回 409 Conflict"]
+    G1 -->|"抢到"| G2{"② 幂等键<br/>Idempotency-Key 已存在？"}
+    G2 -->|"已存在（同一客户端重试）"| SAME["返回同一 runId<br/>不重复触发"]
+    G2 -->|"新 key"| G3{"③ 任务级单一写者锁<br/>acquireLock（第 9 章引入）"}
+    G3 -->|"抢到锁"| GEN["本实例跑生成器"]
+    G3 -->|"已被其他实例抢占"| SKIP["不重复跑，返回现有 run"]
+```
 
 ### 6.2 动手
 
@@ -2087,6 +2208,20 @@ git add -A && git commit -m "第6章:run资源+状态机+幂等键+会话级独�
 | **分布式锁** | 临时、低延迟 | **Redis（Redisson）** | 第 6 章用（会话锁）；第 9 章（任务锁） |
 | **实时取消/结束通知** | 即时广播、不持久 | **Redis Pub/Sub** | 第 9 章用 |
 
+**数据按形态分工**：
+
+```mermaid
+flowchart TD
+    RUN["run 状态 / 记录"] --> PG["PostgreSQL<br/>结构化 · 可 SQL 查询 · ACID · 长期保留"]
+    IDEM["幂等映射"] --> PG
+    SESS["会话记录（第 8 章）"] --> PG
+    SESSX["会话独占标记（短命闸门）"] --> RD["Redis<br/>低延迟 · TTL 自动过期兜底"]
+    LOCK["分布式锁（Redisson）"] --> RD
+    NOTIFY["实时取消 / 结束通知"] --> RD
+    CHUNK["chunk 流（流式数据）"] -->|"第 4-9 章"| RSTREAM["Redis Stream"]
+    CHUNK -->|"第 10 章起"| KAFKA["Kafka<br/>磁盘持久 · 消费组 · 保留 30 天"]
+```
+
 > **为什么 chunk 不进 PG？** chunk 是"每秒几十条、按顺序追加、按游标回放"的流式数据。PG 的关系表做高频追加 + 范围回放，性能和成本都不如 Redis Stream（第 4 章）/ Kafka（第 10 章）。**把流式数据塞进关系库是常见反模式**——流有流的家（Kafka），记录有记录的家（PG）。
 
 #### 为什么选 MyBatis-Flex 而不是 MyBatis-Plus / JPA
@@ -2468,6 +2603,21 @@ run 状态、幂等映射现在落 PG 了——能 SQL 查询、重启不丢、A
 **"上下文跟着 sessionId 走"（本章最重要的设计点，记住这句话）**：
 
 > 每次触发，后端从**请求里的 sessionId** 读该会话的历史注入模型。所以**前端切到哪个历史会话，LLM 就感知哪个会话的历史**——会话 A 的问题不会串到会话 B，切回 A 它记得 A 说过什么。上下文**不是**"全局最后状态"，而是"当前会话的历史"。这正是真实聊天产品（ChatGPT 等）的语义，也是"切回历史会话不失忆"的机制本身。
+
+**多轮上下文注入流程（上下文跟着 sessionId 走）**：
+
+```mermaid
+flowchart TD
+    FE["前端发送（携带当前 sessionId）"] --> REQ["POST /api/runs?sessionId=X"]
+    REQ --> LOAD["loadContext(X)<br/>读会话 X 最近 N 轮（MAX_CONTEXT=20）"]
+    REQ --> WU["writeUserMessage<br/>user 问题落库"]
+    LOAD --> GEN["generate(prompt, history)<br/>ChatClient.messages(history).user(prompt)"]
+    GEN -->|"LLM 记得会话 X 的前文"| OUT["流式输出 chunk"]
+    OUT -->|"终态：拼 chunk 全文"| WA["writeAssistantMessage<br/>assistant 回答落库"]
+    WU --> DB[(gen_message 表)]
+    WA --> DB
+    DB -.->|"下一轮 loadContext 再读到"| LOAD
+```
 
 **表设计**：
 
@@ -3206,6 +3356,22 @@ research-stream/src/main/resources/
 
 `cancel` 时不再依赖本地 `Disposable`，而是 `PUBLISH` 一个取消指令到频道。**持有生成器的那台实例监听到指令，自己 dispose 掉生成流。** 这样取消天然跨实例。
 
+**多实例架构（跨实例广播 + 单一写者）**：
+
+```mermaid
+flowchart TD
+    subgraph CL["多实例集群，共用同一个 Redis"]
+        I1["instance-1 :8080"]
+        I2["instance-2 :8081"]
+    end
+    R["共享 Redis<br/>chunk(Stream) · 实时(Pub/Sub) · 锁(Redisson)"]
+    I1 -->|"① 触发：抢到 gen:{id}:lock 才跑生成器"| R
+    I1 -->|"② 写 chunk：XADD 持久 + PUBLISH 实时"| R
+    I2 -->|"③ 订阅：XRANGE 回放 + 监听频道<br/>跨实例读到同一份内容"| R
+    I2 -->|"④ 取消：PUBLISH 到 gen:{id}:cancel"| R
+    R -->|"持有生成器的实例监听指令后 dispose"| I1
+```
+
 ### 9.2 动手
 
 #### 9.2.1 StreamBus：加锁 + 跨实例取消监听
@@ -3618,6 +3784,20 @@ git add -A && git commit -m "第9章:多实例跨实例广播+Redisson单一写�
 
 > **为什么"每个实例一个消费者，N 个 SSE 连接共享"？** 如果每个 SSE 连接都建一个 Kafka 消费者，连接数一多，消费者数会爆炸（Kafka 单分区同时只能被组内一个消费者消费，消费者数 > 分区数会闲置）。正确做法：**一个实例一个消费者，把收到的消息按 key 扇出到内存 Sinks，N 个 SSE 连接共享这个 Sinks**。这是 Kafka + SSE 的标准架构。
 
+**Kafka chunk 总线架构（每实例一个消费者 + 按 key 分发）**：
+
+```mermaid
+flowchart TD
+    GEN["生成器逐字吐 chunk"] -->|"key = runId"| KAFKA["Kafka topic: gen-chunks<br/>同 run 进同分区，保序"]
+    KAFKA -->|"消费组 research-sse"| CONS["本实例一个消费者"]
+    CONS -->|"按 key(runId) 分发"| SINK["Sinks.Many<br/>内存广播"]
+    SINK -->|"扇出"| SSE1["SSE 连接 1"]
+    SINK -->|"扇出"| SSE2["SSE 连接 2"]
+    SINK -->|"扇出"| SSEN["SSE 连接 N"]
+    KAFKA -->|"独立消费组，各自维护 offset"| AUDIT["审计服务消费组"]
+    KAFKA -->|"独立消费组，各自维护 offset"| BILL["计费服务消费组"]
+```
+
 ### 10.2 动手
 
 #### 10.2.1 加 Kafka 依赖 + 配置
@@ -4022,6 +4202,25 @@ chunk 总线升级完成。系统现在有 **PG（run 状态/幂等）+ Redis（
 
 **通信方式**：两个服务**不直接调用**，而是通过 **Kafka（chunk 总线）+ Redis（锁/会话独占）+ PG（状态/幂等）** 间接通信。trigger-service 写 Kafka/PG，stream-service 从 Kafka 读——天然解耦。这正是第 4 章"把数据搬出进程"的又一次回报。
 
+**服务拆分架构（同代码库 + Profile）**：
+
+```mermaid
+flowchart TD
+    subgraph TRIG["trigger-service · :8080 · profile=trigger<br/>CPU 密集，按生成并发量扩"]
+        T1["收 POST 触发 / 查状态 / 取消"]
+        T2["跑生成器"]
+    end
+    subgraph STREAM["stream-service · :8081 · profile=stream<br/>连接密集，按在线连接数扩"]
+        S1["维持 SSE 长连接"]
+        S2["从 Kafka 读 chunk 推给前端"]
+    end
+    T1 -->|"run 状态 / 幂等"| PG["PostgreSQL"]
+    T1 -->|"锁 / 会话独占"| RD["Redis"]
+    T2 -->|"chunk"| K["Kafka gen-chunks"]
+    K -->|"消费组"| S2
+    T1 -.->|"不直接调用，只经中间件"| S1
+```
+
 ### 11.2 动手（同代码库 + Profile 拆分）
 
 #### 11.2.1 配置两个 Profile
@@ -4301,6 +4500,26 @@ git add -A && git commit -m "第12章:Spring Cloud Gateway统一入口"
 第11章 按 Profile 拆触发服务/订阅服务                                  ← 物理拆分
   │
 第12章 Spring Cloud Gateway 统一入口                                    ← 网关收口
+```
+
+**演进路线（Mermaid 版）**：
+
+```mermaid
+flowchart LR
+    C0["第0章 建项目 + ChatClient 流式<br/>（数据源）"]
+    C1["第1章 GET /generate 反模式基线<br/>一个接口干三件事"]
+    C2["第2章 POST 触发 + GET 只读流<br/>管数分离起步"]
+    C3["第3章 Sinks.Many 广播<br/>冷流 → 热流"]
+    C4["第4章 Redis Stream + Pub/Sub<br/>持久化 · 断线续传"]
+    C5["第5章 seq 游标 + Last-Event-ID<br/>精确回放不重复不漏"]
+    C6["第6章 run 资源 + 状态机 + 幂等<br/>+ 会话级独占（企业级形态）"]
+    C7["第7章 PostgreSQL + MyBatis-Flex<br/>结构化数据落关系库"]
+    C8["第8章 会话历史 + 多轮上下文<br/>+ 会话管理 API"]
+    C9["第9章 多实例：跨实例广播<br/>+ 单一写者锁"]
+    C10["第10章 Kafka 持久总线<br/>消费组 · 跨服务消费"]
+    C11["第11章 Profile 拆触发 / 订阅服务<br/>物理拆分"]
+    C12["第12章 Spring Cloud Gateway<br/>统一入口"]
+    C0 --> C1 --> C2 --> C3 --> C4 --> C5 --> C6 --> C7 --> C8 --> C9 --> C10 --> C11 --> C12
 ```
 
 ### 每章引入的核心概念回顾

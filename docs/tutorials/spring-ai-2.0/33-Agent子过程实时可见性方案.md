@@ -445,7 +445,7 @@ public record AgentEvent(
 flowchart LR
     CODE[业务编排代码] --> EMIT[AgentEventEmitter.emit]
     EMIT --> SINK[Sinks.Many 总线]
-    subgraph 采集点
+    subgraph CP["采集点"]
         A[4.2 工具装饰器: 拦截 ToolCallback.call]
         B[4.3 Workflow 钩子: 模板方法插入]
         C[4.4 Graph 监听: GraphLifecycleListener]
@@ -775,6 +775,22 @@ public class TokenMeter implements Consumer<ChatClientResponse> {
 
 > 一个进程**一个** `Sinks.Many` Bean。`multicast()` 让所有订阅者共享；`onBackpressureBuffer(Q)` 在消费者跟不上时缓冲，防丢事件。
 
+**一次 emit 的处理管线**（总线内部 0→3 步）：
+
+```mermaid
+flowchart TD
+    IN[业务采集点 emit AgentEvent] --> RED[总线层统一脱敏 PiiRedactor]
+    RED --> SEQ[分配会话内单调递增 sequence]
+    SEQ --> PST[按 criticality 持久化: CRITICAL 落库 / NORMAL 采样 / DISCARDABLE 不落]
+    PST --> ROUTE[按 sessionId hash 路由到分片 sink]
+    ROUTE --> TRY[tryEmitNext 推分片]
+    TRY --> BR{跨实例开启?}
+    BR -->|是| PUB[Redis Stream XADD 广播到各实例]
+    BR -->|否| NONE[仅本机消费]
+    PUB --> CON[SSE 定向订阅 / Langfuse / OTel 消费者]
+    NONE --> CON
+```
+
 ```java
 // 设计示意：说明类职责与调用关系，落地需补全 import/异常/配置
 package org.demo02.toolkit.observability.bus;
@@ -956,10 +972,10 @@ public interface AgentEventEmitter {
 
 ```mermaid
 flowchart LR
-    subgraph 实例A
+    subgraph IA["实例A"]
         SINKA[Sinks.Many] --> SSEA[SSE 给前端]
     end
-    subgraph 实例B
+    subgraph IB["实例B"]
         WF[Workflow 处理请求] --> SINKB[Sinks.Many]
         SINKB --> XADD
     end
@@ -1775,8 +1791,8 @@ flowchart LR
 flowchart TD
     REQ[请求进入] --> SPAN1[创建 root span, 生成 traceId]
     SPAN1 --> EMIT1[emit SESSION_STARTED traceId=...]
-    EMIT1 --> BUS
-    BUS --> SSE
+    EMIT1 --> BUS[AgentEvent 总线]
+    BUS --> SSE[SSE Controller]
     BUS --> OTELOTEL[OTel Exporter]
     OTELOTEL --> JAEGER[(Jaeger)]
     SSE --> FE[前端 traceId 显示]
@@ -2093,6 +2109,34 @@ public class SessionCostRegistry {
 > 3. 旁路 `LLM_TOKENS` 到达 → `costRegistry.add` 算实际成本 → `quota.settle` 核销
 >
 > 这样即使 token 事件延迟到达，预扣也已经占了预算，不会并发超支。三重保护（[14-安全工程与红队](./14-安全工程与红队.md)）：`maxTurns`（§9.2）+ 预算预扣（本节）+ 死循环检测（重复 tool args 检测），本方案把前两者的决策点都可视化成事件。
+
+**预扣与核销时序**（reserve → 调用 → settle）：
+
+```mermaid
+sequenceDiagram
+    participant CL as 采集点
+    participant QS as QuotaService
+    participant CS as SessionCostRegistry
+    participant LLM as LLM 调用
+    participant TM as 旁路 TokenMeter
+    participant BUS as AgentEvent 总线
+    CL->>QS: reserve(sessionId) 预扣
+    QS->>CS: tryReserve(used+reserved+reserve <= budget)
+    alt 预算不足(硬拦截)
+        CS-->>QS: false
+        QS-->>BUS: emit QUOTA_EXCEEDED(CRITICAL)
+        QS-->>CL: 抛 QuotaExceededException
+    else 预算充足
+        CS-->>QS: true
+        QS-->>CL: 放行, 发起 LLM 调用
+        CL->>LLM: LLM 调用
+        LLM-->>TM: 流式 Usage 旁路聚合
+        TM->>CS: costRegistry.add 算实际成本
+        TM->>QS: settle(sessionId, actual) 核销
+        QS->>CS: reserved 减预扣 / used 加实际
+        TM-->>BUS: emit LLM_TOKENS
+    end
+```
 
 ---
 
@@ -2582,6 +2626,25 @@ public void checkCancel(String sessionId) {
         throw new SessionCancelledException("用户已取消");
     }
 }
+```
+
+**取消时序**：
+
+```mermaid
+sequenceDiagram
+    participant FE as 前端
+    participant CAN as AgentCancelController
+    participant SR as SessionRegistry
+    participant BUS as AgentEvent 总线
+    participant SSE as SSE 流
+    participant ORC as 编排侧(每轮 checkCancel)
+    FE->>CAN: POST /agent/cancel/{sessionId}
+    CAN->>SR: requestCancel(sessionId) 标记取消
+    CAN->>BUS: emit SESSION_CANCELLED(CRITICAL)
+    SR-->>CAN: 返回 {cancelled:true}
+    BUS-->>SSE: SESSION_CANCELLED 事件到达
+    SSE-->>FE: isTerminal 判定 → 优雅结束流, 显示「已取消」
+    Note over ORC: 下一轮 checkCancel 检测到取消标志, 抛 SessionCancelledException 中止编排
 ```
 
 > SSE 端收到 `SESSION_CANCELLED`（§6.1 `isTerminal` 已纳入）自动优雅结束流，前端显示「已取消」。

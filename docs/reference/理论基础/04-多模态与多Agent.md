@@ -44,11 +44,42 @@
 | **Hierarchical** | 多层级 Agent |
 | **Round-Table** | 多 Agent 轮流发言，最后达成共识 |
 
+**三种协作模式**：
+
+```mermaid
+flowchart TD
+    subgraph SW["Supervisor-Worker：一个主控 Agent 分派任务"]
+        S["主控 Agent"] -->|"分派任务"| W1["子 Agent 1"]
+        S -->|"分派任务"| W2["子 Agent 2"]
+        S -->|"分派任务"| W3["子 Agent 3"]
+    end
+    subgraph HI["Hierarchical：多层级 Agent"]
+        H1["顶层 Agent"] --> H2["中层 Agent"]
+        H2 --> H3["底层 Agent"]
+    end
+    subgraph RT["Round-Table：多 Agent 轮流发言，最后达成共识"]
+        T1["Agent A"] <--> T2["Agent B"]
+        T2 <--> T3["Agent C"]
+    end
+```
+
 ### 2.3 实操
 
 用 LangGraph 实现"产品经理 + 架构师 + 开发"三个 Agent：
 - 输入需求
 - 输出规格文档 + 设计文档 + 代码框架
+
+**产品经理 + 架构师 + 开发 协作流水线**：
+
+```mermaid
+flowchart LR
+    REQ["输入需求"] --> PM["产品经理 Agent"]
+    PM --> SPEC["规格文档"]
+    SPEC --> AR["架构师 Agent"]
+    AR --> DESIGN["设计文档"]
+    DESIGN --> DEV["开发 Agent"]
+    DEV --> CODE["代码框架"]
+```
 
 ---
 

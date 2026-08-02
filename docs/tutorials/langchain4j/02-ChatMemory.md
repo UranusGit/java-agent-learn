@@ -41,6 +41,24 @@ model.chat(history);  // 把全部历史一起发给模型
 
 `ChatMemory` 就是帮你自动管理这个 `history` 列表的对象。
 
+**无记忆 vs 有记忆**：
+
+```mermaid
+flowchart TD
+    subgraph NO["无记忆（每次请求独立）"]
+        A1["第1次: 我叫张三"] --> M1["HTTP messages=[user:我叫张三]"]
+        A2["第2次: 我叫什么名字？"] --> M2["HTTP messages=[user:我叫什么名字？]"]
+        M1 --> R1["模型回复: 张三你好"]
+        M2 --> R2["模型回复: 我不知道<br/>（看不到第1次）"]
+    end
+    subgraph YES["有记忆（ChatMemory 携带历史）"]
+        B1["第1次: 我叫张三"] --> M3["messages=[user:我叫张三]"]
+        M3 --> R3["模型回复: 张三你好<br/>并追加进 memory"]
+        B2["第2次: 我叫什么名字？"] --> M4["messages=[user:我叫张三, ai:张三你好, user:我叫什么名字？]"]
+        M4 --> R4["模型回复: 你叫张三"]
+    end
+```
+
 ---
 
 ## 2. ChatMemory 的本质
@@ -156,6 +174,22 @@ public class ChatDemo {
 - 每轮对话，`memory` 自动追加 `UserMessage` 和 `AiMessage`，下次请求时一并发出。
 - `maxMessages(10)` 意味着只保留最近 10 条消息（5 轮对话）。
 
+**多轮对话循环**：
+
+```mermaid
+flowchart TD
+    Start(("开始")) --> Input["用户输入 input"]
+    Input --> Check{"input == exit ?"}
+    Check -->|"是"| Stop(("退出"))
+    Check -->|"否"| Chain["chain.execute(input)"]
+    Chain --> Mem1["memory 追加 UserMessage(input)"]
+    Mem1 --> Send["发给 LLM 的 messages 拼接全部历史"]
+    Send --> Reply["模型返回 answer"]
+    Reply --> Mem2["memory 追加 AiMessage(answer)"]
+    Mem2 --> Out["打印 AI > answer"]
+    Out --> Input
+```
+
 ---
 
 ## 5. 理解请求到底发了什么
@@ -204,6 +238,19 @@ ChatMemoryProvider provider = memoryId -> MessageWindowChatMemory.builder()
 // 按用户 ID 取 memory
 ChatMemory user1Memory = provider.get("user-001");
 ChatMemory user2Memory = provider.get("user-002");
+```
+
+**多用户隔离 + 持久化**：
+
+```mermaid
+flowchart TD
+    U1["user-001"] --> P["ChatMemoryProvider"]
+    U2["user-002"] --> P
+    P -->|"memoryId → 创建/获取"| M1["ChatMemory(id=user-001)"]
+    P -->|"memoryId → 创建/获取"| M2["ChatMemory(id=user-002)"]
+    M1 --> S["ChatMemoryStore<br/>（生产用 Redis）"]
+    M2 --> S
+    S -->|"getMessages / updateMessages / deleteMessages"| R["Redis key=chat:user-id<br/>TTL 7 天"]
 ```
 
 ### 6.3 自定义 Redis Store（伪代码）

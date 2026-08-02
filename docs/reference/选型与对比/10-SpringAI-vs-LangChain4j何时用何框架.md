@@ -71,6 +71,22 @@
 
 **其余 90% 场景，Spring AI 2.0 已经够用且更优**（生态、可观测性、MCP、生产化能力）。
 
+**优势分布**：2.0 之后 LangChain4j 只剩 3 个细分场景优势。
+
+```mermaid
+flowchart LR
+    ROOT["选型格局"] --- SA
+    ROOT --- LC
+    subgraph SA["Spring AI 2.0 覆盖 90% 场景"]
+        SA1["生态 / 可观测性 / MCP / 生产化能力"]
+    end
+    subgraph LC["LangChain4j 仅剩 3 优势"]
+        L1["Quarkus 生态(Red Hat 官方背书)"]
+        L2["复杂多 Agent 状态机(LangGraph4j)<br/>企业实战 <10%"]
+        L3["无 Spring 容器的纯 Java/CLI 场景"]
+    end
+```
+
 ---
 
 ## 3. 决策树：我该用哪个
@@ -97,6 +113,18 @@
 │
 └─ 国内复杂工作流 + Spring 系
     └─→ ✅ Spring AI Alibaba Graph（DAG 编排）
+```
+
+**一图决策**：按生态对号入座。
+
+```mermaid
+flowchart TD
+    Q{"你的项目跑在什么生态?"} -->|"Spring Boot(80% Java 项目)"| SA["✅ Spring AI 2.0"]
+    SA -->|"有强状态机需求?"| SA1["加 LangGraph4j 或 Alibaba Graph"]
+    Q -->|"Quarkus / 云原生 / GraalVM"| QU["✅ Quarkus LangChain4j<br/>(与 Spring AI 互斥)"]
+    Q -->|"纯 Java / Kotlin(无框架)"| PJ["✅ LangChain4j(轻量)<br/>Spring AI 也可, 需手动初始化 IoC"]
+    Q -->|"Kotlin + 复杂 Agent"| KG["✅ Koog(JetBrains, 1.0 GA)"]
+    Q -->|"国内复杂工作流 + Spring 系"| AG["✅ Spring AI Alibaba Graph(DAG 编排)"]
 ```
 
 ### 3.2 决策清单（按优先级）
@@ -153,6 +181,23 @@ ChatModel（调 LLM）
 Flux<String> 流式返回
 ```
 
+**架构骨架**：ChatClient 统一入口，Advisor 链逐层包裹横切关注点。
+
+```mermaid
+flowchart TD
+    HTTP["HTTP / SSE"] --> CTL["Controller"]
+    CTL --> CC["ChatClient(统一入口)"]
+    CC --> AD1["SecurityAdvisor 鉴权"]
+    AD1 --> AD2["RateLimitAdvisor 限流(Bucket4j)"]
+    AD2 --> AD3["AuditAdvisor 审计落库"]
+    AD3 --> AD4["ToolCallingAdvisor<br/>2.0 自动注册递归迭代 = Agent Loop"]
+    AD4 --> AD5["MessageChatMemoryAdvisor 记忆"]
+    AD5 --> AD6["QuestionAnswerAdvisor RAG"]
+    AD6 --> AD7["StructuredOutputValidationAdvisor 结构化校验"]
+    AD7 --> CM["ChatModel(调 LLM)"]
+    CM --> F["Flux 流式返回"]
+```
+
 **关键能力**：
 - `ToolCallingAdvisor` 自动递归 —— **这就是 Agent Loop**，无需手写 while(true)
 - `@Tool` + Spring Bean —— 直接复用 `@Transactional`/`@Cacheable`
@@ -194,6 +239,20 @@ AiServices.builder(...)
 LangGraph4j（可选，复杂状态机）
   ↓
 ChatLanguageModel 调用
+```
+
+**架构骨架**：AiServices 接口驱动，builder 装配各依赖。
+
+```mermaid
+flowchart TD
+    U["用户输入"] --> AI["AiServices 接口(声明式)"]
+    AI --> B["AiServices.builder(...)"]
+    B --> M["ChatLanguageModel 调用"]
+    B -.-> R["contentRetriever(RAG)"]
+    B -.-> T["tools(@Tool 集合)"]
+    B -.-> MEM["chatMemoryProvider"]
+    B -.-> SO["structuredOutputConverter"]
+    LG["LangGraph4j(可选, 复杂状态机)"] -.-> M
 ```
 
 **关键能力**：
@@ -253,6 +312,21 @@ StateGraph<AgentState> graph = new StateGraph<>(...)
     .addNode("retrieve", SpringAiClientNode(client))
     .addNode("analyze", SpringAiClientNode(client))
     .addEdge("retrieve", "analyze");
+```
+
+**三种混合形态**：从同进程到跨进程，再到主框架 + 编排引擎。
+
+```mermaid
+flowchart LR
+    subgraph FA["形态 A: 同进程"]
+        A1["Spring AI Web 层"] --> A2["LangChain4j Agent 层"]
+    end
+    subgraph FB["形态 B: 跨进程"]
+        B1["Spring AI 微服务"] --"HTTP/gRPC"--> B2["LangChain4j 微服务"]
+    end
+    subgraph FC["形态 C: 最常见的混合"]
+        C1["Spring AI ChatClient"] --> C2["LangGraph4j 编排"]
+    end
 ```
 
 ### 5.2 为什么企业不混用（来自第 11 篇的论据）
@@ -382,6 +456,16 @@ StateGraph<AgentState> graph = new StateGraph<>(...)
 | 阶段 6+ | 完全不用（除非遗留迁移） |
 
 **心智模型**：LangChain4j 是**入门老师**，Spring AI 是**最终主框架**。
+
+**路线演进**：LangChain4j 由主框架逐步退位，Spring AI 成为最终主框架。
+
+```mermaid
+flowchart LR
+    S1["阶段 1<br/>LangChain4j 主框架(入门)"] --> S2["阶段 2-3<br/>Spring AI 1.0 切入 + 对照学习"]
+    S2 --> S3["阶段 4<br/>自研工具箱 + Workflow 模式"]
+    S3 --> S4["阶段 5<br/>升级 Spring AI 2.0"]
+    S4 --> S5["阶段 6+<br/>LangChain4j 完全不用"]
+```
 
 ---
 

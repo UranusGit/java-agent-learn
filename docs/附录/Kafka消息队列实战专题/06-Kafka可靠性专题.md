@@ -187,6 +187,24 @@ public class WalletService {
 
 > **要点**：`existsById` 先查只是**优化**（少写一次），真正的保证是**唯一约束 + 同一事务**。因为 `@Id` 建了唯一索引，两个实例都插同一主键时第二个必然冲突、事务整体回滚，**重复的业务也被回滚**。这就是 [03 第 4.3 章](./03-事件驱动微服务端到端实战.md) 说的"唯一约束是双保险"。
 
+**多实例并发时序**：两个实例同时 poll 到同一条 `evt-1`，唯一约束保证只有一次生效：
+
+```mermaid
+sequenceDiagram
+    participant K as Kafka (orders topic)
+    participant A as 实例 A (wallet-group)
+    participant B as 实例 B (wallet-group)
+    participant DB as 业务 DB (processed_message)
+    K->>A: 投递 evt-1
+    K->>B: 投递 evt-1
+    A->>DB: existsById(evt-1) → false
+    B->>DB: existsById(evt-1) → false（A 还没提交）
+    A->>DB: 扣款 + 插入 ProcessedMessage(evt-1) → 提交 ✅
+    B->>DB: 扣款 + 插入 ProcessedMessage(evt-1)
+    DB-->>B: 主键冲突 DataIntegrityViolationException
+    Note over B,DB: B 的整个 @Transactional 回滚<br/>B 的重复扣款也一起回滚
+```
+
 ### 1.4 幂等方案 B：Redis setnx 去重（无 DB 或想用缓存）
 
 **思路**：用 Redis 的 `SETNX`（`setIfAbsent`）原子地去占位。**只有第一次能占上**，天然防多实例并发。
@@ -354,6 +372,16 @@ public class OrderService {
 
 **为什么 `UPDATE ... WHERE status='NEW'` 就是幂等**：数据库的行锁保证同一时刻只有**一个**事务能把 `NEW` 翻成 `PROCESSED`，第二个事务的 UPDATE 匹配不到行、影响行数为 0。这和 1.3 的唯一约束是**同一个物理原理**（约束/条件保证只有一次能成功），只是把"标记已处理"做进了业务实体自己。
 
+**状态机视角**：订单状态只有 `NEW` 和 `PROCESSED` 两态，CAS 抢占就是"谁先翻过去谁生效"：
+
+```mermaid
+stateDiagram-v2
+    [*] --> NEW: 订单创建，status=NEW
+    NEW --> PROCESSED: 事务 A 抢占成功，UPDATE 匹配 1 行
+    NEW --> NEW: 事务 B 抢占失败，匹配 0 行，幂等跳过
+    PROCESSED --> [*]: 已处理落库
+```
+
 > **三种方案怎么选**（先给结论，详细对比在 3.5）：
 > | 方案 | 依赖 | 适用 | 代价 |
 > |------|------|------|------|
@@ -433,6 +461,17 @@ public class WalletConsumer {
 | ④ 消费幂等 | 第 1 章三种方案 | 消费者 at-least-once **重复投递** |
 
 > **"事务消息 + 消费幂等 = EOS"**：Kafka 事务保证**发送端**"一批消息原子可见、回滚消息永不出现"，`read_committed` 让**消费端**只读到已提交的；但消费端依然可能**重复处理**（崩溃窗口），所以**最后一道闸门永远是第 1 章的消费幂等**。四层合起来才是端到端恰好一次。
+
+**四层机制一条链路**：从生产端到消费端，每一层各干掉一种"重复/不可见"：
+
+```mermaid
+flowchart TD
+    Idem["① 幂等生产者<br/>enable.idempotence=true<br/>干掉：网络重试导致的 broker 端重复"] --> PTx["② 生产者事务<br/>transactional.id + @Transactional<br/>干掉：一批消息要么全可见要么全不可见"]
+    PTx -->|"事务提交后消息才可见"| Broker["Kafka topic"]
+    Broker -->|"消费"| Iso["③ 消费端隔离<br/>isolation.level=read_committed<br/>干掉：看到未提交/已回滚事务的消息"]
+    Iso --> CI["④ 消费幂等<br/>唯一键 / Redis setnx / 状态机 CAS<br/>干掉：at-least-once 重复投递"]
+    CI --> EOS(("端到端<br/>恰好一次 EOS"))
+```
 
 ### 2.2 幂等生产者：`enable.idempotence`
 
@@ -886,6 +925,19 @@ public class SchedulingConfig {
 > 3. 接受重复发送，靠**消费端幂等**兜底（把第 1 章的 `eventId` 去重用上）。
 > 真实生产一般 **1 + 3 组合**：发送端少重复，消费端不怕重复。
 
+**DB 扫描方案的数据流**：数据库当"延迟队列"，定时任务到点才把消息投进 Kafka：
+
+```mermaid
+flowchart LR
+    Biz["业务调用方"] -->|"delay(topic, key, payload, Duration)<br/>写 fireAt=now+延迟"| Svc["DelayedMessageService"]
+    Svc -->|"入库"| DB[("scheduled_message 表<br/>status=PENDING")]
+    Poller["@Scheduled 扫描器<br/>每秒一次 findDue(now)"] -->|"查到已到期未发记录"| DB
+    Poller -->|"kafkaTemplate.send 投递"| Kafka["目标 topic"]
+    Kafka --> Consumer["消费者只收到到点的消息<br/>不需要等"]
+    Poller -->|"发成功"| Mark["标记 status=SENT"]
+    Poller -->|"失败，尝试 3 次后"| Fail["标记 status=FAILED<br/>人工补偿"]
+```
+
 ### 3.3 实现二：重试 topic 阶梯延迟（`@RetryableTopic` + `@Backoff` 变体）
 
 **思路**：`@RetryableTopic` 的每一次"重试"本身就是**投到下一个延迟递增的重试 topic**。把"处理必失败"的监听器当成一个**定时炸弹**——故意抛异常触发重试，每跳一档就是一次延迟。用 `SUFFIX_WITH_DELAY_VALUE` 让 topic 名直接显示延迟值，看得见"阶梯"：
@@ -1215,6 +1267,23 @@ rpcClient.request("stock-check", requestJson)
             System.out.println("RPC 失败或超时：" + ex.getMessage());
             return null;
         });
+```
+
+**手写版完整时序**：两个约定（CorrelationId + reply topic）驱动"一问一答"：
+
+```mermaid
+sequenceDiagram
+    participant C as RpcClient 请求方
+    participant K as Kafka
+    participant S as StockServer 响应方
+    C->>K: 发请求 topic=stock-check<br/>headers: CorrelationId=uuid, ReplyTopic=rpc-replies
+    Note over C: pending.put(uuid, future)
+    K->>S: 投递请求
+    S->>S: stockService.check() 查库存
+    S->>K: 回信到 rpc-replies<br/>原样带回 CorrelationId=uuid
+    K->>C: @KafkaListener(rpc-replies) 收到回复
+    C->>C: pending.get(uuid) → future.complete(结果)
+    Note over C: 5s 没回 → future 超时失败<br/>pending 清除，迟到回复静默忽略
 ```
 
 ### 4.4 Spring 原生版：`ReplyingKafkaTemplate.sendAndReceive` + `@SendTo`
@@ -1582,6 +1651,24 @@ public class TracingConsumer {
 ```
 
 > **串链路的完整闭环**：HTTP 请求带 `traceparent` 进来 → `TracingProducer.send` 把它写进 Kafka 消息头 → 库存服务 `TracingConsumer` 读出来续上 span → 库存服务再 `send` 时继续往下传 → 支付服务再续。**三个服务、N 条消息，Zipkin 里是一条 trace。**
+
+**trace 在服务间传递**：同一个 `traceId` 顺着消息头一路传下去，串成一条链路：
+
+```mermaid
+sequenceDiagram
+    participant HTTP as 外部 HTTP 请求
+    participant OS as 订单服务 (TracingProducer)
+    participant K as Kafka
+    participant IS as 库存服务 (消费 + 再发送)
+    participant PS as 支付服务
+    HTTP->>OS: 请求带 traceparent 头
+    OS->>OS: tracer.inject 把当前 trace 写入消息头
+    OS->>K: send(orders, traceparent)
+    K->>IS: 消费 → tracer.extract 还原父上下文 → 续上 span
+    IS->>K: 再 send 新消息（同一 traceId）
+    K->>PS: 消费 → 继续往下传
+    Note over HTTP,PS: 三个服务、N 条消息<br/>Zipkin / Tempo 里是一条完整 trace
+```
 
 ### 5.4 手写简化版链路（零依赖，MDC + traceparent）
 

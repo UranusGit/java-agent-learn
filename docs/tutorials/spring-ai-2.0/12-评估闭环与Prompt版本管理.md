@@ -79,6 +79,22 @@ L3 架构：可观测、可治理、可演进
 **优点**：用真实流量验证，比离线测试更接近线上。
 **缺点**：双倍 LLM 调用成本。
 
+**三种评估模式的时机与生命周期**：
+
+```mermaid
+flowchart TD
+    subgraph DevPhase["开发期"]
+        Offline["离线评估 Offline Eval<br/>测试集 → 跑全量 → 算指标 → 与基线对比<br/>可重复 / 可对比 / 成本低<br/>缺点：覆盖不了线上长尾"]
+    end
+    subgraph PrePhase["上线前"]
+        Shadow["影子评估 Shadow Eval<br/>线上流量复制 → 新版本只跑不出 → 与 v1 对比<br/>更接近线上<br/>缺点：双倍 LLM 调用成本"]
+    end
+    subgraph PostPhase["上线后"]
+        Online["在线评估 Online Eval<br/>隐式反馈 + 显式 👍/👎 + LLM-as-Critic 抽样 1%<br/>输出：告警 / 看板"]
+    end
+    Offline --> Shadow --> Online
+```
+
 ---
 
 ## 2. 评估指标的三个维度
@@ -536,6 +552,18 @@ public class ABPromptRouter {
 
 **关键**：用 `hash(sessionId)` 而非随机，保证同一用户每次访问同一版本（不然体验抖动）。
 
+**A/B 路由流程**：
+
+```mermaid
+flowchart TD
+    Req["用户请求 sessionId"] --> Hash["bucket = hash(sessionId) % 100"]
+    Hash --> Decide{"bucket &lt; ratioB * 100?"}
+    Decide -->|"是"| V2["加载 v2 prompt（占比 ratioB 的流量）"]
+    Decide -->|"否"| V1["加载 v1 prompt"]
+    V1 --> Answer["生成回答"]
+    V2 --> Answer
+```
+
 ---
 
 ## 6. 评估闭环的完整工作流
@@ -560,6 +588,27 @@ public class ABPromptRouter {
 
 异常处理：
   10. 指标下降 > 阈值 → 告警 / 自动回滚
+```
+
+**评估闭环完整工作流**：
+
+```mermaid
+flowchart TD
+    Start(("开始")) --> S1["1. 改 prompt / chunk size / retrieval 策略"]
+    S1 --> S2["2. 跑离线评估 dataset.yaml → EvalReport"]
+    S2 --> Cmp["3. 与 baseline report 对比"]
+    Cmp -->|"全部指标 >= baseline"| S4["4. 写入 git：report.yml + prompt 改动一起 commit"]
+    Cmp -->|"有指标退步"| Decide{"找原因"}
+    Decide -->|"修"| S1
+    Decide -->|"接受"| S4
+    S4 --> S5["5. 影子评估：真实流量跑新版本，对比胜率"]
+    S5 --> S6["6. A/B 测试：10% 灰度"]
+    S6 --> S7["7. 上线后在线评估：1% 流量抽样 LLM-as-Judge"]
+    S7 --> S8["8. 监控看板：faithfulness / latency / cost 实时"]
+    S8 --> S9["9. 用户反馈 👍/👎 收集"]
+    S9 --> Anomaly{"10. 指标下降 &gt; 阈值?"}
+    Anomaly -->|"是"| Rollback["告警 / 自动回滚"]
+    Anomaly -->|"否"| Monitor["持续监控"]
 ```
 
 ---
@@ -820,6 +869,17 @@ GROUP BY query;
 | L5 | 评估指标反推 prompt 优化方向（自动建议） | 业界领先 |
 
 **目标**：本文读完你应该能从 L0/L1 进到 L2/L3。
+
+**评估成熟度演进**：
+
+```mermaid
+flowchart LR
+    L0["L0 凭感觉改 prompt，没有评估<br/>草台班子"] --> L1["L1 有离线测试集，每次手动跑<br/>起步"]
+    L1 --> L2["L2 离线评估自动化 + baseline 对比<br/>合格"]
+    L2 --> L3["L3 在线抽样 LLM-as-Judge + Grafana 看板<br/>良好"]
+    L3 --> L4["L4 A/B 测试 + 影子评估 + 自动回滚<br/>优秀"]
+    L4 --> L5["L5 评估指标反推 prompt 优化方向<br/>业界领先"]
+```
 
 ---
 

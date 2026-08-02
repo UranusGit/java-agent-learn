@@ -258,6 +258,24 @@ private boolean shouldTerminate(State state, Throwable error) {
 
 > 本章不实现条件 4 和 5 的完整逻辑（fallback 在 09 章，wait_for_input 在 05 章权限部分），只放占位符。
 
+**5 个终止条件评估**：
+
+```mermaid
+flowchart TD
+    LOOP["Agent Loop 每轮结束"] --> C1{"条件1：模型主动 end_turn?"}
+    C1 -->|"是"| T(("终止"))
+    C1 -->|"否"| C2{"条件2：用户中断 (abort)?"}
+    C2 -->|"是"| T
+    C2 -->|"否"| C3{"条件3：超出预算<br/>(tokensIn + tokensOut > BUDGET_LIMIT)?"}
+    C3 -->|"是"| T
+    C3 -->|"否"| C4{"条件4：fallback 也失败<br/>(ModelFallbackExhausted)?"}
+    C4 -->|"是"| T
+    C4 -->|"否"| C5{"条件5：等待输入<br/>(wait_for_input，工具审批)?"}
+    C5 -->|"是"| T
+    C5 -->|"否"| CONT["继续下一轮 stepForward"]
+    CONT --> C1
+```
+
 ---
 
 ## 4. WebSocket 接入中断
@@ -331,6 +349,27 @@ const abort = () => {
 <button onClick={abort} disabled={!streaming}>取消</button>
 ```
 
+**取消按钮 → 中断级联时序**：
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant FE as ChatPanel（前端）
+    participant WS as SessionWebSocketHandler
+    participant AH as AbortHandle（L2 turn）
+    participant AL as AgentLoopV2
+    U->>FE: 点击"取消"按钮
+    FE->>WS: {type:'abort', session_id}
+    WS->>AH: turnAborts.get(sid).abort()
+    AH-->>AH: aborted.compareAndSet(false, true)<br/>触发 onAbort 级联
+    AH-->>AL: onChunk 入口检查 isAborted()
+    AL-->>AL: markAborted().withTransition("aborted")
+    AL-->>WS: sink.next(state) + sink.complete()
+    WS-->>FE: {type:'state', transition:'aborted'}
+    FE-->>U: 气泡立即停止
+    Note over WS,AL: 关浏览器仅断 WS，默认不级联 L3 取消任务<br/>取消必须由用户显式发 abort
+```
+
 ---
 
 ## 6. 验证：测试中断
@@ -372,6 +411,27 @@ aborted             ← 终止条件 2
 wait_for_input      ← 终止条件 5（05 章权限部分）
 budget_exceeded     ← 终止条件 3（11 章成本部分）
 fallback_exhausted  ← 终止条件 4（09 章模型降级）
+```
+
+**State 状态机**：
+
+```mermaid
+stateDiagram-v2
+    [*] --> init
+    init --> thinking: user_input
+    thinking --> streaming: 第一条流式 chunk
+    streaming --> end_turn: stream complete<br/>(终止条件1)
+    init --> aborted: abort（终止条件2）
+    thinking --> aborted: abort（终止条件2）
+    streaming --> aborted: abort（终止条件2）
+    end_turn --> [*]
+    aborted --> [*]
+    streaming --> wait_for_input: 工具调用待审批<br/>(终止条件5，05 章权限)
+    streaming --> budget_exceeded: 超出预算<br/>(终止条件3，11 章成本)
+    streaming --> fallback_exhausted: fallback 也失败<br/>(终止条件4，09 章模型降级)
+    wait_for_input --> [*]
+    budget_exceeded --> [*]
+    fallback_exhausted --> [*]
 ```
 
 ---

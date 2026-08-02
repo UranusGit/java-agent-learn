@@ -560,6 +560,16 @@ try {
 }
 ```
 
+**异步 vs 同步的选择**：
+
+```mermaid
+flowchart TD
+    A(("kafkaTemplate.send()<br/>异步, 立即返回")) --> B{"要不要等发送结果?"}
+    B -->|"默认 / 生产推荐"| C["异步 + whenComplete 回调<br/>拿 SendResult 判断成败<br/>吞吐高"]
+    B -->|"关键消息"| D["同步 future.get()<br/>阻塞等 broker 确认<br/>吞吐低"]
+    C --> C1["回调里的 RecordMetadata<br/>提供 partition / offset<br/>判断是否真成功"]
+```
+
 > **为什么"发送成功"≠"已落盘"**：`send` 成功只代表 broker 的 leader **收到了**消息。`acks` 配置（第 6 章）决定"收到"到什么程度算成功：
 > - `acks=0`：fire-and-forget，发出即算成功（可能丢）；
 > - `acks=1`：leader 写入就算成功（默认推荐）；
@@ -726,6 +736,19 @@ public CommonErrorHandler kafkaErrorHandler(KafkaTemplate<String, Object> templa
 
 **发生了什么**：重试 3 次仍失败 → 消息（连同原始异常信息）被发到 `orders-dlq` 这个 topic。默认 DLT 名是 **`<原topic>.DLT`**；上面自定义成了 `<原topic>-dlq`。你可以单独起一个消费者处理它（发告警、记库、人工修复）。
 
+**重试 → 死信 的完整流程**：
+
+```mermaid
+flowchart TD
+    A(("消息到达<br/>orders topic")) --> B["@KafkaListener 处理消息"]
+    B --> D{"处理成功?"}
+    D -->|"成功"| E["提交 offset<br/>消费完成"]
+    D -->|"失败"| R["FixedBackOff 等 1s<br/>自动重试"]
+    R -->|"重试次数未满"| B
+    R -->|"3 次仍失败"| F["DeadLetterPublishingRecoverer<br/>把消息连同异常发到 orders-dlq"]
+    F --> G["死信消费者<br/>提取异常做告警 / 记库 / 人工修复"]
+```
+
 再补一个消费者看死信长什么样：
 
 ```java
@@ -804,6 +827,16 @@ spring:
 > - `acks=all`：一条消息只有所有同步副本写入才返回成功 → 不丢。
 > - `enable.idempotence=true`：给每条消息加序列号，broker 去重 → 重试不重。
 > - 二者配合，生产者在正常故障下能保证 **exactly-once 写入**（对单分区而言）。**生产必开**。
+
+**不丢不重的组合逻辑**：
+
+```mermaid
+flowchart TD
+    A["acks=all<br/>所有同步副本写入才返回成功"] --> N1["不丢"]
+    B["enable.idempotence=true<br/>每条消息带生产者ID + 序列号, broker 去重"] --> N2["不重"]
+    N1 --> E["二者配合<br/>正常故障下 exactly-once 写入<br/>(对单分区而言)"]
+    N2 --> E
+```
 
 ### 6.2 consumer 关键配置（`spring.kafka.consumer.*`）
 
@@ -896,6 +929,17 @@ kafkaTemplate.send("orders", order.getId(), order);
 
 - **选 Kafka**：消息量大、要留存重放、要流式计算、要削峰填谷、要强顺序——**互联网大流量后端，绝大多数事件流场景**。
 - **选 RabbitMQ**：消息量不大（万级够用）、需要复杂路由（按 header/主题匹配）、团队更熟悉 AMQP、要"消费即删"的普通业务队列。
+
+**选型决策**：
+
+```mermaid
+flowchart TD
+    A(("消息中间件选型")) --> B{"消息量大 / 要留存重放<br/>要流式计算 / 要削峰填谷 / 要强顺序?"}
+    B -->|"是"| K["选 Kafka<br/>互联网大流量后端事件流主场"]
+    B -->|"否"| C{"消息量不大(万级)<br/>要复杂路由 / 团队熟悉 AMQP<br/>要'消费即删'?"}
+    C -->|"是"| R["选 RabbitMQ<br/>业务消息 / 任务队列"]
+    C -->|"否"| K
+```
 
 > **35 号文档为什么选 Kafka**：chunk 持久总线高频产出大量消息，需要**扛得住、可留存、可重放**——这是 Kafka 的主场。如果是低频业务通知，RabbitMQ 也完全够用。
 
@@ -1150,6 +1194,17 @@ kafkaTemplate.send("orders", order.getUserId(), order);
 | KafkaTransactionManager + @Transactional | 让 Kafka 事务和 DB 事务同生共死（`ChainedTransactionManager` 或 `KafkaTransactionManager` 结合本地事务） | **不推荐**：链式事务两阶段提交复杂、性能差、易出问题 |
 | 先 DB 后发消息（best-effort） | DB 提交成功后再发消息，失败打补偿日志 | 简单但有窗口（DB 成功、消息没发出去） |
 
+**三种方案的取舍**：
+
+```mermaid
+flowchart TD
+    A(("要保证 'DB 写 + 发消息' 原子")) --> B["一个本地事务无法横跨<br/>DB 连接 + Kafka Producer 两个资源"]
+    B --> C{"架构选型"}
+    C -->|"业界标准"| O["Outbox 模式<br/>业务表和 outbox 表同一 DB 事务写<br/>轮询 / CDC 组件异步投递"]
+    C -->|"不推荐"| CH["Kafka 事务 + 链式事务<br/>ChainedTransactionManager<br/>两阶段提交, 性能差、易出问题"]
+    C -->|"简单但有窗口"| BE["先 DB 后发消息 (best-effort)<br/>失败打补偿日志"]
+```
+
 **如果坚持用 Spring 的事务抽象做"DB + Kafka"**，做法是把 `KafkaTransactionManager` 和 `DataSourceTransactionManager` 链起来——但**强烈不建议生产使用**：
 
 ```java
@@ -1243,6 +1298,19 @@ Spring Cloud Stream 解决的是 **"中间件无关性"**。它的价值在下�
 3. **团队统一消息编程模型**：多个系统、多种中间件，想用一套"函数式"模型通吃，降低学习成本。
 
 如果你确定**只用 Kafka**，上面三条一条都不占——**别上 Stream**。上了只会多一层映射、多一层调试负担。
+
+**直接 Kafka vs Stream 的决策**：
+
+```mermaid
+flowchart TD
+    A(("该直接写 Kafka 还是上 Stream 抽象?")) --> B{"确定只用 Kafka?"}
+    B -->|"是"| K["直接 spring-boot-starter-kafka<br/>少一层抽象 / 无抽象损耗 / 调试直观"]
+    B -->|"否 / 不确定"| C{"占不占 Stream 的卖点?"}
+    C -->|"可能换中间件"| S["上 Spring Cloud Stream"]
+    C -->|"多中间件并存(桥接 Kafka+RabbitMQ)"| S
+    C -->|"团队统一消息编程模型"| S
+    S --> S1["换中间件不改代码<br/>Kafka-only 时它是负资产"]
+```
 
 ### 10.3 和 35 号文档手写 Kafka 的对比
 

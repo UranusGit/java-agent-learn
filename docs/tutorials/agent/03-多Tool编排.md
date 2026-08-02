@@ -45,6 +45,16 @@ Router Agent（看意图）
    └── "其他"     → 通用 Agent
 ```
 
+**Tool 路由架构**：
+
+```mermaid
+flowchart TD
+    USER["用户请求"] --> ROUTER["Router Agent<br/>判断意图"]
+    ROUTER -->|"人事相关"| HR["HR Agent<br/>3 个 HR Tool"]
+    ROUTER -->|"IT 相关"| IT["IT Agent<br/>3 个 IT Tool"]
+    ROUTER -->|"其他"| GEN["通用 Agent"]
+```
+
 ### 2.2 LangChain4j 实现
 
 #### Router Agent
@@ -225,6 +235,18 @@ var graph = StateGraph.<AgentState>builder()
 AgentState result = graph.invoke(new AgentState("张三工位在哪", null, null));
 ```
 
+**状态机流转**：
+
+```mermaid
+stateDiagram-v2
+    [*] --> router: START
+    router --> hr: category = HR
+    router --> it: category = IT
+    router --> [*]: 其他（END）
+    hr --> [*]
+    it --> [*]
+```
+
 ### 3.3 状态机优势
 
 - **可视化**：能画出来
@@ -257,6 +279,24 @@ LangChain4j / Spring AI 都已经实现：
 - 收到多个 tool_calls
 - **并行执行**（或顺序执行，看版本）
 - 把所有结果收集后发给 LLM
+
+**并行调用时序**：
+
+```mermaid
+sequenceDiagram
+    participant LLM as LLM
+    participant FW as 框架（LangChain4j / Spring AI）
+    participant T as queryEmployee
+    LLM->>FW: 单次响应输出多个 tool_calls
+    par 并行执行
+        FW->>T: queryEmployee(张三)
+        T-->>FW: 张三的工位
+    and
+        FW->>T: queryEmployee(李四)
+        T-->>FW: 李四的工位
+    end
+    FW->>LLM: 收集全部结果后返回
+```
 
 ### 4.4 性能对比
 
@@ -295,6 +335,16 @@ public class CollaborativeAgent {
         return code;
     }
 }
+```
+
+**子 Agent 协作流水线**：
+
+```mermaid
+flowchart LR
+    REQ["需求"] --> PM["产品经理 Agent<br/>分析需求"]
+    PM --> ARCH["架构师 Agent<br/>设计方案"]
+    ARCH --> DEV["开发 Agent<br/>写代码"]
+    DEV --> CODE["返回代码"]
 ```
 
 ### 5.3 复杂协作（用 AutoGen / CrewAI 风格）

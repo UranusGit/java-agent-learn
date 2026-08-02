@@ -113,6 +113,37 @@ Coder → Tester → Reviewer → (commit)
 
 **v1 实现顺序**：A → B → D → C。本章主要讲 B 和 D。
 
+**四种编排模式**：
+
+```mermaid
+flowchart LR
+    subgraph PA["模式A：顺序委派"]
+        OA[Orchestrator] --> S1[Subagent-1]
+        S1 -->|"done"| S2[Subagent-2]
+    end
+    subgraph PB["模式B：并行委派 fan-out / fan-in"]
+        OB[Orchestrator] --> B1[Subagent-1]
+        OB --> B2[Subagent-2]
+        OB --> B3[Subagent-3]
+        OB --> B4[Subagent-4]
+        B1 -->|"聚合"| FB[Orchestrator]
+        B2 -->|"聚合"| FB
+        B3 -->|"聚合"| FB
+        B4 -->|"聚合"| FB
+    end
+    subgraph PC["模式C：流水线"]
+        CO[Coder] --> TE[Tester] --> RV[Reviewer] --> CMT[commit]
+    end
+    subgraph PD["模式D：DAG 调度"]
+        F1[F001] --> F2[F002]
+        F1 --> F3[F003]
+        F2 --> F4[F004]
+        F3 --> F5[F005]
+        F4 --> F6[F006]
+        F5 --> F6
+    end
+```
+
 ---
 
 ## 3. 数据模型
@@ -230,6 +261,26 @@ public class DelegateTool implements Tool {
         });
     }
 }
+```
+
+**Delegate 委派时序**：
+
+```mermaid
+sequenceDiagram
+    participant OR as Orchestrator（主 Agent）
+    participant DT as DelegateTool
+    participant SL as SessionLauncher
+    participant SUB as 子 Agent（独立 session）
+    participant BUS as SubagentEventBus
+    OR->>DT: Delegate(role, task, depends_on, max_tokens)
+    DT->>DT: 创建 subagent 记录 + git 分支 subagent/{role}/{id}
+    DT->>SL: launchSubagent(...)
+    SL-->>DT: 独立沙箱 + 子 session
+    DT-->>OR: 立即返回 subagent_id（异步执行）
+    Note over OR,SUB: 子 agent 上下文隔离：<br/>只看 role_instructions / task / parent_context_summary
+    SUB-->>BUS: 完成 → 事件 DONE / FAILED
+    BUS-->>OR: 注入结果到主 agent 下一轮
+    OR->>DT: QuerySubagent 查进度（可选）
 ```
 
 ### 3.1 配套工具：QuerySubagent / CancelSubagent / ListSubagents
@@ -372,6 +423,18 @@ public class SubagentScheduler {
 }
 ```
 
+**DAG 调度流程**：
+
+```mermaid
+flowchart TD
+    ALL["所有 pending 的 subagent"] --> DEP{"dependenciesSatisfied?<br/>依赖全部 done"}
+    DEP -->|"否"| WAIT["等待依赖完成"]
+    DEP -->|"是"| SORT["按 priority 排序<br/>用户高优 / 卡住路径优先 / 防饥饿"]
+    SORT --> SLOT{"availableSlots > 0?<br/>全局 100 / 租户 plan / session 预算"}
+    SLOT -->|"否"| FULL["等待并发配额释放"]
+    SLOT -->|"是"| PICK["pickReady 选中并启动"]
+```
+
 ### 6.2 并发上限
 
 - 全局：100 个并发子 agent；
@@ -395,6 +458,21 @@ public class SubagentScheduler {
 | 工具调用错误 | 子 agent 自己 retry（标准 Agent Loop 行为） |
 | 主 agent abort | 级联 cancel 所有子 agent |
 | 沙箱崩溃 | 自动迁移到新沙箱 retry |
+
+**错误传播路径**：
+
+```mermaid
+flowchart TD
+    FAIL["子 agent 失败"] --> TYPE{"失败类型?"}
+    TYPE -->|"超时"| RT["retry 1 次"]
+    RT --> ST{"仍失败?"}
+    ST -->|"否"| CONT["继续执行"]
+    ST -->|"是"| MARK["标 failed<br/>主 agent 决定：重派 / 跳过 / abort"]
+    TYPE -->|"max_tokens 用完"| F1["直接 failed（task 太大，不 retry）"]
+    TYPE -->|"工具调用错误"| SELF["子 agent 自己 retry（标准 Agent Loop）"]
+    TYPE -->|"主 agent abort"| CASC["级联 cancel 所有子 agent"]
+    TYPE -->|"沙箱崩溃"| MIG["自动迁移新沙箱 retry"]
+```
 
 ---
 
