@@ -51,18 +51,26 @@
 以「用户问『查北京天气并写一句诗』，走 Orchestrator-Workers Workflow」为例：
 
 ```mermaid
-flowchart TD
-    A["[前端] POST /agent/run { input: '查北京天气并写一句诗', sessionId: 's1' }"] --> B["SESSION_STARTED { sessionId:'s1', input:'查北京天气并写一句诗' }"]
-    B --> C["WORKFLOW_PHASE { phase:'orchestrator-plan', data:{ subtasks:['查天气','写诗'] } }"]
-    C --> D["TOOL_CALL_START { tool:'getWeather', args:{city:'北京'} } // 本进程工具"]
-    D --> E["TOOL_CALL_END { tool:'getWeather', result:'晴 28℃', durationMs:120 }"]
-    E --> F["MCP_CALL_START { server:'weather-mcp', tool:'forecast', traceId:'a1b2...' } // 跨进程"]
-    F --> G["MCP_CALL_END { server:'weather-mcp', result:'未来3天晴', durationMs:340 }"]
-    G --> H["LLM_TOKENS { phase:'write-poem', promptTokens:520, completionTokens:48 } // 每次调用"]
-    H --> I["WORKFLOW_PHASE { phase:'aggregate', data:{ output:'北京晴空...' } }"]
-    I --> J["CONTENT_DELTA { text:'北京' } // 流式正文片段（与事件流 merge）"]
-    J --> K["CONTENT_DELTA { text:'晴空万里' }"]
-    K --> L["SESSION_COMPLETED { sessionId:'s1', totalTokens:568, costUsd:0.0021 }"]
+sequenceDiagram
+    participant FE as 前端
+    participant AG as Agent 进程
+    participant TOOL as 本进程工具
+    participant MCP as MCP Server
+    participant LLM as LLM
+
+    FE->>AG: "POST /agent/run<br/>{input:'查北京天气并写一句诗', sessionId:'s1'}"
+    AG-->>FE: SESSION_STARTED {sessionId:'s1', input:'查北京天气并写一句诗'}
+    AG-->>FE: WORKFLOW_PHASE {phase:'orchestrator-plan', subtasks:['查天气','写诗']}
+    AG->>TOOL: TOOL_CALL_START {tool:'getWeather', args:{city:'北京'}}
+    TOOL-->>AG: TOOL_CALL_END {result:'晴 28℃', durationMs:120}
+    AG->>MCP: MCP_CALL_START {server:'weather-mcp', tool:'forecast', traceId:'a1b2...'}
+    MCP-->>AG: MCP_CALL_END {result:'未来3天晴', durationMs:340}
+    AG->>LLM: 调用（phase:'write-poem'）
+    LLM-->>AG: LLM_TOKENS {promptTokens:520, completionTokens:48}
+    AG-->>FE: WORKFLOW_PHASE {phase:'aggregate', output:'北京晴空...'}
+    AG-->>FE: CONTENT_DELTA {text:'北京'}（流式正文片段）
+    AG-->>FE: CONTENT_DELTA {text:'晴空万里'}
+    AG-->>FE: SESSION_COMPLETED {sessionId:'s1', totalTokens:568, costUsd:0.0021}
 ```
 
 前端拿到的不是「等 30 秒后一个字符串」，而是上面这条**实时事件流**，可以渲染成「正在查天气 → 查到了 → 正在写诗 → 输出中」的进度条。
@@ -71,17 +79,17 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph W[Workflow: 确定性 DAG]
+    subgraph W["Workflow: 确定性 DAG"]
         W1[WORKFLOW_PHASE] --> W2[TOOL_CALL]
         W2 --> W3[WORKFLOW_PHASE]
         W3 --> W4[LLM_TOKENS]
     end
-    subgraph G[Graph: 状态机]
+    subgraph G["Graph: 状态机"]
         G1[GRAPH_NODE_START] --> G2[GRAPH_EDGE 决策]
         G2 --> G3[GRAPH_NODE_END]
         G3 --> G2
     end
-    subgraph A[ChatClient: 自主循环]
+    subgraph A["ChatClient: 自主循环"]
         A1[AGENT_TURN_START] --> A2[TOOL_CALL]
         A2 --> A3[AGENT_TURN_END]
         A3 --> A1
@@ -158,18 +166,18 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    subgraph L1[第一层: 事件采集]
+    subgraph L1["第一层: 事件采集"]
         T1[ToolCallback 装饰器]
         T2[Workflow 阶段钩子]
         T3[GraphLifecycleListener]
         T4[ChatClientMessageAggregator 旁路]
     end
-    subgraph L2[第二层: 事件总线]
+    subgraph L2["第二层: 事件总线"]
         SINK[Sinks.Many 单实例 multicast]
         REDIS[(Redis Stream 跨实例广播)]
         SINK <--> REDIS
     end
-    subgraph L3[第三层: 推送与消费]
+    subgraph L3["第三层: 推送与消费"]
         SSE[SSE Controller 按 sessionId 过滤]
         LF[Langfuse 消费者]
         OT[OpenTelemetry 消费者]
@@ -436,10 +444,10 @@ flowchart LR
     CODE[业务编排代码] --> EMIT[AgentEventEmitter.emit]
     EMIT --> SINK[Sinks.Many 总线]
     subgraph CP["采集点"]
-        A[4.2 工具装饰器: 拦截 ToolCallback.call]
-        B[4.3 Workflow 钩子: 模板方法插入]
-        C[4.4 Graph 监听: GraphLifecycleListener]
-        D[4.5 流式旁路: ChatClientMessageAggregator]
+        A["4.2 工具装饰器: 拦截 ToolCallback.call"]
+        B["4.3 Workflow 钩子: 模板方法插入"]
+        C["4.4 Graph 监听: GraphLifecycleListener"]
+        D["4.5 流式旁路: ChatClientMessageAggregator"]
     end
     A --> EMIT
     B --> EMIT
@@ -771,7 +779,7 @@ public class TokenMeter implements Consumer<ChatClientResponse> {
 flowchart TD
     IN[业务采集点 emit AgentEvent] --> RED[总线层统一脱敏 PiiRedactor]
     RED --> SEQ[分配会话内单调递增 sequence]
-    SEQ --> PST[按 criticality 持久化: CRITICAL 落库 / NORMAL 采样 / DISCARDABLE 不落]
+    SEQ --> PST["按 criticality 持久化: CRITICAL 落库 / NORMAL 采样 / DISCARDABLE 不落"]
     PST --> ROUTE[按 sessionId hash 路由到分片 sink]
     ROUTE --> TRY[tryEmitNext 推分片]
     TRY --> BR{跨实例开启?}
@@ -2271,9 +2279,9 @@ function subscribe(sessionId, tenantId) {
 
 ```mermaid
 flowchart LR
-    BUS[Sinks.Many 总线] --> SSE[SSE: 实时给前端]
-    BUS --> LF[Langfuse: Prompt and Trace 评估]
-    BUS --> OT[OTel: 分布式 span]
+    BUS[Sinks.Many 总线] --> SSE["SSE: 实时给前端"]
+    BUS --> LF["Langfuse: Prompt and Trace 评估"]
+    BUS --> OT["OTel: 分布式 span"]
     LF --> LFDASH[(Langfuse Dashboard)]
     OT --> JAEGER[(Jaeger)]
     SSE --> FE[前端]
@@ -2330,11 +2338,11 @@ public class LangfuseCollector {
 
 ```mermaid
 flowchart TD
-    LB[Nginx LB] -->|sticky by sessionId| INST1[实例1: Sinks + SSE + Redis Bridge]
-    LB -->|sticky by sessionId| INST2[实例2: Sinks + SSE + Redis Bridge]
+    LB[Nginx LB] -->|sticky by sessionId| INST1["实例1: Sinks + SSE + Redis Bridge"]
+    LB -->|sticky by sessionId| INST2["实例2: Sinks + SSE + Redis Bridge"]
     INST1 <--> STREAM[(Redis Stream agent-events)]
     INST2 <--> STREAM
-    STREAM --> INST3[实例3: 只有 SSE 订阅]
+    STREAM --> INST3["实例3: 只有 SSE 订阅"]
 ```
 
 - `cross-instance=true`，每实例的 `emit` 都 `XADD` 到 Redis Stream。

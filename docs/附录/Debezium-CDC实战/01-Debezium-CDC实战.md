@@ -187,6 +187,15 @@ curl -X POST http://localhost:8083/connectors -H "Content-Type: application/json
 1. Debezium 先对 `orders`/`outbox` 表做**初始快照**（snapshot，把现有数据全发一遍）。
 2. 之后监听 WAL，表一有变更立刻发 Kafka。
 
+**注册后的两阶段流程**：先全量快照、再增量 WAL：
+
+```mermaid
+flowchart TD
+    Reg["注册 connector<br/>(POST /connectors)"] --> P1["阶段 1：初始快照<br/>把 orders/outbox 现有数据全量发一遍"]
+    P1 --> P2["阶段 2：监听 WAL<br/>表一有变更立刻发 Kafka (毫秒级)"]
+    P2 --> K["Kafka topic<br/>pgserver.public.orders"]
+```
+
 ### 3.4 验证：改一条数据，看 Kafka
 
 ```bash

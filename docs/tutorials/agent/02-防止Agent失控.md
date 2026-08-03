@@ -21,24 +21,11 @@ flowchart TD
 
 ### 1.2 链式调用爆炸
 
-```mermaid
-flowchart TD
-    GOAL["LLM 想完成：创建用户并加权限"] --> S1["createUser(张三)"]
-    S1 -->|"返回 userId"| S2["addPermission(userId, read)"]
-    S2 --> S3["addPermission(userId, write)"]
-    S3 --> S4["addPermission(userId, delete)"]
-    S4 --> MORE["... 连续追加到 50 个权限"]
-    MORE --> COST["成本失控"]
-```
+LLM 想完成"创建用户并加权限"，于是 createUser → addPermission(read) → addPermission(write) → addPermission(delete) → …… 连续追加到 50 个权限，成本失控。
 
 ### 1.3 超长上下文
 
-```mermaid
-flowchart TD
-    LOOP["LLM 反复调 Tool<br/>每次返回大数据"] --> LONG["context 越来越长"]
-    LONG --> OVER["token 超限"]
-    OVER --> TRUNC["报错或自动截断<br/>丢失关键信息"]
-```
+LLM 反复调 Tool、每次返回大数据 → context 越来越长 → token 超限 → 报错或自动截断，丢失关键信息。
 
 ### 1.4 工具失败导致挂死
 
@@ -75,31 +62,6 @@ LLM 编造了一个不存在的工具
 | **循环检测** | 同参数重复调用 | 中等 |
 | **Tool 校验** | 幻觉工具 / 错误参数 | 简单（框架内置） |
 | **降级策略** | 模型不可用 | 中等 |
-
-**失控问题 → 防御机制映射**：
-
-```mermaid
-flowchart LR
-    subgraph PROB["失控问题"]
-        P1["死循环"]
-        P2["链式调用爆炸"]
-        P3["上下文爆炸"]
-        P4["工具失败挂死"]
-        P5["幻觉工具调用"]
-    end
-    subgraph DEF["防御机制"]
-        D1["迭代次数上限"]
-        D2["成本上限"]
-        D3["token 上限"]
-        D4["总超时"]
-        D5["Tool 校验"]
-    end
-    P1 --> D1
-    P2 --> D2
-    P3 --> D3
-    P4 --> D4
-    P5 --> D5
-```
 
 ---
 
@@ -410,16 +372,6 @@ public Object getWeather(String city) {
 }
 ```
 
-**主备模型降级流程**：
-
-```mermaid
-flowchart TD
-    Req["用户请求"] --> TRY["primaryClient 调用"]
-    TRY -->|"成功"| RET["返回主模型结果"]
-    TRY -->|"异常"| FB["fallbackClient 调用"]
-    FB --> RET
-```
-
 ---
 
 ## 10. 整体防御架构（生产级）
@@ -447,21 +399,6 @@ ChatClient productionClient(ChatClient.Builder builder) {
 ```
 RateLimit → Cost → Token → Iteration → Loop → Logging → Memory → RAG
 （外层阻断优先）                       （内层业务功能）
-```
-
-**生产级 Advisor 链**：
-
-```mermaid
-flowchart LR
-    Req["用户请求"] --> R1["RateLimitAdvisor<br/>每分钟最多 100 请求"]
-    R1 --> R2["CostMonitorAdvisor<br/>单会话成本 ¥10"]
-    R2 --> R3["TokenLimitAdvisor<br/>总 token 上限 100_000"]
-    R3 --> R4["IterationLimitAdvisor<br/>最大迭代 10"]
-    R4 --> R5["LoopDetectionAdvisor<br/>循环检测"]
-    R5 --> R6["LoggingAdvisor<br/>日志"]
-    R6 --> R7["MessageChatMemoryAdvisor<br/>记忆"]
-    R7 --> R8["RetrievalAugmentationAdvisor<br/>RAG"]
-    R8 --> LLM["LLM"]
 ```
 
 ---

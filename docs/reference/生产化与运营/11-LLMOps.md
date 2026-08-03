@@ -33,36 +33,6 @@
 | **数据标注/版本** | Argilla / Label Studio | 标注 |
 |  | DVC / LakeFS | 数据版本 |
 
-**工具栈分层全景**：四类工具共同支撑 LLMOps 闭环。
-
-```mermaid
-flowchart LR
-    ROOT["LLMOps 工具栈"] --- OBS
-    ROOT --- EVAL
-    ROOT --- GW
-    ROOT --- VER
-    subgraph OBS["追踪/可观测"]
-        O1["Langfuse(自建, 强烈推荐)"]
-        O2["LangSmith(闭源)"]
-        O3["Phoenix(评估导向)"]
-        O4["OpenTelemetry + 自建(Java 友好)"]
-    end
-    subgraph EVAL["评估"]
-        E1["RAGAS(事实标准)"]
-        E2["DeepEval"]
-        E3["Promptfoo(端到端 + 回归测试)"]
-    end
-    subgraph GW["网关/治理"]
-        G1["Portkey / LiteLLM(多模型路由)"]
-        G2["Kong AI Gateway(企业级)"]
-        G3["Spring Cloud Gateway(Java 工程师优势)"]
-    end
-    subgraph VER["数据标注/版本"]
-        V1["Argilla / Label Studio(标注)"]
-        V2["DVC / LakeFS(数据版本)"]
-    end
-```
-
 ---
 
 ## 3. Langfuse 集成（Java 视角）

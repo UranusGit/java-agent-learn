@@ -38,15 +38,6 @@ public Sentiment analyze(@RequestParam String text) {
 2. LLM 返回 JSON 字符串
 3. Spring AI 用 Jackson 反序列化成 `Sentiment`
 
-**`.entity()` 内部流程**：
-
-```mermaid
-flowchart TD
-    prompt["chatClient.prompt()<br/>system 指定返回 JSON：{emotion, score, reason}"] --> llm["LLM 返回符合 schema 的 JSON 字符串"]
-    llm --> jackson["Spring AI 用 Jackson 反序列化"]
-    jackson --> entity["entity(Sentiment.class)<br/>得到 Java 对象"]
-```
-
 ### 1.3 LangChain4j 对比
 
 ```java

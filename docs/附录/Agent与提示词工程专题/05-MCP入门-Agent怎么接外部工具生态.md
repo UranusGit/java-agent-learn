@@ -41,35 +41,14 @@ public class OrderTools {
 
 ## 2. 心智模型：Client 和 Server
 
-```mermaid
-flowchart LR
-    C["MCP Client<br/>（你的 Spring AI 应用）<br/>Agent 循环<br/>① listTools<br/>② callTool"]
-    S["MCP Server<br/>（工具服务的提供方）<br/>getOrder / searchX"]
-    C <-->|"stdio / HTTP"| S
-```
-
 | 角色 | 是谁 | 做什么 |
 |------|------|--------|
 | **MCP Server** | 工具服务的提供方（可独立部署、另一种语言） | 向外界声明"我有这些工具"，并响应调用 |
 | **MCP Client** | 你的 Agent 应用 | 发现 Server 的工具 → Agent 决定调用 → 拿到结果回传 |
 
-两件事就构成协议的核心：**① listTools（发现有哪些工具）② callTool（调用某个工具）**。传输走 stdio 或 HTTP。
+两件事就构成协议的核心：**① listTools（发现有哪些工具）② callTool（调用某个工具）**。传输走 stdio 或 HTTP——Client 和 Server 就靠这条通道双向通信。
 
 > 关键认知：**对 Agent 而言，MCP 工具和本地 `@Tool` 没有区别**——它看到的是同样的"工具名 + 描述 + 参数"。MCP 只是让这些工具可以来自"别处"。
-
-**调用流程**（协议核心就两步：发现 + 调用）：
-
-```mermaid
-sequenceDiagram
-    participant C as MCP Client<br/>（你的 Spring AI 应用）
-    participant S as MCP Server<br/>（工具服务的提供方）
-    Note over C,S: 传输走 stdio 或 HTTP
-    C->>S: ① listTools（发现有哪些工具）
-    S-->>C: 工具清单：getOrder / searchX + 描述 + 参数
-    C->>S: ② callTool getOrder(orderId)
-    S-->>C: 工具结果
-    Note over C: Agent 循环拿到结果，回传给模型
-```
 
 ### 2.1 MCP 工具在模型眼里长什么样（本质也是"提示词"）
 

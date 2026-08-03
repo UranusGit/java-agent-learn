@@ -35,21 +35,6 @@ LLM 表现：
 - 调用准确率 90%+
 - 参数填对率 95%+
 
-**坏设计与好设计的对比**：
-
-```mermaid
-flowchart LR
-    subgraph BAD["坏设计：一个 Tool 干所有事"]
-        A["@Tool(查询)<br/>query(type, param1, param2, param3)"] --> A1["LLM 不知道何时调用"]
-        A1 --> A2["不知道填什么参数"]
-        A2 --> A3["经常调错"]
-    end
-    subgraph GOOD["好设计：单一职责 + 清晰描述"]
-        C["@Tool(根据员工姓名查询工号)<br/>queryEmployeeByName(fullName)"] --> C1["调用准确率 90%+"]
-        C1 --> C2["参数填对率 95%+"]
-    end
-```
-
 ### 1.2 核心结论
 
 > **Tool 描述是给 LLM 看的"接口契约"**。
@@ -259,19 +244,6 @@ public Weather getWeather(String city) {
 
 **适用**：非关键 Tool、可降级场景。
 
-**三种错误处理策略选型**：
-
-```mermaid
-flowchart TD
-    Begin(["Tool 执行失败"]) --> D{"失败属于哪种场景?"}
-    D -->|"偶发错误 / 外部依赖失败"| P1["策略1：抛异常"]
-    P1 --> P1a["LLM 收到错误信息后自行决策：<br/>重试 / 换工具 / 告知用户"]
-    D -->|"业务校验失败 / 用户输入错误"| P2["策略2：返回错误信息"]
-    P2 --> P2a["LLM 如实告知用户，让用户修正输入"]
-    D -->|"非关键 Tool / 可降级场景"| P3["策略3：返回空值或默认值"]
-    P3 --> P3a["隐藏错误，用默认值兜底"]
-```
-
 ### 4.3 错误信息友好度
 
 #### ❌ 错误信息不友好
@@ -368,19 +340,6 @@ Agent 工具超过 10 个时：
    │   ├── queryK8s
    │   └── queryPrometheus
    └── 业务 Agent（业务相关 Tool）
-```
-
-**分组路由结构**：
-
-```mermaid
-flowchart TD
-    Top["顶层 Agent（路由）"] --> HR["HR Agent<br/>人事相关 Tool"]
-    Top --> IT["IT Agent<br/>IT 相关 Tool"]
-    Top --> BIZ["业务 Agent<br/>业务相关 Tool"]
-    HR --> HR1["queryEmployee"]
-    HR --> HR2["queryDepartment"]
-    IT --> IT1["queryK8s"]
-    IT --> IT2["queryPrometheus"]
 ```
 
 实现见 [03-多 Tool 编排](./03-多Tool编排.md)。

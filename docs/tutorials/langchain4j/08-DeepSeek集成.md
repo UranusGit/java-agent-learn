@@ -175,17 +175,6 @@ ChatModel bigModel = OpenAiChatModel.builder()
 // 详见第 6 节
 ```
 
-**成本控制路径**：
-
-```mermaid
-flowchart TD
-    A["每次调用<br/>TokenUsage 打印用量"] --> B{"如何降低成本?"}
-    B -->|"铁律1"| C["控制 prompt 长度<br/>maxMessages(10) 而非 100"]
-    B -->|"铁律2"| D["用便宜模型做简单事<br/>maxOutputTokens(50) 短输出"]
-    B -->|"铁律3"| E["实现缓存<br/>相同 prompt 直接返回"]
-    B -->|"兜底"| F["设 ¥10 预算告警<br/>每天看用量"]
-```
-
 ### 4.3 预算告警
 
 DeepSeek 后台可设置余额告警。**学习期建议**：

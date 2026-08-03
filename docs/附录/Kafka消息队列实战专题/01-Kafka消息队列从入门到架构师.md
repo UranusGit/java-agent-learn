@@ -1037,6 +1037,18 @@ public void onOrder(ConsumerRecord<String, Order> record, Acknowledgment ack) {
 
 > **手动 ack 的典型场景**：业务成功 + 提交 offset 需要"原子化"（比如 DB 写成功才算消费成功）；或你想自定义失败策略（部分成功、部分进死信）。
 
+**手动 ack 的成败分支**：业务成功才提交 offset，失败不提交 → 重启重读（at-least-once）：
+
+```mermaid
+flowchart TD
+    A(("poll 拉到消息")) --> B["业务处理<br/>(charge / 入账 / 写库)"]
+    B --> R{"成功?"}
+    R -->|"成功"| OK["ack.acknowledge()<br/>提交 offset"]
+    R -->|"失败"| N["不提交 offset<br/>异常 / 自定义失败策略"]
+    N -.->|"重启后同一条消息重新投递"| A
+    OK --> Next["消费下一条"]
+```
+
 ### 8.4 Kafka 事务——多条消息"要么全发、要么全不发"
 
 Kafka 支持**事务性发送**：一批消息要么全部对消费者可见、要么一条都不可见。前提是开启幂等（`enable.idempotence=true`，事务要求幂等）并给事务一个 ID 前缀：
@@ -1088,6 +1100,18 @@ public class KafkaTransactionConfig {
         return new KafkaTransactionManager<>(producerFactory);
     }
 }
+```
+
+**Kafka 事务的可见性语义**：三条消息要么全部对外可见、要么一条都不可见：
+
+```mermaid
+flowchart TD
+    Start(("开启事务<br/>@Transactional")) --> S1["send(orders, 创建)"]
+    S1 --> S2["send(orders, 支付)"]
+    S2 --> S3["send(orders, 发货)"]
+    S3 --> End{"事务结局?"}
+    End -->|"全部成功 → commit"| V["read_committed 消费者同时看到这 3 条"]
+    End -->|"中途失败 → rollback"| H["一条都不出现<br/>消费者永远看不到半套消息"]
 ```
 
 > **关键**：`@Transactional("kafkaTransactionManager")` 里的 `"kafkaTransactionManager"` 是**事务管理器 bean 的名字**。只有配了 `transaction-id-prefix`，`ProducerFactory` 才是事务性的，`KafkaTransactionManager` 才有意义。第 9 章会把它升级成"DB + Kafka"跨资源一致性。
@@ -1175,6 +1199,18 @@ public void chargeOrder(Order order) {
     idempotencyRepository.save(order.getId());   // 标记已处理（和扣款同一 DB 事务）
 }
 ```
+
+**幂等消费流程**（at-least-once 下防重复的核心套路）：
+
+```mermaid
+flowchart TD
+    A(("收到消息<br/>(可能重复投递)")) --> B{"幂等表<br/>existsById?"}
+    B -->|"处理过"| S["跳过(幂等)<br/>不重复执行业务"]
+    B -->|"未处理"| C["执行业务<br/>(扣款/入账)"]
+    C --> M["幂等表标记已处理<br/>(与业务同 DB 事务)"]
+    M --> D["消费完成"]
+```
+
 
 > **和 35 号文档的呼应**：35 号文档第 6 章讲的"幂等键（Idempotency-Key）"就是这个思想——用唯一键保证"同一操作只执行一次"。在消息系统里，**幂等是底线，不是优化**。更工程化的做法是 Outbox + 唯一约束（见 [04-生产级进阶](./04-生产级进阶-Outbox与Schema与分区调优.md)）。
 

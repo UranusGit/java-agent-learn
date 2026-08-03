@@ -103,18 +103,6 @@ URI 形式，LLM 通过读 resource 获取上下文。适合大文档/结构化�
 
 可复用的 prompt 模板，类似 Spring 的 `MessageTemplate`。
 
-**三大能力对照**：Tool 自主调用、Resource 按需读取、Prompt 模板复用。
-
-```mermaid
-flowchart LR
-    LLM["LLM"] --> T["Tool(等价 Function Calling)<br/>看到工具列表自主决定调用"]
-    LLM --> R["Resource(URI 形式)<br/>大文档/结构化数据按需读取"]
-    LLM --> P["Prompt(模板库)<br/>按 ID 取, 类似 MessageTemplate"]
-    T -.-> T2["query_employee"]
-    R -.-> R2["resource://employee/12345"]
-    P -.-> P2["code_review"]
-```
-
 ---
 
 ## 3. Spring AI 2.0 的 MCP 支持

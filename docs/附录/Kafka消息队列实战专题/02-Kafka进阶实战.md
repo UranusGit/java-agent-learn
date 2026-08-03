@@ -90,6 +90,15 @@ kafkaTemplate.send("orders", orderId, eventJson);
 - **自动提交**：`spring.kafka.consumer.enable-auto-commit`（默认 `true`）让消费者定期自动提交（默认每 5 秒）。简单，但可能"处理了但没提交就崩了"→ 重启重复消费；或"没处理完就提交了"→ 崩了丢消息。
 - **手动提交**：`enable-auto-commit=false` + 在 `@KafkaListener` 里注入 `Acknowledgment`，处理完再 `acknowledgment.acknowledge()`。精确，但要自己管。
 
+**offset 提交与 at-least-once 重复窗口**：
+
+```mermaid
+flowchart LR
+    P["partition<br/>offset 0→1→2→3…"] --> M["消费者处理<br/>(poll → 处理 → 提交)"]
+    M --> C["提交 offset<br/>(commit)"]
+    M -.->|"处理成功但提交前崩溃<br/>offset 未落库"| W["at-least-once 重复窗口<br/>重启后从上次 offset 续读<br/>同一条消息被再处理一次"]
+```
+
 > **核心结论**：Kafka 默认是 **at-least-once（至少一次）**——同一条消息**可能被消费多次**（比如处理成功、提交 offset 前崩溃）。所以**消费者必须幂等**。这是铁律，不懂这个，上线必出数据错误。
 
 ### 1.5 Consumer Group（消费组）——负载均衡 vs 发布订阅

@@ -9082,11 +9082,11 @@ flowchart TD
     S3[第3章 工具升级+可靠性加固<br/>MCP server+超时/429重试/错误归宿] -->|痛点: 复杂主题漏角度| S4
     S4[第4章 Plan-Execute<br/>先规划拆子任务串行执行] -->|痛点: 串行太慢| S5
     S5[第5章 多Worker并发<br/>flatMap限流+错误隔离+Aggregate] -->|痛点: 过程不可追溯| S6
-    S6[第6章 审计日志<br/>按会话串联全流程落库(MyBatis-Plus)] -->|痛点: 刷新丢/不能多轮| S7
+    S6["第6章 审计日志<br/>按会话串联全流程落库(MyBatis-Plus)"] -->|痛点: 刷新丢/不能多轮| S7
     S7[第7章 会话持久化<br/>ChatMemory落PG+CONVERSATION_ID] -->|痛点: 没法当产品用| S8
     S8[第8章 产品化<br/>会话CRUD+自动标题+前端对话页] -->|痛点: 单机不能多设备| S9
     S9[第9章 分布式流式<br/>Redis Streams+Pub/Sub三层广播]
-```html
+```
 
 ### A.5 调试页面（第 0-4 章单次研究版）
 

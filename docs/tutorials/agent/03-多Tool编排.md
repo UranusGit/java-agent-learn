@@ -9,11 +9,7 @@
 
 ### 1.1 简单 Agent 的瓶颈
 
-```mermaid
-flowchart TD
-    REG["20 个 Tool 注册到一个 Agent"] --> SEE["LLM 每次都要看 20 个 Tool 的 schema<br/>消耗大量 token"]
-    SEE --> DROP["Tool 选择准确率断崖式下降<br/>经常选错"]
-```
+20 个 Tool 注册到一个 Agent → LLM 每次都要看 20 个 Tool 的 schema，消耗大量 token → Tool 选择准确率断崖式下降，经常选错。
 
 ### 1.2 解决方案
 
@@ -324,16 +320,6 @@ public class CollaborativeAgent {
         return code;
     }
 }
-```
-
-**子 Agent 协作流水线**：
-
-```mermaid
-flowchart LR
-    REQ["需求"] --> PM["产品经理 Agent<br/>分析需求"]
-    PM --> ARCH["架构师 Agent<br/>设计方案"]
-    ARCH --> DEV["开发 Agent<br/>写代码"]
-    DEV --> CODE["返回代码"]
 ```
 
 ### 5.3 复杂协作（用 AutoGen / CrewAI 风格）

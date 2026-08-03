@@ -25,19 +25,6 @@ reactive-stock-quotes/
     └── QuoteController.java               # SSE 接口
 ```
 
-**项目结构**：
-
-```mermaid
-flowchart TD
-    ROOT["reactive-stock-quotes"] --> POM["pom.xml"]
-    ROOT --> SRC["src/main/java/com/example/reactivestocks"]
-    SRC --> APP["ReactiveStocksApplication.java<br/>启动类"]
-    SRC --> QUOTE["Quote.java<br/>报价模型 record"]
-    SRC --> ALERT["Alert.java<br/>告警模型 record"]
-    SRC --> ENGINE["QuoteEngine.java ★<br/>行情引擎：Reactor 流水线的家"]
-    SRC --> CONT["QuoteController.java<br/>SSE 接口"]
-```
-
 > **一句话分工**：`QuoteEngine` 是"发动机"——里面跑着一条 Reactor 流水线，每秒产出一条报价；`QuoteController` 是"仪表盘"——把发动机的数据通过 SSE 推给浏览器。**Reactor 的全部能力几乎都写在 `QuoteEngine` 里**，Controller 只是把 `Flux` return 出去让框架订阅。
 
 ### 1.2 pom 关键依赖
