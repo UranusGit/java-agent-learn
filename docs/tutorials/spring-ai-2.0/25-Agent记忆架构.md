@@ -10,13 +10,14 @@
 ## 0. 认知地图
 
 ```mermaid
-flowchart TD
-    A["人类记忆（认知心理学）"] --> B["短时记忆 Working Memory<br/>← ChatClient 上下文窗口"]
-    A --> C["长时记忆 Long-term"]
-    A --> F["元记忆 Meta<br/>← 偏好 / 人格"]
-    C --> D1["情节记忆 Episodic<br/>“我经历过 X” ← 会话历史"]
-    C --> D2["语义记忆 Semantic<br/>“我知道 X” ← 知识库 / RAG"]
-    C --> D3["程序记忆 Procedural<br/>“我会做 X” ← 工具 / skill"]
+mindmap
+  root((人类记忆（认知心理学）))
+    短时记忆 Working Memory ← ChatClient 上下文窗口
+    长时记忆 Long-term
+      情节记忆 Episodic “我经历过 X” ← 会话历史
+      语义记忆 Semantic “我知道 X” ← 知识库 / RAG
+      程序记忆 Procedural “我会做 X” ← 工具 / skill
+    元记忆 Meta ← 偏好 / 人格
 ```
 
 Spring AI 2.0 提供的：

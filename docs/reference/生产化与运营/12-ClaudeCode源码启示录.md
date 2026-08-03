@@ -63,11 +63,11 @@ public class AgentLoop {
 ```mermaid
 flowchart TD
     Start(("Agent Loop 开始")) --> T1{"turnCount > maxTurns?"}
-    T1 -->|"是"| E1((""终止: maxTurns""))
+    T1 -->|"是"| E1(("终止: maxTurns"))
     T1 -->|"否"| T2{"costUsd > budgetUsd?"}
-    T2 -->|"是"| E2((""终止: 美元预算超限""))
+    T2 -->|"是"| E2(("终止: 美元预算超限"))
     T2 -->|"否"| T3{"transitionReason<br/>连续重复出现?"}
-    T3 -->|"是"| E3((""终止: 死循环检测""))
+    T3 -->|"是"| E3(("终止: 死循环检测"))
     T3 -->|"否"| T4{"用户中断 / error / blocking_limit?"}
     T4 -->|"是"| E4(("终止"))
     T4 -->|"否"| LLM["调 ChatClient<br/>执行工具调用"]

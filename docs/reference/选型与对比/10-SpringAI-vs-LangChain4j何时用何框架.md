@@ -74,17 +74,15 @@
 **优势分布**：2.0 之后 LangChain4j 只剩 3 个细分场景优势。
 
 ```mermaid
-flowchart LR
-    ROOT["选型格局"] --- SA
-    ROOT --- LC
-    subgraph SA["Spring AI 2.0 覆盖 90% 场景"]
-        SA1["生态 / 可观测性 / MCP / 生产化能力"]
-    end
-    subgraph LC["LangChain4j 仅剩 3 优势"]
-        L1["Quarkus 生态(Red Hat 官方背书)"]
-        L2["复杂多 Agent 状态机(LangGraph4j)<br/>企业实战 <10%"]
-        L3["无 Spring 容器的纯 Java/CLI 场景"]
-    end
+mindmap
+  root((选型格局))
+    "Spring AI 2.0 覆盖 90% 场景"
+      "生态 / 可观测性 / MCP / 生产化能力"
+    "LangChain4j 仅剩 3 优势"
+      "Quarkus 生态 (Red Hat 官方背书)"
+      "复杂多 Agent 状态机 (LangGraph4j)"
+        "企业实战 <10%"
+      "无 Spring 容器的纯 Java/CLI 场景"
 ```
 
 ---

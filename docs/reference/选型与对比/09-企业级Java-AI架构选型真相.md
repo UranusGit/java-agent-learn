@@ -39,23 +39,19 @@
 **四大阵营**：企业方案按主框架与生态分四派，彼此基本互斥。
 
 ```mermaid
-flowchart LR
-    ROOT["企业方案 4 大阵营"] --- SP
-    ROOT --- QK
-    ROOT --- DC
-    ROOT --- TH
-    subgraph SP["Spring 派(VMware/绝大多数企业)"]
-        SP1["Spring AI 2.0<br/>全栈统一 + Advisor 链"]
-    end
-    subgraph QK["Quarkus 派(Red Hat 官方推荐)"]
-        QK1["LangChain4j + Quarkus<br/>云原生 / GraalVM 原生镜像"]
-    end
-    subgraph DC["声明式派(欧洲企业/原型)"]
-        DC1["LangChain4j + AiServices<br/>接口驱动, 最像 Python LangChain"]
-    end
-    subgraph TH["第三方扩展派(复杂 Agent)"]
-        TH1["Spring AI + LangGraph4j / Alibaba Graph / Embabel"]
-    end
+mindmap
+  root((企业方案 4 大阵营))
+    "Spring 派 (VMware/绝大多数企业)"
+      "Spring AI 2.0"
+      "全栈统一 + Advisor 链"
+    "Quarkus 派 (Red Hat 官方推荐)"
+      "LangChain4j + Quarkus"
+      "云原生 / GraalVM 原生镜像"
+    "声明式派 (欧洲企业/原型)"
+      "LangChain4j + AiServices"
+      "接口驱动, 最像 Python LangChain"
+    "第三方扩展派 (复杂 Agent)"
+      "Spring AI + LangGraph4j / Alibaba Graph / Embabel"
 ```
 
 ### 2.1 关键证据：Red Hat 官方立场

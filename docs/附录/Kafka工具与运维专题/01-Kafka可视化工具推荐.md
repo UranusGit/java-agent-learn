@@ -54,23 +54,24 @@
 **13 个工具按类型分组**：
 
 ```mermaid
-flowchart TD
-    TOOLS["Kafka 可视化工具（13 个）"] --> WEB["Web 面板"]
-    TOOLS --> DESK["桌面应用"]
-    TOOLS --> IDE["IDE 插件"]
-    WEB --> W1["Redpanda Console<br/>颜值天花板"]
-    WEB --> W2["Kafka UI<br/>功能最全 · Apache 2.0"]
-    WEB --> W3["Kafdrop<br/>最轻量"]
-    WEB --> W4["AKHQ"]
-    WEB --> W5["kafka-map<br/>中文"]
-    WEB --> W6["kafka-console-ui<br/>中文"]
-    WEB --> W7["Confluent Control Center<br/>企业付费"]
-    DESK --> D1["Conduktor<br/>桌面 + Web"]
-    DESK --> D2["Offset Explorer<br/>功能最全"]
-    DESK --> D3["Kafka-King<br/>中文"]
-    DESK --> D4["KafkaLens<br/>收费"]
-    DESK --> D5["Kafka Assistant<br/>中文"]
-    IDE --> I1["IntelliJ Kafka 插件"]
+mindmap
+  root((Kafka 可视化工具（13 个）))
+    Web 面板
+      "Redpanda Console（颜值天花板）"
+      "Kafka UI（功能最全 · Apache 2.0）"
+      "Kafdrop（最轻量）"
+      AKHQ
+      "kafka-map（中文）"
+      "kafka-console-ui（中文）"
+      "Confluent Control Center（企业付费）"
+    桌面应用
+      "Conduktor（桌面 + Web）"
+      "Offset Explorer（功能最全）"
+      "Kafka-King（中文）"
+      "KafkaLens（收费）"
+      "Kafka Assistant（中文）"
+    IDE 插件
+      "IntelliJ Kafka 插件"
 ```
 
 ---
