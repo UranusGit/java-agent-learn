@@ -34,11 +34,6 @@
 
 **流处理（Stream Processing）**：数据**一来就处理**，持续维护计算结果。订单一来就累加到"今日订单量"——任意时刻查都是最新的。
 
-```
-批处理：[攒一天数据] → [夜里全量算] → 结果（延迟1天）
-流处理：[来一条] → [增量更新结果]（持续，毫秒~秒级延迟）
-```
-
 **批处理 vs 流处理**：
 
 ```mermaid
@@ -436,10 +431,6 @@ public class OrderPaymentTopology {
 ### 4.1 State Store——流处理的状态住哪
 
 前面 `count`/`aggregate`/`JOIN` 都产生**状态**（计数、表）。这些状态存在哪？**不是外部数据库，是 Streams 自带的本地状态存储（state store）**——默认用 RocksDB（磁盘）+ 内存缓存。
-
-```
-事件流 → Kafka Streams → [ 本地 state store (RocksDB) ]  ← 状态在这，毫秒级读写
-```
 
 好处：状态在本地，读写极快，不依赖外部 DB。崩溃后能从 Kafka changelog topic 重建（容错）。
 

@@ -28,25 +28,6 @@
 
 ### 0.1 单向 vs 收敛
 
-**错误（单向）**：
-```
-用户：做个 todo app
-agent：[闷头做了 5 分钟，方向错了]
-agent：完成了！
-用户：这不是我要的
-```
-
-**正确（收敛）**：
-```
-用户：做个 todo app
-agent：我需要确认几点：
-       ① 技术栈：React/Vue？
-       ② 存储：localStorage/IndexedDB/后端？
-       ③ 用户系统：登录/单机？
-用户：React + 后端 + 登录
-agent：明白了。开始。
-```
-
 **单向 vs 收敛**：
 
 ```mermaid

@@ -129,8 +129,9 @@ public class ArticleChainingService extends ChainingService {
 
 把一个复杂任务拆成**线性**子任务，每步 LLM 调用以上一步输出为输入。
 
-```
-Step 1 → Step 2 → Step 3 → ... → Output
+```mermaid
+flowchart LR
+    A[Step 1] --> B[Step 2] --> C[Step 3] --> D["..."] --> E[Output]
 ```
 
 ### 1.2 适用场景
@@ -320,19 +321,7 @@ flowchart TD
 
 **Sectioning**：把任务拆成独立子任务并行执行。
 
-```
-Input → ┌─ Subtask A ─┐
-        ├─ Subtask B ─┤→ Aggregate → Output
-        └─ Subtask C ─┘
-```
-
 **Voting**：同一任务跑 N 次，投票决出最终答案。
-
-```
-Input → ┌─ LLM Run 1 ─┐
-        ├─ LLM Run 2 ─┤→ Vote → Output
-        └─ LLM Run 3 ─┘
-```
 
 **两种子模式（Mermaid 版）**：
 
@@ -545,10 +534,12 @@ public class VotingReviewService extends ParallelizationService {
 
 根据输入类型路由到不同处理流程。
 
-```
-Input → [Router] → ┌─ Path A
-                   ├─ Path B
-                   └─ Path C
+```mermaid
+flowchart LR
+    IN["Input"] --> RT["Router"]
+    RT --> PA["Path A"]
+    RT --> PB["Path B"]
+    RT --> PC["Path C"]
 ```
 
 ### 3.2 抽象类：RoutingService
@@ -713,20 +704,6 @@ public class CodeRouterService extends RoutingService {
 
 Routing 是**静态**路由（事先定义好分类）。
 Orchestrator-Workers 是**动态**分配：LLM 看了输入后**自己决定**要拆成几个子任务。
-
-```
-Input → [Orchestrator LLM]
-            ↓ 决定子任务列表
-        ┌───┴───┐
-        ↓       ↓
-     Worker  Worker   ... 动态数量
-        ↓       ↓
-        └───┬───┘
-            ↓
-       [Aggregator]
-            ↓
-         Output
-```
 
 **Orchestrator-Workers 流程（Mermaid 版）**：
 
@@ -923,12 +900,6 @@ public class LongDocSummaryService extends OrchestratorService {
 ### 5.1 定义
 
 LLM 生成 → 评估 → 不合格则反馈给 LLM 重做，直到合格或达到最大次数。
-
-```
-Input → [Generator] → Output → [Evaluator] → pass?
-                                            ├ yes → return
-                                            └ no  → feedback → loop back
-```
 
 **Evaluator-Optimizer 反馈循环**：
 
@@ -1375,25 +1346,20 @@ Postman 配置步骤：
 
 ## 7. 模式选择决策树
 
-```
-任务能拆成线性步骤吗？
-├── 能 → Prompt Chaining
-└── 否 →
-    任务有多个独立子任务吗？
-    ├── 是 → Parallelization（Sectioning）
-    └── 否 →
-        需要提升结果稳定性吗？
-        ├── 是 → Parallelization（Voting）
-        └── 否 →
-            输入类型决定了不同处理？
-            ├── 是 → Routing
-            └── 否 →
-                子任务数量事先不知道？
-                ├── 是 → Orchestrator-Workers
-                └── 否 →
-                    结果可被评估并改进？
-                    ├── 是 → Evaluator-Optimizer
-                    └── 否 → 自主 Agent（最后手段）
+```mermaid
+flowchart TD
+    Q1{"任务能拆成线性步骤吗？"} -- "能" --> P1["Prompt Chaining"]
+    Q1 -- "否" --> Q2{"任务有多个独立子任务吗？"}
+    Q2 -- "是" --> P2["Parallelization（Sectioning）"]
+    Q2 -- "否" --> Q3{"需要提升结果稳定性吗？"}
+    Q3 -- "是" --> P3["Parallelization（Voting）"]
+    Q3 -- "否" --> Q4{"输入类型决定了不同处理？"}
+    Q4 -- "是" --> P4["Routing"]
+    Q4 -- "否" --> Q5{"子任务数量事先不知道？"}
+    Q5 -- "是" --> P5["Orchestrator-Workers"]
+    Q5 -- "否" --> Q6{"结果可被评估并改进？"}
+    Q6 -- "是" --> P6["Evaluator-Optimizer"]
+    Q6 -- "否" --> P7["自主 Agent（最后手段）"]
 ```
 
 ---

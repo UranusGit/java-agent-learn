@@ -9,15 +9,6 @@
 
 ## 0. 认知地图
 
-```
-传统 SRE 四本柱（容量 / 变更 / 预算 / Runbook）
-    + LLM 特有的三本柱（行为 / 成本 / 模型漂移）
-    ↓
-七本柱：容量 / 变更 / 行为 / 成本 / 模型漂移 / 安全 / Runbook
-```
-
-**七本柱构成**：
-
 ```mermaid
 flowchart LR
     T["传统 SRE 四本柱<br/>容量 / 变更 / 预算 / Runbook"] --> S["合并"]
@@ -137,18 +128,6 @@ flowchart TD
 
 ### 3.2 Prompt 变更的三道门
 
-```
-PR 提交
-  ↓
-[门 1：离线 eval]   跑 eval 集，对比 baseline，要求不退步
-  ↓
-[门 2：影子流量]   线上 1% 流量双跑（老 prompt + 新 prompt），人工 spot check
-  ↓
-[门 3：渐进发布]   10% → 50% → 100%，每阶段观察 SLO
-```
-
-**Prompt 变更三道门**：
-
 ```mermaid
 flowchart TD
     A["PR 提交"] --> G1["门 1：离线 eval<br/>跑 eval 集，对比 baseline，要求不退步"]
@@ -193,17 +172,23 @@ Spring AI 2.0 自动埋点（Micrometer + OTel），见 [`./15-可观测性与�
 
 ### 4.2 三层 trace
 
-```
-[Span: handle_user_request]
-  ├── [Span: chat_client.call]
-  │     ├── [Span: advisor.memory.before]
-  │     ├── [Span: advisor.rag.retrieve]
-  │     │     ├── [Span: vector_store.search]
-  │     │     └── [Span: rerank]
-  │     ├── [Span: chat_model.invoke (openai)]
-  │     ├── [Span: advisor.tool.loop]
-  │     │     └── [Span: tool.weather_api]
-  │     └── [Span: advisor.memory.after]
+```mermaid
+flowchart TD
+    H["Span: handle_user_request"]
+    subgraph CC["Span: chat_client.call"]
+        M1["Span: advisor.memory.before"]
+        subgraph RG["Span: advisor.rag.retrieve"]
+            V1["Span: vector_store.search"]
+            RK["Span: rerank"]
+        end
+        CM["Span: chat_model.invoke (openai)"]
+        subgraph TL["Span: advisor.tool.loop"]
+            TW["Span: tool.weather_api"]
+        end
+        M2["Span: advisor.memory.after"]
+        M1 --> RG --> CM --> TL --> M2
+    end
+    H --> CC
 ```
 
 每个 span 都带 GenAI attributes，可以在 Jaeger / Tempo 里直接筛选。
@@ -295,15 +280,6 @@ if kl > 0.1:
 用户 thumbs down 率突增 = 漂移信号。
 
 ### 6.3 漂移响应
-
-```
-检测到漂移 →
-  ├── 自动回滚 prompt 版本（如果当天有变更）
-  ├── 上游模型 fallback 到旧版本
-  └── 触发复盘：是新行为还是 bug？
-```
-
-**漂移响应**：
 
 ```mermaid
 flowchart TD

@@ -63,25 +63,6 @@ flowchart TD
     LLM --> FLUX
 ```
 
-```
-HTTP 请求
-  ↓
-Spring Security（鉴权）
-  ↓
-Controller（Spring AI ChatClient）
-  ↓
-Advisor 链：
-  ├─ 限流 Advisor（Bucket4j + Redis）
-  ├─ 审计 Advisor（落库 prompt/response）
-  ├─ 多租户 Advisor（选知识库）
-  ├─ RAG Advisor（QuestionAnswerAdvisor）
-  └─ Memory Advisor（会话记忆）
-  ↓
-ChatModel（调用 LLM）
-  ↓
-Flux<String> 流式返回
-```
-
 **关键能力**：
 - `ChatClient.Builder` 全局默认配置（system prompt、advisors、tools）
 - `@Tool` Bean 直接注入业务 Service（`@Transactional`、`@Cacheable` 都能用）
@@ -136,16 +117,6 @@ Assistant agent = AiServices.builder(Analyst.class)
 ### 3.2 "编排"指什么
 
 LangChain4j 负责**多步骤、多 Agent 的编排**：
-
-```
-用户："帮我分析上周销售数据并生成报告"
-
-LangChain4j 编排流程：
-  ├─ Agent A（数据查询）：调 Tool 取数据
-  ├─ Agent B（数据分析）：ReAct 循环算指标
-  ├─ Agent C（报告生成）：汇总 + 写报告
-  └─ 状态机：控制 Agent 之间的跳转
-```
 
 **编排流程**：
 
@@ -202,45 +173,6 @@ flowchart TD
     end
     FE -->|"HTTP / SSE"| CTL
     CC -->|"复杂请求"| AS
-```
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                     前端 / 第三方                          │
-└──────────────────────────┬───────────────────────────────┘
-                           │ HTTP / SSE
-┌──────────────────────────▼───────────────────────────────┐
-│  Spring AI 层【接入 + 兜底】                               │
-│  ──────────────────────────────────────                  │
-│  ┌────────────┐  ┌────────────┐  ┌────────────────┐     │
-│  │ Controller │→ │ Advisor 链  │→ │  ChatClient    │     │
-│  │  (Web)     │  │ - 鉴权      │  │  (统一入口)    │     │
-│  └────────────┘  │ - 限流      │  └───────┬────────┘     │
-│                  │ - 审计      │          │              │
-│                  │ - 多租户    │          │ 路由          │
-│                  │ - 降级      │          ↓              │
-│                  └────────────┘  ┌──────────────────┐    │
-│                                  │ 简单请求直接处理  │    │
-│                                  │ (单轮 RAG + Tool) │    │
-│                                  └────────┬─────────┘    │
-│                                           │ 复杂请求      │
-└───────────────────────────────────────────┼──────────────┘
-                                            ↓
-┌──────────────────────────────────────────────────────────┐
-│  LangChain4j 层【思考 + 编排】                            │
-│  ──────────────────────────────────────                  │
-│  ┌────────────────┐  ┌────────────────┐  ┌──────────┐   │
-│  │ AiServices     │  │  LangGraph4j   │  │ ReAct    │   │
-│  │ (声明式 Agent) │→ │  (状态机编排)  │← │ (思考循环)│  │
-│  └────────────────┘  └────────────────┘  └──────────┘   │
-│         │                    │                  │        │
-│         └────────────────────┴──────────────────┘        │
-│                           │                              │
-│                  ┌────────▼─────────┐                    │
-│                  │ ChatMemory +     │                    │
-│                  │ ContentRetriever │                    │
-│                  └──────────────────┘                    │
-└──────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -322,12 +254,9 @@ class AnalysisController {
 
 Spring AI 层通过 HTTP/gRPC 调用 LangChain4j 服务：
 
-```
-┌─────────────┐    HTTP/gRPC    ┌──────────────────┐
-│ Spring AI   │ ──────────────→ │ LangChain4j      │
-│ (Web 层)    │                 │ (Agent 服务)     │
-│ 多实例      │                 │ 多实例            │
-└─────────────┘                 └──────────────────┘
+```mermaid
+flowchart LR
+    SA["Spring AI<br/>（Web 层）<br/>多实例"] -->|"HTTP/gRPC"| L4J["LangChain4j<br/>（Agent 服务）<br/>多实例"]
 ```
 
 **适用场景**：
@@ -472,23 +401,11 @@ public class EmployeeTools {
 
 > ⚠️ **2026-07 更新**：原"阶段 3 引入 LangChain4j"建议已过时。Spring AI 2.0 GA 后 LangChain4j 在"思考/编排"上的优势大幅缩水，企业实战更倾向于**单框架 + 编排引擎**而非"两层分工"。修正后的演进路径如下：
 
-```
-阶段 1（MVP）
-  └─ 单框架（Spring AI 或 LangChain4j）跑通核心功能
-     ※ 本仓库阶段 1 用 LangChain4j 入门是合理的（学习摩擦小）
-
-阶段 2（生产化）
-  └─ Spring AI 加 Advisor 链（鉴权、限流、审计、降级）
-  └─ 简单 Agent 直接用 ChatClient + ToolCallingAdvisor（2.0 自动 Agent Loop）
-  └─ 升级到 Spring AI 2.0（Spring Boot 4 + Jackson 3 + JSpecify）
-
-阶段 3（编排复杂化，仅在 Workflow 模式 hold 不住时）
-  └─ 引入编排引擎：Spring AI Alibaba Graph（国内首选）或 LangGraph4j
-  └─ ❌ 不建议引入 LangChain4j 做"第二框架"（维护成本翻倍）
-
-阶段 4（团队规模化）
-  └─ 单框架 + 编排引擎已能支撑绝大多数团队规模
-  └─ 跨进程 Agent 通信等 MCP / A2A 协议成熟后再考虑
+```mermaid
+flowchart TD
+    S1["阶段 1（MVP）<br/>单框架（Spring AI 或 LangChain4j）跑通核心功能<br/>※ 本仓库阶段 1 用 LangChain4j 入门是合理的（学习摩擦小）"] --> S2["阶段 2（生产化）<br/>Spring AI 加 Advisor 链（鉴权、限流、审计、降级）<br/>简单 Agent 直接用 ChatClient + ToolCallingAdvisor（2.0 自动 Agent Loop）<br/>升级到 Spring AI 2.0（Spring Boot 4 + Jackson 3 + JSpecify）"]
+    S2 --> S3["阶段 3（编排复杂化，仅在 Workflow 模式 hold 不住时）<br/>引入编排引擎：Spring AI Alibaba Graph（国内首选）或 LangGraph4j<br/>❌ 不建议引入 LangChain4j 做“第二框架”（维护成本翻倍）"]
+    S3 --> S4["阶段 4（团队规模化）<br/>单框架 + 编排引擎已能支撑绝大多数团队规模<br/>跨进程 Agent 通信等 MCP / A2A 协议成熟后再考虑"]
 ```
 
 **核心修正**：原方案的"两层独立部署"在企业实战中**几乎没有案例**（见第 11 篇 §2-3）。

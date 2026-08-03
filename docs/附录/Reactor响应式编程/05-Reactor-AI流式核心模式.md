@@ -64,9 +64,18 @@ public Flux<String> generate(String prompt, String sessionId) {
 
 ### 因果链
 
-```
-不用 defer: trigger() → memory.add() 执行 → 客户端可能永不消费 → 记忆脏了
-用 defer:   trigger() → 只创建 Flux 骨架 → 客户端 GET /stream 时才真正 subscribe → memory.add() 才执行
+```mermaid
+flowchart LR
+    subgraph BAD["不用 defer（有副作用提前执行）"]
+        A1["trigger()"] --> B1["memory.add() 立即执行"]
+        B1 --> C1["客户端可能永不消费流"]
+        C1 --> D1["对话记忆脏了一条"]
+    end
+    subgraph GOOD["用 defer（副作用推迟到订阅）"]
+        A2["trigger()"] --> B2["只创建 Flux 骨架<br/>副作用不执行"]
+        B2 --> C2["客户端 GET /stream 时才 subscribe"]
+        C2 --> D2["memory.add() 订阅时才执行"]
+    end
 ```
 
 **一句话**：有副作用的代码（写库、写缓存），如果必须跟着订阅一起发生，就包在 `defer` 里。
@@ -84,9 +93,17 @@ public Flux<String> generate(String prompt, String sessionId) {
 
 ### 3.2 为什么 `concatWith` 而不是 `mergeWith`
 
-```
-mergeWith:  [chunk1] [chunk4?] [chunk2] [chunk5?] [chunk3] → 顺序乱了！
-concatWith: [chunk1] [chunk2] [chunk3] → [切到 live] → [chunk4] [chunk5] → 顺序对！
+```mermaid
+flowchart LR
+    subgraph MW["mergeWith：两条流混着来"]
+        A1["history 回放 chunk1"] --> A2["实时 chunk 可能插队<br/>chunk4? 排在 chunk2 前面"]
+        A2 --> A3["顺序乱了"]
+    end
+    subgraph CW["concatWith：先过去、后未来"]
+        B1["history 先全部回放<br/>chunk1 → chunk2 → chunk3"] --> B2["history 完成后切到 live"]
+        B2 --> B3["实时按序到达<br/>chunk4 → chunk5"]
+        B3 --> B4["顺序对"]
+    end
 ```
 
 **`concatWith` 保证第一条流跑完才启动第二条**。历史总是先于实时到达，顺序不乱。
@@ -109,11 +126,6 @@ live.concatWith(history)  // ❌
 `takeUntil(predicate)` = "遇到满足条件的元素就自动关闭水管"。
 
 SSE 长连接总要有个关闭信号。我们用 `__END__` 这个特殊标记。生产者写它，订阅者用它关闭连接：
-
-```
-生产者：chunk1 → chunk2 → chunk3 → __END__
-消费者：chunk1 → chunk2 → chunk3 → [takeUntil 触发] → 完成 → SSE 关闭
-```
 
 **订阅时序**：
 
@@ -214,9 +226,20 @@ generate(prompt, sessionId)
 
 ### 因果链
 
-```
-只用 doOnComplete: LLM 超时 → 流以 error 结束 → doOnComplete 不触发 → __END__ 没写 → 订阅方挂死
-加上 doOnError:   LLM 超时 → 流以 error 结束 → doOnError 触发 → __END__ 写了 → 订阅方正常关闭
+```mermaid
+flowchart LR
+    subgraph BAD["只用 doOnComplete"]
+        A1["LLM 超时"] --> B1["流以 error 结束"]
+        B1 --> C1["doOnComplete 不触发"]
+        C1 --> D1["__END__ 没写"]
+        D1 --> E1["订阅方 takeUntil 永远等不到<br/>连接挂死"]
+    end
+    subgraph GOOD["doOnError 也写终止标记"]
+        A2["LLM 超时"] --> B2["流以 error 结束"]
+        B2 --> C2["doOnError 触发"]
+        C2 --> D2["__END__ 写了"]
+        D2 --> E2["订阅方正常关闭"]
+    end
 ```
 
 **一句话**：终止标记的"必达性"比成功/失败的区分更重要。订阅方不关心为什么结束，只关心能不能正常关闭。
@@ -247,27 +270,6 @@ flowchart TD
     FILT --> SSE["SSE 推给前端"]
 ```
 
-```
-POST /chat → trigger()
-  │
-  ├─ generate() 创建 Flux（冷，未订阅）
-  │     ├─ Flux.defer 包裹 → 副作用推迟到订阅时（模式一）
-  │     └─ doFinally 保证写 __END__（模式五）
-  │
-  ├─ .subscribe() → 生成开始
-  │     ├─ chunk → bus.write() → XADD Stream + PUBLISH Pub/Sub
-  │     └─ 完成/失败 → bus.writeEnd() → 写 __END__
-  │
-GET /stream → bus.subscribe(token)
-  │
-  ├─ history = range(key) 回放 Stream（"过去"的 chunk）
-  │     └─ 碰到 __END__ → ended.set(true)
-  ├─ live = Flux.defer(ended 检查) → 没结束才连 Pub/Sub（模式四）
-  └─ history.concatWith(live)（模式二）
-        .takeUntil("__END__")（模式三）
-        .filter(not __END__)
-        → SSE 推给前端
-```
 
 ---
 

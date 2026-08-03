@@ -25,18 +25,6 @@
 
 ### 1.2 Agent 加了一个"手脚 + 循环"
 
-```
-用户问
-  ↓
-LLM 决定："我需要查订单状态"   ← Thought（想）
-  ↓
-调用 getOrderStatus(orderId)   ← Action（做，宿主程序执行）
-  ↓
-返回 "已发货，明天送达"         ← Observation（看结果）
-  ↓
-LLM 综合 → 输出最终回答        ← 循环结束
-```
-
 **ReAct 循环**：
 
 ```mermaid
@@ -80,9 +68,9 @@ sequenceDiagram
     participant H as 宿主程序（JVM）
     U->>A: 我的订单 ORD-1001 到哪了？
     Note over A: Thought：需要先查订单状态
-    A->>H: tool_call getOrderStatus<br/>{"orderId": "ORD-1001"}
+    A->>H: tool_call getOrderStatus<br/>{orderId: ORD-1001}
     Note over H: Action：解析 JSON，执行真实 Java 方法
-    H-->>A: {"status": "已发货", "eta": "明天 18:00"}
+    H-->>A: {status: 已发货, eta: 明天 18:00}
     Note over A: Observation：信息够了，循环结束
     A->>U: 您的订单 ORD-1001 已发货，预计明天 18:00 送达
 ```
@@ -148,15 +136,6 @@ sequenceDiagram
 这是**最高频的架构问题**。Anthropic 官方给过权威判据（[Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)），仓库里 [11-五大Workflow模式](../../tutorials/spring-ai-2.0/11-五大Workflow模式与代码评审助手.md) 有中文展开。
 
 ### 3.1 决策树
-
-```
-任务流程是固定的、可预期的？
-├── 是 → 用 Workflow（固定步骤：比如"先检索 → 再总结 → 后格式化"）
-│        用代码编排每一步，LLM 只负责其中某些步骤
-└── 否 → 任务需要动态决定"下一步做什么"？
-        ├── 是 → 用 Agent（模型在循环里自由决策）
-        └── 否 → 单次 LLM 调用就够（别上 Agent！）
-```
 
 **选型决策**：
 

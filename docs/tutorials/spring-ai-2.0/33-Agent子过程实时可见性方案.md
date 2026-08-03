@@ -50,29 +50,19 @@
 
 以「用户问『查北京天气并写一句诗』，走 Orchestrator-Workers Workflow」为例：
 
-```
-// 本伪代码仅作学习材料参考
-
-[前端] POST /agent/run { input: "查北京天气并写一句诗", sessionId: "s1" }
-   │
-   ├─► SESSION_STARTED   { sessionId:"s1", input:"查北京天气并写一句诗" }
-   │
-   ├─► WORKFLOW_PHASE    { phase:"orchestrator-plan", data:{ subtasks:["查天气","写诗"] } }
-   │
-   ├─► TOOL_CALL_START   { tool:"getWeather", args:{city:"北京"} }       // 本进程工具
-   ├─► TOOL_CALL_END     { tool:"getWeather", result:"晴 28℃", durationMs:120 }
-   │
-   ├─► MCP_CALL_START    { server:"weather-mcp", tool:"forecast", traceId:"a1b2..." }  // 跨进程
-   ├─► MCP_CALL_END      { server:"weather-mcp", result:"未来3天晴", durationMs:340 }
-   │
-   ├─► LLM_TOKENS        { phase:"write-poem", promptTokens:520, completionTokens:48 }  // 每次调用
-   │
-   ├─► WORKFLOW_PHASE    { phase:"aggregate", data:{ output:"北京晴空..." } }
-   │
-   ├─► CONTENT_DELTA     { text:"北京" }    // 流式正文片段（与事件流 merge）
-   ├─► CONTENT_DELTA     { text:"晴空万里" }
-   │
-   └─► SESSION_COMPLETED { sessionId:"s1", totalTokens:568, costUsd:0.0021 }
+```mermaid
+flowchart TD
+    A["[前端] POST /agent/run { input: '查北京天气并写一句诗', sessionId: 's1' }"] --> B["SESSION_STARTED { sessionId:'s1', input:'查北京天气并写一句诗' }"]
+    B --> C["WORKFLOW_PHASE { phase:'orchestrator-plan', data:{ subtasks:['查天气','写诗'] } }"]
+    C --> D["TOOL_CALL_START { tool:'getWeather', args:{city:'北京'} } // 本进程工具"]
+    D --> E["TOOL_CALL_END { tool:'getWeather', result:'晴 28℃', durationMs:120 }"]
+    E --> F["MCP_CALL_START { server:'weather-mcp', tool:'forecast', traceId:'a1b2...' } // 跨进程"]
+    F --> G["MCP_CALL_END { server:'weather-mcp', result:'未来3天晴', durationMs:340 }"]
+    G --> H["LLM_TOKENS { phase:'write-poem', promptTokens:520, completionTokens:48 } // 每次调用"]
+    H --> I["WORKFLOW_PHASE { phase:'aggregate', data:{ output:'北京晴空...' } }"]
+    I --> J["CONTENT_DELTA { text:'北京' } // 流式正文片段（与事件流 merge）"]
+    J --> K["CONTENT_DELTA { text:'晴空万里' }"]
+    K --> L["SESSION_COMPLETED { sessionId:'s1', totalTokens:568, costUsd:0.0021 }"]
 ```
 
 前端拿到的不是「等 30 秒后一个字符串」，而是上面这条**实时事件流**，可以渲染成「正在查天气 → 查到了 → 正在写诗 → 输出中」的进度条。

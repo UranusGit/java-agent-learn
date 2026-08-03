@@ -26,14 +26,6 @@ Flux<String> stream = webClient.get().uri(url).retrieve().bodyToFlux(String.clas
 
 ### 1.2 Sink 就是那个入口
 
-```
-        命令式代码（主动 push）                  响应式代码（被动接收）
-  ┌──────────────────────┐       ┌──────────────────────┐
-  │  eventBus.emit(x)   │──────→│   sink.asFlux()     │──→ 订阅者
-  │  （你主动调）      │  Sink  │   （Flux 流）       │
-  └──────────────────────┘       └──────────────────────┘
-```
-
 **Sink 是"命令式世界"和"响应式世界"之间的桥梁**。你代码主动调 `sink.tryEmitNext(value)`，它就把 value 塞进一个 Flux——所有订阅这个 Flux 的人立刻收到。
 
 ```java

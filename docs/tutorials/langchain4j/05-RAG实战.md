@@ -34,46 +34,6 @@
 
 ## 2. RAG 全链路（必懂一图）
 
-```
-【离线索引阶段】（一次性，文档更新时重做）
-
-   原始文档（PDF/Markdown/HTML）
-              ↓
-       DocumentReader（解析）
-              ↓
-       Document（统一中间格式）
-              ↓
-       DocumentSplitter（分块）
-              ↓
-       List<TextSegment>（文本片段）
-              ↓
-       EmbeddingModel（向量化）
-              ↓
-       List<Embedding>
-              ↓
-       EmbeddingStore（入库）
-
-
-【在线问答阶段】（每次用户提问）
-
-   用户问题
-              ↓
-       EmbeddingModel（向量化）
-              ↓
-       Embedding
-              ↓
-       EmbeddingStore.search（相似度检索）
-              ↓
-       List<TextSegment>（最相关的 K 个片段）
-              ↓
-       拼接进 prompt
-       "根据以下上下文回答：
-        {{context}}
-        问题：{{question}}"
-              ↓
-       LLM 生成答案
-```
-
 **RAG 全链路图**：
 
 ```mermaid
@@ -90,7 +50,7 @@ flowchart TD
         Q1["用户问题"] --> Q2["EmbeddingModel 向量化"]
         Q2 --> Q3["EmbeddingStore.search 相似度检索"]
         Q3 --> Q4["最相关的 K 个片段"]
-        Q4 --> Q5["拼接进 prompt<br/>context + question"]
+        Q4 --> Q5["拼接进 prompt<br/>「根据以下上下文回答：<br/>context；问题：question」"]
         Q5 --> Q6["LLM 生成答案"]
     end
     D7 -.->|"向量库跨阶段复用"| Q3
@@ -403,27 +363,6 @@ public class Test02 {
 
 `contentRetriever(retriever)` 这一行背后发生了什么：
 
-```
-用户问："退货政策是什么？"
-   ↓
-LangChain4j 自动调用 retriever.retrieve(query)
-   ↓
-retriever 内部：
-   1. embedModel.embed("退货政策是什么？") → 用户问题的向量
-   2. store.search(向量, topK=5) → 找到最相关的 5 个片段
-   3. 返回 List<Content>
-   ↓
-LangChain4j 自动把检索结果拼到 prompt：
-   "基于以下信息回答问题：
-    ---
-    片段1: 7 天无理由退货...
-    片段2: 商品需保持完好...
-    ---
-    问题：退货政策是什么？"
-   ↓
-发给 LLM 生成答案
-```
-
 **检索时序**：
 
 ```mermaid
@@ -434,14 +373,14 @@ sequenceDiagram
     participant EM as EmbeddingModel
     participant ST as EmbeddingStore
     participant LLM as LLM
-    App->>AS: agent.chat("退货政策是什么？")
-    AS->>CR: retriever.retrieve(query)
-    CR->>EM: embed("退货政策是什么？")
+    App->>AS: "agent.chat('退货政策是什么？')"
+    AS->>CR: "retriever.retrieve(query)"
+    CR->>EM: "embed('退货政策是什么？')"
     EM-->>CR: 问题向量
-    CR->>ST: store.search(向量, topK=5)
+    CR->>ST: "store.search(向量, topK=5)"
     ST-->>CR: 最相关的 5 个片段
     CR-->>AS: List of Content
-    AS->>LLM: prompt = 上下文片段 + 问题
+    AS->>LLM: "prompt = 上下文片段 + 问题"
     LLM-->>AS: 基于上下文的答案
     AS-->>App: 回答
 ```

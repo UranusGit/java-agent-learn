@@ -9,18 +9,6 @@
 
 ## 0. 认知地图
 
-```
-人类记忆分类（认知心理学）
-├── 短时记忆（Working Memory）        ← ChatClient 的上下文窗口
-├── 长时记忆（Long-term）
-│   ├── 情节记忆（Episodic）           ← "我经历过 X"——会话历史
-│   ├── 语义记忆（Semantic）           ← "我知道 X"——知识库 / RAG
-│   └── 程序记忆（Procedural）         ← "我会做 X"——工具 / skill
-└── 元记忆（Meta）                     ← "我学到了什么"——偏好 / 人格
-```
-
-**记忆分类**：
-
 ```mermaid
 flowchart TD
     A["人类记忆（认知心理学）"] --> B["短时记忆 Working Memory<br/>← ChatClient 上下文窗口"]
@@ -381,31 +369,6 @@ You are a helpful assistant. Adapt to the user.
 ---
 
 ## 6. 五种记忆协同：完整架构
-
-```
-用户消息
-    ↓
-[Profile Advisor]    注入人格 + 偏好
-    ↓
-[Episodic Advisor]   检索"过去对话"
-    ↓
-[Semantic Advisor]   检索"知识库"（RAG）
-    ↓
-[Short Memory]       滚动窗口 + 摘要
-    ↓
-ChatModel.call
-    ↓
-[Tool Calling]       程序记忆（工具）
-    ↓
-响应
-    ↓
-[After 阶段]
-    ├── 抽取语义事实 → 入语义记忆
-    ├── 抽取偏好 → 更新画像
-    └── 写入情节记忆 → 入向量库
-```
-
-**完整调用链**：
 
 ```mermaid
 flowchart TD

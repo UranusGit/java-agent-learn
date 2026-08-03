@@ -118,16 +118,6 @@ flowchart TD
     end
 ```
 
-```
-原始文档（PDF/Word/HTML）
-    ↓ Read（DocumentReader）
-Document（统一格式）
-    ↓ Transform（TokenTextSplitter 等）
-List<Document>（分块后）
-    ↓ Load（VectorStore.add）
-向量库
-```
-
 ### 4.2 完整索引代码
 
 ```java

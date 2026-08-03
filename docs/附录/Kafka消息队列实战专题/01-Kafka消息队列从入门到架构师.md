@@ -49,11 +49,13 @@ billingService.charge(order);      // 同步调用
 
 **消息驱动（Event-Driven）**是业界标准答案：订单服务下单后，**只做一件事——往消息系统扔一条"订单已创建"的消息**，然后立即返回。库存、通知、计费、市场部分别**订阅**这条消息，各自处理，互不影响。
 
-```
-订单服务 ──发消息──> [ 消息系统(Kafka) ] ──┬──> 库存服务
-                                          ├──> 通知服务
-                                          ├──> 计费服务
-                                          └──> 市场分析服务
+```mermaid
+flowchart LR
+    O[订单服务] -- "发布订单事件" --> K[("消息系统 Kafka")]
+    K --> I[库存服务]
+    K --> N[通知服务]
+    K --> B[计费服务]
+    K --> M[市场分析服务]
 ```
 
 订单服务**根本不知道**下游有几个、是谁——它只管发消息。这就叫**发布-订阅（Pub/Sub）**。
@@ -107,14 +109,13 @@ try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
 
 ### 0.4 它在整个 Spring 生态的位置
 
-```
-你的业务代码（@KafkaListener 方法 / KafkaTemplate 调用）
-        ↓
-Spring Kafka（spring-boot-starter-kafka）← 本文主角：用 Spring 管理 Kafka 客户端
-        ↓
-kafka-clients（Apache 官方客户端：Producer / Consumer / Admin）← 真正的网络协议层
-        ↓
-Kafka Broker（真正的分布式消息集群）
+```mermaid
+flowchart TD
+    A["你的业务代码<br/>(@KafkaListener 方法 / KafkaTemplate 调用)"]
+    B["Spring Kafka (spring-boot-starter-kafka)<br/>用 Spring 管理 Kafka 客户端"]
+    C["kafka-clients (Apache 官方客户端)<br/>Producer / Consumer / Admin<br/>真正的网络协议层"]
+    D[("Kafka Broker<br/>分布式消息集群")]
+    A --> B --> C --> D
 ```
 
 **记住这张图**：你写业务，Spring Kafka 管客户端生命周期，kafka-clients 干实事，broker 存数据。架构师必须能在脑子里画出这张分层——出问题时才知道去哪层排查。
@@ -283,11 +284,14 @@ Kafka Cluster
 1. **并行**：一个 topic 的数据可以分散到多个分区，由多个消费者**并行消费**。分区数 = 该 topic 的并行度上限。
 2. **保序**：**同一个 key 的消息永远进同一个 partition**，因此 partition 内天然有序。比如"同一订单的 创建→支付→发货"事件，把 `orderId` 作为 key，它们就都在同一个分区里、按顺序被消费。
 
-```
-topic: orders（分 3 个分区）
-   partition 0: [order-1 创建] → [order-1 支付] → ...   ← 同一 orderId 进同分区，保序
-   partition 1: [order-2 创建] → [order-3 创建] → ...
-   partition 2: [order-4 创建] → ...
+```mermaid
+flowchart LR
+    T["topic: orders<br/>(分 3 个分区)"] --> P0["partition 0"]
+    T --> P1["partition 1"]
+    T --> P2["partition 2"]
+    P0 --> A1["order-1 创建"] --> A2["order-1 支付"]
+    P1 --> B1["order-2 创建"] --> B2["order-3 创建"]
+    P2 --> C1["order-4 创建"]
 ```
 
 **Key 决定进哪个分区**：`key.hashCode() % 分区数`（或用自定义分区器）。**不指定 key 则轮询/粘性分配**，不保序。
@@ -296,9 +300,10 @@ topic: orders（分 3 个分区）
 
 **offset 是消息在分区里的序号（从 0 开始）**。消费者读到哪了，靠 offset 记录：
 
-```
-partition 0: [msg0(offset=0)] [msg1(offset=1)] [msg2(offset=2)] [msg3(offset=3)]
-消费进度：↑ 消费者当前 offset=2，下次从 msg2 开始读
+```mermaid
+flowchart LR
+    P["partition 0"] --> M0["msg0<br/>(offset=0)"] --> M1["msg1<br/>(offset=1)"] --> M2["msg2<br/>(offset=2)"] --> M3["msg3<br/>(offset=3)"]
+    C["消费者当前 offset=2<br/>下次从 msg2 开始读"] -. "消费进度" .-> M2
 ```
 
 - Kafka **不会因为你消费过就删消息**（默认保留 7 天），所以必须有 offset 标记"读到哪里"。
@@ -313,14 +318,27 @@ partition 0: [msg0(offset=0)] [msg1(offset=1)] [msg2(offset=2)] [msg3(offset=3)]
 
 **消费组解决这个问题**：把 3 个库存实例放进**同一个消费组**，那么**一条消息只会被组内的一个实例消费**（负载均衡）。不同组（如 inventory-group 和 analytics-group）则**各自都能收到**全量消息（发布订阅）。
 
-```
-                      orders topic（分 3 个分区）
-                           │
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-   inventory-group   analytics-group   inventory-group
-   (3 个实例分摊 3 个分区，   (收全量做分析)    (实例1/2/3 各分 1 个分区)
-    每条只被一个实例处理)
+```mermaid
+flowchart LR
+    T["orders topic<br/>(分 3 个分区)"] --> P0["partition 0"]
+    T --> P1["partition 1"]
+    T --> P2["partition 2"]
+    subgraph g1[inventory-group · 负载均衡]
+        direction LR
+        C1["实例 1"]
+        C2["实例 2"]
+        C3["实例 3"]
+    end
+    subgraph g2[analytics-group · 发布订阅]
+        direction LR
+        C4["消费者<br/>(收全量做分析)"]
+    end
+    P0 --> C1
+    P1 --> C2
+    P2 --> C3
+    P0 --> C4
+    P1 --> C4
+    P2 --> C4
 ```
 
 **记住**：
@@ -331,16 +349,10 @@ Spring Kafka 里用 `@KafkaListener` 的 `groupId`（或配置 `spring.kafka.con
 
 ### 2.5 四者关系一张图 + 配置速查
 
-```
-  topic（消息管道：orders）
-     │
-     │ 分成 N 个 partition（并行度 / 保序的载体）
-     ▼
-  partition 0 / 1 / 2 ...（每条消息有唯一 offset）
-     │
-     │ 消费者按"消费组 + offset"记录读到哪
-     ▼
-  consumer group（决定负载均衡 vs 发布订阅）
+```mermaid
+flowchart TD
+    T["topic: orders<br/>(消息管道)"] -->|"分成 N 个 partition<br/>并行度 / 保序的载体"| P["partition 0 / 1 / 2 ...<br/>每条消息有唯一 offset"]
+    P -->|"消费者按消费组 + offset<br/>记录读到哪"| G["consumer group<br/>决定负载均衡 vs 发布订阅"]
 ```
 
 **背下来**：消息存进 **topic 的某个分区**，**offset 记录消费进度**，**消费组决定谁消费**。

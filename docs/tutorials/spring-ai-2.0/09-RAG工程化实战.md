@@ -1314,12 +1314,11 @@ public List<Map<String, Object>> debugRetrieve(@RequestParam String q) {
 Rerank 用 **cross-encoder**（query 和 doc 拼一起过同一个模型），慢但精度高得多。
 
 典型流程：
-```
-混合检索 topK=20（快、召回全）
-   ↓
-Rerank topN=5（慢、但精度高）
-   ↓
-最终给 LLM 的 5 个 doc 都是高相关
+
+```mermaid
+flowchart TD
+    A["混合检索 topK=20<br/>（快、召回全）"] --> B["Rerank topN=5<br/>（慢、但精度高）"]
+    B --> C["最终给 LLM 的 5 个 doc 都是高相关"]
 ```
 
 ### 6.2 最小实现：Rerank PostProcessor

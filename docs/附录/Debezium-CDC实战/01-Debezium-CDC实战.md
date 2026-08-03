@@ -55,14 +55,11 @@ flowchart TD
 
 数据库每次写操作（INSERT/UPDATE/DELETE），除了改数据，还会往**变更日志**（MySQL binlog、PostgreSQL WAL）写一条记录。**CDC 工具伪装成数据库的"副本订阅者"，读这个日志**，把每条变更转成事件。
 
-```
-应用写 DB → DB 改数据 + 写 WAL 日志
-                    │
-                    ▼
-              [ CDC 工具(Debezium) ]  ← 读 WAL，不查表
-                    │
-                    ▼
-              [ Kafka topic ]  ← 变更变成事件
+```mermaid
+flowchart TD
+    A["应用写 DB"] --> B["DB 改数据 + 写 WAL 日志"]
+    B --> C["CDC 工具 (Debezium)<br/>读 WAL, 不查表"]
+    C --> D["Kafka topic<br/>变更变成事件"]
 ```
 
 **关键**：CDC **不查表**，读的是数据库用来保证持久化的日志——所以零查询压力、毫秒延迟。
@@ -73,10 +70,13 @@ flowchart TD
 
 **部署形态**：Debezium 是 Kafka Connect 的一个 **connector（连接器）** 插件。架构：
 
-```
-[ 数据库 ] ←Debezium connector 监听─ [ Kafka Connect ] ─发→ [ Kafka ]
-                                         ▲
-                                   （Kafka Connect 是运行 connector 的框架，独立进程）
+```mermaid
+flowchart LR
+    DB["数据库"]
+    KC["Kafka Connect<br/>(运行 connector 的框架, 独立进程)"]
+    K["Kafka"]
+    KC -->|"Debezium connector 监听"| DB
+    KC -->|"发"| K
 ```
 
 ### 2.3 Debezium 的事件结构

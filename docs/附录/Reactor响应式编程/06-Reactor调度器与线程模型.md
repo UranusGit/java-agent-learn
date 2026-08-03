@@ -46,10 +46,6 @@ userDao.findByIdReactive(id)        // 源：发起异步查询
 
 把一条响应式链想成**接力赛**：
 
-```
-源(起跑) ──(parallel-1 接棒)──> map1 ──(parallel-1 接棒)──> map2 ──(boundedElastic-1 接棒)──> map3 ──> 终点(println)
-```
-
 **接力示意**：
 
 ```mermaid
@@ -240,18 +236,6 @@ Scheduler myCpu = Schedulers.newParallel("myCpu", 4);
 > **最容易记错的**：`subscribeOn` **不是**只管 `subscribe()` 那个方法本身，它管的是**整条链的源头**。而 `publishOn` 管的是**它后面**的所有操作符。
 
 ### 3.2 一张图
-
-```
- Flux.just("A","B","C")
-   .doOnNext(map1)              ┐
-   .subscribeOn(parallel())     ├─ 这一段跑在 parallel-N
-   .doOnNext(map2)              ┘
-   .publishOn(boundedElastic()) ┐
-   .doOnNext(map3)              ├─ 这一段跑在 boundedElastic-N
-   .subscribe(println)          ┘
-
- 源往下的"棒"：parallel-N ── 递到 publishOn 时被"截断" ──> 换成 boundedElastic-N
-```
 
 **线程分段图**：
 

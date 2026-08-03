@@ -38,12 +38,12 @@ session-1 → F001（30min）→ session-2 → F002（30min）→ ... → F100�
 
 主 agent（**Orchestrator**）把任务**委派**给若干子 agent，子 agent 各自独立工作，结果汇总回主 agent。
 
-```
-Orchestrator
-   ├─→ Coder-Frontend  ─→ F001, F003, F005（并行）
-   ├─→ Coder-Backend   ─→ F002, F004, F006（并行）
-   ├─→ Tester          ─→ 跑所有 feature 的测试
-   └─→ Reviewer        ─→ 审查 Coder 的提交
+```mermaid
+flowchart TD
+    OR["Orchestrator"] --> CF["Coder-Frontend<br/>F001, F003, F005（并行）"]
+    OR --> CB["Coder-Backend<br/>F002, F004, F006（并行）"]
+    OR --> TE["Tester<br/>跑所有 feature 的测试"]
+    OR --> RV["Reviewer<br/>审查 Coder 的提交"]
 ```
 
 理论上 N=5 并行下，100 feature 任务 10 小时完成。
@@ -67,46 +67,20 @@ Orchestrator
 
 ### 1.1 模式 A：顺序委派（最简单）
 
-```
-Orchestrator → Subagent-1 → done → Subagent-2 → done → ...
-```
-
 适用：F002 严格依赖 F001，无法并行。
 速度：和单 agent 一样，但**子 agent 上下文隔离** → 不爆主 agent 的 context。
 
 ### 1.2 模式 B：并行委派（fan-out / fan-in）
-
-```
-Orchestrator
-   ├──→ Subagent-1 ─┐
-   ├──→ Subagent-2 ─┤
-   ├──→ Subagent-3 ─┼─→ Orchestrator（聚合）
-   └──→ Subagent-4 ─┘
-```
 
 适用：feature 之间相互独立（如不同模块、不同页面）。
 速度：瓶颈是最慢的那个子 agent。
 
 ### 1.3 模式 C：流水线（pipeline）
 
-```
-Coder → Tester → Reviewer → (commit)
-```
-
 适用：单个 feature 的多角色协作。
 速度：每个 stage 一旦空闲就接下一个 feature，类似 CPU 流水线。
 
 ### 1.4 模式 D：DAG 调度（最通用）
-
-```
-       F001
-       /  \
-    F002  F003
-      |    |
-    F004  F005
-       \  /
-       F006
-```
 
 依赖图，调度器按拓扑序执行，无依赖关系的并行跑。
 速度：理论最优。
@@ -273,7 +247,7 @@ sequenceDiagram
     participant SUB as 子 Agent（独立 session）
     participant BUS as SubagentEventBus
     OR->>DT: Delegate(role, task, depends_on, max_tokens)
-    DT->>DT: 创建 subagent 记录 + git 分支 subagent/{role}/{id}
+    DT->>DT: "创建 subagent 记录 + git 分支 subagent/{role}/{id}"
     DT->>SL: launchSubagent(...)
     SL-->>DT: 独立沙箱 + 子 session
     DT-->>OR: 立即返回 subagent_id（异步执行）

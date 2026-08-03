@@ -78,7 +78,7 @@ public class Demo {
 flowchart LR
     Int["声明接口 Assistant<br/>String chat(String userMessage)"] --> B["AiServices.builder(Assistant.class)<br/>.chatModel(model)<br/>.build()"]
     B --> Proxy["生成动态代理实现<br/>（Java 动态代理）"]
-    App["业务代码<br/>agent.chat(\"你好\")"] --> Proxy
+    App["业务代码<br/>agent.chat(#quot;你好#quot;)"] --> Proxy
     Proxy --> Model["ChatModel"]
     Proxy --> Mem["ChatMemory"]
     Proxy --> Tools["@Tool 方法"]
@@ -161,12 +161,12 @@ sequenceDiagram
     participant AS as AiServices
     participant LLM as LLM
     participant JS as Jackson
-    App->>AS: analyzer.analyze("这个产品真烂，没法用")
+    App->>AS: "analyzer.analyze('这个产品真烂，没法用')"
     AS->>LLM: prompt 追加「必须返回符合 schema 的 JSON」
     LLM-->>AS: 返回 JSON 字符串
     AS->>JS: 反序列化
     JS-->>AS: record Sentiment 对象
-    AS-->>App: result.emotion()="negative"
+    AS-->>App: "result.emotion() = 'negative'"
 ```
 
 ### 4.3 注意事项
@@ -264,8 +264,8 @@ flowchart TD
     CMP --> Mem["按 userId 隔离的 ChatMemory"]
     T --> O["OrderTools(orderRepo)"]
     T --> P["ProductTools(productRepo)"]
-    U1["service.chat(\"user-001\", \"我的订单到哪了？\")"] --> SVC
-    U2["service.chat(\"user-002\", \"iPhone 15 多少钱？\")"] --> SVC
+    U1["service.chat(#quot;user-001#quot;, #quot;我的订单到哪了？#quot;)"] --> SVC
+    U2["service.chat(#quot;user-002#quot;, #quot;iPhone 15 多少钱？#quot;)"] --> SVC
 ```
 
 ### 6.1 关键注解

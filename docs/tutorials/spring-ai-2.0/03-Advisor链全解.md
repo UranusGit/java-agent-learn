@@ -13,17 +13,6 @@
 
 Spring AI 2.0 的 Advisor 链是一条**双向流水线**：
 
-```
-请求进来 →  before() 按 order 升序执行（小→大）
-                ↓
-            ChatModel（真正调 LLM）
-                ↓
-            after()  按 order 降序执行（大→小）
-请求出去 ←
-```
-
-**Mermaid 版双向流水线**：
-
 ```mermaid
 flowchart TD
     In["请求进来"]
@@ -49,11 +38,28 @@ Spring AI 2.0 给你三种写 Advisor 的方式，**选错会增加无谓的代�
 
 ### 1.1 三种接口的关系
 
-```
-Advisor (extends Ordered)              ← 最顶层，只有 getName() + getOrder()
-  ├── CallAdvisor                       ← 同步：adviseCall(req, chain)
-  ├── StreamAdvisor                     ← 流式：adviseStream(req, chain) → Flux
-  └── BaseAdvisor (extends Call+Stream) ← 同时支持两种，且提供 before/after 模板
+```mermaid
+classDiagram
+    class Ordered
+    class Advisor {
+        +getName() String
+        +getOrder() int
+    }
+    class CallAdvisor {
+        +adviseCall(req, chain)
+    }
+    class StreamAdvisor {
+        +adviseStream(req, chain) Flux
+    }
+    class BaseAdvisor {
+        +before(req, chain)
+        +after(resp, chain)
+    }
+    Advisor --|> Ordered : 继承
+    CallAdvisor --|> Advisor : 同步
+    StreamAdvisor --|> Advisor : 流式
+    BaseAdvisor --|> CallAdvisor : 同时支持
+    BaseAdvisor --|> StreamAdvisor : 同时支持
 ```
 
 ### 1.2 三种方式的对比
@@ -66,18 +72,6 @@ Advisor (extends Ordered)              ← 最顶层，只有 getName() + getOrd
 | `implements StreamAdvisor`（只一个） | 一份 | ❌ | ✅ | 业务只走流式，从不 `.call()` |
 
 ### 1.3 决策树
-
-```
-你的 Advisor 业务逻辑在 call 和 stream 下是一样的吗？
-├── 是（90% 情况，比如改 prompt、加 system message、记录日志）
-│   └── 用 BaseAdvisor，只写 before() / after()，框架自动处理 call/stream
-├── 不一样（少数，比如流式要聚合才能判断，同步直接看完整响应）
-│   └── 分别 implements CallAdvisor + StreamAdvisor，各写各的
-└── 业务只走一种模式（比如内部 SDK 永远 .call()，从不 .stream()）
-    └── 只 implements 你需要的那一个，省代码
-```
-
-**Mermaid 版选型决策树**：
 
 ```mermaid
 flowchart TD
@@ -203,14 +197,6 @@ Spring AI 设计者预留的"插槽"是 200/300/400/500... 每个 advisor 占一
 ## 3. before/after 执行顺序的可视化
 
 假设 advisor 链按 order 排序后是 `A(order=0) → B(order=100) → C(order=200)`：
-
-```
-用户请求 ──→ A.before ──→ B.before ──→ C.before ──→ ChatModel.call
-                                                       │
-用户响应 ←── A.after  ←── B.after  ←── C.after  ←──────┘
-```
-
-**Mermaid 版 before/after 顺序**：
 
 ```mermaid
 flowchart LR
@@ -466,12 +452,11 @@ public ToolCallingAdvisor toolCallingAdvisor(ToolCallingManager mgr) {
 
 ### 7.3 顺序决策树
 
-```
-我的 Advisor 需要看到工具调用的中间过程吗？
-├── 是（比如记录每次 tool call 的耗时）
-│   └── order 设在 Tool 外层（< 100），让 Tool 循环在你 inside
-└── 否（只关心最终用户看到的回复）
-    └── order 设在 Tool 内层（> 100），工具循环结束后再走你的逻辑
+```mermaid
+flowchart TD
+    Q{"我的 Advisor 需要看到<br/>工具调用的中间过程吗？"}
+    Q -->|"是<br/>（比如记录每次 tool call 的耗时）"| Y["order 设在 Tool 外层（< 100）<br/>让 Tool 循环发生在本 Advisor 内部"]
+    Q -->|"否<br/>（只关心最终用户看到的回复）"| N["order 设在 Tool 内层（> 100）<br/>工具循环结束后再走本 Advisor 逻辑"]
 ```
 
 ---

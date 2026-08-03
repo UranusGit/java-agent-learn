@@ -40,24 +40,16 @@
 
 ### 2.1 调用链路
 
-```
-chatClient.prompt().user("hi").call()
-            ↓
-   ┌──────────────────────────────────────────┐
-   │  before(request)                         │ ← Advisor 1（如日志）
-   │  ┌──────────────────────────────────┐    │
-   │  │  before(request)                 │    │ ← Advisor 2（如 RAG）
-   │  │  ┌──────────────────────────┐    │    │
-   │  │  │  before(request)         │    │    │ ← Advisor 3（如 Memory）
-   │  │  │     → 调用 LLM ←         │    │    │
-   │  │  │  after(response)         │    │    │
-   │  │  └──────────────────────────┘    │    │
-   │  │  after(response)                 │    │
-   │  └──────────────────────────────────┘    │
-   │  after(response)                         │
-   └──────────────────────────────────────────┘
-            ↓
-        最终响应
+```mermaid
+flowchart TD
+    START["chatClient.prompt().user(&quot;hi&quot;).call()"] --> A1["Advisor 1（如日志）<br/>before(request)"]
+    A1 --> A2["Advisor 2（如 RAG）<br/>before(request)"]
+    A2 --> A3["Advisor 3（如 Memory）<br/>before(request)"]
+    A3 --> LLM["调用 LLM"]
+    LLM --> R3["Advisor 3<br/>after(response)"]
+    R3 --> R2["Advisor 2<br/>after(response)"]
+    R2 --> R1["Advisor 1<br/>after(response)"]
+    R1 --> END["最终响应"]
 ```
 
 **洋葱模型**：before 是从外到内，after 是从内到外。

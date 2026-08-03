@@ -72,16 +72,18 @@
 
 ### 2.2 RAG 架构
 
-```
-法律法规库（结构化）
-    ├── 国家法律（全国人大）
-    ├── 行政法规（国务院）
-    ├── 司法解释（最高法 / 最高检）
-    ├── 地方性法规
-    └── 部门规章
-    ↓ Hybrid Search（dense + sparse + 法条编号精确匹配）
-    ↓ Reranker（bge-reranker-large）
-    ↓ LLM 重组（必须引用 source_id）
+```mermaid
+flowchart TD
+    subgraph DB["法律法规库（结构化）"]
+        L1["国家法律（全国人大）"]
+        L2["行政法规（国务院）"]
+        L3["司法解释（最高法 / 最高检）"]
+        L4["地方性法规"]
+        L5["部门规章"]
+    end
+    DB --> HS["Hybrid Search<br/>dense + sparse + 法条编号精确匹配"]
+    HS --> RK["Reranker<br/>bge-reranker-large"]
+    RK --> LM["LLM 重组<br/>必须引用 source_id"]
 ```
 
 ### 2.3 数据准备的特殊性
@@ -273,20 +275,6 @@ public ContractReview review(String contractText, ContractContext ctx) {
 
 Agent 输出后必须律师 review：
 
-```
-[Agent 输出]
-风险条款 1：第 X 条违反《合同法》第 Y 条
-    suggestedRevision: ...
-    
-[律师 UI]
-✓ 采纳          ✗ 不采纳（写理由）        ✏️ 修改
-    
-[最终意见]
-律师签字 + 出具法律意见书
-```
-
-**律师在回路流程**：
-
 ```mermaid
 flowchart TD
     AG["Agent 输出<br/>风险条款 + 缺漏条款 + 修改建议"] --> UI{"律师 UI"}
@@ -315,11 +303,11 @@ flowchart TD
 
 ### 4.3 多阶段检索
 
-```
-1. 元数据过滤（court_level, date_range, cause_of_action）
-2. 稠密检索（语义）
-3. Reranker（按"判决要旨"段落精排）
-4. LLM 抽取要点（"本案判决要旨：..."）
+```mermaid
+flowchart TD
+    A["1. 元数据过滤<br/>court_level / date_range / cause_of_action"] --> B["2. 稠密检索（语义）"]
+    B --> C["3. Reranker<br/>按“判决要旨”段落精排"]
+    C --> D["4. LLM 抽取要点<br/>“本案判决要旨：...”"]
 ```
 
 ### 4.4 判例要点抽取

@@ -93,20 +93,7 @@ ksqlDB 把 Kafka Streams 的 DSL **包成 SQL**——`CREATE STREAM`、`CREATE T
 | 适合团队 | Java 后端团队 | 大数据团队 | 业务/数据开发 |
 | 生产级自定义 | 强（Processor API） | 强 | 弱（SQL 上限） |
 
-**决策树**（一图流）：
-
-```
-你的数据输入输出都是 Kafka topic 吗？
-├─ 不是 → Flink（连接器丰富）或自研消费+写库
-└─ 是 ↓
-   团队会不会 Java？
-   ├─ 会，且要复杂逻辑 → Kafka Streams（本篇主角，01 是它的入门）
-   └─ 不会 / 想用 SQL 快速搞定 → ksqlDB
-   规模大、要重 ETL / 批流统一？
-   └─ 是 → Flink（哪怕进出都是 Kafka，量级和复杂度到了也得换）
-```
-
-**选型决策树**：
+**选型决策树**（一图流）：
 
 ```mermaid
 flowchart TD
@@ -292,10 +279,6 @@ SELECT productId, userId, name, level FROM enriched_orders EMIT CHANGES;
 ### 2.6 ksqlDB 与 Kafka Streams 的关系——底层是同一个引擎
 
 ksqlDB 不是又造了一个轮子，它是 **Kafka Streams 的 SQL 壳**：
-
-```
-你的 SQL → ksqlDB 编译器 → 生成 Kafka Streams 拓扑 → 同一个 RocksDB + changelog 容错
-```
 
 **SQL 到状态的链路**：
 
@@ -684,10 +667,17 @@ docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 \
 
 Kafka Streams 多实例部署时，每个实例只持有**自己负责的分区**的状态：
 
-```
-实例 A（持有分区 0/1 状态）        实例 B（持有分区 2/3 状态）
-  ├─ product-total store             ├─ product-total store
-  └─ 有 p001 / p002 的状态           └─ 有 p003 / p004 的状态
+```mermaid
+flowchart TD
+    subgraph IA["实例 A · 持有分区 0/1 状态"]
+        direction LR
+        SA["product-total store<br/>有 p001 / p002 的状态"]
+    end
+    subgraph IB["实例 B · 持有分区 2/3 状态"]
+        direction LR
+        SB["product-total store<br/>有 p003 / p004 的状态"]
+    end
+    Q["请求查 p003 打到 A<br/>→ A 本地查不到"] -.->|"转发给持有 p003 的实例 B"| SB
 ```
 
 请求打给 A 查 p003 → A 本地查不到。**必须**：先问 Streams "p003 在哪个实例"，查到是 B，就把请求**转发给 B**。

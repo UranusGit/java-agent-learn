@@ -30,14 +30,6 @@
 
 ### 原因：容器里的 `localhost` 指向"容器自己"，不是你的 Mac
 
-```
-你的 Mac（宿主机）
-├── localhost:9092  ✅ 能连到 Kafka（因为 Kafka 把 9092 映射到了宿主机）
-│
-└── Conduktor 容器（一个隔离的小房间）
-    └── localhost:9092  ❌ 在这个房间里，localhost 指向"房间自己"，房间里没 Kafka
-```
-
 所以当 Conduktor 容器去连 `localhost:9092` 时，它在**自己肚子里**找 9092，自然找不到 → `Connection refused`。`127.0.0.1` 是 `localhost` 的 IP 写法，同理一样不通。
 
 **为什么 `localhost` 在容器里不通**：
@@ -1011,30 +1003,6 @@ networks:
 ---
 
 ## 第 10 章：最终架构图
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                     Docker 网络: kafka-net                    │
-│                       (external, 共享)                        │
-│                                                              │
-│   ┌─────────────┐              ┌──────────────────────┐      │
-│   │   kafka     │  29092 容器间  │  conduktor-console   │      │
-│   │  (9092对外) │ ◄──────────► │   纳管 kafka:29092    │      │
-│   │  (9999 JMX) │   9999 JMX   │   38080 Web UI        │      │
-│   └─────────────┘              └──────────┬───────────┘      │
-│          │                                │                  │
-└──────────┼────────────────────────────────┼──────────────────┘
-           │ localhost:9092                │ host.docker.internal
-           ▼                                ▼
-   ┌────────────────┐               ┌────────────────┐
-   │  业务服务 / 终端  │               │ 本地 PostgreSQL │
-   │  localhost:9092 │               │  库 conduktor   │
-   └────────────────┘               │ (独立库, public)│
-                                    └────────────────┘
-
-  独立容器①: /Volumes/data/software/docker/containers/kafka/
-  独立容器②: /Volumes/data/software/docker/containers/conduktor/
-```
 
 **特点回顾：**
 - 两个容器各自独立 compose，互不依赖生命周期

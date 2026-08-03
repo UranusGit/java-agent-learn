@@ -127,14 +127,6 @@ flowchart TD
 
 ### 5.2 用 Spring Cloud Gateway 实现 LLM Gateway
 
-```
-Client → SCG GlobalFilter (鉴权/限流) → 模型路由 → 上游 LLM
-                                    ↓
-                                Redis 缓存
-                                    ↓
-                                Langfuse 上报
-```
-
 **整体架构**：Client 请求经 GlobalFilter 鉴权/限流后进入模型路由，Redis 缓存与 Langfuse 上报为旁路能力。
 
 ```mermaid

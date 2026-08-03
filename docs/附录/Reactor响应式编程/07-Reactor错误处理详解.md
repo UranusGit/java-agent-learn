@@ -49,8 +49,11 @@ Mono<User> u = userDao.findByIdReactive(id);   // ① 这行只是"声明"，没
 
 > **核心认知**：在响应式世界里，**错误不是一个"跳出来的异常"，而是和"数据"`onNext`、"结束"`onComplete` 并列的第三种信号 `onError`**。它和数据一样，从上游顺着链往下游传。传到哪里才算完？**传到订阅者（subscribe / WebFlux 框架），被某个环节处理掉**，才算结束。
 
-```
-    onNext(1) → onNext(2) → onError(RuntimeException) → [信号到这里，流终止]
+```mermaid
+flowchart LR
+    A["onNext(1)"] --> B["onNext(2)"]
+    B --> C["onError(RuntimeException)"]
+    C --> D["信号到这里，流终止"]
 ```
 
 > **为什么这很重要**：因为"错误是一个可以沿途被观察、被拦截、被替换的信号"，所以才有 `doOnError`（看一眼）、`onErrorResume`（拦下来换一条流）、`onErrorReturn`（拦下来换一个值）、`retry`（拦下来重跑一遍）这些操作符。**你学错误处理，学的其实是"怎么在信号往下传的路上拦截它"。**
@@ -697,6 +700,18 @@ flowchart TD
 > **这是最隐蔽的坑**：**SSE/流式响应一旦开始吐数据，HTTP 状态码就已经是 200 了**。如果流中途出错，**你没法再把状态码改成 500**——错误只能以"连接中断"的形式出现。
 
 看 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的场景：`GET /generate/stream` 返回 `Flux<ServerSentEvent<String>>`，正在逐字推 token。如果生成中途 LLM 报错，链里的异常 → `onError` 传到框架 → **连接被掐断，前端看到流戛然而止，没有任何错误信息**。这就是"错误被吞掉，前端无感"。
+
+**流式错误处理的三个分支**：
+
+```mermaid
+flowchart TD
+    A["SSE 已开始吐数据<br/>HTTP 状态码已是 200"] --> B{"流中途出错怎么办?"}
+    B -->|"什么都不做"| C["onError 传到框架<br/>连接被掐断"]
+    C --> D["前端看到流戛然而止<br/>没有任何错误信息（被吞）"]
+    B -->|"onErrorResume 转 error 事件"| E["把错误作为流内事件推给前端"]
+    E --> F["前端 addEventListener('error')<br/>能显示错误提示"]
+    B -->|"重活场景再配 run 状态机"| G["任务置为 FAILED<br/>前端轮询 GET /api/runs/{id} 可查原因"]
+```
 
 **正确做法：把错误转成流里的一个"事件"推给前端**，而不是让连接干断：
 

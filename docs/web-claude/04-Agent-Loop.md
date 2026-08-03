@@ -233,6 +233,21 @@ public class AbortHandle {
 
 `AbortHandle.parent` 链让级联自动传播。
 
+**3 层中断级联结构**：
+
+```mermaid
+flowchart TD
+    subgraph LEVELS["3 层中断：AbortHandle.parent 链"]
+        L3["L3 session 级<br/>session 关闭时 abort"]
+        L2["L2 turn 级<br/>一次 run()，主 Agent Loop 持有<br/>parent = L3"]
+        L1["L1 tool-call 级<br/>工具内部 cancel<br/>parent = L2"]
+    end
+    L3 -->|"级联向下传播"| L2
+    L2 -->|"级联向下传播"| L1
+    L1 -.->|"isAborted() 沿 parent 链向上检查"| L2
+    L2 -.->|"isAborted() 沿 parent 链向上检查"| L3
+```
+
 ---
 
 ## 3. 5 个终止条件
@@ -359,7 +374,7 @@ sequenceDiagram
     participant AH as AbortHandle（L2 turn）
     participant AL as AgentLoopV2
     U->>FE: 点击"取消"按钮
-    FE->>WS: {type:'abort', session_id}
+    FE->>WS: "{type:'abort', session_id}"
     WS->>AH: turnAborts.get(sid).abort()
     AH-->>AH: aborted.compareAndSet(false, true)<br/>触发 onAbort 级联
     AH-->>AL: onChunk 入口检查 isAborted()
@@ -393,25 +408,6 @@ sequenceDiagram
 ---
 
 ## 6. State 状态机总结
-
-```
-init
-  ↓ user_input
-thinking
-  ↓ 第一条流式 chunk
-streaming
-  ↓ stream complete
-end_turn            ← 终止条件 1
-
-任意阶段
-  ↓ abort
-aborted             ← 终止条件 2
-
-（其他终止条件在后续章节）
-wait_for_input      ← 终止条件 5（05 章权限部分）
-budget_exceeded     ← 终止条件 3（11 章成本部分）
-fallback_exhausted  ← 终止条件 4（09 章模型降级）
-```
 
 **State 状态机**：
 

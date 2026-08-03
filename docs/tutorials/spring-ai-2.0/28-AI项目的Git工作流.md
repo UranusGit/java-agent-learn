@@ -67,17 +67,6 @@ infra-deployments/              # ArgoCD 仓库
 
 ### 2.1 推荐：Trunk-Based + Feature Branch
 
-```
-main
-  │
-  ├── feature/refund-flow      ← feature branch（1-3 天合并）
-  ├── feature/v2-embedding     ← feature branch
-  ├── experiment/qwen2.5-test  ← 实验 branch（throwaway）
-  └── hotfix/crash-fix         ← 紧急修复
-```
-
-**分支模型**：
-
 ```mermaid
 flowchart TD
     M["main（始终可发布）"]
@@ -103,20 +92,7 @@ Git Flow 的 develop / release 分支模型是为"季度发布"设计的，AI �
 
 ### 2.3 实验 branch 的特殊用法
 
-```
-experiment/try-cot-on-classifier
-  ↓ 试了 CoT 提升不显著
-  ↓ 删掉（不合并）
-
-experiment/try-new-embedding-bge-m3
-  ↓ 显著提升
-  ↓ 改写为 feature/upgrade-embedding-bge-m3
-  ↓ PR + eval + 合并
-```
-
 实验 branch 名字以 `experiment/` 开头，CI 不强制跑全量 eval（鼓励尝试）。
-
-**实验 branch 生命周期**：
 
 ```mermaid
 flowchart TD
@@ -331,18 +307,6 @@ mlflow artifacts download  # 模型权重
 ## 7. 数据变更工作流
 
 ### 7.1 标准流程
-
-```
-1. 在 feature branch 修改 data/...
-2. dvc add data/...
-3. git commit data/... .dvc
-4. PR + DBA review
-5. merge 触发 reindex CI
-6. reindex 完跑 retrieval eval
-7. eval 绿才发版
-```
-
-**数据变更流程**：
 
 ```mermaid
 flowchart TD

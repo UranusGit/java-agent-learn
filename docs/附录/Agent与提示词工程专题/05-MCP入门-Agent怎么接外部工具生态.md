@@ -41,13 +41,11 @@ public class OrderTools {
 
 ## 2. 心智模型：Client 和 Server
 
-```
-┌──────────────────────┐                 ┌──────────────────────┐
-│  MCP Client           │                 │  MCP Server           │
-│ (你的 Spring AI 应用) │ ◄──stdio/HTTP──►│ (工具服务的提供方)     │
-│                      │  ① listTools    │                       │
-│  Agent 循环           │  ② callTool     │  getOrder / searchX  │
-└──────────────────────┘                 └──────────────────────┘
+```mermaid
+flowchart LR
+    C["MCP Client<br/>（你的 Spring AI 应用）<br/>Agent 循环<br/>① listTools<br/>② callTool"]
+    S["MCP Server<br/>（工具服务的提供方）<br/>getOrder / searchX"]
+    C <-->|"stdio / HTTP"| S
 ```
 
 | 角色 | 是谁 | 做什么 |

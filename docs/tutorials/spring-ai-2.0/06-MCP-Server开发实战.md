@@ -373,17 +373,6 @@ curl -i http://localhost:8081/mcp
 
 ### 3.2 选择决策
 
-```
-你的项目已经是 Spring MVC？
-  → webmvc starter
-你的项目已经是 WebFlux / 需要非阻塞？
-  → webflux starter
-只在 Claude Desktop 用？
-  → 纯 server starter（stdio）
-```
-
-**传输 starter 选型决策**：
-
 ```mermaid
 flowchart TD
     Start(("选哪个 starter？")) --> Q1{"你的项目已经<br/>是 Spring MVC？"}
@@ -774,14 +763,6 @@ public void addDynamicTool(ToolCallback tool) {
 
 ### 8.1 三层鉴权
 
-```
-1. 传输层：HTTPS + Bearer Token（最外层，确认 client 身份）
-2. 工具层：ABAC / RBAC（每个工具内部决定是否允许）
-3. 数据层：行级权限（同一个工具，不同租户看不同数据）
-```
-
-**三层鉴权**：
-
 ```mermaid
 flowchart TD
     Layer1["第 1 层：传输层<br/>HTTPS + Bearer Token<br/>确认 Client 身份"]
@@ -903,10 +884,12 @@ Client 在第一次握手时走 OAuth code flow，拿到 access_token 后所有�
 
 ### 9.1 三层防护
 
-```
-1. 单 client 并发上限（防一个 Client 打爆 Server）
-2. per-tenant rate limit（每分钟 QPS）
-3. per-tenant 配额（每天总量）
+```mermaid
+flowchart TD
+    C["MCP Client 请求"] --> B["第 1 层：Bulkhead<br/>单 client 并发上限<br/>（防一个 Client 打爆 Server）"]
+    B --> R["第 2 层：RateLimiter<br/>per-tenant 限流<br/>（每分钟 QPS）"]
+    R --> Q["第 3 层：配额<br/>per-tenant 配额<br/>（每天总量）"]
+    Q --> T["MCP Server 工具执行"]
 ```
 
 ### 9.2 Resilience4j Bulkhead
@@ -1067,11 +1050,13 @@ Grafana 关键看板：
 
 ### 10.3 全链路 trace
 
-```
-[Span: agent.chat_client.call]
-  └── [Span: mcp.client.callTool searchPoi]
-        └── [Span: mcp.server.handleToolCall searchPoi]   ← 跨进程
-              └── [Span: baidu_map.search]                ← 第三方 API
+```mermaid
+flowchart TD
+    S1["Span: agent.chat_client.call"]
+    S2["Span: mcp.client.callTool searchPoi"]
+    S3["Span: mcp.server.handleToolCall searchPoi<br/>（跨进程）"]
+    S4["Span: baidu_map.search<br/>（第三方 API）"]
+    S1 --> S2 --> S3 --> S4
 ```
 
 用 OTel + W3C Trace Context，跨进程透传 traceId。
@@ -1188,6 +1173,14 @@ public List<Poi> searchPoi(String keyword) {
 - **超时**：单次调用 5 秒上限
 - **重试**：临时错误重试 3 次（指数退避）
 - **熔断**：连续失败开熔断器，快速失败
+
+```mermaid
+flowchart TD
+    CALL["调用 searchPoi"] --> RETRY["重试层（最外）<br/>临时错误重试 3 次（指数退避）"]
+    RETRY --> CB["熔断层<br/>连续失败开熔断器，快速失败"]
+    CB --> TL["超时层（最内）<br/>单次调用 5 秒上限"]
+    TL --> BAIDU["百度地图 API"]
+```
 
 ---
 

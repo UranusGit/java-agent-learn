@@ -51,25 +51,6 @@ Harness 工程就是为了堵这些漏洞。
 
 ## 2. Harness 工程的五层模型
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Layer 5: Multi-Agent Topology                          │
-│    Planner / Coder / Tester / Reviewer / Cleaner        │
-├─────────────────────────────────────────────────────────┤
-│  Layer 4: Session Protocol                              │
-│    起步流程 / 终止流程 / 增量推进规则                     │
-├─────────────────────────────────────────────────────────┤
-│  Layer 3: Guardrails（强约束）                           │
-│    禁删测试 / 单 session 单 feature / 必须验证            │
-├─────────────────────────────────────────────────────────┤
-│  Layer 2: Scaffold Artifacts                            │
-│    feature_list.json / progress.txt / init.sh / git     │
-├─────────────────────────────────────────────────────────┤
-│  Layer 1: Initializer Agent                             │
-│    首次运行的脚手架生成器                                 │
-└─────────────────────────────────────────────────────────┘
-```
-
 每一层都可独立替换、可测试、可观测。本章逐层展开。
 
 **五层模型**：
@@ -401,22 +382,6 @@ public class TestVerifier {
 
 ### 5.3 协议状态机
 
-```
-session.created
-  ↓
-protocol.booting
-  ↓ (pwd, git status, log, progress, init.sh)
-protocol.ready
-  ↓
-protocol.working
-  ↓ (实现 + 测试)
-protocol.verifying
-  ↓ TestVerifier
-protocol.committing
-  ↓
-session.end_turn
-```
-
 每一步都有 timeout（booting 5 分钟、working 30 分钟、verifying 5 分钟）。超时 → abort。
 
 **Session 协议状态机**：
@@ -443,26 +408,14 @@ stateDiagram-v2
 
 ### 6.1 单 agent 模式（11 章做法，harness 文章里也提到了它的局限）
 
-```
-用户提需求 → Initializer → 循环（Coding Agent session × N）→ 完成
+```mermaid
+flowchart LR
+    REQ["用户提需求"] --> INIT["Initializer"] --> LOOP["循环（Coding Agent session × N）"] --> DONE["完成"]
 ```
 
 只有 1 个角色（除 Initializer 外），简单但容易"自我安慰"完成。
 
 ### 6.2 三角色模式（harness 文章 v2 推荐）
-
-```
-                    ┌──────────────────┐
-                    │  Planner Agent   │  （读需求，维护 feature_list）
-                    └────────┬─────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              ↓              ↓              ↓
-       ┌────────────┐ ┌────────────┐ ┌────────────┐
-       │ Coder Agent│ │ Tester Agent│ │ Reviewer   │
-       │  实现       │ │  自动化测试 │ │  验收 + Lint │
-       └────────────┘ └────────────┘ └────────────┘
-```
 
 **三角色拓扑**：
 
@@ -495,16 +448,13 @@ flowchart TD
 
 ### 6.3 五角色模式（v3 完整版）
 
-```
-       Planner
-       ↓ ↑
-   ┌───┴───┐
-   ↓       ↑
- Coder ← Cleaner
-   ↓
- Tester
-   ↓
- Reviewer
+```mermaid
+flowchart TD
+    PL["Planner"] --> CO["Coder"]
+    CL["Cleaner"] --> PL
+    CL --> CO
+    CO --> TE["Tester"]
+    TE --> RE["Reviewer"]
 ```
 
 新增 **Cleaner Agent**：在 Coder 提交后跑 lint/format/refactor，保持代码质量。

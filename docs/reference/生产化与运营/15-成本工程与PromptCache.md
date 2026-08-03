@@ -29,18 +29,6 @@
 
 ## 2. 4 层缓存与路由
 
-```
-请求
-  ↓
-L1: Prompt Cache（Anthropic/OpenAI 原生，5min/1hr）
-  ↓ miss
-L2: Semantic Cache（语义相似复用，GPTCache/Langfuse Cache）
-  ↓ miss
-L3: Model Routing（简单→Haiku，复杂→Sonnet/Opus）
-  ↓
-实际 LLM 调用
-```
-
 **四级路径**：命中即返回，miss 逐级下探，最终才触发真实 LLM 调用。
 
 ```mermaid

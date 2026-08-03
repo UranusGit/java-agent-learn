@@ -47,29 +47,6 @@
 
 ### 1.2 架构：六个角色一张图
 
-```
-                    ┌───────────────────────────── Kafka Connect 集群 ─────────────────────────────┐
-                    │                                                                              │
-   数据源            │   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                   │
-  ┌────────┐        │   │  Worker 1    │    │  Worker 2    │    │  Worker 3    │                   │
-  │ DB/文件 │───────┼──▶│  Source Task │    │  Source Task │    │   Sink Task  │──────┐            │
-  │ /HTTP/  │        │   │  （读源数据）│    │  （读源数据）│    │  （写目标）  │      │            │
-  │ NoSQL   │        │   └──────────────┘    └──────────────┘    └──────────────┘      │            │
-  └────────┘        │        │ converter / SMT                              │          │            │
-                    │        ▼                                              ▼          ▼            │
-                    │   ┌───────────────────────────────────────────────────────────────┐          │
-                    │   │                          Kafka                               │          │
-                    │   └───────────────────────────────────────────────────────────────┘          │
-                    │                                                                              │
-                    └──────────────────────────────────────────────────────────────────────────────┘
-                                          ▲                          │
-                               （Source：搬进 Kafka）      （Sink：搬出 Kafka）
-                                          │                          ▼
-                                        REST API                  ┌─────────┐
-                                   http://worker:8083            │ ES/DB/文件 │
-                                   注册/管理 connector            └─────────┘
-```
-
 **六个角色，各司其职**：
 
 | 角色 | 是什么 | 干什么 |
@@ -106,8 +83,9 @@ flowchart TD
 - **Source connector（源连接器）**：把数据**从外部系统搬进 Kafka**。核心是你实现 `SourceTask.poll()`，返回一批 `SourceRecord`（每条 = 一条要发进 Kafka 的消息）。
 - **Sink connector（汇连接器）**：把数据**从 Kafka 搬到外部系统**。核心是你实现 `SinkTask.put(Collection<SinkRecord>)`，拿到一批 Kafka 消息，写进目标系统。
 
-```
-  DB ─▶[Source Task]─▶ Kafka ─▶[Sink Task]─▶ ES / 文件 / 数仓
+```mermaid
+flowchart LR
+    db["DB"] --> st["Source Task"] --> kafka["Kafka"] --> sk["Sink Task"] --> tgt["ES / 文件 / 数仓"]
 ```
 
 ### 1.4 和"直接用 KafkaTemplate 发"的区别
@@ -1000,16 +978,14 @@ cat /tmp/sink-output.txt
 
 ### 5.1 converter 在管道里的位置
 
-```
-SourceTask.poll() ──▶ SourceRecord（Connect 内部对象，带 Schema）
-                          │
-                    [ converter 序列化 ]   ← key.converter / value.converter
-                          ▼
-                    Kafka bytes
-                          ▼
-                    [ converter 反序列化 ]
-                          │
-SinkTask.put()  ◀── SinkRecord（又变回带 Schema 的对象）
+```mermaid
+flowchart TD
+    A["SourceTask.poll()"] --> B["SourceRecord（Connect 内部对象，带 Schema）"]
+    B --> C["converter 序列化<br/>（key.converter / value.converter）"]
+    C --> D["Kafka bytes"]
+    D --> E["converter 反序列化"]
+    E --> F["SinkRecord（又变回带 Schema 的对象）"]
+    F --> G["SinkTask.put()"]
 ```
 
 **converter 是管道的数据格式转换层**：Connect 内部统一用**带 schema 的对象模型**（`Schema` + `Struct` 等），但 Kafka 里存的必须是 **bytes**。converter 负责这两个世界的互转。**它和 Source/Sink 无关**（每个 worker 配一套，所有 connector 共用）。

@@ -2021,16 +2021,13 @@ public class StreamService {
 > **为什么 409 用 `IllegalStateException`？** Spring WebFlux 默认会把未处理的异常转成 500。生产级应在 Controller 里捕获这个异常并映射成 `409 Conflict`（见 6.2.3 的 Controller）。这里先抛异常，Controller 层做状态码映射。
 
 > **会话级独占的状态机视图**：
-> ```
-> 空闲（无会话锁）
->   │ POST 触发
->   ▼ acquireSession Redisson 抢到锁
-> 生成中（会话锁被当前 run 持有）
->   │ 这期间同会话再 POST？acquireSession 失败 → 409 拒绝 ❌
->   │
->   │ 生成到终态（DONE/FAILED/CANCELLED）
->   ▼ releaseSession unlock（实例崩溃则看门狗停止，30s 后锁过期兜底）
-> 空闲（可接受下一个任务）
+> ```mermaid
+> stateDiagram-v2
+>     [*] --> 空闲
+>     空闲 --> 生成中 : POST 触发，acquireSession(Redisson) 抢到锁
+>     生成中 --> 生成中 : 这期间同会话再 POST？acquireSession 失败 → 409 拒绝 ❌
+>     生成中 --> 空闲 : 生成到终态（DONE/FAILED/CANCELLED），releaseSession unlock（实例崩溃则看门狗停止，30s 后锁过期兜底）
+>     空闲 --> [*]
 > ```
 
 #### 6.2.3 RunController：企业级 REST
@@ -3693,16 +3690,12 @@ public class StreamService {
 > - **跨实例取消的会话锁释放**：`runSession` 是本实例内存 Map，跨实例取消时该 Map 没有映射，`releaseSessionFor` 不会生效。但会话锁有 Redisson 看门狗兜底（实例崩溃 30s 后锁自动过期）——这是已知取舍，严格场景应把 run→session 映射存 Redis（留作进阶扩展点）。
 
 > **三道防线的层次**：
-> ```
-> 请求进入
->   │
->   ▼ ① 会话级独占（acquireSession）── 同 session 同时只一个任务 → 409
->   │   └─ 通过 ↓
->   ▼ ② 幂等创建（create）── 同 idemKey 返回同一 run → 201（不重复触发）
->   │   └─ 通过 ↓
->   ▼ ③ 任务级锁（acquireLock）── 同 run 多实例只一个跑
->   │
->   ▼ 跑生成器
+> ```mermaid
+> flowchart TD
+>     A["请求进入"] --> B["① 会话级独占（acquireSession）<br/>同 session 同时只一个任务 → 409 拒绝"]
+>     B --> C["② 幂等创建（create）<br/>同 idemKey 返回同一 run → 201（不重复触发）"]
+>     C --> D["③ 任务级锁（acquireLock）<br/>同 run 多实例只一个跑"]
+>     D --> E["跑生成器"]
 > ```
 > ① 是**最外层闸门**——挡掉绝大多数并发（"同一个会话狂点发送"）；②③ 是兜底。
 
@@ -4473,34 +4466,6 @@ git add -A && git commit -m "第12章:Spring Cloud Gateway统一入口"
 ## 全文演进总览与后续方向
 
 ### 你走过的路（一张图）
-
-```
-第0章  建项目 + Spring AI 2.0 ChatClient 流式（数据源）
-  │
-第1章  GET /generate 返回 Flux<String>（流式，但一个接口干三件事）   ← 反模式基线
-  │
-第2章  POST 触发 + GET 只读流（管数分离起步）                          ← 管理面/数据面分离
-  │
-第3章  Sinks.Many：一份数据扇出给多个订阅者                            ← 解决冷流重复触发
-  │
-第4章  引入 Redis：chunk 落 Stream 持久 + Pub/Sub 实时                 ← 持久化、断线续传
-  │
-第5章  seq 游标 + SSE Last-Event-ID：重连不重复不漏                    ← 精确回放
-  │
-第6章  run 资源 + 状态机 + 幂等键 + 取消 + 会话级独占（Redisson 会话锁，状态存 Redis KV）← 企业级标准形态（含并发闸门）
-  │
-第7章  PostgreSQL + MyBatis-Flex：run 状态/幂等落关系库                ← 结构化数据持久化、SQL 查询、ACID 幂等
-  │
-第8章  会话历史落 PG + 多轮上下文注入 + 会话管理 API                    ← 历史记录、上下文记忆、切换会话
-  │
-第9章  多实例：跨实例广播 + 会话级独占 + Redisson 单一写者 + Pub/Sub   ← 水平扩展（三道防线）
-  │
-第10章  chunk 总线升级 Kafka：消费组、跨服务消费、长期保留              ← 持久总线
-  │
-第11章 按 Profile 拆触发服务/订阅服务                                  ← 物理拆分
-  │
-第12章 Spring Cloud Gateway 统一入口                                    ← 网关收口
-```
 
 **演进路线（Mermaid 版）**：
 

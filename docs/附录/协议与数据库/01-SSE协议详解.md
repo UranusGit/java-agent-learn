@@ -108,13 +108,6 @@ es.addEventListener("done",  e => console.log("结束了"));
 
 `EventSource` 有个杀手锏：**连接断开时，浏览器会自动重连，并自动带上 `Last-Event-ID` 请求头**，值是它记录的最后那个 `id`。
 
-```
-正常:  服务器推 id=1, id=2, ... id=15
-断网:  连接断开
-重连:  浏览器自动发 GET，带请求头 Last-Event-ID: 15
-服务端: 读这个头，从 id=15 之后继续推
-```
-
 **自动断线重连时序**：
 
 ```mermaid

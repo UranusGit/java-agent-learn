@@ -35,12 +35,10 @@
 
 比喻：把 Kafka 想成一个**无限追加的日志本**（像 git log）。生产者往里**追加**事件，消费者**从任意位置读**。事件一旦写入就不改（除非过期删除），多个消费者可以各自独立地读同一份日志。
 
-```
-topic: orders （一个"日志本"）
-─────────────────────────────────
-[订单1][订单2][订单3][订单4][订单5...]   → 不断追加
-  ↑
-  offset（每个消费者记住自己读到第几条）
+```mermaid
+flowchart LR
+    O["topic: orders<br/>(一个日志本)"] --> M1["订单1"] --> M2["订单2"] --> M3["订单3"] --> M4["订单4"] --> M5["订单5...<br/>不断追加"]
+    C["offset<br/>每个消费者记住自己读到第几条"] -. "读到哪" .-> M3
 ```
 
 ### 1.2 Topic（主题）——消息的分类
@@ -53,12 +51,14 @@ topic: orders （一个"日志本"）
 
 **这是 Kafka 最重要、也最容易不懂的概念。** 一个 topic 被切成多个 **partition**（分区），就像一本日志被拆成几本子日志：
 
-```
-topic: orders （假设 3 个分区）
-─────────────────────────────────────
-partition 0: [订单A][订单D][订单G]
-partition 1: [订单B][订单E][订单H]
-partition 2: [订单C][订单F][订单I]
+```mermaid
+flowchart LR
+    T["topic: orders<br/>(3 个分区)"] --> P0["partition 0"]
+    T --> P1["partition 1"]
+    T --> P2["partition 2"]
+    P0 --> A1["订单A"] --> A2["订单D"] --> A3["订单G"]
+    P1 --> B1["订单B"] --> B2["订单E"] --> B3["订单H"]
+    P2 --> C1["订单C"] --> C2["订单F"] --> C3["订单I"]
 ```
 
 **分区有两个核心意义**：
@@ -99,13 +99,27 @@ kafkaTemplate.send("orders", orderId, eventJson);
 - **同组**：一个 partition 只被组内**一个**消费者消费 → 负载均衡。
 - **不同组**：每组**各自独立**收到全量消息 → 发布订阅。
 
-```
-topic orders 有 3 个分区 P0/P1/P2：
-
-消费组 A（3 个消费者）：   消费组 B（1 个消费者）：
-  c1 ← P0                   c4 ← P0,P1,P2（全收）
-  c2 ← P1
-  c3 ← P2
+```mermaid
+flowchart LR
+    T["orders topic<br/>P0 / P1 / P2"] --> P0["P0"]
+    T --> P1["P1"]
+    T --> P2["P2"]
+    subgraph ga[消费组 A · 3 个消费者 · 负载均衡]
+        direction LR
+        c1["c1"]
+        c2["c2"]
+        c3["c3"]
+    end
+    subgraph gb[消费组 B · 1 个消费者 · 全量]
+        direction LR
+        c4["c4<br/>(P0, P1, P2 全收)"]
+    end
+    P0 --> c1
+    P1 --> c2
+    P2 --> c3
+    P0 --> c4
+    P1 --> c4
+    P2 --> c4
 ```
 
 组 A 三个消费者分担（负载均衡）；组 B 一个消费者全收（它可能是做全量备份/分析的）。
@@ -122,14 +136,30 @@ topic orders 有 3 个分区 P0/P1/P2：
 
 ### 1.7 一张图总结 Kafka 结构
 
-```
-Producer ──写──> [ Broker1: P0(leader) P1(follower) ]
-                  [ Broker2: P1(leader) P2(follower) ]  ← 一个 Kafka 集群
-                  [ Broker3: P2(leader) P0(follower) ]
-                        │ topic = 多个 partition，partition 有副本
-                        ▼
-Consumer Group X:  c1(P0)  c2(P1)  c3(P2)   ← 同组分担
-Consumer Group Y:  c4(P0,P1,P2)             ← 另一组全收
+```mermaid
+flowchart LR
+    P["Producer"] -- "写" --> K1["Broker1<br/>P0(leader) · P1(follower)"]
+    P -- "写" --> K2["Broker2<br/>P1(leader) · P2(follower)"]
+    P -- "写" --> K3["Broker3<br/>P2(leader) · P0(follower)"]
+    subgraph cluster[Kafka 集群 · topic = 多个 partition, 有副本]
+        K1
+        K2
+        K3
+    end
+    K1 --> c1["c1 (P0)"]
+    K2 --> c2["c2 (P1)"]
+    K3 --> c3["c3 (P2)"]
+    subgraph gx[Consumer Group X · 同组分担]
+        c1
+        c2
+        c3
+    end
+    K1 --> y1["c4 (P0, P1, P2)"]
+    K2 --> y1
+    K3 --> y1
+    subgraph gy[Consumer Group Y · 另一组全收]
+        y1
+    end
 ```
 
 **分清边界**（这张表请你背下来）：
@@ -623,25 +653,7 @@ public class WordCountProcessor {
 }
 ```
 
-**三步合起来的逻辑**（这就是 Kafka Streams 的核心思维）：
-
-```
-输入流 "hello world hello"
-    │
-    │ ① flatMapValues（拆词）
-    ▼
-流：hello / world / hello   （3 条消息）
-    │
-    │ ② groupBy（按单词分组，单词当 key）
-    ▼
-分组：{hello: [hello, hello], world: [world]}
-    │
-    │ ③ count（每组计数）
-    ▼
-KTable（状态表）：{hello: 2, world: 1}   ← 输出，存在本地 state store
-```
-
-**三步合起来的流水线**：
+**三步合起来的流水线**（变换 → 分组 → 聚合，输出从 KStream 变成 KTable）：
 
 ```mermaid
 flowchart TD
@@ -966,9 +978,17 @@ kafkaTemplate.send("orders", order.getId(), new OrderCreated(order).toJson());
 
 传统：DB 存"**当前状态**"（用户余额=100）。事件溯源：DB 存"**所有事件**"（存了"充值100""消费30""消费20"...），当前状态由事件**重算**得出。
 
-```
-传统 DB：  accounts 表 → balance = 100（只存结果）
-事件溯源：  events 流 → [+100, -30, -20]（存所有变化，balance = 重算 = 50）
+```mermaid
+flowchart LR
+    subgraph trad[传统 DB · 只存结果]
+        direction LR
+        A1["accounts 表"] --> A2["balance = 100"]
+    end
+    subgraph es[事件溯源 · 存所有变化]
+        direction LR
+        B1["events 流"] --> B2["+100"] --> B3["-30"] --> B4["-20"]
+        B4 --> B5["balance = 重算 = 50"]
+    end
 ```
 
 **好处**：
@@ -982,10 +1002,18 @@ kafkaTemplate.send("orders", order.getId(), new OrderCreated(order).toJson());
 
 传统：同一个模型既写又读。**CQRS**：写模型（命令侧）和读模型（查询侧）**分开**。
 
-```
-写侧（命令）：订单事件 → 更新写库（优化写入）
-                ↓ 发事件（kafkaTemplate.send）
-读侧（查询）：订阅事件 → 更新读库（优化查询，如 Elasticsearch）
+```mermaid
+flowchart LR
+    subgraph write[写侧 · 命令]
+        direction LR
+        W1["订单事件"] --> W2["更新写库<br/>(优化写入)"]
+        W2 --> W3["发事件<br/>kafkaTemplate.send"]
+    end
+    subgraph read[读侧 · 查询]
+        direction LR
+        R1["订阅事件"] --> R2["更新读库<br/>(优化查询, 如 Elasticsearch)"]
+    end
+    W3 --> R1
 ```
 
 **为什么**：写和读的优化方向不同（写要事务一致，读要快/灵活查询）。分开各优化各的。常和事件溯源搭配。
@@ -995,12 +1023,6 @@ kafkaTemplate.send("orders", order.getId(), new OrderCreated(order).toJson());
 跨服务的业务操作（如"下单要扣库存+扣余额+加积分"，分别在不同服务）怎么保证一致性？**不能用 DB 事务**（跨服务跨库）。
 
 **Saga**：把分布式操作拆成一串**本地事务**，每步发事件，失败时发**补偿事件**回滚。
-
-```
-正向：CreateOrder → InventoryReserved → PaymentCharged → PointsAdded
-         ↑           ↓ 失败                ↓ 失败          ↓ 失败
-补偿：OrderCancelled ← InventoryReleased ← PaymentRefunded ← (无)
-```
 
 **Saga 的正向与补偿**：
 

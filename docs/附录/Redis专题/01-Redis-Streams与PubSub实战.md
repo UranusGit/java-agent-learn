@@ -193,14 +193,6 @@ redis.opsForStream().read(StreamOffset.create(streamKey,
 
 Pub/Sub 做不到（它是强制广播，5 个都收到）。Stream 的**消费组**就是干这个的：
 
-```
-Stream (10000 条)
-   │
-   ├── 消费者 A (group=workers) → 处理 1,4,7,10...
-   ├── 消费者 B (group=workers) → 处理 2,5,8,11...
-   └── 消费者 C (group=workers) → 处理 3,6,9,12...
-```
-
 **同一个 group 内**，每条消息只被一个消费者拿到。**不同 group** 各自独立消费全量（一个 group 像一个独立的"读书小组"，各自从头读到尾）。
 
 **消费组分担与独立**：
@@ -580,28 +572,7 @@ return history.concatWith(live)
 
 ### 8.4 完整时序图
 
-```
-生产者（trigger）:
-  write("你") → XADD + PUBLISH
-  write("好") → XADD + PUBLISH
-  writeEnd()  → XADD + PUBLISH __END__
-
-消费者（subscribe）:
-  ① range() 回放: "你", "好", "__END__"
-     └─ 碰到 __END__ → ended = true
-  ② live = defer → ended=true → Flux.empty()
-  ③ takeUntil("__END__") → 触发 → complete
-  ④ filter → "你", "好" 推给前端，__END__ 过滤掉
-  → 流正常结束
-
-如果消费者在"好"和"__END__"之间连入：
-  ① range() 回放: "你", "好"（__END__ 还没写）
-     └─ 没有 __END__ → ended = false
-  ② live = defer → ended=false → 连 Pub/Sub
-  ③ 生成结束，writeEnd() → PUBLISH __END__
-  ④ Pub/Sub 收到 __END__ → takeUntil 触发 → complete
-  → 流正常结束
-```
+> 上面的「StreamBus 协同流程」时序图（第 8.1 节）已经完整展示了写路径（XADD + PUBLISH）与读路径（history 回放 + live 订阅 + takeUntil 关流）的两种场景：历史里已有 `__END__`（生成已完成）→ 不连 Pub/Sub 直接结束；历史里没有 `__END__`（生成进行中）→ 连 Pub/Sub 接实时直到收到 `__END__`。这里不再用文本图重复。
 
 ### 8.5 核心认知
 

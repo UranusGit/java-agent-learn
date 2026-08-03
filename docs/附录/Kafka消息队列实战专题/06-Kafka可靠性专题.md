@@ -30,10 +30,11 @@
 
 Kafka 消费者的循环是 `poll → 处理 → 提交 offset`。**"处理成功但还没提交 offset 就崩溃"** 这个窗口，决定了 Kafka 是 **at-least-once（至少一次）**：
 
-```
-poll 拉到消息 ──► 处理业务（扣库存/入账）──► 提交 offset
-                          │
-                          └─ 这个时刻崩溃 → 重启后 offset 没变 → 同一条消息再投递一次
+```mermaid
+flowchart LR
+    A["poll 拉到消息"] --> B["处理业务<br/>(扣库存 / 入账)"]
+    B --> C["提交 offset"]
+    B -. "这个时刻崩溃<br/>→ 重启后 offset 没变" .-> D["同一条消息再投递一次<br/>(at-least-once 重复窗口)"]
 ```
 
 > **结论一句话**：**Kafka 保证消息"至少被处理一次"，但不保证"只被处理一次"。重复消费是常态，不是事故。** 所以消费者侧**必须幂等**——同一条消息处理 N 次，效果必须和 1 次一样。（概念详见 [01 第 6.3 章 ack-mode](./01-Kafka消息队列从入门到架构师.md) 和 [01 第 9.2 章](./01-Kafka消息队列从入门到架构师.md)。）
@@ -175,15 +176,7 @@ public class WalletService {
 }
 ```
 
-**为什么多实例并发也不会重复扣**——这是本方案的精髓，画出来：
-
-```
-实例 A 和实例 B 同时 poll 到同一条 eventId=evt-1：
-  A: existsById(evt-1) → false        B: existsById(evt-1) → false（还没提交）
-  A: 扣款 + 插 ProcessedMessage(evt-1)
-  B: 扣款 + 插 ProcessedMessage(evt-1) → ❗主键冲突 DataIntegrityViolationException
-       → B 的整个 @Transactional 回滚 → B 的扣款也一起回滚 ✅
-```
+**为什么多实例并发也不会重复扣**——这是本方案的精髓（时序见下方）：
 
 > **要点**：`existsById` 先查只是**优化**（少写一次），真正的保证是**唯一约束 + 同一事务**。因为 `@Id` 建了唯一索引，两个实例都插同一主键时第二个必然冲突、事务整体回滚，**重复的业务也被回滚**。这就是 [03 第 4.3 章](./03-事件驱动微服务端到端实战.md) 说的"唯一约束是双保险"。
 
@@ -1120,20 +1113,18 @@ Kafka 是单向的，要把"一对多/多对一"变成"一问一答"，靠**两�
 1. **`CorrelationId`**：请求方生成一个唯一 ID 放进消息头；响应方原样带回来。响应方靠它知道"回给谁"，请求方靠它知道"这条回复是我哪次请求的"。
 2. **`reply topic`**：请求方在消息头里告诉响应方"回信投到哪个 topic"。响应方把结果投到那个 topic，请求方在 reply topic 上等。
 
-```
-请求方                               响应方
-  │  ① ProducerRecord                    │
-  │  headers:                            │
-  │    CorrelationId = uuid              │
-  │    ReplyTopic    = "rpc-replies"     │
-  ├──────────────────────────────────────►  @KafkaListener("stock-check")
-  │                                      │  ② 处理请求
-  │                                      │  ③ 回信到 ReplyTopic，带同一个 CorrelationId
-  │  ④ @KafkaListener("rpc-replies")     │
-  │  用 CorrelationId 匹配到 pending      │
-  │  future → complete(结果)             │
-  │                                      │
-  │  ⑤ 超时（5s 没回）→ future 超时失败   │
+```mermaid
+sequenceDiagram
+    participant R as 请求方
+    participant K as Kafka
+    participant S as 响应方
+    R->>K: ① ProducerRecord<br/>headers: CorrelationId=uuid, ReplyTopic=rpc-replies
+    K->>S: @KafkaListener("stock-check") 收到请求
+    S->>S: ② 处理请求
+    S->>K: ③ 回信到 ReplyTopic, 带同一个 CorrelationId
+    K->>R: ④ @KafkaListener("rpc-replies")
+    R->>R: 用 CorrelationId 匹配 pending future → complete(结果)
+    Note over R: ⑤ 超时(5s 没回) → future 超时失败
 ```
 
 Spring Kafka 已经把这两个约定封装成了 `KafkaHeaders.CORRELATION_ID` 和 `KafkaHeaders.REPLY_TOPIC`。下面先手写一遍（把机制讲透），再用官方 `ReplyingKafkaTemplate`。

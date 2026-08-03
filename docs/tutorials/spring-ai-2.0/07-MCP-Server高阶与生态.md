@@ -21,31 +21,13 @@
 如果你刚读完 05 + 06，**直接读 §1**——这是把前两篇能力拼起来的关键章节。
 如果你已经会端到端跑通，跳到 §2 看架构与生态。
 
-```
-§1 端到端整合实战（强烈推荐先读）
-  ├── 两个进程怎么起
-  ├── ChatClient → MCP Client → MCP Server 完整时序
-  ├── 多租户上下文透传
-  ├── 跨进程 trace
-  └── 调试技巧与常见报错
-        ↓
-§2-§5 L4 架构与生态
-  ├── 把任意 HTTP API 包装成 MCP Server
-  ├── MCP Hub：注册发现 + 多租户代理
-  ├── 跨语言互操作
-  └── 版本管理与灰度
-        ↓
-§6-§7 L5 高手向
-  ├── 性能调优
-  ├── 安全红线
-  └── 测试工程化
-        ↓
-附录
-  A. McpServerFeatures 全 API 速查
-  B. starter 配置项全表
-  C. 常见报错 50 例
-  D. 已发布优质 MCP Server 清单
-  E. MCP vs 传统 RPC 对比
+```mermaid
+flowchart TD
+    S1["§1 端到端整合实战（强烈推荐先读）<br/>├── 两个进程怎么起<br/>├── ChatClient → MCP Client → MCP Server 完整时序<br/>├── 多租户上下文透传<br/>├── 跨进程 trace<br/>└── 调试技巧与常见报错"]
+    S2["§2-§5 L4 架构与生态<br/>├── 把任意 HTTP API 包装成 MCP Server<br/>├── MCP Hub：注册发现 + 多租户代理<br/>├── 跨语言互操作<br/>└── 版本管理与灰度"]
+    S3["§6-§7 L5 高手向<br/>├── 性能调优<br/>├── 安全红线<br/>└── 测试工程化"]
+    S4["附录<br/>A. McpServerFeatures 全 API 速查<br/>B. starter 配置项全表<br/>C. 常见报错 50 例<br/>D. 已发布优质 MCP Server 清单<br/>E. MCP vs 传统 RPC 对比"]
+    S1 --> S2 --> S3 --> S4
 ```
 
 **心法**：单机能跑只是起点。真正难的是：让 100 个工具被 10 个团队用，且不让任何一个团队把整个生态拖死。
@@ -57,41 +39,6 @@
 > 本节是三部曲的**收口**。读完你能：起两个进程、ChatClient 调到对端 MCP 工具、跨进程 trace 一眼到底、多租户上下文从 HTTP request 一直透传到 Server 业务方法。
 
 ## 1.1 总体架构
-
-```
-┌─────────────────────────────────────────────────┐      ┌──────────────────────────────────┐
-│ 进程 A：Spring AI 应用（Agent / 业务后端）         │      │ 进程 B：MCP Server                │
-│                                                  │      │ （独立部署、独立团队维护）         │
-│  HTTP Request                                    │      │                                  │
-│   { "question": "查 E001 员工" }                  │      │  @McpTool                        │
-│        ↓                                         │      │  getEmployee(id, McpMeta)        │
-│  Controller                                      │      │   ↓                              │
-│   ↓ 调 ChatClient                                │      │  HrService.findById(...)         │
-│  ChatClient.prompt()                             │      │   ↓                              │
-│   .toolContext({"userId":"u001", ...})           │      │  DB                              │
-│   .call()                                        │      │                                  │
-│        ↓                                         │      │                                  │
-│  ┌───────────────────────────────────────────┐  │      │                                  │
-│  │ LLM (OpenAI/Anthropic)                    │  │      │                                  │
-│  │  - 看到工具列表                            │  │      │                                  │
-│  │  - 决定调用 getEmployee                    │  │      │                                  │
-│  └────────┬──────────────────────────────────┘  │      │                                  │
-│           ↓                                      │      │                                  │
-│  ToolCallingManager                              │      │                                  │
-│   → SyncMcpToolCallback.call(args)               │      │                                  │
-│           ↓                                      │      │                                  │
-│  McpSyncClient ──── Streamable HTTP ──────────────┼─────►│ MCP Server Endpoint              │
-│           .callTool("getEmployee",               │      │  /mcp                            │
-│              {id:"E001",                         │      │   ↓                              │
-│               _meta:{userId:"u001", ...}})       │      │  McpMeta = {userId:"u001", ...}  │
-│                                                  │      │   ↓                              │
-│  ◄──────────────── Employee JSON ───────────────┼──────┤                                  │
-│        ↓                                         │      │                                  │
-│  LLM 拿到结果 → 组织自然语言                      │      │                                  │
-│        ↓                                         │      │                                  │
-│  HTTP Response 给前端                            │      │                                  │
-└─────────────────────────────────────────────────┘      └──────────────────────────────────┘
-```
 
 **端到端总体架构**：
 
@@ -451,52 +398,6 @@ sequenceDiagram
 
 调用 `/api/chat/askAsUser`，看 `userId` 怎么从 HTTP header 一路传到 MCP Server 的业务方法：
 
-```
-1. curl 带 header
-   -H "X-User-Id: u001"
-   POST /api/chat/askAsUser { "question": "我在 Asia/Shanghai 时区几点？" }
-        │
-        ▼
-2. Agent App: Controller 提取 header → toolContext
-   chatClient.prompt()
-     .user(question)
-     .toolContext(Map.of("userId", "u001"))   // ← 这里塞进 toolContext
-     .call();
-        │
-        ▼
-3. LLM 决定调用 currentTimeForUser(zoneId="Asia/Shanghai")
-        │
-        ▼
-4. SyncMcpToolCallback.call(args)
-   ↓ 框架通过 ToolContextToMcpMetaConverter 转换
-   toolContext { userId: "u001" }
-        ↓
-   McpMeta    { userId: "u001" }    // ← 同样的 key/value
-        │
-        ▼
-5. MCP 协议层（跨进程 HTTP）
-   POST /mcp
-   {
-     "method": "tools/call",
-     "params": {
-       "name": "currentTimeForUser",
-       "arguments": { "zoneId": "Asia/Shanghai" },
-       "_meta": { "userId": "u001" }    // ← MCP 协议字段 _meta
-     }
-   }
-        │
-        ▼
-6. MCP Server: 框架把 _meta 反序列化为 McpMeta 注入工具方法
-   @McpTool
-   currentTimeForUser(String zoneId, McpMeta meta) {
-       String userId = (String) meta.get("userId");   // "u001"
-       // ... 业务逻辑
-   }
-        │
-        ▼
-7. 返回结果："userId=u001, time=2026-07-18T22:23:11+08:00[Asia/Shanghai]"
-```
-
 **上下文透传时序**：
 
 ```mermaid
@@ -805,29 +706,6 @@ flowchart TD
 当公司有 20+ MCP Server 时，每个 Agent 都手配连接配置不现实。需要一个 Hub。
 
 ### 3.1 Hub 的定位
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ MCP Hub（注册中心 + 代理网关）                                │
-│                                                             │
-│  Registry:                                                  │
-│    - hr-mcp        v1.2.0   sse://hr.internal/mcp/sse       │
-│    - erp-mcp       v3.0.1   http://erp.internal/mcp         │
-│    - geo-mcp       v1.0.0   http://geo.internal/mcp         │
-│    - ... (20 个)                                             │
-│                                                             │
-│  Subscription:                                              │
-│    tenant=tenantA → [hr, erp]                               │
-│    tenant=tenantB → [hr, geo, marketing]                    │
-└─────────────────┬──────────────────────────────────────────┘
-                  │ 统一端点
-                  ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Agent (租户 A)                                               │
-│   只配 Hub 一个连接：https://hub/mcp                         │
-│   自动看到 [hr, erp] 两个 Server 的所有工具                  │
-└─────────────────────────────────────────────────────────────┘
-```
 
 **MCP Hub 架构**：
 
@@ -1381,16 +1259,11 @@ public class HrTools {
 
 ### 8.1 测试金字塔
 
-```
-                ┌──────────────┐
-                │  红队测试     │  ← 少量，专项
-                ├──────────────┤
-                │  契约测试     │  ← 每个 Server 一套
-                ├──────────────┤
-                │  集成测试     │  ← Inspector 跑通
-                ├──────────────┤
-                │  单元测试     │  ← 最多
-                └──────────────┘
+```mermaid
+flowchart TD
+    RED["红队测试<br/>少量，专项"] --- CON["契约测试<br/>每个 Server 一套"]
+    CON --- INT["集成测试<br/>Inspector 跑通"]
+    INT --- UNIT["单元测试<br/>最多"]
 ```
 
 ### 8.2 单元测试

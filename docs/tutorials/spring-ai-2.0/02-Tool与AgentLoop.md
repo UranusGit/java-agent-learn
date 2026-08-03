@@ -60,36 +60,16 @@ flowchart TD
 
 ## 2. ToolCallingAdvisor 的执行图
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ 用户业务代码：chatClient.prompt().user(q).tools(t).call()              │
-└────────────────────────────────┬─────────────────────────────────────┘
-                                 │
-                          ┌──────▼──────┐
-                          │ Memory      │  ← 优先级 HIGHEST+200（外层）
-                          │ Advisor     │
-                          └──────┬──────┘
-                                 │
-                          ┌──────▼──────┐
-                          │ ToolCalling │  ← 优先级 HIGHEST+300（内层）
-                          │ Advisor     │
-                          └──────┬──────┘
-                                 │
-                          ┌──────▼──────┐
-                          │ ChatModel   │
-                          │ .call()     │
-                          └──────┬──────┘
-                                 │
-                ┌────────────────┼────────────────┐
-                │ no tool calls  │ has tool calls │
-                ▼                ▼                
-           直接返回         ToolCallingManager.executeToolCalls
-                                  │
-                                  ▼
-                          新的 conversation history
-                                  │
-                                  ▼
-                          再次调用 ChatModel（递归下一轮）
+```mermaid
+flowchart TD
+    A["用户业务代码：chatClient.prompt().user(q).tools(t).call()"] --> B["Memory Advisor<br/>优先级 HIGHEST+200（外层）"]
+    B --> C["ToolCalling Advisor<br/>优先级 HIGHEST+300（内层）"]
+    C --> D["ChatModel<br/>.call()"]
+    D --> E{"resp.hasToolCalls()?"}
+    E -- "no tool calls" --> F["直接返回"]
+    E -- "has tool calls" --> G["ToolCallingManager.executeToolCalls"]
+    G --> H["新的 conversation history"]
+    H --> D
 ```
 
 ---

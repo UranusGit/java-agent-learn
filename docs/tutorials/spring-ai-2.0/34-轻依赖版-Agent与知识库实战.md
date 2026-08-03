@@ -129,7 +129,6 @@
 
 ---
 
-
 ## 第 0 章：固定 workflow 打底（Spring AI 2.0 ChatClient + 静态知识源）
 
 ### 0.0 场景
@@ -892,7 +891,6 @@ git add -A && git commit -m "第1章：自主Agent（先注册工具，再演进
 **核心跃迁**：从"人写死步骤"到"LLM 自主决定下一步"——工具调用循环由 Spring AI 托管，我们用 `ToolCallingLoop` 补上企业级治理（超时、防烧 token、埋点扩展位）。**这是演进式：先让工具能用，再补治理。**
 
 ---
-
 
 ## 第 2 章：知识库搜索——内存 TF-IDF RAG（落 Redis）
 
@@ -2383,7 +2381,6 @@ git add -A && git commit -m "第8章：会话CRUD+前端对话页（产品化）
 
 ---
 
-
 ## 第 9 章：多端同步流式——企业级多端同步的真实做法
 
 > **这一章和原版的根本不同**：原版把"Redis Streams + Pub/Sub + SETNX"当作既定方案直接上。本章先**调研企业级多端同步到底怎么做**（ChatGPT/Claude/Cursor/Linear/飞书等），讲清取舍，再据此落地。**不是模仿，是带着判断重做。**
@@ -2453,15 +2450,6 @@ Notion/Linear/飞书文档用 **CRDT 或 OT** 做协同编辑——那是"多端
 **我的判断（重要边界）**：LLM 研究问答**不是协同编辑**，它是"单一写者（LLM）写、多读者（设备）看"的**追加日志**模型。**不需要 CRDT/OT**——那是杀鸡用牛刀，而且引入巨大的复杂度。用"事件日志 + 多播 + seq 去重"就是正解。**这个边界判断本身就是企业级设计能力的体现**：知道什么问题该用什么工具，不被"显得高级"绑架。
 
 #### 调研结论 → 本章架构（终态长这样，但我们会一步步搭到它）
-
-```
-                       ┌── 单一写者 ──┐
-LLM 调用(唯一实例) ──写──→ Redis Stream 持久日志(每条带 seq) ──多播──→ 各实例各设备
-                       │  (单一事件源，权威数据)  │
-                       └──────────────────────────┘
-        客户端记录最后收到的 SSE id(=seq)，断线重连浏览器自动带 Last-Event-ID → 服务端从该 seq 之后补推
-        客户端按 seq 幂等去重
-```
 
 这是**终态**。但本章**不一次搭成**——先 9.2 给最小版（只做"持久+广播"，让多端看到同一条流），再 9.6-9.9 按"一个痛点 → 一处加固"逐步补上单一写者、seq、Last-Event-ID、MAXLEN/cancel。**每节只引入一个新概念。**
 
@@ -3546,7 +3534,6 @@ git add -A && git commit -m "第10章：管数分离企业级（run资源+幂等
 
 ---
 
-
 ## 补强 A：传输层真相——SSE / WebSocket / Flux 到底用哪个
 
 > 你问的这个问题很关键，很多人在这层概念混乱。我不省事，把这层彻底讲透。**这一节是第 9 章的"硬核补充"，比第 9 章主体更重要。**
@@ -3680,13 +3667,12 @@ public Flux<ServerSentEvent<String>> stream(@RequestParam String sessionId,
 
 把整条链路画清楚：
 
-```
-LLM(Mock)  ──Flux<String>──→  SyncStreamBus(写Redis) ──Flux──→ 订阅者读出 Flux<String>
-                                                                    │
-                                                         Controller 把 Flux<String>
-                                                         映射成 Flux<ServerSentEvent>
-                                                                    │
-                                                         SSE 编码器 → 网络(text/event-stream) → 浏览器 EventSource
+```mermaid
+flowchart LR
+    A["LLM(Mock)"] -->|"Flux&lt;String&gt;"| B["SyncStreamBus(写Redis)"]
+    B -->|"Flux"| C["订阅者读出 Flux&lt;String&gt;"]
+    C --> D["Controller 把 Flux&lt;String&gt; 映射成 Flux&lt;ServerSentEvent&gt;"]
+    D --> E["SSE 编码器 → 网络(text/event-stream) → 浏览器 EventSource"]
 ```
 
 - **Flux 是全程的内部管道**：从 LLM 吐字、到写 Redis、到读出来，都是 `Flux<String>` 在串。
@@ -3792,7 +3778,6 @@ curl "http://localhost:8080/api/runs/run_abc123"
 
 ---
 
-
 ## 第 10.5 章：管理数据持久层——引入 H2（开发期零硬件，生产一行配置切 PG）
 
 > **定位**：这一章解决全文最大的一个"妥协"——前面（第 7/8/10 章）把**用户数据**（会话历史、会话元信息、run 资源、审计）全压在 Redis 上。Redis 是内存型、TTL 会过期、故障转移会丢数据，而且**没法按条件查询**（用户搜历史、运营统计都做不到）。这些数据是**关系型数据库的活**。
@@ -3847,15 +3832,6 @@ curl "http://localhost:8080/api/runs/run_abc123"
 #### ② 归属链（设计的核心）
 
 把"多租户 / 多会话 / 历史持久化"三个维度串起来，就是一条从租户到消息的**归属链**：
-
-```
-tenant (租户)
-  └─ user (用户, 属于某 tenant)         ← 多租户隔离的边界（tenant_id）
-       └─ session (会话, 属于某 user)   ← 多会话（user_id）
-            └─ chat_message (消息)      ← 历史持久化（session_id）
-            └─ run (研究任务)            ← 属于某 session
-                 └─ audit_event (审计)  ← 属于某 session/run
-```
 
 **每个箭头对应一个外键**：`chat_message.session_id` → `session.id` → `session.user_id` → `user.id` → `user.tenant_id` → `tenant.id`。
 
@@ -3943,7 +3919,6 @@ CREATE TABLE chat_message (
 | **多租户** | 租户隔离、用户认证 | 多会话（会话要先属于用户） | **第 18 章**（对外运营阶段）|
 
 > **为什么多租户放最后**：它是"安全/治理"特性，企业级定位在"功能定型 + 架构成型之后"才做。提前做会让前面的学习被认证/隔离逻辑淹没。**但数据模型（tenant/user 表 + tenant_id 列）本章就先建好**——数据模型先行，认证后补。这是"模型就位、行为渐进"的纪律。
-
 
 ### 10.5.2 动手
 
@@ -4340,26 +4315,16 @@ public Flux<ServerSentEvent<String>> stream(@PathVariable String runId,
 
 ##### ⑤ 一张图总结：一条回复的完整数据流（含两个源、三个衔接点）
 
+```mermaid
+flowchart TD
+    A["用户发问（POST /runs）"] --> B["SyncStreamBus.trigger<br/>（单一写者，抢 SETNX 锁）"]
+    B --> C["流式阶段：LLM 每 chunk → XADD Redis Streams + PUBLISH ──→ 多端 SSE 实时订阅<br/>（高吞吐、多播、24h）（读流：补强C的30%场景）"]
+    B --> D["衔接点① 流完（doOnComplete）→ 拼完整 assistant → 落 chat_message（库，幂等：锁保证只落一次）<br/>→ 发 __END__、清锁、status=DONE"]
+    C --> E["持久阶段：chat_message 永久存"]
+    D --> E
+    E --> F["衔接点② 打开会话：run.status==DONE → 读库（chat_message）<br/>run.status==RUNNING → 读流（Redis Streams）"]
+    E --> G["衔接点③ 下次多轮：load() 读库（不读流，流会过期）→ 注入 LLM history"]
 ```
-用户发问（POST /runs）
-  │
-  ▼
-SyncStreamBus.trigger（单一写者，抢 SETNX 锁）
-  │
-  ├─ 流式阶段：LLM 每 chunk → XADD Redis Streams + PUBLISH ──→ 多端 SSE 实时订阅
-  │                     （高吞吐、多播、24h）                        （读流：补强C的30%场景）
-  │
-  ├─ 衔接点① 流完（doOnComplete）→ 拼完整 assistant → 落 chat_message（库，幂等：锁保证只落一次）
-  │                                          → 发 __END__、清锁、status=DONE
-  │
-  ▼
-持久阶段：chat_message 永久存
-  │
-  ├─ 衔接点② 打开会话：run.status==DONE → 读库（chat_message）
-  │              run.status==RUNNING → 读流（Redis Streams）
-  │
-  └─ 衔接点③ 下次多轮：load() 读库（不读流，流会过期）→ 注入 LLM history
-```bash
 
 > **一句话记忆**：**流服务"现在正在发生的"，库服务"已经发生完的"**；衔接靠 run 状态分流，落库收敛到单一写者（锁保证幂等）。这套配合齐了，才不会出现"流完没落库 / 刷新看不到正在吐的 / 多轮失忆"三类问题。
 
@@ -4442,7 +4407,6 @@ git add -A && git commit -m "第10.5章：管理数据持久层（H2+JPA，一�
 - **职责分离**：持久管理数据→关系库（H2/PG）；实时流态→Redis/Kafka；协调锁→Redis。各司其职，不互相越界。
 
 ---
-
 
 ## 第 11 章：Redis 高可用——消除单点
 
@@ -4779,15 +4743,21 @@ git add -A && git commit -m "第12章：chunk总线升级Kafka+消费组跨服�
 
 当规模真正需要时，目标架构如下（**企业级终极形态**）：
 
-```
-前端 ──→ API网关(:8080) ──┬── POST /api/runs（+cancel/status） ──→ research-trigger   (lb)
-                          ├── GET  /api/runs/{id}/stream        ──→ research-subscribe  (lb)
-                          └── /api/**（知识库/会话 CRUD）         ──→ research-agent     (业务核心: kb/plan/session)
-                                                                    │
-                              research-llm-gateway ←── 触发服务调它(屏蔽LLM厂商)
-                                                                    │
-                              research-registry(Eureka :8761)  ←── 全部注册
-共享：Kafka(chunk总线) + Redis(锁/记忆/知识库) + Redis Sentinel(HA)
+```mermaid
+flowchart LR
+    FE["前端"] --> GW["API网关(:8080)"]
+    GW -->|"POST /api/runs（+cancel/status）"| TR["research-trigger (lb)"]
+    GW -->|"GET /api/runs/{id}/stream"| SU["research-subscribe (lb)"]
+    GW -->|"/api/**（知识库/会话 CRUD）"| AG["research-agent<br/>（业务核心: kb/plan/session）"]
+    TR -->|"调（屏蔽LLM厂商）"| LG["research-llm-gateway"]
+    TR -.->|"注册"| REG["research-registry (Eureka :8761)"]
+    SU -.->|"注册"| REG
+    AG -.->|"注册"| REG
+    LG -.->|"注册"| REG
+    SUB["共享：Kafka(chunk总线) + Redis(锁/记忆/知识库) + Redis Sentinel(HA)"]
+    TR -.-> SUB
+    SU -.-> SUB
+    AG -.-> SUB
 ```
 
 | 服务 | 职责 | 扩容依据 | 依赖 |
@@ -5209,19 +5179,16 @@ t3:  页面B 打开（同 sessionId / 同 runId）
 
 **关键不在"把 A 的数据复制给 B"，而在"A 和 B 各自从同一个源头按各自进度消费"：**
 
-```
-                  LLM（单一写者，只在一台实例上跑一次）
-                         │ 每个 chunk
-                         ▼
-              XADD ──→ Redis Stream（run_abc:chunks）   ← 持久，唯一权威数据源
-              PUBLISH ──→ 频道 run_abc                   ← 通知铃
-                         │
-        ┌────────────────┼────────────────┐
-        ▼                ▼                 ▼
-   页面A 订阅         页面B 订阅        （页面C 也能加）
-   （一直在听）       （t3 加入：
-                      先读历史 1..30，
-                      再接实时）
+```mermaid
+flowchart TD
+    LLM["LLM（单一写者，只在一台实例上跑一次）"] -->|"XADD"| RS["Redis Stream（run_abc:chunks）<br/>← 持久，唯一权威数据源"]
+    LLM -->|"PUBLISH"| CH["频道 run_abc<br/>← 通知铃"]
+    RS --> PA["页面A 订阅（一直在听）"]
+    RS --> PB["页面B 订阅（t3 加入：先读历史 1..30，再接实时）"]
+    RS --> PC["页面C 也能加"]
+    CH --> PA
+    CH --> PB
+    CH --> PC
 ```
 
 因为后续 chunk 只写进这一条 Stream + 这一个频道，**所有订阅者最终看到的内容一定逐字相同**。这是 ChatGPT 多端同步的底层同构——"一个中心产生流，多路分发"。
@@ -5283,23 +5250,6 @@ es.onmessage = (e) => {
 
 ### C.7 端到端时序总图（最终证明）
 
-```
-t0  A: POST → run_abc 创建，A 实例抢锁成为写者
-t1  A: GET stream → 订阅频道 run_abc
-t1+ 写者: LLM 吐字 → XADD(seq=1..30) + PUBLISH ×30
-    A: 收到 id:1..30，屏幕显示 30% ✅
-
-t3  B: GET stream（同 run_abc）→ 不触发（只读）
-    B: readAfter(cursor=0) 读历史 → id:1..30 快速刷出 ✅(1) 前面 30% 可见
-    B: cursor=30，接频道订阅
-    
-t4  写者: 吐 id:31 → XADD(31) + PUBLISH
-    A: 频道收到通知 → 显示 id:31 ✅(3) A 继续
-    B: 频道收到通知 → readAfter(cursor=30) 读出 31 → 显示 ✅(2) B 与 A 一致
-t5+ ... 31,32,... 两页逐字相同，都继续流 ✅
-    全程只有一次 LLM 调用 ✅(4) B 没重复触发
-```
-
 **多端同步端到端时序（A 输出 30% 时 B 打开）**：B 加入时不触发 LLM（数据面只读）、先回放前 30% 历史、再接实时，后续两页从同一 Redis 源消费而逐字一致。
 
 ```mermaid
@@ -5356,14 +5306,11 @@ sequenceDiagram
 
 ### 18.1 思路：JWT 携带身份 + 网关验签 + 查询带 tenant_id
 
-```
-登录 → 颁发 JWT（含 userId/tenantId，签名防伪造）
-  ↓
-每次请求带 Authorization: Bearer <jwt>
-  ↓
-网关/Filter 验签 JWT → 解出 userId/tenantId → 放进请求上下文
-  ↓
-业务查询统一 WHERE tenant_id=?（从上下文取，不信任前端传入）
+```mermaid
+flowchart TD
+    A["登录 → 颁发 JWT（含 userId/tenantId，签名防伪造）"] --> B["每次请求带 Authorization: Bearer &lt;jwt&gt;"]
+    B --> C["网关/Filter 验签 JWT → 解出 userId/tenantId → 放进请求上下文"]
+    C --> D["业务查询统一 WHERE tenant_id=?（从上下文取，不信任前端传入）"]
 ```
 
 | 决策 | 选择 | 理由 |
@@ -5673,7 +5620,6 @@ git add -A && git commit -m "第18章：多租户+JWT认证（逻辑隔离+网�
 
 ---
 
-
 ## 第 19 章：成本治理——token 计量、租户预算与分摊
 
 > **定位（对外运营阶段）**：第 18 章做了多租户/认证，但还有个痛点没解决——**匿名/恶意用户能无限触发 LLM**。LLM 调用是真金白银（按 token 计费），没有计量和预算控制，一个恶意租户就能烧光整个平台的预算。这是 B2B AI 平台的**必备治理能力**（原版第 23 章）。
@@ -5694,12 +5640,10 @@ git add -A && git commit -m "第18章：多租户+JWT认证（逻辑隔离+网�
 
 ### 19.1 思路：计量 → 预算 → 分摊
 
-```
-LLM 调用 → 计量（记 token 数，带 tenant_id 落库 usage_record）
-              ↓
-          预算检查（查租户当月累计 vs 预算）→ 超额则拒绝触发
-              ↓
-          分摊（按 tenant_id 聚合 usage_record → 计费/报表）
+```mermaid
+flowchart TD
+    A["LLM 调用 → 计量（记 token 数，带 tenant_id 落库 usage_record）"] --> B["预算检查（查租户当月累计 vs 预算）→ 超额则拒绝触发"]
+    B --> C["分摊（按 tenant_id 聚合 usage_record → 计费/报表）"]
 ```
 
 | 能力 | 落点 | 数据 |
@@ -5956,7 +5900,6 @@ git add -A && git commit -m "第19章：成本治理（token计量+租户预算+
 
 ---
 
-
 ## 第 20 章：可观测性——链路追踪 + 指标 + 告警
 
 > **定位（运营阶段）**：第 13-16 章拆成 6 个微服务后，系统从"单进程白盒"变成"多服务黑盒"。一次研究请求要跨：网关 → 触发 → LLM 网关 → DeepSeek → Kafka → 订阅 → 前端。**出问题时（响应慢、某个 run 卡住、LLM 偶发失败），不知道卡在哪一环**。这是微服务化的必然代价，必须靠可观测性补回来。
@@ -6117,13 +6060,13 @@ public class ResearchMetrics {
 
 **解法**：**OpenTelemetry**（业界标准）——一个 trace 跨多个 span（每服务/每操作一个 span），span 间有父子关系，组成调用树。trace 上下文（traceId + spanId）随请求跨服务透传。
 
-```
-trace（一次研究）
- ├─ span: gateway 处理 (2ms)
- │   ├─ span: trigger 服务 (50ms)
- │   │   ├─ span: LLM 网关调用 (30000ms) ← ▼ 慢在这
- │   │   └─ span: 写 Kafka (5ms)
- │   └─ span: subscribe 服务推 SSE (持续)
+```mermaid
+flowchart TD
+    TR["trace（一次研究）"] --> GW["span: gateway 处理 (2ms)"]
+    GW --> TG["span: trigger 服务 (50ms)"]
+    TG --> LM["span: LLM 网关调用 (30000ms)<br/>← ▼ 慢在这"]
+    TG --> KF["span: 写 Kafka (5ms)"]
+    GW --> SB["span: subscribe 服务推 SSE (持续)"]
 ```
 
 **【配置】** 引入 OpenTelemetry agent（最省事的方式——javaagent 自动埋点，业务代码零改）：
@@ -6160,14 +6103,11 @@ public class PlanExecuteService {
 
 把三者串起来，看一次真实排障：
 
-```
-① 告警触发（Metrics）：Grafana 显示 research.failed 计数突增，成功率掉到 80%
-      ↓
-② 定位慢点（Traces）：Jaeger 看失败请求的 trace → 发现 LLM 网关 span 普遍 30s+ 超时
-      ↓
-③ 查根因（Logs）：grep 那批 traceId 的日志 → LLM 网关日志显示 "DeepSeek 429 rate limit"
-      ↓
-结论：DeepSeek 限流 → 触发 LLM 网关的熔断降级（第16章扩展点）→ 切备用厂商
+```mermaid
+flowchart TD
+    A["① 告警触发（Metrics）：Grafana 显示 research.failed 计数突增，成功率掉到 80%"] --> B["② 定位慢点（Traces）：Jaeger 看失败请求的 trace → 发现 LLM 网关 span 普遍 30s+ 超时"]
+    B --> C["③ 查根因（Logs）：grep 那批 traceId 的日志 → LLM 网关日志显示 'DeepSeek 429 rate limit'"]
+    C --> D["结论：DeepSeek 限流 → 触发 LLM 网关的熔断降级（第16章扩展点）→ 切备用厂商"]
 ```
 
 | 支柱 | 这次排障里的作用 |
@@ -6203,7 +6143,6 @@ git add -A && git commit -m "第20章：可观测性（结构化日志+Micromete
 - **指标要带标签维度**：`research.triggered{tenant=...}` 按租户分维度——和多租户/成本治理一脉相承，能按租户看健康度。
 
 ---
-
 
 ## 第 21 章：幻觉检测与反馈闭环——质量保障
 
@@ -6461,7 +6400,6 @@ git add -A && git commit -m "第21章：幻觉检测+反馈闭环（AI质量保�
 - **质量保障以 tenant_id 维度**：反馈、幻觉率都可按租户看，支持按租户的质量运营。
 
 ---
-
 
 ## 第 22 章：DAG 工作流——条件分支与多 Agent 协作
 
@@ -6721,7 +6659,6 @@ git add -A && git commit -m "第22章：DAG工作流（条件分支+循环+多Ag
 
 ---
 
-
 ## 第 23 章：长期记忆与个性化——跨会话用户画像
 
 > **定位（个性化阶段）**：第 7 章的 `ChatMemory` 是**会话内**记忆——同一 sessionId 内记得上文，刷新不丢。但**换会话就失忆**：用户在 A 会话说过"我主要做推理优化、关注 vLLM"，到 B 会话问问题时，Agent 完全不知道这个偏好。**用户每次都要重新交代背景**，体验差、不个性化。
@@ -6742,13 +6679,10 @@ git add -A && git commit -m "第22章：DAG工作流（条件分支+循环+多Ag
 
 ### 23.1 思路：会话记忆（短期）+ 用户画像（长期）两级
 
-```
-会话记忆 chat_message（第7章，session维度）   ← 会话内，多轮上下文
-         ▲ 读时拼接
-         │
-LLM ← 拼上"用户画像"（长期，user维度）          ← 跨会话，个性化
-         ▲
-    user_profile 表（按 userId 沉淀偏好/背景）
+```mermaid
+flowchart TD
+    CM["会话记忆 chat_message（第7章，session维度）<br/>← 会话内，多轮上下文"] -->|"读时拼接"| LLM["LLM<br/>拼上'用户画像'（长期，user维度）<br/>← 跨会话，个性化"]
+    UP["user_profile 表（按 userId 沉淀偏好/背景）"] -->|"读时拼接"| LLM
 ```
 
 | 记忆层 | 维度 | 生命周期 | 内容 |
@@ -6973,7 +6907,6 @@ git add -A && git commit -m "第23章：长期记忆与个性化（跨会话用�
 
 ---
 
-
 ## 第 24 章：全文演进总览 + 后续方向
 
 > **收尾章**。到这里，从第 0 章"固定 workflow"一路演进到第 23 章"跨会话个性化"，一个**管数分离、多端同步、可观测、可治理、高质量、可个性化**的企业级 Agent 系统成形了。这一章不写新代码，而是**回顾演进脉络、画出终态架构、列明未尽事项**——给整份文档一个完整收束，也给你指明继续深入的方向。
@@ -6995,34 +6928,31 @@ git add -A && git commit -m "第23章：长期记忆与个性化（跨会话用�
 
 ### 24.2 终态架构图（六服务 + 中间件 + 存储）
 
-```
-                          ┌──────────────────────┐
-   前端 ──── SSE/REST ────│   API 网关 (:8080)    │ ← 统一入口、JWT 验签、注入 traceId
-                          └──────────┬───────────┘
-             ┌────────────────────────┼─────────────────────────┐
-             ▼                        ▼                         ▼
-   POST /runs（管理面）      GET /runs/{id}/stream（数据面）   /api/**（业务）
-   research-trigger          research-subscribe               research-agent
-   触发+锁+写Kafka+计量       订阅Kafka推SSE+状态分流           知识库/Plan/会话CRUD/画像
-             │                        │                         │
-             ▼                        │                         │
-   research-llm-gateway ←── 调（屏蔽厂商，A/B/熔断/计价）
-             │
-             ▼
-        真 LLM（DeepSeek/通义/GPT，本文默认 DeepSeek 经 Spring AI 接入）
-             │
-   ╔════════╧══════════════════════════════════════════════════╗
-   ║                    共享中间件层                              ║
-   ╠════════════════════════════════════════════════════════════╣
-   ║  Redis（Sentinel HA）：实时流态(Streams) + 锁(SETNX) + 热缓存 ║
-   ║  Kafka：chunk 持久总线（跨服务消费组、长期保留）              ║
-   ║  关系库（H2开发/PG生产）：管理数据（tenant/user/session/     ║
-   ║        chat_message/run/audit/usage/feedback/user_profile） ║
-   ╚════════════════════════════════════════════════════════════╝
-             │
-   research-registry（Eureka :8761）← 所有服务注册
-
-   可观测：Prometheus（指标）+ Jaeger/Tempo（追踪）+ ELK/Loki（日志）
+```mermaid
+flowchart TD
+    FE["前端"] -->|"SSE/REST"| GW["API 网关 (:8080)<br/>← 统一入口、JWT 验签、注入 traceId"]
+    GW -->|"POST /runs（管理面）"| TR["research-trigger<br/>触发+锁+写Kafka+计量"]
+    GW -->|"GET /runs/{id}/stream（数据面）"| SU["research-subscribe<br/>订阅Kafka推SSE+状态分流"]
+    GW -->|"/api/**（业务）"| AG["research-agent<br/>知识库/Plan/会话CRUD/画像"]
+    TR -->|"调（屏蔽厂商，A/B/熔断/计价）"| LG["research-llm-gateway"]
+    LG --> LLM["真 LLM（DeepSeek/通义/GPT，本文默认 DeepSeek 经 Spring AI 接入）"]
+    subgraph MID["共享中间件层"]
+        R["Redis（Sentinel HA）：实时流态(Streams) + 锁(SETNX) + 热缓存"]
+        K["Kafka：chunk 持久总线（跨服务消费组、长期保留）"]
+        DB["关系库（H2开发/PG生产）：管理数据（tenant/user/session/chat_message/run/audit/usage/feedback/user_profile）"]
+    end
+    TR -.->|"依赖"| MID
+    SU -.->|"依赖"| MID
+    AG -.->|"依赖"| MID
+    REG["research-registry（Eureka :8761）<br/>← 所有服务注册"]
+    TR -.->|"注册"| REG
+    SU -.->|"注册"| REG
+    AG -.->|"注册"| REG
+    LG -.->|"注册"| REG
+    OBS["可观测：Prometheus（指标）+ Jaeger/Tempo（追踪）+ ELK/Loki（日志）"]
+    TR -.-> OBS
+    SU -.-> OBS
+    AG -.-> OBS
 ```
 
 ### 24.3 数据模型终态（归属链 + 三类数据）
@@ -7080,7 +7010,6 @@ git add -A && git commit -m "第23章：长期记忆与个性化（跨会话用�
 > **全文结束。** 从"固定 workflow 的最小 demo"到"分布式、可观测、可治理的企业级 Agent 平台"——24 章，一步一痛点。剩下的，交给你的真实场景去驱动。
 
 ---
-
 
 ## 附录：项目结构与踩坑手册
 

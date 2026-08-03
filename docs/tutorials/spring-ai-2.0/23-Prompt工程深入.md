@@ -180,17 +180,6 @@ ReasoningAnswer r = cotClient.prompt()
 
 让模型对**同一问题**生成 K 条不同的 CoT 路径，**投票**选最常见的答案。
 
-```
-question → [CoT run 1] → A
-        → [CoT run 2] → B
-        → [CoT run 3] → A
-        → [CoT run 4] → A
-        → [CoT run 5] → C
-答案 = A（多数票）
-```
-
-**投票机制**：
-
 ```mermaid
 flowchart TD
     A["同一问题 question"] --> R1["CoT run 1 → A"]
@@ -241,12 +230,6 @@ public <T> T selfConsistent(String question, Class<T> type, int k) {
 ## 5. Reflexion（自我反思）
 
 让模型评估自己的回答，发现问题后重写。
-
-```
-Round 1: question → answer_v1
-Round 2: question + answer_v1 → critique（"我发现 X 不严谨"）
-Round 3: question + answer_v1 + critique → answer_v2
-```
 
 ```java
 // 本代码仅作学习材料参考
@@ -299,20 +282,7 @@ flowchart TD
 
 CoT 是链（一条路走到底），ToT 是树（多分支探索 + 剪枝）。
 
-```
-                根：问题
-              /     |     \
-        分支A   分支B   分支C
-         |       |       |
-       评估 A   评估 B   评估 C   ← 给每个分支打分
-         ✓       ✗       ✓
-        /              \
-      继续A1, A2     继续C1, C2
-```
-
 适合：**有明确目标可评估**的问题（24 点游戏、迷宫、复杂规划）。
-
-**树的探索与剪枝**：
 
 ```mermaid
 flowchart TD
@@ -399,14 +369,6 @@ Final Answer: ...
 ### 7.2 Plan-and-Execute（ReAct 升级版）
 
 ReAct 的痛点：模型"边走边想"，容易陷入局部最优。Plan-and-Execute 改为：
-
-```
-阶段 1：Planner 一次性生成完整 plan（拆成 N 个子任务）
-阶段 2：Executor 依次执行每个子任务（可调工具）
-阶段 3：Replanner 看执行结果，决定是 replan 还是收尾
-```
-
-**Planner-Executor-Replanner 时序**：
 
 ```mermaid
 sequenceDiagram
@@ -564,21 +526,6 @@ BaseAdvisor promptLogger() {
 ---
 
 ## 12. 选型决策树
-
-```
-任务是开放生成（写作、总结）？
-├── 是 → Zero/Few-shot + Format；可叠 Reflexion（离线）
-└── 否 →
-    任务有明确答案？
-    ├── 是 → 推理模型？是 → 直接问
-    │           否 → CoT + Self-Consistency（K=5）
-    └── 否 →
-        需要外部数据？
-        ├── 是 → ReAct / Plan-Execute（用 ToolCallingAdvisor）
-        └── 否 → ToT（多分支探索 + 剪枝）
-```
-
-**选型决策**：
 
 ```mermaid
 flowchart TD

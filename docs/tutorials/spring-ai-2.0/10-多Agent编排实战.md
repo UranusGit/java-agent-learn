@@ -13,18 +13,6 @@
 
 ## 0. 认知地图
 
-```
-单 Agent（一个 ChatClient + N 个 Tool）
-    ↓
-能力边界：工具数量爆炸（10+）→ 决策变差；prompt 太长；上下文炸
-    ↓
-多 Agent（按职责拆分，互相协作）
-    ├── 路由模式（Router）
-    ├── 管道模式（Pipeline）
-    ├── 协作模式（Collaborator）
-    └── 监督模式（Supervisor）
-```
-
 **认知地图（Mermaid 版）**：
 
 ```mermaid
@@ -76,10 +64,12 @@ flowchart TD
 
 ### 2.1 Router（路由）
 
-```
-用户请求 → [Router Agent] ──┬─→ [客服 Agent]
-                            ├─→ [技术 Agent]
-                            └─→ [销售 Agent]
+```mermaid
+flowchart LR
+    U["用户请求"] --> R["Router Agent"]
+    R --> CS["客服 Agent"]
+    R --> TS["技术 Agent"]
+    R --> SS["销售 Agent"]
 ```
 
 Router 用 LLM 判断该走哪条路。
@@ -90,8 +80,9 @@ Router 用 LLM 判断该走哪条路。
 
 ### 2.2 Pipeline（管道）
 
-```
-[Agent A: 采集] → [Agent B: 分析] → [Agent C: 报告]
+```mermaid
+flowchart LR
+    A["Agent A: 采集"] --> B["Agent B: 分析"] --> C["Agent C: 报告"]
 ```
 
 串行流水线，每个 Agent 输出是下一个的输入。
@@ -102,8 +93,9 @@ Router 用 LLM 判断该走哪条路。
 
 ### 2.3 Collaborator（协作）
 
-```
-[Planner] ←→ [Coder] ←→ [Reviewer]
+```mermaid
+flowchart LR
+    P["Planner"] <--> C["Coder"] <--> R["Reviewer"]
 ```
 
 多 Agent 循环协作，互相评审。
@@ -113,13 +105,6 @@ Router 用 LLM 判断该走哪条路。
 **陷阱**：可能死循环。设最大轮数 + 终止条件。
 
 ### 2.4 Supervisor（监督）
-
-```
-[Supervisor] ──┬─→ [Worker 1]
-              ├─→ [Worker 2]
-              ├─→ [Worker 3]
-              └─→ (汇总)
-```
 
 Supervisor 是大脑，动态分配任务给 Worker，收集结果再决策下一步。
 
@@ -225,25 +210,16 @@ Spring AI 2.0 自身不带多 Agent 编排，但同生态的 **Spring AI Alibaba
 
 **目标流程图**：
 
-```
-                    START
-                      │
-                      ▼
-              ┌───────────────┐
-              │ router (LLM)  │   ← 判断 user_query 属于哪个域，写入 state["route"]
-              └───────────────┘
-                      │
-              (条件边：读 state["route"])
-                      │
-        ┌─────────────┼─────────────┐
-        ▼             ▼             ▼
-   ┌────────┐   ┌────────┐    ┌────────┐
-   │billing │   │  tech  │    │ sales  │
-   └────────┘   └────────┘    └────────┘
-        │             │             │
-        └─────────────┼─────────────┘
-                      ▼
-                     END
+```mermaid
+flowchart TD
+    START((START)) --> R["router (LLM)<br/>判断 user_query 属于哪个域，写入 state['route']"]
+    R --> COND{"条件边：读 state['route']"}
+    COND --> B["billing"]
+    COND --> T["tech"]
+    COND --> S["sales"]
+    B --> E((END))
+    T --> E
+    S --> E
 ```
 
 **完整代码**：
@@ -472,45 +448,6 @@ System.out.println(mermaid);
 输出：一份结构化报告（含大纲、各章节、参考文献）。
 
 **目标流程图**：
-
-```
-              START
-                │
-                ▼
-        ┌───────────────┐
-        │   outliner    │  生成章节大纲 JSON
-        └───────────────┘
-                │
-                ▼
-        ┌───────────────┐
-   ┌───▶│    writer     │  写第 current_chapter 章
-   │    └───────────────┘
-   │            │
-   │   (条件边：done?)
-   │            │
-   │     ┌──────┴──────┐
-   │     ▼             ▼
-   │  未完成          完成
-   │     │             │
-   └─────┘             ▼
-                ┌───────────────┐
-                │   reviewer    │  审稿，pass=true/false
-                └───────────────┘
-                        │
-                (条件边：pass?)
-                        │
-                ┌───────┴───────┐
-                ▼               ▼
-              不通过          通过
-                │               │
-                ▼               ▼
-        (回到 writer)   ┌───────────────┐
-                        │   formatter   │  Markdown 输出
-                        └───────────────┘
-                                │
-                                ▼
-                              END
-```
 
 **报告生成 Pipeline（Mermaid 版）**：
 
@@ -814,18 +751,6 @@ EdgeAction afterSafeNode = state -> {
 ## 6. 从单 Agent 升级到多 Agent 的路径
 
 ### 6.1 渐进式升级
-
-```
-阶段 1：单 Agent + 5 个 Tool
-        ↓ 工具数膨胀到 15
-阶段 2：单 Agent + ToolSearchToolCallingAdvisor（自动检索相关工具）
-        ↓ 还是不够，业务领域分明
-阶段 3：Router 模式，3 个领域 Agent
-        ↓ 流程变复杂，需要多步
-阶段 4：Pipeline 模式
-        ↓ 需要反馈循环
-阶段 5：Collaborator / Supervisor 模式
-```
 
 **渐进式升级路径（Mermaid 版）**：
 

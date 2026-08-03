@@ -55,14 +55,18 @@ flowchart TD
 
 > **把"发事件"从"调 Kafka"变成"往数据库的一张表插一行"**——和业务数据写在**同一个数据库事务**里。这样"业务数据 + 事件记录"要么一起成功、要么一起回滚。然后**另一个机制**异步地把表里的事件投递到 Kafka。
 
-```
-传统 dual-write（不原子）:              Outbox（原子）:
-  事务 {                                  事务 {
-    写 orders 表                            写 orders 表
-  }                                        写 outbox 表（事件记录）  ← 同一个事务！
-  发 Kafka  ← 不在事务里,可能丢           }
-                                           （都成功或都回滚）
-                                           异步投递：outbox 表 → Kafka
+```mermaid
+flowchart LR
+    subgraph dw[传统 dual-write · 不原子]
+        direction LR
+        T1["事务: 写 orders 表"] --> T2["发 Kafka<br/>(不在事务里, 可能丢)"]
+    end
+    subgraph ob[Outbox · 原子]
+        direction LR
+        T3["事务: 写 orders 表"] --> T4["写 outbox 表<br/>(事件记录, 同一事务)"]
+        T4 --> T5["都成功或都回滚"]
+        T5 --> T6["异步投递<br/>outbox 表 → Kafka"]
+    end
 ```
 
 **关键洞察**:把"发事件"降级成"写一行记录",就能用成熟的数据库事务保证原子性。事件记录暂时"困"在 outbox 表里,再由投递器搬到 Kafka。
@@ -216,20 +220,12 @@ flowchart TD
 
 #### A.4.1 CDC + Outbox 的架构
 
-```
-订单服务: 事务里写 orders + outbox 表（同 A.3.2,代码不变）
-                │
-                ▼
-         [ 数据库 binlog ]   ← outbox 表的新行会进 binlog
-                │
-                ▼
-         [ Debezium Connector ]  ← 监听 binlog,捕获 outbox 新行
-                │
-                ▼
-            [ Kafka topic ]   ← Debezium 自动把新行发到这里
-                │
-                ▼
-         下游消费者（库存/支付服务）
+```mermaid
+flowchart TD
+    A["订单服务<br/>事务里写 orders + outbox 表<br/>(同 A.3.2, 代码不变)"] --> B["数据库 binlog<br/>outbox 表的新行会进 binlog"]
+    B --> C["Debezium Connector<br/>监听 binlog, 捕获 outbox 新行"]
+    C --> D["Kafka topic<br/>Debezium 自动把新行发到这里"]
+    D --> E["下游消费者<br/>(库存 / 支付服务)"]
 ```
 
 **关键**:订单服务的代码**和轮询方案一样**（还是事务里写 outbox）。区别在于"谁来把 outbox 搬到 Kafka"——轮询方案是你的 `@Scheduled` + `kafkaTemplate.send`,CDC 方案是 Debezium。
@@ -291,12 +287,6 @@ Debezium 默认会把 outbox 表的整行（含 id/aggregate_id/event_type/paylo
 2. Registry 校验这个 schema 和之前版本的**兼容性**（只加字段?兼容;删字段?不兼容,拒绝）。
 3. 消息里**不存完整 schema,只存一个 schema ID**（一个数字）→ 省带宽。
 4. 消费者收到消息,凭 ID 去 Registry 拿对应 schema 反序列化。
-
-```
-生产者 ──①注册schema──> [ Schema Registry ]（校验兼容性）
-        ──②发消息(带schema ID)──> [ Kafka ]
-消费者 <──③凭ID取schema── [ Schema Registry ] ──反序列化
-```
 
 **Schema 注册与读取的时序**：
 

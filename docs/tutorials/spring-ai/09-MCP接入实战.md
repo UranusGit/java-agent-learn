@@ -104,7 +104,7 @@ sequenceDiagram
     participant MCP as MCP Client（stdio）
     participant FS as filesystem Server<br/>npx server-filesystem
     Curl->>Ctl: POST /mcp-chat 创建 hello.txt
-    Ctl->>CC: prompt().user(question).call()
+    Ctl->>CC: "prompt().user(question).call()"
     CC->>LLM: 请求（filesystem 工具已自动注入）
     LLM->>LLM: 决定调用 write_file
     LLM->>MCP: 调用 write_file 工具
@@ -113,7 +113,7 @@ sequenceDiagram
     FS-->>MCP: 工具结果
     MCP-->>LLM: tool 结果
     LLM-->>CC: 最终回答
-    CC-->>Ctl: content()
+    CC-->>Ctl: "content()"
     Ctl-->>Curl: 200 响应
 ```
 

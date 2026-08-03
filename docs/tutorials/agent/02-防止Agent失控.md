@@ -9,17 +9,6 @@
 
 ### 1.1 死循环调用
 
-```
-LLM: 我需要查询张三
-  → 调 queryEmployee("张三")
-  → 返回：not found
-LLM: 没找到，再试一次
-  → 调 queryEmployee("张三")
-  → 返回：not found
-LLM: 再试...
-（无限循环，烧钱）
-```
-
 **死循环场景**：
 
 ```mermaid
@@ -32,33 +21,37 @@ flowchart TD
 
 ### 1.2 链式调用爆炸
 
-```
-LLM 想完成"创建用户并加权限"：
-  → createUser("张三")  → 返回 userId
-  → addPermission(userId, "read")
-  → addPermission(userId, "write")
-  → addPermission(userId, "delete")
-  → addPermission(userId, "...")  // LLM 决定加 50 个权限
-（成本失控）
+```mermaid
+flowchart TD
+    GOAL["LLM 想完成：创建用户并加权限"] --> S1["createUser(张三)"]
+    S1 -->|"返回 userId"| S2["addPermission(userId, read)"]
+    S2 --> S3["addPermission(userId, write)"]
+    S3 --> S4["addPermission(userId, delete)"]
+    S4 --> MORE["... 连续追加到 50 个权限"]
+    MORE --> COST["成本失控"]
 ```
 
 ### 1.3 超长上下文
 
-```
-LLM 一直调 Tool，每次返回大数据
-  → context 越来越长
-  → token 超限
-  → 报错或自动截断（丢失关键信息）
+```mermaid
+flowchart TD
+    LOOP["LLM 反复调 Tool<br/>每次返回大数据"] --> LONG["context 越来越长"]
+    LONG --> OVER["token 超限"]
+    OVER --> TRUNC["报错或自动截断<br/>丢失关键信息"]
 ```
 
 ### 1.4 工具失败导致挂死
 
-```
-LLM 调外部 API
-  → API 30 秒不响应
-  → LLM 等待
-  → 用户等不及，重复请求
-  → 队列堆积
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant LLM as LLM
+    participant API as 外部 API
+    LLM->>API: 调用外部 API
+    Note over API: 30 秒不响应
+    LLM-->>U: 一直等待，无响应
+    U->>LLM: 用户等不及，重复请求
+    Note over U,LLM: 队列堆积，服务挂死
 ```
 
 ### 1.5 幻觉工具调用

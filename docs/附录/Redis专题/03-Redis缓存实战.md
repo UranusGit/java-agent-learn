@@ -31,35 +31,21 @@
 
 **读流程（旁路 = 绕过？不对，是"缓存做旁边"）：**
 
-```
-① 读请求
-   │
-   ▼
-② 查缓存  GET user:1
-   ├── 命中（缓存有）→ ③ 直接返回  ←—— 快，~0.1ms，到此结束
-   │
-   └── 未命中（缓存没有）
-          │
-          ▼
-       ④ 查数据库  SELECT ... WHERE id=1   ←—— 慢，~10ms
-          │
-          ▼
-       ⑤ 把结果写回缓存  SET user:1 ... EX 600
-          │
-          ▼
-       ⑥ 返回给调用方
+```mermaid
+flowchart TD
+    A["① 读请求"] --> B["② 查缓存 GET user:1"]
+    B -->|"命中（缓存有）"| C["③ 直接返回<br/>快，~0.1ms，到此结束"]
+    B -->|"未命中（缓存没有）"| D["④ 查数据库 SELECT ... WHERE id=1<br/>慢，~10ms"]
+    D --> E["⑤ 把结果写回缓存 SET user:1 ... EX 600"]
+    E --> F["⑥ 返回给调用方"]
 ```
 
 **写流程（先写数据库，再删缓存）：**
 
-```
-① 写请求
-   │
-   ▼
-② 先写数据库  UPDATE user SET ... WHERE id=1   ←—— 数据库是"真源"，必须最先改对
-   │
-   ▼
-③ 再删缓存  DEL user:1                         ←—— 不是"更新"缓存，而是"删掉"！
+```mermaid
+flowchart TD
+    A["① 写请求"] --> B["② 先写数据库 UPDATE user SET ... WHERE id=1<br/>数据库是真源，必须最先改对"]
+    B --> C["③ 再删缓存 DEL user:1<br/>不是更新缓存，而是删掉"]
 ```
 
 > **为什么写流程是"删缓存"而不是"更新缓存"？** 三个理由：
@@ -69,23 +55,22 @@
 
 **完整的时序图（读 + 写交错，也是第 5 章一致性的基础）：**
 
-```
-          缓存                       数据库
-  读A     │                            │
-  ──────► │ GET user:1 → miss         │
-          │ ────────────────────────► │  SELECT 得 v1
-          │ ◄──────────────────────── │
-          │ SET user:1 = v1           │
-          │                            │
-  写B     │                            │
-  ──────► │                           │ UPDATE → v2
-          │ ◄──────────────────────── │
-          │ DEL user:1               │
-  读C     │                            │
-  ──────► │ GET user:1 → miss         │  ← 缓存已被删，miss
-          │ ────────────────────────► │  SELECT 得 v2（新值）
-          │ ◄──────────────────────── │
-          │ SET user:1 = v2           │
+```mermaid
+sequenceDiagram
+    participant A as 读A
+    participant B as 写B
+    participant C as 读C
+    participant Cache as Redis 缓存
+    participant DB as 数据库
+
+    A->>Cache: GET user:1 → miss
+    A->>DB: SELECT 得 v1
+    A->>Cache: SET user:1 = v1
+    B->>DB: UPDATE → v2
+    B->>Cache: DEL user:1
+    C->>Cache: GET user:1 → miss（缓存已被删）
+    C->>DB: SELECT 得 v2（新值）
+    C->>Cache: SET user:1 = v2
 ```
 
 ### 1.3 Read-Through / Write-Through / Write-Behind 简述
@@ -148,11 +133,12 @@ flowchart LR
 
 **现象**：恶意或误操作，疯狂查询一个**不存在的 id**（如 `user:-1`、随机 UUID）。缓存永远 miss（因为没人会回填不存在的值），**每个请求都穿过缓存直打数据库**。攻击者可以靠这个把 DB 打垮——这是缓存最大的安全坑。
 
-```
-攻击者: GET user:-1 → miss → SELECT ... WHERE id=-1 → 空
-         GET user:-1 → miss → SELECT ... WHERE id=-1 → 空
-         GET user:-1 → miss → SELECT ... WHERE id=-1 → 空
-         ...... 每次都打到数据库！
+```mermaid
+flowchart TD
+    A["GET user:-1"] --> B["查缓存 → miss<br/>（没人回填不存在的值）"]
+    B --> C["SELECT ... WHERE id=-1 → 空"]
+    C --> A
+    A -.->|"攻击者反复触发"| D["每次都打到数据库<br/>DB 被反复空查，可能被打垮"]
 ```
 
 **解决 ①：缓存空值（最简单、最常用）**
@@ -207,13 +193,11 @@ public class UserCacheService {
 
 布隆过滤器是一个**极省内存的"可能包含"集合**：判断"这个 key **一定不存在**"非常准，判断"可能存在"可能有小概率误判（假阳性）。把**所有合法 id** 塞进去，查询前先问过滤器：
 
-```
-查询 user:123
-   │
-   ▼
-布隆过滤器：123 一定不存在吗？
-   ├── "一定不存在" → 直接返回 null，连 Redis 都不查 ← 挡住攻击
-   └── "可能存在" → 再走缓存 → DB
+```mermaid
+flowchart TD
+    A["查询 user:123"] --> B{"布隆过滤器：123 一定不存在吗?"}
+    B -->|"一定不存在"| C["直接返回 null<br/>连 Redis 都不查，挡住攻击"]
+    B -->|"可能存在"| D["再走缓存 → DB"]
 ```
 
 ```java
@@ -278,14 +262,16 @@ User user = userCacheService.findById(id);
 
 **现象**：某个 key 是**高并发热点**（秒杀商品、热搜词）。它**过期的那一瞬**，所有请求同时 miss，**一起冲进数据库**。
 
-```
-缓存里 user:hot 刚过期
-   │
-   ▼
-请求1 ──► miss ──► SELECT      │
-请求2 ──► miss ──► SELECT      ├── 同一瞬间 N 个请求同时打 DB
-请求3 ──► miss ──► SELECT      │
-请求N ──► miss ──► SELECT      │
+```mermaid
+flowchart TD
+    HOT["缓存里 user:hot 刚过期"] --> R1["请求1 miss → SELECT"]
+    HOT --> R2["请求2 miss → SELECT"]
+    HOT --> R3["请求3 miss → SELECT"]
+    HOT --> RN["请求N miss → SELECT"]
+    R1 --> F["同一瞬间 N 个请求同时打 DB"]
+    R2 --> F
+    R3 --> F
+    RN --> F
 ```
 
 **解决 ①：互斥锁重建（mutex，只让一个请求去查 DB）**
@@ -441,9 +427,11 @@ public User findById(Long id) {
 
 **现象**：不是"一个 key"，而是**一大批 key 在同一时刻过期**（比如缓存预热时都设了 `EX 3600`，1 小时后整批到期），一波请求同时 miss，**DB 被打垮**。
 
-```
-t=0    大量 key 一起 SET EX 3600
-t=3600 全部 key 一起过期 ──► 所有请求同时 miss ──► DB 瞬间被打垮
+```mermaid
+flowchart TD
+    A["t=0 大量 key 一起 SET EX 3600"] --> B["t=3600 全部 key 一起过期"]
+    B --> C["所有请求同时 miss"]
+    C --> D["DB 瞬间被打垮"]
 ```
 
 **解决 ①：TTL 加随机（最简单、最有效）**
@@ -958,25 +946,37 @@ redis-cli GET user:1          # → (nil)，缓存已被删，下次读会重新
 
 **情况一：先删缓存、后写 DB（错误顺序，窗口大）**
 
-```
-T1 读A：查缓存 → miss
-T2 写B：删缓存（此时 DB 还没写）
-T3 读A：查 DB → 读到旧值 v1
-T4 写B：写 DB → v2
-T5 读A：把旧值 v1 回填缓存   ←── 缓存里是旧值！
-T6 之后所有读都命中 v1，直到 TTL 过期
+```mermaid
+sequenceDiagram
+    participant A as 读A
+    participant B as 写B
+    participant Cache as Redis 缓存
+    participant DB as 数据库
+
+    A->>Cache: T1 查缓存 → miss
+    B->>Cache: T2 删缓存（此时 DB 还没写）
+    A->>DB: T3 查 DB → 读到旧值 v1
+    B->>DB: T4 写 DB → v2
+    A->>Cache: T5 把旧值 v1 回填缓存 ← 旧值被固化
+    Note over Cache: T6 之后所有读都命中 v1，直到 TTL 过期
 ```
 
 **所以"先删缓存再写 DB"是错的**：删除和写入之间的空档，会让一个"读"读到旧值并回填，把旧值"固化"进缓存。
 
 **情况二：先写 DB、后删缓存（正确顺序，窗口极小）**
 
-```
-T1 读A：查缓存 → 命中 v1（缓存里还是旧值）
-T2 写B：写 DB → v2
-T3 写B：删缓存
-T4 读A：返回 v1        ←── 这一次读到了旧值（窗口：T1~T4，就这一次）
-T5 之后的读：miss → 查 DB 得 v2 → 回填新值
+```mermaid
+sequenceDiagram
+    participant A as 读A
+    participant B as 写B
+    participant Cache as Redis 缓存
+    participant DB as 数据库
+
+    A->>Cache: T1 查缓存 → 命中 v1（还是旧值）
+    B->>DB: T2 写 DB → v2
+    B->>Cache: T3 删缓存
+    Note over A,Cache: T4 这一次读返回旧值 v1（窗口：T1~T4，就这一次）
+    A->>Cache: T5 之后的读 miss → 查 DB 得 v2 → 回填新值
 ```
 
 窗口从"旧值被固化进缓存"（可能是 TTL 那么长）缩小成"**一次读**"（毫秒级）。这就是 Cache-Aside 写流程必须是"**先写 DB → 再删缓存**"的原因。
@@ -987,11 +987,11 @@ T5 之后的读：miss → 查 DB 得 v2 → 回填新值
 
 "先写 DB → 删缓存"还有一个真实风险：**删缓存的那条 `DEL` 失败了**（Redis 超时、网络抖动），缓存里旧值还在。解法是**延迟双删（Double Delete）**：
 
-```
-① 写 DB
-② 删缓存（第一次）
-③ sleep 一段时间（如 500ms~1s）
-④ 删缓存（第二次）   ← 把第一步到第二步之间"读回填的旧值"再删掉
+```mermaid
+flowchart TD
+    A["① 写数据库"] --> B["② 删缓存（第一次）"]
+    B --> C["③ sleep 500ms~1s<br/>给读-回填留出窗口"]
+    C --> D["④ 删缓存（第二次）<br/>把第一步到第二步之间读回填的旧值再删掉"]
 ```
 
 ```java

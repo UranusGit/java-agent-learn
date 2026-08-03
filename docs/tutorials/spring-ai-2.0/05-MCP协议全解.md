@@ -60,19 +60,6 @@ public class TimeTools {
 
 ### 2.1 一张图
 
-```
-┌──────────────────────┐                    ┌──────────────────────┐
-│   MCP Client         │                    │   MCP Server         │
-│ (你的 Spring AI App) │  ◄── stdio / ──►   │ (工具服务的提供方)    │
-│                      │      HTTP          │                      │
-│  ChatClient          │                    │  @McpTool            │
-│   ↓ 调用工具         │  ① listTools       │   - getEmployee      │
-│   ↓ 拿到结果         │  ② callTool        │   - searchOrders     │
-│                      │  ③ readResource    │  @McpResource        │
-│                      │  ④ ...             │   - company://...    │
-└──────────────────────┘                    └──────────────────────┘
-```
-
 **Mermaid 版心智模型**：
 
 ```mermaid
@@ -124,25 +111,6 @@ flowchart LR
 
 Client 调用 Server 的 `getEmployee` 工具，背后发生的事情：
 
-```
-Client                                    Server
-  │                                          │
-  │── initialize (handshake) ───────────────►│  协议版本、能力协商
-  │◄────────── capabilities ─────────────────│
-  │                                          │
-  │── tools/list ───────────────────────────►│  "你有哪些工具？"
-  │◄── [getEmployee, searchOrders, ...] ─────│
-  │                                          │
-  │   (此时 LLM 看到工具列表，决定调用 getEmployee)
-  │                                          │
-  │── tools/call(name=getEmployee,           │
-  │              args={id:"E001"}) ─────────►│
-  │                                          │  执行业务逻辑
-  │◄── result={name:"张三", dept:"HR"} ──────│
-  │                                          │
-  │   (LLM 拿到结果，组织自然语言返回给用户)   │
-```
-
 **Mermaid 版协议一次调用时序**：
 
 ```mermaid
@@ -166,15 +134,6 @@ sequenceDiagram
 ## 3. 学习路线建议
 
 如果你按 05 → 06 → 07 顺序学：
-
-```
-05（本文）              06                     07
-入门 + 当 Client        当 Server 作者          端到端 + 进阶
-─────────────          ─────────────          ─────────────
-用现成 Server           自己造一个 Server       Client 和 Server
-跑通第一次调用          暴露 4 类能力           拼起来跑通
-理解协议                学会鉴权/限流/可观测    多租户/Hub/跨语言
-```
 
 **Mermaid 版三部曲路线**：
 
@@ -523,46 +482,6 @@ McpToolFilter filter() {
 
 这一节解决一个核心困惑：**"LLM 是怎么知道有 MCP 工具、又是怎么调用的？"**
 
-```
-用户输入 "查 E001 员工"
-        │
-        ▼
-┌─────────────────────────────────────────┐
-│ ChatClient.prompt().user(...).call()    │
-└─────┬───────────────────────────────────┘
-      │ 把 prompt 发给 LLM，附上工具列表
-      │ （工具列表来自 §4.6 的 defaultTools(all)）
-      ▼
-┌─────────────────────────────────────────┐
-│ LLM（OpenAI / Anthropic）                │
-│  - 看到工具 getEmployee(id)              │
-│  - 决定调用，返回 tool_call              │
-└─────┬───────────────────────────────────┘
-      │ Spring AI 拦截到 tool_call
-      ▼
-┌─────────────────────────────────────────┐
-│ ToolCallingManager 路由到对应的 Callback │
-│  - 进程内 @Tool → MethodToolCallback     │
-│  - MCP 工具     → SyncMcpToolCallback    │
-└─────┬───────────────────────────────────┘
-      │ SyncMcpToolCallback.call(args)
-      ▼
-┌─────────────────────────────────────────┐
-│ McpSyncClient.callTool(name, args)       │
-│  - 通过 Streamable HTTP 发 tools/call    │
-└─────┬───────────────────────────────────┘
-      │ 跨进程 HTTP
-      ▼
-┌─────────────────────────────────────────┐
-│ MCP Server (另一个进程)                  │
-│  - @McpTool getEmployee 执行             │
-│  - 返回 Employee JSON                    │
-└─────┬───────────────────────────────────┘
-      │ 原路返回
-      ▼
-   LLM 拿到结果 → 组织自然语言 → 返回给用户
-```
-
 **Mermaid 版完整调用时序**：
 
 ```mermaid
@@ -635,23 +554,6 @@ DEBUG i.m.spec.McpClientSchema - Received: {result: "Mon Jul 18 ..."}
 **生产场景**：一个 Server 给多个租户用。Client 调用工具时要把"当前是哪个租户、哪个用户"告诉 Server。MCP 协议里这个上下文叫 **McpMeta**。
 
 链路图：
-
-```
-Client 侧（你的 Spring AI App）              Server 侧
-─────────────────────────────────             ─────────
-chatClient.prompt()
-  .user("查我的订单")
-  .toolContext(Map.of(                       Map<String, Object> McpMeta
-    "userId", "u001",              ─────►      { userId: "u001",
-    "tenantId", "acme" }))                       tenantId: "acme" }
-  .call();
-                                              @McpTool
-                                              public List<Order> myOrders(
-                                                  McpMeta meta) {
-                                                  String uid = (String) meta.get("userId");
-                                                  // 用 uid 查询...
-                                              }
-```
 
 **Mermaid 版多租户上下文透传时序**：
 

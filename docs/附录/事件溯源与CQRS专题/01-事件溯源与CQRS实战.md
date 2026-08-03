@@ -56,16 +56,6 @@ A001  | 150
 
 **事件溯源（Event Sourcing）**：数据库**不存当前状态，存所有发生过的事件**。当前状态由事件**重放计算**得出。
 
-```
-传统：account 表 → balance = 150（只存结果）
-
-事件溯源：account_events 流 →
-  [AccountOpened(余额0)]
-  [Deposited(存100)]      ← 重放后余额=100
-  [Withdrew(取50)]        ← 重放后余额=50
-  [Deposited(存100)]      ← 重放后余额=150  ← 当前状态由这4个事件算出
-```
-
 **两种存储方式对比**：
 
 ```mermaid
@@ -75,7 +65,7 @@ flowchart LR
         T2 --> T3["旧状态 100、50 被覆盖、消失<br/>历史 / 审计 / 时间旅行无从谈起"]
     end
     subgraph ES["事件溯源：存事件，状态靠重放"]
-        E1["account_events 流"] --> E2["Opened(0) → Deposited(100)<br/>→ Withdrew(50) → Deposited(100)"]
+        E1["account_events 流"] --> E2["Opened(0) → Deposited(100) → Withdrew(50) → Deposited(100)<br/>重放后余额：0 → 100 → 50 → 150"]
         E2 --> E3["按序 apply 重放<br/>当前状态 balance = 150"]
     end
 ```
@@ -97,24 +87,14 @@ flowchart LR
 - **命令**：意图，可能被拒绝（"存 -100"？拒绝，金额非法）。表达"想要做什么"。
 - **事件**：已发生的事实，不可拒绝（已经发生了）。表达"做成了什么"。
 
-```
-命令: Deposit(accountId=A001, amount=100)   ← 意图
-        │
-        │ 聚合校验（amount>0？账户存在？）
-        ▼
-事件: Deposited(accountId=A001, amount=100)  ← 事实，存入 event store
+```mermaid
+flowchart TD
+    A["命令：Deposit(A001, 100)<br/>意图，可能被拒绝"] --> B["聚合校验<br/>amount>0？账户存在？"]
+    B --> C["事件：Deposited(A001, 100)<br/>已发生的事实，不可拒绝"]
+    C --> D["存入 event store"]
 ```
 
 ### 2.4 一个完整的写入流程
-
-```
-1. 收到命令: Deposit(A001, 100)
-2. 加载聚合 A001 的当前状态（从事件重放得到）
-3. 校验：amount>0？余额足够（如果是取款）？
-4. 校验通过 → 产生事件 Deposited(A001, 100)
-5. 事件追加到 event store
-6. （可选）事件发布给读模型/其他服务
-```
 
 **完整写入流程**：
 
@@ -138,14 +118,14 @@ flowchart TD
 
 **CQRS（Command Query Responsibility Segregation）**：把"**写**模型"和"**读**模型"彻底分开，用不同的数据结构（甚至不同的库）。
 
-```
-传统：一个 account 表既写又读
-       ↓ 读要灵活查（按用户、按时间）、写要事务一致——两难
-
-CQRS：
-  写模型（命令侧）：account_events（事件，优化追加、保证一致）
-  读模型（查询侧）：account_balance_view（物化的当前状态，优化查询）
-        ↑ 读模型由订阅写模型的事件、增量更新而来
+```mermaid
+flowchart LR
+    subgraph T["传统：一个 account 表既写又读"]
+        A1["account 表"] --> A2["读要灵活查 / 写要事务一致<br/>两难"]
+    end
+    subgraph C["CQRS：读写分离"]
+        W["写模型（命令侧）<br/>account_events 事件<br/>优化追加、保证一致"] -->|"订阅事件"| R["读模型（查询侧）<br/>account_balance_view<br/>物化当前状态、优化查询"]
+    end
 ```
 
 ### 3.2 为什么写读要分开
@@ -161,18 +141,6 @@ CQRS：
 硬塞在一个表里，两边都别扭。CQRS 让各自用最合适的结构。
 
 ### 3.3 CQRS + 事件溯源的配合（黄金搭档）
-
-```
-命令 → 写模型（聚合 + 事件存储）
-            │ 发布事件
-            ▼
-      读模型投影（projection）订阅事件
-            │ 增量更新
-            ▼
-      读库（如 account_balance_view 表 / ES）
-            ▲
-查询 ────────┘ （查询只读读库，绝不碰写模型）
-```
 
 - **写侧**：事件溯源（存事件，重放得状态）。
 - **读侧**：CQRS（单独的读库，由投影从事件流增量构建）。
@@ -411,10 +379,7 @@ sequenceDiagram
 
 **快照**：每隔 N 个事件，把聚合的当前状态**存一份快照**。加载时：先读最近的快照，再重放快照之后的事件。
 
-```
-无快照：重放 10000 条事件
-有快照（每100条存一次）：读第9900条的快照 + 重放后面100条 = 只处理100条
-```
+无快照：重放全部 10000 条事件；有快照（每 100 条存一次）：读第 9900 条的快照 + 只重放后面 100 条。
 
 ```sql
 CREATE TABLE account_snapshot (

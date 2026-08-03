@@ -185,9 +185,9 @@ sequenceDiagram
     participant SVR as MCP Server(EmployeeMcpServer)
     LLM->>CC: 需要调用工具 queryByName
     CC->>MC: 触发 MCP Tool 调用
-    MC->>SVR: tools/call(stdio 传输)
-    SVR->>SVR: employeeService.findByName(name)
-    SVR-->>MC: ToolResult(Employee)
+    MC->>SVR: "tools/call(stdio 传输)"
+    SVR->>SVR: "employeeService.findByName(name)"
+    SVR-->>MC: "ToolResult(Employee)"
     MC-->>CC: 工具结果
     CC-->>LLM: 结果并入上下文
 ```

@@ -16,16 +16,6 @@
 
 ### 1.2 设计根源差异
 
-```
-LangChain4j 来源          Spring AI 来源
-      ↓                       ↓
-LangChain Python         Spring Boot / Spring Cloud
-（社区生态）              （Spring 官方）
-      ↓                       ↓
-独立运行                深度集成 Spring
-（可单 JVM 跑）          （必须 Spring 容器）
-```
-
 **设计根源差异**：
 
 ```mermaid
@@ -191,16 +181,6 @@ Spring AI Tool 内部可以用：
 
 ## 6. 团队选型决策树
 
-```
-你的项目是 Spring Boot 吗？
-   ├── 否 → LangChain4j
-   └── 是 → 团队对 AI 熟悉度？
-            ├── 新手 → Spring AI（学习曲线低）
-            └── 熟手 → 看是否需要复杂 Advisor 组合
-                       ├── 需要 → Spring AI
-                       └── 不需要 → 都行（推荐 Spring AI，统一栈）
-```
-
 **决策树**：
 
 ```mermaid
@@ -317,22 +297,6 @@ flowchart TD
 ## 12. 双框架"各取所长"的架构建议
 
 如果以后你做大型企业项目，可以考虑这种架构：
-
-```
-┌─────────────────────────────────────┐
-│  Spring AI 层（业务编排）             │
-│  ─ Controller / Service / Repository │
-│  ─ Advisor 链（鉴权、限流、审计）     │
-│  ─ Tool 调用（注入业务 Bean）         │
-└────────────┬────────────────────────┘
-             │
-┌────────────▼────────────────────────┐
-│  LangChain4j 层（复杂 Agent）         │
-│  ─ LangGraph4j 状态机                │
-│  ─ 多 Agent 协作                     │
-│  ─ 自定义推理策略                    │
-└─────────────────────────────────────┘
-```
 
 **各取所长**：
 

@@ -170,14 +170,6 @@ sequenceDiagram
 
 ### 架构（强烈建议 Java 侧实现）
 
-```
-Spring Boot (LangChain4j)
-   ├── Tool: K8sClientTool（用 fabric8 io.fabric8:kubernetes-client）
-   ├── Tool: PromClientTool（用 WebClient 调 Prometheus HTTP API）
-   ├── Tool: LogClientTool（调 Loki API）
-   └── ChatMemory: Redis-backed
-```
-
 **运维助手架构**：
 
 ```mermaid

@@ -162,15 +162,7 @@ public class WeightedFusion {
 
 不一定融合，可以**先用一路粗筛，再用另一路精排**：
 
-```
-1. BM25 召回 top100（精确关键词覆盖）
-2. 向量精排 top100 → top30（语义补充）
-3. cross-encoder 精排 top30 → top5（最终答案）
-```
-
 适合**大规模知识库**（千万级 chunk），单路向量检索成本太高。
-
-**级联检索流程**：
 
 ```mermaid
 flowchart TD
@@ -256,15 +248,11 @@ public List<Document> retrieveWithMultiQuery(String query) {
 
 **直觉**：query 和文档的语言风格不一致（query 是问题，文档是陈述）。先让 LLM **编一个假答案**，再用假答案去检索 —— 假答案的语言风格和真文档更接近。
 
-```
-用户问："如何配置 Spring AI 的 ChatClient？"
-    ↓ HyDE
-LLM 编答案（不一定对）：
-    "要配置 Spring AI 的 ChatClient，首先在 pom.xml 引入
-     spring-ai-openai-spring-boot-starter，然后在 application.yaml
-     配置 api-key，最后通过 ChatClient.builder()..."
-    ↓
-用假答案 embed → 检索 → 真答案
+```mermaid
+flowchart TD
+    A["用户问：如何配置 Spring AI 的 ChatClient？"] --> B["LLM 编一个假答案<br/>（HyDE，不一定对，用陈述句写）"]
+    B --> C["用假答案 embed → 检索"]
+    C --> D["拿到真答案"]
 ```
 
 ```java
@@ -304,15 +292,18 @@ public List<Document> retrieveWithHyDE(String query) {
 
 复杂问题拆成多个子问题，分别检索：
 
-```
-用户问："比较 Spring AI 和 LangChain4j 在流式响应和工具调用上的差异"
-    ↓ 拆解
-1. Spring AI 流式响应怎么实现
-2. LangChain4j 流式响应怎么实现
-3. Spring AI 工具调用怎么实现
-4. LangChain4j 工具调用怎么实现
-    ↓
-4 次检索 → 拼到一起 → LLM 综合
+```mermaid
+flowchart TD
+    A["用户问：比较 Spring AI 和 LangChain4j 在流式响应和工具调用上的差异"] --> B["LLM 拆解为 4 个子问题"]
+    B --> C1["1. Spring AI 流式响应怎么实现"]
+    B --> C2["2. LangChain4j 流式响应怎么实现"]
+    B --> C3["3. Spring AI 工具调用怎么实现"]
+    B --> C4["4. LangChain4j 工具调用怎么实现"]
+    C1 --> D["4 次检索"]
+    C2 --> D
+    C3 --> D
+    C4 --> D
+    D --> E["拼到一起 → LLM 综合"]
 ```
 
 ```java
@@ -356,12 +347,11 @@ public Map<String, List<Document>> retrieveBySubQuestions(String query) {
 
 不直接回答，先问一个更抽象的问题：
 
-```
-用户问："2024 年 Q3 GPT-4 在 MATH 基准上的分数是多少？"
-    ↓ Step-Back
-后退问题："GPT-4 在 2024 年的基准测试表现如何？"
-    ↓
-两个问题都检索，结合回答
+```mermaid
+flowchart TD
+    A["用户问：2024 年 Q3 GPT-4 在 MATH 基准上的分数是多少？"] --> B["Step-Back 后退问题<br/>GPT-4 在 2024 年的基准测试表现如何？"]
+    B --> C["两个问题都检索"]
+    C --> D["结合回答"]
 ```
 
 适合**容易过拟合到具体细节的问题**，后退一步召回更全的上下文。
@@ -512,21 +502,6 @@ public class LlmListwiseReranker {
 - chunk 切 1024 字 → 上下文够，但向量混入太多无关信息，召回率下降。
 
 ### 6.2 解决：父子分块
-
-```
-原文档（4000 字）
-    ↓ 切大块（parent，1024 字）
-[Parent-1] [Parent-2] [Parent-3] [Parent-4]
-    ↓ 每个大块再切小块（child，256 字）
-[Child-1a][Child-1b][Child-1c][Child-1d]  ← Parent-1
-[Child-2a][Child-2b][Child-2c][Child-2d]  ← Parent-2
-...
-
-索引：只 embed child
-检索：用 child query → 找到 child → 返回对应的 parent
-```
-
-**父子分块与检索流程**：
 
 ```mermaid
 flowchart TD
@@ -712,17 +687,7 @@ public class AdaptiveRetrievalAdvisor implements BaseAdvisor {
 
 更进一步：每一步检索后让 LLM 判断"召回的够不够"，不够就再查：
 
-```
-1. 判断：要检索 → 检索 top5
-2. LLM 看召回：相关吗？够吗？
-   - 相关够 → 回答
-   - 不相关 → 改写 query，再检索
-3. 最多 3 轮
-```
-
 成本翻倍但准确率显著提升。适合**高准确率场景**（医疗、法律）。
-
-**Self-RAG 循环**：
 
 ```mermaid
 flowchart TD
@@ -845,16 +810,6 @@ public List<Document> retrieve(String query) {
 ### 9.1 思路
 
 最高阶的 RAG：把检索策略当成工具，让 Agent 自己决定查什么、查几次。
-
-```
-用户问："对比 2023 和 2024 年中国新能源汽车销量前三的品牌"
-    ↓ Agent 思考
-1. 调工具 search_kb("2023 中国新能源汽车销量")
-2. 看结果 → 调工具 search_kb("2024 中国新能源汽车销量")
-3. 综合回答
-```
-
-**核心时序**：
 
 ```mermaid
 sequenceDiagram

@@ -9,20 +9,6 @@
 
 ## 0. 认知地图
 
-```
-传统 CI/CD
-    ├── 代码版本：Git
-    ├── 构建产物：Docker image
-    └── 部署：Helm + ArgoCD
-
-AI CI/CD 加 3 套
-    ├── Prompt 版本：PromptRepo（11 篇）+ diff eval
-    ├── 模型版本：model registry（vLLM / OpenAI snapshot）
-    └── 数据版本：DVC / LakeFS（retrieval corpus / eval set）
-```
-
-**三套版本化**：
-
 ```mermaid
 flowchart LR
     T["传统 CI/CD<br/>Git + Docker image + Helm/ArgoCD"] --> P["AI CI/CD 管线"]
@@ -401,12 +387,10 @@ flowchart TD
 
 ## 7. ArgoCD / Flux GitOps
 
-```
-Git 仓库（desired state）
-    ↓ ArgoCD 同步
-K8s 集群（actual state）
-    ↓ drift detection
-告警 / 自愈
+```mermaid
+flowchart TD
+    G["Git 仓库<br/>（desired state）"] -->|"ArgoCD 同步"| K["K8s 集群<br/>（actual state）"]
+    K -->|"drift detection"| A["告警 / 自愈"]
 ```
 
 K8s manifest 全部走 GitOps，CI/CD 只改 Git，不直接 kubectl apply。
@@ -432,15 +416,6 @@ spec:
 ## 8. 回滚策略
 
 ### 8.1 三层回滚
-
-```
-应用代码回滚 → ArgoCD one-click（秒级）
-Prompt 回滚 → FeatureFlag 翻开关（秒级）
-模型回滚 → 更新 models.yaml + ArgoCD 同步（分钟级）
-数据回滚 → DVC/LakeFS 切版本 + reindex（小时级）
-```
-
-**三层回滚**：
 
 ```mermaid
 flowchart LR

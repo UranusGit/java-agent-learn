@@ -46,17 +46,6 @@
 
 ## 2. 架构
 
-```
-Agent Engine
-     ↓
-ToolRegistry（统一注册）
-     ↓
-McpClientManager
-     ↓ ↓ ↓ ↓
-  GitHub  Filesystem  Slack  Database  ...
-  (各自作为子进程或 HTTP server)
-```
-
 **整体架构**：
 
 ```mermaid

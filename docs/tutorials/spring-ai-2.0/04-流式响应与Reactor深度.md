@@ -391,27 +391,17 @@ Flux.fromIterable(queries)
 
 ### E.1 工具调用在流中是什么样的
 
-```
-chunk 1: assistant message，含 toolCalls=[{name:"getWeather", args:"{city:北京}"}]
-    ↓ Advisor 检测到 toolCalls，触发工具执行
-chunk 2: tool message（工具结果）
-    ↓ 重新调用 LLM
-chunk 3+: assistant message，开始流式返回最终答案
-```
-
-**Mermaid 版流式工具调用时序**：
-
 ```mermaid
 sequenceDiagram
     participant LLM as LLM
     participant ADV as ToolCallingAdvisor
     participant TOOL as 工具
-    LLM-->>ADV: chunk 1：assistant message<br/>含 toolCalls=[getWeather(city:北京)]
+    LLM-->>ADV: "chunk 1：assistant message<br/>含 toolCalls=[getWeather(city:北京)]"
     Note over ADV: 单看一个 chunk 看不到完整 tool call<br/>先用 ChatClientMessageAggregator 聚合判断
     ADV->>TOOL: 检测到 toolCalls，触发工具执行
     TOOL-->>ADV: chunk 2：tool message（工具结果）
     ADV->>LLM: 工具结果拼回 history，重新调用 LLM
-    LLM-->>ADV: chunk 3+：assistant message<br/>开始流式返回最终答案
+    LLM-->>ADV: "chunk 3+：assistant message<br/>开始流式返回最终答案"
 ```
 
 ### E.2 用 ChatClientMessageAggregator 旁路聚合

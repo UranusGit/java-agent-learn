@@ -93,28 +93,6 @@ flowchart LR
 
 ### 3.1 一图决策
 
-```
-你的项目跑在什么生态？
-│
-├─ Spring Boot（80% Java 项目）
-│   └─→ ✅ Spring AI 2.0
-│        （除非有强状态机需求 → 加 LangGraph4j 或 Alibaba Graph）
-│
-├─ Quarkus / 云原生 / GraalVM 原生镜像
-│   └─→ ✅ Quarkus LangChain4j
-│        （Red Hat 官方推荐，互斥于 Spring AI）
-│
-├─ 纯 Java / Kotlin（无框架）
-│   ├─→ ✅ LangChain4j（无容器依赖）
-│   └─→ ⚠️ Spring AI 也可，但需手动初始化 IoC
-│
-├─ Kotlin 项目 + 复杂 Agent
-│   └─→ ✅ Koog（JetBrains，1.0 GA，实验性跟进）
-│
-└─ 国内复杂工作流 + Spring 系
-    └─→ ✅ Spring AI Alibaba Graph（DAG 编排）
-```
-
 **一图决策**：按生态对号入座。
 
 ```mermaid
@@ -159,28 +137,6 @@ flowchart TD
 
 **架构骨架**：
 
-```
-HTTP / SSE
-  ↓
-Controller
-  ↓
-ChatClient（统一入口）
-  ├─ defaultSystem
-  ├─ defaultAdvisors:
-  │   ├─ SecurityAdvisor（鉴权）
-  │   ├─ RateLimitAdvisor（限流，Bucket4j）
-  │   ├─ AuditAdvisor（审计落库）
-  │   ├─ ToolCallingAdvisor（2.0 自动注册，递归迭代 = Agent Loop）
-  │   ├─ MessageChatMemoryAdvisor（记忆）
-  │   ├─ QuestionAnswerAdvisor（RAG）
-  │   └─ StructuredOutputValidationAdvisor（结构化输出校验）
-  └─ defaultTools
-  ↓
-ChatModel（调 LLM）
-  ↓
-Flux<String> 流式返回
-```
-
 **架构骨架**：ChatClient 统一入口，Advisor 链逐层包裹横切关注点。
 
 ```mermaid
@@ -219,27 +175,6 @@ flowchart TD
 - 复杂多 Agent 状态机（用 LangGraph4j）
 
 **架构骨架**：
-
-```
-用户输入
-  ↓
-AiServices 接口（声明式）
-  ├─ @SystemMessage
-  ├─ @UserMessage
-  ├─ @MemoryId
-  └─ 返回类型即结构化输出契约
-  ↓
-AiServices.builder(...)
-  ├─ chatLanguageModel
-  ├─ contentRetriever（RAG）
-  ├─ tools（@Tool 集合）
-  ├─ chatMemoryProvider
-  └─ structuredOutputConverter
-  ↓
-LangGraph4j（可选，复杂状态机）
-  ↓
-ChatLanguageModel 调用
-```
 
 **架构骨架**：AiServices 接口驱动，builder 装配各依赖。
 
@@ -297,12 +232,6 @@ class Controller {
 ```
 
 **形态 B：Spring AI 服务 + LangChain4j 服务（跨进程，HTTP/gRPC）**
-
-```
-Spring AI 微服务（Web 层）
-  ↓ HTTP/gRPC
-LangChain4j 微服务（Agent 层）
-```
 
 **形态 C：Spring AI 主框架 + LangGraph4j 编排引擎（最常见的混合）**
 
@@ -495,16 +424,10 @@ flowchart LR
 
 ### 9.3 三篇文档的最终关系
 
-```
-第 10 篇（理论范式）
-   │
-   │ 现实校正
-   ↓
-第 11 篇（企业实战）
-   │
-   │ 版本更新 + 决策落地
-   ↓
-第 13 篇（本文，决策手册）
+```mermaid
+flowchart TD
+    T10["第 10 篇（理论范式）"] -->|"现实校正"| T11["第 11 篇（企业实战）"]
+    T11 -->|"版本更新 + 决策落地"| T13["第 13 篇（本文，决策手册）"]
 ```
 
 **读法建议**：

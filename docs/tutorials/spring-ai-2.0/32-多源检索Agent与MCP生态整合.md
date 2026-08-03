@@ -11,29 +11,24 @@
 
 ## 0. 认知地图
 
-```
-传统 RAG：单源（自己的向量库）→ 检索 → 回答
-Agentic Search：多源（搜索引擎 + 知识库 + 社交平台）→ 融合 → 综合 + 引用
-                                ↑
-                          MCP 协议统一接入
+```mermaid
+flowchart LR
+    TRAD["传统 RAG<br/>单源（自己的向量库）→ 检索 → 回答"]
+    AGENT["Agentic Search<br/>多源（搜索引擎 + 知识库 + 社交平台）→ 融合 → 综合 + 引用"]
+    MCP["MCP 协议统一接入"]
+    MCP --> AGENT
 ```
 
-```
-用户问题
-    ↓
-[Query Rewrite]    把一个问题拆成 N 个子查询（适配不同源）
-    ↓
-[Fan-out 并发]     Reactor Flux 并发调 K 个搜索 MCP Server
-    ↓
-[Dedup + RRF 融合] 跨源结果合并
-    ↓
-[Rerank]           cross-encoder 精排 top-K
-    ↓
-[LLM 综合]         必须引用 [1][2][3] source
-    ↓
-[引用校验 Advisor] 复用 30 篇的 CitationValidationAdvisor，根除幻觉
-    ↓
-带角标的最终答案 + source 列表
+```mermaid
+flowchart TD
+    U["用户问题"]
+    U --> QR["Query Rewrite<br/>把一个问题拆成 N 个子查询（适配不同源）"]
+    QR --> FO["Fan-out 并发<br/>Reactor Flux 并发调 K 个搜索 MCP Server"]
+    FO --> DF["Dedup + RRF 融合<br/>跨源结果合并"]
+    DF --> RR["Rerank<br/>cross-encoder 精排 top-K"]
+    RR --> LLM["LLM 综合<br/>必须引用 [1][2][3] source"]
+    LLM --> CV["引用校验 Advisor<br/>复用 30 篇的 CitationValidationAdvisor，根除幻觉"]
+    CV --> OUT["带角标的最终答案 + source 列表"]
 ```
 
 ---
@@ -125,35 +120,6 @@ flowchart TD
     BG --> BI["Bing API"]
     TV --> TA["Tavily API"]
     KB --> VEC["内部向量库"]
-```
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│ Agentic Search Agent（业务进程）                                │
-│                                                                 │
-│  ┌──────────┐   ┌────────────┐   ┌──────────────────┐         │
-│  │ Query    │ → │ Fan-out    │ → │ Result Merger    │         │
-│  │ Rewriter │   │ (Reactor)  │   │ (RRF + Rerank)   │         │
-│  └──────────┘   └────────────┘   └────────┬─────────┘         │
-│                                          ↓                     │
-│                                  ┌──────────────┐              │
-│                                  │ Synthesizer  │              │
-│                                  │ + Citation   │              │
-│                                  └──────────────┘              │
-│                                          ↑                     │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │ MCP Client (Spring AI 自动装配的 SyncMcpToolCallbackProvider)│
-│  └─────────────────────────────────────────────────────────┘  │
-└────────────────────┬───────────────────────────────────────────┘
-                     │ MCP 协议（Streamable HTTP）
-        ┌────────────┼────────────┬──────────────┐
-        ↓            ↓            ↓              ↓
-   ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌────────────┐
-   │ Baidu   │ │ Bing    │ │ Tavily   │ │ Internal   │
-   │ MCP Srv │ │ MCP Srv │ │ MCP Srv  │ │ KB MCP Srv │
-   └─────────┘ └─────────┘ └──────────┘ └────────────┘
-        ↓            ↓            ↓              ↓
-     百度 API    Bing API   Tavily API    内部向量库
 ```
 
 每个搜索源是一个**独立部署的 MCP Server**，由各自的团队维护。Agentic Search Agent 只关心"调谁 + 怎么融合"。

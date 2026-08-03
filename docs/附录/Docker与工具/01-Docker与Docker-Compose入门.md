@@ -35,9 +35,10 @@
 
 **比喻**：镜像是"菜谱"（红烧肉的做法），容器是"按菜谱做出来、正在桌上的一盘红烧肉"。一份菜谱可以做出很多盘菜（一个镜像启动多个容器）。
 
-```
-镜像 redis:7  ──docker run──→  容器A（正在跑的 Redis，端口 6379）
-              ──docker run──→  容器B（另一个 Redis，端口 6380）
+```mermaid
+flowchart LR
+    IMG["镜像 redis:7"] -->|"docker run"| CA["容器A<br/>正在跑的 Redis, 端口 6379"]
+    IMG -->|"docker run"| CB["容器B<br/>另一个 Redis, 端口 6380"]
 ```
 
 ### 1.3 和虚拟机的区别（顺带理解）

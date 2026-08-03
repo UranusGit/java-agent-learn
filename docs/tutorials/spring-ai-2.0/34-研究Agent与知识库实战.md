@@ -664,21 +664,6 @@ public class ResearchService {
 
 照着敲能跑，但要学懂"Agent"的本质，得看清这一轮轮循环内部发生了什么。Agent 用的叫 **ReAct**（Reason + Act，推理+行动）模式：
 
-```
-用户：研究 XX
-  ↓
-[第1轮]
-  Reason：LLM 想"我需要资料 → 该调 search"
-  Act：    LLM 输出结构化的 tool_call（不是普通文本！）：{调 search, 参数:"XX"}
-  ↓ 框架执行 search，把结果塞回去
-[第2轮]
-  Reason：LLM 看 search 结果，想"资料够了/不够"
-  Act：   够了 → 不再请求工具，直接输出最终答案（循环结束）
-          不够 → 再输出一个 tool_call（再搜/换词）
-  ↓
-... 直到 LLM 不再请求工具，或撞 maxIterations 兜底
-```javascript
-
 **核心时序（ToolCallingAdvisor 托管的 ReAct 循环）**：
 
 ```mermaid
@@ -2908,16 +2893,17 @@ Agent 的回答让人崩溃——它**完全不记得上一轮聊了什么**，�
 
 Spring AI 2.0 的 ChatMemory 体系（先理清概念，再动手）：
 
-```
-ChatMemory（逻辑层：管窗口/裁剪）          ChatMemoryRepository（持久化层：存取）
-┌──────────────────────────┐              ┌──────────────────────────┐
-│ MessageWindowChatMemory  │ ── 持有 ──► │ JdbcChatMemoryRepository │ ← 本章用这个（PG）
-│  .maxMessages(20)        │              │   PostgresDialect         │
-│  （默认实现，自动裁剪超窗） │              │ InMemoryChatMemoryRepo   │ ← 默认（重启丢）
-└──────────────────────────┘              └──────────────────────────┘
-            ▲
-            │ ChatClient 通过 MessageChatMemoryAdvisor 使用它
-            │ .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))
+```mermaid
+flowchart LR
+    subgraph logic["ChatMemory 逻辑层（管窗口/裁剪）"]
+        A["MessageWindowChatMemory<br/>.maxMessages(20)<br/>（默认实现，自动裁剪超窗）"]
+    end
+    subgraph persist["ChatMemoryRepository 持久化层（存取）"]
+        B["JdbcChatMemoryRepository<br/>PostgresDialect（本章用这个，PG）"]
+        C["InMemoryChatMemoryRepo（默认，重启丢）"]
+    end
+    A -- 持有 --> B
+    CL["ChatClient"] -- "通过 MessageChatMemoryAdvisor 使用<br/>.advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionId))" --> A
 ```
 
 | 决策 | 选择 | 理由 |
@@ -3827,26 +3813,12 @@ git add -A && git commit -m "第8章：会话CRUD(MyBatis-Plus)+前端对话页�
 
 #### 三层广播架构
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Layer 3: 消息持久层（Redis Streams）                          │
-│    - XADD stream:{sid} * chunk "xxx"                         │
-│    - 持久化每条 chunk，支持 XREAD 从任意 offset 重放            │
-│    - MAXLEN 限制流长度                                        │
-└──────────────────────┬───────────────────────────────────────┘
-                       │
-┌──────────────────────▼───────────────────────────────────────┐
-│  Layer 2: 实时推送层（Redis Pub/Sub + 本地 Sinks）             │
-│    - PUBLISH stream:{sid} "xxx" → 所有实例的低延迟广播         │
-│    - 本地 Sinks.Many 扇出给本实例所有 SSE 客户端                │
-│    - Pub/Sub 失败时降级到 Stream XREAD 轮询                    │
-└──────────────────────┬───────────────────────────────────────┘
-                       │
-┌──────────────────────▼───────────────────────────────────────┐
-│  Layer 1: 协调层（SETNX 锁 + 实例注册）                        │
-│    - SETNX stream:{sid}:lock → 全集群只触发一次 LLM 调用       │
-│    - 锁带 TTL（5min），防崩溃死锁                               │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    L3["Layer 3: 消息持久层（Redis Streams）<br/>- XADD stream:{sid} * chunk \"xxx\"<br/>- 持久化每条 chunk，支持 XREAD 从任意 offset 重放<br/>- MAXLEN 限制流长度"]
+    L2["Layer 2: 实时推送层（Redis Pub/Sub + 本地 Sinks）<br/>- PUBLISH stream:{sid} \"xxx\" → 所有实例的低延迟广播<br/>- 本地 Sinks.Many 扇出给本实例所有 SSE 客户端<br/>- Pub/Sub 失败时降级到 Stream XREAD 轮询"]
+    L1["Layer 1: 协调层（SETNX 锁 + 实例注册）<br/>- SETNX stream:{sid}:lock → 全集群只触发一次 LLM 调用<br/>- 锁带 TTL（5min），防崩溃死锁"]
+    L3 --> L2 --> L1
 ```
 
 #### 新设备加入时（iPad 晚 10 秒打开同一会话）
@@ -5283,16 +5255,18 @@ public class RunController {
 
 ### 11.1 思路：主从 + 哨兵
 
-```
-单节点（第 9-10 章）              Sentinel（主从 + 哨兵）
-┌─────────┐                       ┌──────┐  复制  ┌──────┐
-│ Redis   │                       │Master│ ─────→ │Slave │
-│ (单点)  │                       └──┬───┘        └──┬───┘
-└─────────┘                          │               │
-                                  ┌───┴───────────────┴───┐
-                                  │  哨兵 ×3（投票监控）    │
-                                  └───────────────────────┘
-                                  Master 挂 → 哨兵投票 → 选 Slave 提升为新 Master
+```mermaid
+flowchart LR
+    subgraph old["单节点（第 9-10 章）"]
+        R1["Redis（单点）"]
+    end
+    subgraph new["Sentinel（主从 + 哨兵）"]
+        M["Master"] -- 复制 --> S["Slave"]
+        SEN["哨兵 ×3（投票监控）"]
+        SEN --- M
+        SEN --- S
+    end
+    NOTE["Master 挂 → 哨兵投票 → 选 Slave 提升为新 Master"]
 ```
 
 | 角色 | 职责 | 数量 |
@@ -5475,15 +5449,22 @@ git add -A && git commit -m "第11章：Redis Sentinel高可用+故障转移退�
 
 ### 12.1 思路：Streams 多播 → Kafka 消费组
 
-```
-第 9-11 章（Redis Streams）              第 12 章（Kafka）
-LLM → XADD stream:{sid}                  LLM → produce topic=research-chunks
-     ↓                                        ↓
-本服务内多播订阅                         消费组各自管理 offset：
-                                         - 订阅服务（SSE 推前端）
-                                         - 审计服务（落合规日志）
-                                         - 计费服务（按 token 计费）
-                                         磁盘持久 30 天，按需重放
+```mermaid
+flowchart LR
+    subgraph redis["第 9-11 章（Redis Streams）"]
+        direction TB
+        LLM1["LLM"] --> XADD["XADD stream:{sid}"]
+        XADD --> SUB1["本服务内多播订阅"]
+    end
+    subgraph kafka["第 12 章（Kafka）"]
+        direction TB
+        LLM2["LLM"] --> PROD["produce topic=research-chunks"]
+        PROD --> CONSUME["消费组各自管理 offset"]
+        CONSUME --> S1["订阅服务（SSE 推前端）"]
+        CONSUME --> S2["审计服务（落合规日志）"]
+        CONSUME --> S3["计费服务（按 token 计费）"]
+        PERSIST["磁盘持久 30 天，按需重放"]
+    end
 ```
 
 | 维度 | Redis Streams（第 9 章） | Kafka（第 12 章） |
@@ -5776,18 +5757,20 @@ git add -A && git commit -m "第12章：chunk总线升级Kafka+消费组跨服�
 
 ### 13.1 思路：单体 + 一个独立订阅服务
 
-```
-拆分前（第 12 章）                    拆分后（第 13 章）
-┌─────────────────────┐              ┌─────────────────────┐
-│  research-agent      │              │  research-agent      │ ← 触发/锁/写 Kafka
-│  ├ 触发（POST）      │              │  ├ 触发（POST）      │   保留在原进程
-│  ├ 订阅（GET SSE）◀──┼── 拆出 ──▶  └─────────────────────┘
-│  └ 锁/ChatMemory     │              ┌─────────────────────┐
-└─────────────────────┘              │  research-subscribe  │ ← 新独立进程
-   共享 Kafka/Redis/PG                │  └ 订阅（GET SSE）   │   只读 Kafka 推 SSE
-                                     └──────────┬──────────┘
-                                                │ 读
-                                     共享 Kafka/Redis/PG
+```mermaid
+flowchart LR
+    subgraph before["拆分前（第 12 章）"]
+        BA["research-agent<br/>├ 触发（POST）<br/>├ 订阅（GET SSE）<br/>└ 锁/ChatMemory"]
+    end
+    subgraph after["拆分后（第 13 章）"]
+        AA["research-agent<br/>├ 触发（POST）<br/>└ 锁/ChatMemory<br/>（触发/锁/写 Kafka，保留在原进程）"]
+        AS["research-subscribe<br/>└ 订阅（GET SSE）<br/>（新独立进程，只读 Kafka 推 SSE）"]
+    end
+    BA -- 拆出 --> AS
+    INFRA["共享 Kafka/Redis/PG"]
+    INFRA --- BA
+    INFRA --- AA
+    INFRA --- AS
 ```
 
 | 进程 | 职责 | 扩容依据 |
@@ -6078,20 +6061,20 @@ git add -A && git commit -m "第13章：拆出独立订阅服务research-subscri
 
 ### 14.1 思路：触发与业务核心分离
 
-```
-第 13 章后                          第 14 章后
-┌─────────────────────┐            ┌─────────────────────┐
-│  research-agent      │            │  research-agent      │ ← 业务核心
-│  ├ 触发（POST）◀─────┼── 拆出     │  ├ 知识库查询        │   （知识库/Plan/ChatMemory）
-│  ├ 知识库查询        │  ──▶       │  ├ Plan-Execute      │
-│  ├ Plan-Execute      │            │  └ ChatMemory        │
-│  └ ChatMemory        │            └─────────────────────┘
-└─────────────────────┘            ┌─────────────────────┐
-   research-subscribe（已拆）       │  research-trigger    │ ← 新独立进程
-                                    │  └ 触发（POST）      │   调 LLM + 抢锁 + 写 Kafka
-                                    └──────────┬──────────┘
-                                               │ 写
-                                    共享 Kafka/Redis/PG
+```mermaid
+flowchart LR
+    subgraph after13["第 13 章后"]
+        A13["research-agent<br/>├ 触发（POST）<br/>├ 知识库查询<br/>├ Plan-Execute<br/>└ ChatMemory<br/>research-subscribe（已拆）"]
+    end
+    subgraph after14["第 14 章后"]
+        B14["research-agent<br/>├ 知识库查询<br/>├ Plan-Execute<br/>└ ChatMemory<br/>（业务核心：知识库/Plan/ChatMemory）"]
+        T14["research-trigger<br/>└ 触发（POST）<br/>（新独立进程：调 LLM + 抢锁 + 写 Kafka）"]
+    end
+    A13 -- 拆出 --> T14
+    INFRA["共享 Kafka/Redis/PG"]
+    INFRA --- A13
+    INFRA --- B14
+    INFRA --- T14
 ```
 
 | 进程 | 职责 | 扩容依据 |
@@ -6390,12 +6373,12 @@ git add -A && git commit -m "第14章：拆出独立触发服务research-trigger
 
 ### 15.1 思路：网关 + 服务发现
 
-```
-前端 ──→ api.example.com (网关 :8080)
-              │ 按路由规则分发
-              ├── POST /api/research        ──→ research-trigger  (lb 负载均衡)
-              ├── GET  /api/research/stream ──→ research-subscribe
-              └── /api/knowledge/**         ──→ research-agent（业务核心）
+```mermaid
+flowchart LR
+    FE["前端"] --> GW["api.example.com（网关 :8080）<br/>按路由规则分发"]
+    GW -- "POST /api/research" --> TR["research-trigger（lb 负载均衡）"]
+    GW -- "GET /api/research/stream" --> SU["research-subscribe"]
+    GW -- "/api/knowledge/**" --> AG["research-agent（业务核心）"]
 ```
 
 | 能力 | 说明 |
@@ -6655,15 +6638,16 @@ git add -A && git commit -m "第15章：加API网关+Eureka服务发现统一入
 
 ### 16.1 思路：业务服务调统一接口，网关路由到具体厂商
 
-```
-拆分前（第 14-15 章）                 拆分后（第 16 章）
-research-trigger                      research-trigger
-  └ 直连 DeepSeek（API key 在这）       └ 调 LLM 网关统一接口（不知厂商）
-                                          │
-                                       research-llm-gateway（新）
-                                         ├ 路由：DeepSeek / 通义 / GPT
-                                         ├ A/B 测试、熔断、计费
-                                         └ 厂商适配（API 格式转换）
+```mermaid
+flowchart LR
+    subgraph before["拆分前（第 14-15 章）"]
+        T1["research-trigger<br/>└ 直连 DeepSeek（API key 在这）"]
+    end
+    subgraph after["拆分后（第 16 章）"]
+        T2["research-trigger<br/>└ 调 LLM 网关统一接口（不知厂商）"]
+        G["research-llm-gateway（新）<br/>├ 路由：DeepSeek / 通义 / GPT<br/>├ A/B 测试、熔断、计费<br/>└ 厂商适配（API 格式转换）"]
+    end
+    T2 --> G
 ```
 
 | 职责 | 落在哪 | 为什么 |
@@ -6948,15 +6932,16 @@ git add -A && git commit -m "第16章：拆出LLM网关屏蔽厂商差异"
 
 ### 17.1 思路：PG（冷）+ Redis（热）两级存储
 
-```
-第 7 章（单体）              第 17 章（分布式）
-ChatMemory                    ChatMemory
-  ↓ 读写                       ↓ 读写冷数据（全量历史，落库）
-PG（单库）                     PG
-                             ▲
-                             │ 读热数据（最近 N 轮，毫秒级）
-                             │
-触发/业务核心 ──→ Redis（热缓存，所有进程共享）
+```mermaid
+flowchart LR
+    subgraph ch7["第 7 章（单体）"]
+        CM1["ChatMemory"] -- 读写 --> PG1["PG（单库）"]
+    end
+    subgraph ch17["第 17 章（分布式）"]
+        CM2["ChatMemory"] -- "读写冷数据（全量历史，落库）" --> PG2["PG"]
+        CORE["触发/业务核心"] -- "读写热数据（最近 N 轮，毫秒级）" --> REDIS["Redis（热缓存，所有进程共享）"]
+        REDIS -. "回灌/异步落库兜底" .-> PG2
+    end
 ```
 
 | 存储 | 职责 | 访问方 |
@@ -7194,18 +7179,16 @@ git add -A && git commit -m "第17章：分布式ChatMemory——Redis热缓存+
 
 ### 18.1 思路：认证（你是谁）+ 鉴权（你能访问什么）
 
-```
-登录：POST /auth/login {username, password}
-         ↓
-    认证服务校验 → 签发 JWT（含 userId, tenantId，签名防篡改）
-         ↓
-    返回 token 给前端
-
-访问：前端带 Authorization: Bearer <token>
-         ↓
-    API 网关验签 → 校验签名 + 过期时间 → 注入 X-User-Id / X-Tenant-Id 头 → 路由到后端
-         ↓
-    后端服务从头里读 tenantId → 所有数据操作都带 tenantId 过滤/前缀
+```mermaid
+flowchart TD
+    L["登录：POST /auth/login {username, password}"]
+    L --> AUTH["认证服务校验"]
+    AUTH --> JWT["签发 JWT（含 userId, tenantId，签名防篡改）"]
+    JWT --> TOKEN["返回 token 给前端"]
+    ACC["访问：前端带 Authorization: Bearer &lt;token&gt;"]
+    ACC --> GW["API 网关验签"]
+    GW --> INJ["校验签名 + 过期时间 → 注入 X-User-Id / X-Tenant-Id 头 → 路由到后端"]
+    INJ --> TENANT["后端服务从头里读 tenantId → 所有数据操作都带 tenantId 过滤/前缀"]
 ```
 
 | 层 | 职责 | 落在哪 |
@@ -7601,15 +7584,17 @@ git add -A && git commit -m "第18章：JWT认证+网关验签+租户数据隔�
 
 ### 19.1 思路：可观测性三支柱
 
-```
-链路追踪（Trace）        指标（Metrics）           日志聚合（Logs）
-"这个请求经过哪些服务    "系统当前健康吗"          "那一环到底发生了什么"
- 各耗多久"              P95延迟/QPS/错误率         错误堆栈/业务上下文
-   ↓                      ↓                         ↓
- Zipkin（可视化调用链）  Prometheus + Grafana      ELK（全文检索）
-   │                      │                         │
-   └────── 共享 traceId ──┴─────────────────────────┘
-           三者通过 traceId 关联，一个 ID 串起全部视角
+```mermaid
+flowchart LR
+    T["链路追踪（Trace）<br/>这个请求经过哪些服务、各耗多久"]
+    M["指标（Metrics）<br/>系统当前健康吗<br/>P95延迟/QPS/错误率"]
+    L["日志聚合（Logs）<br/>那一环到底发生了什么<br/>错误堆栈/业务上下文"]
+    T --> ZIP["Zipkin（可视化调用链）"]
+    M --> PG["Prometheus + Grafana"]
+    L --> ELK["ELK（全文检索）"]
+    ZIP -. 共享 traceId .-> MERGE["三者通过 traceId 关联，一个 ID 串起全部视角"]
+    PG -. 共享 traceId .-> MERGE
+    ELK -. 共享 traceId .-> MERGE
 ```
 
 | 支柱 | 回答的问题 | 工具 | 数据特征 |
@@ -7863,15 +7848,16 @@ git add -A && git commit -m "第19章：可观测性——Zipkin链路追踪+Pro
 
 ### 20.1 思路：检测（事前）+ 闭环（事后）
 
-```
-检测（生成时，事前）              闭环（用户反馈，事后）
-答案 ← 检索片段                    答案 → 用户
-  ↓ 引用核对                         ↓ 点"答案不对"
-  ↓ 交叉验证                         ↓ 落反馈表
-有支撑 → 正常输出                   ↓ 人工/自动修正
-无支撑 → 标"⚠️ 未核实"             ↓ 改善 RAG 数据
-                                  ↓
-                                  下次同类问题 → 检索到修正后的数据 → 答对
+```mermaid
+flowchart TD
+    subgraph detect["检测（生成时，事前）"]
+        A1["答案 ← 检索片段"] --> A2["引用核对"] --> A3["交叉验证"]
+        A3 --> OK["有支撑 → 正常输出"]
+        A3 --> NO["无支撑 → 标“⚠️ 未核实”"]
+    end
+    subgraph close["闭环（用户反馈，事后）"]
+        B1["答案 → 用户"] --> B2["点“答案不对”"] --> B3["落反馈表"] --> B4["人工/自动修正"] --> B5["改善 RAG 数据"] --> B6["下次同类问题 → 检索到修正后的数据 → 答对"]
+    end
 ```
 
 | 环节 | 做什么 | 何时做 |
@@ -8138,15 +8124,6 @@ git add -A && git commit -m "第20章：幻觉检测(引用核对)+用户反馈�
 **本章解法**：引入 DAG 工作流引擎。把研究过程建模成节点图：每个节点是一个子任务，节点间有依赖边（B 依赖 A 的结果）和条件边（A 结果满足某条件才走 B，否则走 C）。引擎按拓扑顺序执行、动态决定分支。
 
 ### 21.1 思路：节点（任务）+ 边（依赖/条件）
-
-```
-线性 Plan-Execute（第 4-5 章）：        DAG 工作流（第 21 章）：
-[查A] [查B] [对比]                      [查A] ───┬─(支持特性X)─→ [深入查X性能] ─┐
-   并行 → 聚合                                   └─(不支持)──→ (跳过)        ─┤
-扁平、静态、无分支                                                                ├─→ [对比聚合]
-                                                [查B] ─────────────────────────┘
-                                                有依赖、有条件分支、动态决定走向
-```
 
 **DAG 条件分支示意（对应 21.2.3 研究工作流）**：
 
@@ -8425,18 +8402,14 @@ git add -A && git commit -m "第21章：DAG工作流引擎(条件分支+跨步�
 
 ### 22.1 思路：用户画像 + 语义检索（RAG over 用户历史）
 
-```
-会话开始
-  ↓
-按 userId 检索长期记忆（向量库）→ "用户是后端 Java 工程师，关注性能，偏好简洁回答"
-  ↓
-注入 system prompt：你是研究助理。用户画像：[后端/Java/关注性能/偏好简洁]
-  ↓
-本次会话正常进行（读写会话记忆）
-  ↓
-会话结束 → 提取"本次新学到的偏好"→ 写入长期记忆（向量库，按 userId 索引）
-  ↓
-下次任何会话 → 检索到积累的画像 → 越用越懂用户
+```mermaid
+flowchart TD
+    A["会话开始"]
+    A --> B["按 userId 检索长期记忆（向量库）<br/>→ “用户是后端 Java 工程师，关注性能，偏好简洁回答”"]
+    B --> C["注入 system prompt：你是研究助理。用户画像：[后端/Java/关注性能/偏好简洁]"]
+    C --> D["本次会话正常进行（读写会话记忆）"]
+    D --> E["会话结束 → 提取“本次新学到的偏好”→ 写入长期记忆（向量库，按 userId 索引）"]
+    E --> F["下次任何会话 → 检索到积累的画像 → 越用越懂用户"]
 ```
 
 | 存储 | 索引 | 内容 | 复用范围 |
@@ -8627,18 +8600,15 @@ git add -A && git commit -m "第22章：长期记忆与个性化(跨会话用户
 
 ### 23.1 思路：计量（记多少）+ 预算（限多少）+ 分摊（算给谁）
 
-```
-LLM 调用
-  ↓
-调用前：查租户本月已用 token vs 预算上限
-  ├ 超额 → 拒绝（或降级到便宜模型）
-  └ 未超额 → 放行
-  ↓
-调用后：从响应里拿 usage.prompt_tokens / completion_tokens
-  ↓
-记录：usage_log 表（user_id, tenant_id, session_id, tokens, cost, model, 时间）
-  ↓
-聚合：按 tenant_id 汇总本月用量 → 出账单 / 成本分析看板
+```mermaid
+flowchart TD
+    A["LLM 调用"] --> B{"调用前：查租户本月已用 token vs 预算上限"}
+    B -- 超额 --> C["拒绝（或降级到便宜模型）"]
+    B -- 未超额 --> D["放行"]
+    C --> E["调用后：从响应里拿 usage.prompt_tokens / completion_tokens"]
+    D --> E
+    E --> F["记录：usage_log 表<br/>（user_id, tenant_id, session_id, tokens, cost, model, 时间）"]
+    F --> G["聚合：按 tenant_id 汇总本月用量 → 出账单 / 成本分析看板"]
 ```
 
 | 环节 | 做什么 | 何时做 |

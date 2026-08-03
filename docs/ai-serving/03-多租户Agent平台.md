@@ -9,29 +9,6 @@
 
 ## 0. 认知地图
 
-```
-多租户 Agent 平台
-├── 隔离层
-│   ├── 数据隔离（向量库 / ChatMemory / 文件）
-│   ├── 资源隔离（quota / rate limit / 并发）
-│   └── 模型隔离（per-tenant 模型权限）
-│
-├── 编排层
-│   ├── Agent 注册中心
-│   ├── Workflow 引擎
-│   └── MCP Hub（连接所有工具）
-│
-├── 共享层
-│   ├── 推理网关（01 篇）
-│   ├── 向量库（02 篇）
-│   └── Tool 仓库
-│
-└── 治理层
-    ├── 配额与计费（04 篇）
-    ├── 监控与告警（05 篇）
-    └── 租户运营后台
-```
-
 **心法**：单租户系统是"做加法"——加功能；多租户系统是"做减法"——把任何会跨租户串数据的代码、任何会让一个租户拖垮全平台的资源都隔离掉。
 
 **平台分层架构**：
@@ -247,14 +224,6 @@ sequenceDiagram
 ## 3. 数据隔离实现
 
 ### 3.1 三层隔离策略
-
-```
-应用层（强制 filter）  ← 第一道防线，永远不能省
-        ↓
-数据库层（partition / collection）  ← 性能优化，可选
-        ↓
-部署层（独立 DB / 独立服务）  ← KA 才上，最重
-```
 
 **三层隔离策略**：
 
@@ -571,17 +540,15 @@ public class AgentExecutor {
 
 ### 6.1 Hub 在多租户平台中的定位
 
-```
-平台 Agent
-   ↓ tools/call
-MCP Hub（按租户订阅过滤 + 配额 + 审计）
-   ↓ 路由
-MCP Server Pool
-├── hr-mcp（HR 部门维护）
-├── erp-mcp（业务中台维护）
-├── geo-mcp（公共）
-├── tenantA-custom-mcp（租户自建）
-└── ...
+```mermaid
+flowchart TD
+    AGENT["平台 Agent"] -->|"tools/call"| HUB["MCP Hub<br/>按租户订阅过滤 + 配额 + 审计"]
+    HUB -->|"路由"| POOL["MCP Server Pool"]
+    POOL --> HR["hr-mcp<br/>HR 部门维护"]
+    POOL --> ERP["erp-mcp<br/>业务中台维护"]
+    POOL --> GEO["geo-mcp<br/>公共"]
+    POOL --> TA["tenantA-custom-mcp<br/>租户自建"]
+    POOL --> DOTS["..."]
 ```
 
 ### 6.2 订阅模型
@@ -820,14 +787,11 @@ CREATE TABLE workflow_step_log (
 
 平台提供共享能力，每租户有独立"实例"或"配置"：
 
-```
-共享 Tool 仓库（500+ 工具）
-    ↓ 按租户订阅分配
-每租户的 Tool 集合
-    ↓ 绑定到
-每租户的 Agent
-    ↓ 触发
-Workflow / 单次调用
+```mermaid
+flowchart TD
+    REPO["共享 Tool 仓库（500+ 工具）"] -->|"按租户订阅分配"| TOOLS["每租户的 Tool 集合"]
+    TOOLS -->|"绑定到"| AGENT["每租户的 Agent"]
+    AGENT -->|"触发"| WF["Workflow / 单次调用"]
 ```
 
 ### 8.2 平台运营后台
@@ -882,25 +846,6 @@ Workflow / 单次调用
 ## 10. 部署架构
 
 ### 10.1 单机房部署（中小规模）
-
-```
-                         ┌─────────────┐
-                         │  LB / Nginx │
-                         └──────┬──────┘
-                                ↓
-                    ┌───────────────────────┐
-                    │  API Gateway（多实例）│
-                    └───────────┬───────────┘
-                                ↓
-   ┌────────────┬──────────────┬┴──────────────┬────────────┐
-   ↓            ↓              ↓               ↓            ↓
-Agent       Workflow        MCP Hub        LLM Gateway   Attachment
-Service     Engine                          (01 篇)      Service
-   ↓            ↓              ↓               ↓            ↓
-PostgreSQL    Temporal      MCP Server Pool  Cloud LLM    S3
-+ pgvector                                                   ↓
-                                                       Redis (cache)
-```
 
 **单机房部署架构**：
 

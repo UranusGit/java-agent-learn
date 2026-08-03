@@ -9,12 +9,10 @@
 
 ### 1.1 简单 Agent 的瓶颈
 
-```
-20 个 Tool 注册到一个 Agent
-   ↓
-LLM 每次都要看 20 个 Tool 的 schema（消耗 token）
-   ↓
-LLM 选择准确率断崖式下降（经常选错）
+```mermaid
+flowchart TD
+    REG["20 个 Tool 注册到一个 Agent"] --> SEE["LLM 每次都要看 20 个 Tool 的 schema<br/>消耗大量 token"]
+    SEE --> DROP["Tool 选择准确率断崖式下降<br/>经常选错"]
 ```
 
 ### 1.2 解决方案
@@ -35,15 +33,6 @@ LLM 选择准确率断崖式下降（经常选错）
 ## 2. Tool 路由模式
 
 ### 2.1 架构
-
-```
-用户请求
-   ↓
-Router Agent（看意图）
-   ├── "人事相关" → HR Agent (3 个 HR Tool)
-   ├── "IT 相关"  → IT Agent (3 个 IT Tool)
-   └── "其他"     → 通用 Agent
-```
 
 **Tool 路由架构**：
 
@@ -289,10 +278,10 @@ sequenceDiagram
     participant T as queryEmployee
     LLM->>FW: 单次响应输出多个 tool_calls
     par 并行执行
-        FW->>T: queryEmployee(张三)
+        FW->>T: "queryEmployee(张三)"
         T-->>FW: 张三的工位
     and
-        FW->>T: queryEmployee(李四)
+        FW->>T: "queryEmployee(李四)"
         T-->>FW: 李四的工位
     end
     FW->>LLM: 收集全部结果后返回
@@ -442,11 +431,11 @@ Tool 不需要拿 userId，LLM 在调用 Tool 时会带上。
 
 ### 8.2 架构
 
-```
-Router Agent
-   ├── 售前 → RAG Agent (VectorStore: 产品手册)
-   ├── 售后 → Order Agent (OrderTools, RefundTools)
-   └── 技术 → Tech Agent (VectorStore + DiagnosticTools)
+```mermaid
+flowchart TD
+    ROUTER["Router Agent"] -->|"售前"| PRE["RAG Agent<br/>VectorStore: 产品手册"]
+    ROUTER -->|"售后"| AFTER["Order Agent<br/>OrderTools + RefundTools"]
+    ROUTER -->|"技术"| TECH["Tech Agent<br/>VectorStore + DiagnosticTools"]
 ```
 
 ### 8.3 代码骨架

@@ -171,7 +171,7 @@ sequenceDiagram
     participant Adv as ToolCallingAdvisor
     participant LLM
     participant Tool as Tool Bean
-    App->>CC: client.prompt().user(question).call()
+    App->>CC: "client.prompt().user(question).call()"
     CC->>Adv: 递归迭代开始（自动注册，无需声明）
     Adv->>LLM: 请求（含工具定义）
     LLM-->>Adv: 返回 toolCall
@@ -181,7 +181,7 @@ sequenceDiagram
         Adv->>LLM: 再次请求
     else 无工具调用（收敛）
         Adv-->>CC: 返回最终结果
-        CC-->>App: content()
+        CC-->>App: "content()"
     end
 ```
 

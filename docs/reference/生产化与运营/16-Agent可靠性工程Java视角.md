@@ -42,16 +42,6 @@
 
 来源：[`12-ClaudeCode源码启示录.md` §2.1](./12-ClaudeCode源码启示录.md)（Claude Code ch39）
 
-```
-请求
-  ↓
-系统级熔断（Resilience4j @CircuitBreaker）
-  ↓
-查询级降级（onErrorResume 切备用模型）
-  ↓
-工具级错误（ToolResult.error() 不 throw）
-```
-
 **三层降级路径**：请求从上到下逐层兜底，每层用对应 Spring 组件。
 
 ```mermaid
@@ -376,17 +366,6 @@ flowchart TD
 来源：[`12-ClaudeCode源码启示录.md` §2.3](./12-ClaudeCode源码启示录.md)（Claude Code ch12）
 
 ### 7.1 触发链
-
-```
-警告（~85%）
-  ↓
-自动压缩（~90%）
-  ↓ 用 LLM 生成 9 段标准化摘要
-  ↓ 替换历史消息
-错误（~95%）
-  ↓
-阻塞（~99%）
-```
 
 ### 7.2 Resilience4j 断路器包裹压缩
 

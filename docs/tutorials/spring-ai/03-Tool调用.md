@@ -399,9 +399,9 @@ sequenceDiagram
     participant Prom as PromTools
     User->>LLM: 用户服务有几个副本，CPU 高不高?
     LLM->>LLM: 推理：需要查 Deployment 状态
-    LLM->>K8s: Action getDeploymentStatus<br/>(namespace=default, name=user-service)
-    K8s-->>LLM: Observation {"ready":3,"desired":3}
-    LLM->>Prom: Action queryMetric<br/>(PromQL rate(...user-service...[5m]))
+    LLM->>K8s: "Action getDeploymentStatus<br/>(namespace=default, name=user-service)"
+    K8s-->>LLM: "Observation {'ready': 3, 'desired': 3}"
+    LLM->>Prom: "Action queryMetric<br/>(PromQL rate(...user-service...[5m]))"
     Prom-->>LLM: Observation 0.65
     LLM-->>User: Answer 用户服务有 3 个副本，CPU 使用率约 65%
 ```

@@ -247,15 +247,12 @@ curl "http://localhost:8080/demo07/obs/chat?prompt=用一句话介绍你自己"
 ```
 
 **④ 内部怎么流转**（参数传递线，第一次出现）：
-```
-HTTP ?prompt=xxx
-   ↓
-ObsController.chat(prompt)
-   ↓ chatClient.prompt().user(prompt).call().content()
-   ↓ （ChatClient 是单例 Bean，所有请求共享）
-DeepSeek API（用 application.yaml 里的 key/base-url/model）
-   ↓
-返回完整字符串给前端
+```mermaid
+flowchart TD
+    A["HTTP ?prompt=xxx"] --> B["ObsController.chat(prompt)"]
+    B --> C["chatClient.prompt().user(prompt).call().content()<br/>（ChatClient 是单例 Bean，所有请求共享）"]
+    C --> D["DeepSeek API<br/>（用 application.yaml 里的 key/base-url/model）"]
+    D --> E["返回完整字符串给前端"]
 ```
 
 痛点来了：**要等好几秒，期间前端干等**。下一步改成流式。
@@ -765,15 +762,15 @@ data:{"type":"SESSION_COMPLETED","sessionId":"s1",...,"data":{}}
 **前端实时看到工具返回值了！** 但注意一个 bug：`TOOL_CALL` 的 sessionId 是 `"unknown"`——因为 `ToolObservationHandler` 在工具执行线程里，拿不到 `/chat` 那个 sessionId。两个用户同时用就会串流。下一步解决。
 
 **④ 内部怎么流转**（双接口架构 + 就绪握手，消除竞态）：
-```
-①前端 fetch /sse(s1) → 后端订阅总线（就绪）→ 发 READY 帧 → 前端收到 READY
-②前端收到 READY 才 triggerChat → /chat(s1) → run(prompt, s1) 发 SESSION_STARTED/CONTENT_DELTA
-                                                                                  ↓
-                                                            AgentEventBus（公共公告板，此时早已被订阅）
-                                                                                  ↑
-/sse(s1) ──── startWith(READY) ─── filter(sessionId=s1) ─────────────────────────┘
-                                    ↑
-              ToolObservationHandler.onStop ──发 TOOL_CALL──┐（sessionId 还是 unknown！）
+```mermaid
+flowchart LR
+    A["前端"] -->|"① fetch /sse(s1)"| B["后端订阅总线（就绪）"]
+    B -->|"发 READY 帧"| A
+    A -->|"② 收到 READY 才 triggerChat → /chat(s1)"| C["run(prompt, s1)<br/>发 SESSION_STARTED / CONTENT_DELTA"]
+    C -->|"事件"| D["AgentEventBus<br/>（公共公告板，此时早已被订阅）"]
+    E["ToolObservationHandler.onStop"] -->|"发 TOOL_CALL<br/>（sessionId 还是 unknown！）"| D
+    D -->|"按 sessionId 过滤"| F["/sse(s1)<br/>startWith(READY) → filter(sessionId=s1)"]
+    F -->|"事件帧"| A
 ```
 
 > **为什么需要 READY 握手**：双通道下，/sse 订阅和 /chat 触发是两个独立请求，若 /chat 早于 /sse 订阅生效，SESSION_STARTED 已进总线而订阅还没接上，事件就丢了（总线不缓存历史给晚到的订阅者）。READY 帧把"先订阅后触发"从**时序运气**变成**协议保证**——这是企业级 SSE/WebSocket 流式系统的标准做法。
@@ -986,20 +983,6 @@ curl -H "sessionId: s1" "http://localhost:8080/demo07/obs/chat?prompt=现在几�
 **用页面验证会话隔离**：用 [附录 C 页面](#附录-c调试用-html-页面step-8-后)，点右上角「新对话（清记忆）」会换一个新的 sessionId。开两个浏览器窗口、各用不同会话发送，两个窗口的事件流互不串——这就是会话隔离的可视化。
 
 **④ sessionId 怎么到工具线程的**（这一步的核心，参数传递线讲透）：
-```
-/chat header: sessionId=s1
-   ↓
-ObsController: contextWrite(Context.of(AppContextKeys.SESSION_ID.key(), s1))
-   ↓ 写进 Reactor Context（随 Flux 链传播）
-ObservableAgent.run: deferContextual 读出 s1（业务代码到这就够了，不 set ThreadLocal）
-   ↓ ChatClient.stream() 流式调用，LLM 决定调工具
-   ↓ 工具执行切到 boundedElastic 线程（换了线程！）
-Hooks.enableAutomaticContextPropagation() + 已注册的 accessor
-   ↓ 框架自动：把 Reactor Context 的 sessionId 灌进工具线程的 ThreadLocal（业务无感）
-   ↓ 框架自动：离开时 clear（防线程池复用串会话）
-ToolObservationHandler.onStop: AppContextKeys.SESSION_ID.get() → 读到 s1
-   ↓ TOOL_CALL 带上 s1
-```
 
 **时序图**（sessionId 从 Controller 一路传到工具线程）：
 
@@ -1035,7 +1018,6 @@ sequenceDiagram
 > **判断标准**：只要项目会出现第二个需要跨线程传递的上下文值（tenantId/traceId/userId），就值得上这套封装——加第一个值时嫌麻烦，加第二个时会庆幸封装了。
 
 ⚠️ **诚实说明**：`ToolObservationHandler.onStop` 能否读到，取决于 Spring AI 2.0 的 `ToolCallingAdvisor` 内部执行工具时是否走标准 Reactor 操作符链。本 demo 设计是标准做法，但**这一环需实跑验证**。若读不到，退路是把 sessionId 通过 `ToolContext` 显式传给工具（`@Tool` 方法加 `ToolContext` 参数），在工具里手动 emit 事件。
-
 
 ---
 
