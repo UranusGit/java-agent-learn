@@ -455,11 +455,17 @@ management:
 
 进程 B 也加同样配置。Spring AI 2.0 的 `Micrometer Observation` 会自动埋点：
 
-```
-[Span: agent.chat_client.call]                    ← 进程 A
-  └── [Span: mcp.client.callTool currentTime]     ← 进程 A 的 MCP Client
-        └── [Span: mcp.server.handleToolCall]     ← 进程 B（跨进程！traceId 透传）
-              └── [Span: business.currentTimeMillis] ← 进程 B 的业务
+```mermaid
+mindmap
+  root((跨进程 trace 链路))
+    Span: agent.chat_client.call
+      进程 A
+      Span: mcp.client.callTool currentTime
+        进程 A 的 MCP Client
+        Span: mcp.server.handleToolCall
+          进程 B（跨进程！traceId 透传）
+          Span: business.currentTimeMillis
+            进程 B 的业务
 ```
 
 **用 Jaeger / Zipkin 打开**就能看到一条横跨两个进程的链路。W3C Trace Context 的 `traceparent` header 会随 HTTP 请求透传——**这是 MCP 跨进程可观测性的核心**。
@@ -829,15 +835,12 @@ MCP 的核心价值之一：**一个 Server，多种语言的 Client 都能用**
 
 ### 4.1 Java Server + 多语言 Client 矩阵
 
-```
-Java MCP Server (Spring AI)
-   ├── Java Client (Spring AI MCP Client)              ✅ 一等公民
-   ├── Python Client (mcp Python SDK)                  ✅ 完整支持
-   ├── TypeScript Client (@modelcontextprotocol/sdk)   ✅ 完整支持
-   ├── Claude Desktop                                  ✅ 原生支持
-   ├── Cursor                                          ✅ 原生支持
-   └── 自研 Client (任意语言)                            ✅ 只要实现协议即可
-```
+- **Java Client**（Spring AI MCP Client）— ✅ 一等公民
+- **Python Client**（mcp Python SDK）— ✅ 完整支持
+- **TypeScript Client**（@modelcontextprotocol/sdk）— ✅ 完整支持
+- **Claude Desktop** — ✅ 原生支持
+- **Cursor** — ✅ 原生支持
+- **自研 Client**（任意语言）— ✅ 只要实现协议即可
 
 ### 4.2 协议层的"语言无关"是怎么保证的
 

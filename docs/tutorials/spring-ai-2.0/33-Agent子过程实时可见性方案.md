@@ -2243,31 +2243,17 @@ function subscribe(sessionId, tenantId) {
 
 > `EventSource` 的 `addEventListener(name, ...)` 对应 SSE 帧里的 `event: <name>` 行——我们的 Controller 正是用 `AgentEvent.type.name()` 作 SSE event 名（§6.1），前端按类型分发。
 
-### 14.3 UI 组件建议（ASCII mockup）
+### 14.3 UI 组件建议
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ 🤖 Agent 会话  s1   [trace: a1b2c3 ↗]   💰 $0.0021      │
-├─────────────────────────────────────────────────────────┤
-│ ▶ 输入：查北京天气并写一句诗                              │
-│                                                         │
-│ 时间线                                                   │
-│  ✓ orchestrator-plan    拆出 2 个子任务                  │
-│    └─ subtask: 查天气                                    │
-│       ✓ TOOL getWeather(args:{city:北京})  120ms        │
-│       ✓ MCP  weather-mcp/forecast          340ms ↗trace │
-│    └─ subtask: 写诗                                      │
-│       ⟳ LLM 生成中...  token: 520+48                    │
-│                                                         │
-│ 答案区（逐字）                                           │
-│  北京晴空万里，_________________________               │
-└─────────────────────────────────────────────────────────┘
-```
+| 区域 | 展示内容 | 数据来源 |
+|------|---------|---------|
+| 顶栏 | 会话名、traceId（可点跳 Jaeger）、累计成本 | `LLM_TOKENS` 实时更新 |
+| 输入框 | 用户原始提问 | — |
+| 时间线卡片 | orchestrator 规划 → 子任务 → Tool/MCP 调用（含耗时）→ LLM 生成进度 | `WORKFLOW_PHASE` / `GRAPH_*` / `TOOL_*` / `MCP_*` 按时间排序 |
+| 答案区 | 最终回答逐字输出 | `CONTENT_DELTA` |
+| 状态机视图（Graph 模式） | 节点高亮 + 边动画 | `GRAPH_EDGE` |
 
-- **时间线**：`WORKFLOW_PHASE` / `GRAPH_*` / `TOOL_*` / `MCP_*` 按时间排序成卡片。
-- **答案区**：`CONTENT_DELTA` 逐字追加。
-- **顶栏**：traceId 可点跳 Jaeger；成本实时更新（`LLM_TOKENS`）。
-- **状态机视图**（Graph 模式）：节点高亮 + 边动画（`GRAPH_EDGE`）。
+**示例时间线**：`orchestrator-plan 拆出 2 个子任务` → `TOOL getWeather({city:北京}) 120ms` → `MCP weather-mcp/forecast 340ms` → `LLM 生成中 token 520+48` → 答案逐字输出"北京晴空万里，…"。
 
 ---
 

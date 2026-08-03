@@ -86,30 +86,6 @@ S3 bucket:
           counters.json         ← 统计计数
 ```
 
-**存储目录树**：
-
-```mermaid
-flowchart TD
-    B["web-claude bucket"]
-    S["sessions/"]
-    T["{tenant_id}/"]
-    SS["{session_id}/"]
-    MAIN["main.jsonl<br/>消息流 append-only"]
-    META["meta.json<br/>session 元数据"]
-    COMP["compactions/"]
-    CID["{compact_id}.jsonl<br/>压缩快照"]
-    SIDE["sidecar/"]
-    IDX["index.json<br/>uuid → byte offset"]
-    CNT["counters.json<br/>统计计数"]
-
-    B --> S --> T --> SS
-    SS --> MAIN
-    SS --> META
-    SS --> COMP --> CID
-    SS --> SIDE --> IDX
-    SIDE --> CNT
-```
-
 ---
 
 ## 4. JsonlSessionStore

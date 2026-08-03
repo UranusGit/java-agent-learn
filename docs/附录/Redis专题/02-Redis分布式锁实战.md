@@ -118,12 +118,6 @@ sequenceDiagram
 
 第 2.2 节的 `unlock` 是 **GET → 判断 → DEL** 三步，**不是原子的**：
 
-```
-实例A: GET lock → "instance-A" ✅ 是我的
-                                    ← 此时锁恰好过期，实例B SETNX 成功
-实例A: DEL lock → 把实例B 的锁删了！
-```
-
 虽然概率低，但在高并发下真实存在。
 
 **GET-then-DEL 竞态**：

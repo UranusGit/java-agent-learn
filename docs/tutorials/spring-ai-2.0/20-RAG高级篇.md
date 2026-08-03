@@ -11,17 +11,19 @@
 
 ## 0. 认知地图
 
-```
-基础 RAG（07）：chunk + embed + 检索 + 拼接 prompt
-    ↓
-进阶 RAG（本文）：
-    ├── 召回融合：RRF / 加权 / cascaded
-    ├── 排序精修：cross-encoder / LLM rerank / listwise
-    ├── 查询增强：HyDE / 子问题 / Multi-Query / Step-Back
-    ├── 索引结构：Parent-Child / APIClient / 层级摘要
-    ├── 自适应检索：判断是否要 RAG、要查几次
-    ├── Graph RAG：实体关系图谱增强
-    └── Agentic RAG：让 Agent 决策检索策略
+```mermaid
+mindmap
+  root((RAG 进阶路径))
+    基础 RAG（07）
+      chunk + embed + 检索 + 拼接 prompt
+    进阶 RAG（本文）
+      召回融合：RRF / 加权 / cascaded
+      排序精修：cross-encoder / LLM rerank / listwise
+      查询增强：HyDE / 子问题 / Multi-Query / Step-Back
+      索引结构：Parent-Child / APIClient / 层级摘要
+      自适应检索：判断是否要 RAG、要查几次
+      Graph RAG：实体关系图谱增强
+      Agentic RAG：让 Agent 决策检索策略
 ```
 
 **核心心法**：基础 RAG 是"召回 + 拼接"，进阶 RAG 是**"召回精度 × 排序精度 × 查询精度 × 索引精度"**四项乘积。任一项短板都会拖垮整体。

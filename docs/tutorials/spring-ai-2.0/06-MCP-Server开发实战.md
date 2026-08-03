@@ -21,26 +21,26 @@
 
 如果你完全没接触过 MCP，**先读 [05 篇](./05-MCP协议全解.md)** 当一次 Client 用户，再回来造 Server。否则你会不知道自己写的 Server 谁来用。
 
-```
-L1 入门：跑起来
-  ├── 三种实现风格（注解 / Provider / 原生）
-  ├── Hello World（5 分钟）
-  ├── WebMVC vs WebFlux 传输
-  ├── 用 05 的 Client 验证（§2.6）
-  └── Inspector 调试
-        ↓
-L2 进阶：API 表面全扫
-  ├── 四类能力（Tools / Resources / Prompts / Completions）
-  ├── 服务端通知（Progress / Logging）
-  └── Capability 协商
-        ↓
-L3 生产化：能上线
-  ├── 鉴权与多租户
-  ├── 限流 / 熔断 / 配额
-  ├── 可观测性（OTel GenAI）
-  └── 错误处理与失败传播
-        ↓
-进 07 篇：端到端整合 + 架构与生态
+```mermaid
+mindmap
+  root((这篇怎么读：L1 → L2 → L3))
+    L1 入门：跑起来
+      三种实现风格（注解 / Provider / 原生）
+      Hello World（5 分钟）
+      WebMVC vs WebFlux 传输
+      用 05 的 Client 验证（§2.6）
+      Inspector 调试
+    L2 进阶：API 表面全扫
+      四类能力（Tools / Resources / Prompts / Completions）
+      服务端通知（Progress / Logging）
+      Capability 协商
+    L3 生产化：能上线
+      鉴权与多租户
+      限流 / 熔断 / 配额
+      可观测性（OTel GenAI）
+      错误处理与失败传播
+    进 07 篇
+      端到端整合 + 架构与生态
 ```
 
 **心法**：写一个能跑的 MCP Server 半小时；写一个**生产级**的 MCP Server 是另一个量级的事——本文要把这中间的鸿沟填平。

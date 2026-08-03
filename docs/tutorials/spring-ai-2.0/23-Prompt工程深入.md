@@ -9,14 +9,17 @@
 
 ## 0. 认知地图
 
-```
-L1：SystemPrompt / Few-shot / Temperature       ← 99% 项目停在这一层
-        ↓
-L2：CoT / Self-Consistency / Reflexion          ← 让 LLM 像一个会"思考"的人
-        ↓
-L3：ToT / GoT / ReAct / Plan-Execute            ← 多分支探索 + 工具协作
-        ↓
-L4：Prompt as Code（模板化 + 版本化 + 评估闭环）  ← 工程化，配套 11 篇评估闭环
+```mermaid
+mindmap
+  root((Prompt 能力四层))
+    L1：SystemPrompt / Few-shot / Temperature
+      99% 项目停在这一层
+    L2：CoT / Self-Consistency / Reflexion
+      让 LLM 像一个会"思考"的人
+    L3：ToT / GoT / ReAct / Plan-Execute
+      多分支探索 + 工具协作
+    L4：Prompt as Code（模板化 + 版本化 + 评估闭环）
+      工程化，配套 11 篇评估闭环
 ```
 
 > ⚠️ **现代 LLM 的范式迁移**：自 GPT-o1 / Claude 3.7 / DeepSeek-R1 起，模型本身已内置"thinking"阶段（隐式 CoT）。**显式 CoT 在推理模型上的增益变小**。但 ToT、ReAct、Self-Consistency 在 Agent / 工具协作场景依然有效。本文同时覆盖两种范式。

@@ -49,13 +49,17 @@ flowchart TD
 ```mermaid
 flowchart TD
     Portal["Self-Service Portal<br/>注册Agent / 查用量 / 管密钥 / 查日志"] --> GW["Gateway 统一入口<br/>鉴权 / 路由 / 限流 / 计费 / 熔断"]
-    GW --> Core["核心服务"]
     subgraph CORE_SUB["核心服务"]
         AP["Agent Pool<br/>实例池化 + 调度"]
         RS["RAG Service<br/>共享知识库 + 隔离索引"]
         MH["MCP Hub<br/>工具市场 + 鉴权代理"]
     end
-    Core --> SI["Shared Infrastructure<br/>LLM Gateway / Vector DB / Event Store / Cache"]
+    GW --> AP
+    GW --> RS
+    GW --> MH
+    AP --> SI["Shared Infrastructure<br/>LLM Gateway / Vector DB / Event Store / Cache"]
+    RS --> SI
+    MH --> SI
     SI --> OBS["Observability<br/>Metrics / Logs / Traces / Eval / Audit"]
 ```
 

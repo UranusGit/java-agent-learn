@@ -9,15 +9,17 @@
 
 ## 0. 认知地图
 
-```
-传统 Git Flow
-    └── main / develop / feature/* / release/*
-        + AI 项目特殊需求
-            ├── 实验 branch（throwaway）
-            ├── Prompt 独立 repo / sub-module
-            ├── 数据 DVC / LakeFS
-            ├── 实验 tracking（MLflow / Langfuse）
-            └── GitOps（ArgoCD / Flux）
+```mermaid
+mindmap
+  root((Git Flow + AI 特殊需求))
+    传统 Git Flow
+      main / develop / feature/* / release/*
+    AI 项目特殊需求
+      实验 branch（throwaway）
+      Prompt 独立 repo / sub-module
+      数据 DVC / LakeFS
+      实验 tracking（MLflow / Langfuse）
+      GitOps（ArgoCD / Flux）
 ```
 
 ---

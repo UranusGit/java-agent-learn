@@ -2021,14 +2021,15 @@ public class StreamService {
 > **为什么 409 用 `IllegalStateException`？** Spring WebFlux 默认会把未处理的异常转成 500。生产级应在 Controller 里捕获这个异常并映射成 `409 Conflict`（见 6.2.3 的 Controller）。这里先抛异常，Controller 层做状态码映射。
 
 > **会话级独占的状态机视图**：
-> ```mermaid
-> stateDiagram-v2
->     [*] --> 空闲
->     空闲 --> 生成中 : POST 触发，acquireSession(Redisson) 抢到锁
->     生成中 --> 生成中 : 这期间同会话再 POST？acquireSession 失败 → 409 拒绝 ❌
->     生成中 --> 空闲 : 生成到终态（DONE/FAILED/CANCELLED），releaseSession unlock（实例崩溃则看门狗停止，30s 后锁过期兜底）
->     空闲 --> [*]
-> ```
+
+```mermaid
+stateDiagram-v2
+    [*] --> 空闲
+    空闲 --> 生成中 : POST 触发，acquireSession(Redisson) 抢到锁
+    生成中 --> 生成中 : 这期间同会话再 POST？acquireSession 失败 → 409 拒绝 ❌
+    生成中 --> 空闲 : 生成到终态（DONE/FAILED/CANCELLED），releaseSession unlock（实例崩溃则看门狗停止，30s 后锁过期兜底）
+    空闲 --> [*]
+```
 
 #### 6.2.3 RunController：企业级 REST
 
@@ -3690,13 +3691,15 @@ public class StreamService {
 > - **跨实例取消的会话锁释放**：`runSession` 是本实例内存 Map，跨实例取消时该 Map 没有映射，`releaseSessionFor` 不会生效。但会话锁有 Redisson 看门狗兜底（实例崩溃 30s 后锁自动过期）——这是已知取舍，严格场景应把 run→session 映射存 Redis（留作进阶扩展点）。
 
 > **三道防线的层次**：
-> ```mermaid
-> flowchart TD
->     A["请求进入"] --> B["① 会话级独占（acquireSession）<br/>同 session 同时只一个任务 → 409 拒绝"]
->     B --> C["② 幂等创建（create）<br/>同 idemKey 返回同一 run → 201（不重复触发）"]
->     C --> D["③ 任务级锁（acquireLock）<br/>同 run 多实例只一个跑"]
->     D --> E["跑生成器"]
-> ```
+
+```mermaid
+flowchart TD
+    A["请求进入"] --> B["① 会话级独占（acquireSession）<br/>同 session 同时只一个任务 → 409 拒绝"]
+    B --> C["② 幂等创建（create）<br/>同 idemKey 返回同一 run → 201（不重复触发）"]
+    C --> D["③ 任务级锁（acquireLock）<br/>同 run 多实例只一个跑"]
+    D --> E["跑生成器"]
+```
+
 > ① 是**最外层闸门**——挡掉绝大多数并发（"同一个会话狂点发送"）；②③ 是兜底。
 
 ### 9.3 验证（两个实例）

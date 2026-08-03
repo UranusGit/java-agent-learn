@@ -566,16 +566,11 @@ function hasRequired(q: PendingQuestion, values: Record<string, any>): boolean {
 QuestionCard 直接渲染在活动流（17 章）的 decision 事件位置：
 
 ```
-[user_input]    帮我做 todo app
-[thought]       需求不清晰，需要澄清
-[decision requested]
-  ┌─ QuestionCard ────────────────────┐
-  │ 请选择技术栈                        │
-  │ ○ React  ○ Vue  ○ 原生 JS          │
-  │ [取消] [提交]                       │
-  └───────────────────────────────────┘
-[decision made] React
-[thought]       开始实现...
+- `[user_input]` 帮我做 todo app
+- `[thought]` 需求不清晰，需要澄清
+- `[decision requested]` **QuestionCard：请选择技术栈** → 选项：`React` / `Vue` / `原生 JS`；按钮：取消 / 提交
+- `[decision made]` React
+- `[thought]` 开始实现...
 ```
 
 ---

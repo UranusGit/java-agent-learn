@@ -83,7 +83,7 @@ public class PromptChainingAdvisor implements BaseAdvisor {
 sequenceDiagram
     participant REQ as 请求
     participant CH as Advisor 链
-    participant PB as PromptChainingAdvisor.before()
+    participant PB as "PromptChainingAdvisor.before()"
     participant LM as LLM
     participant CC as 链终点 ChatClient
 

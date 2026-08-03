@@ -268,12 +268,9 @@ docker exec -it kafka kafka-console-producer --bootstrap-server localhost:9092 -
 
 **topic 就是一条逻辑上的"消息管道"**。你的业务给管道起个名字（如 `orders`），生产者往里写，消费者从里读。
 
-```
-Kafka Cluster
-   ├── topic: orders     （订单事件）
-   ├── topic: payments   （支付事件）
-   └── topic: hello-topic（示例）
-```
+- `topic: orders`（订单事件）
+- `topic: payments`（支付事件）
+- `topic: hello-topic`（示例）
 
 **关键**：topic 之间完全隔离，互不干扰。它只负责"分类"，不负责"顺序保证"（顺序是分区的职责，见 2.2）。
 

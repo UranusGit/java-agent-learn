@@ -331,15 +331,16 @@ Agent 工具超过 10 个时：
 
 ### 7.2 解决：分组路由
 
-```
-顶层 Agent（路由）
-   ├── HR Agent（人事相关 Tool）
-   │   ├── queryEmployee
-   │   └── queryDepartment
-   ├── IT Agent（IT 相关 Tool）
-   │   ├── queryK8s
-   │   └── queryPrometheus
-   └── 业务 Agent（业务相关 Tool）
+```mermaid
+mindmap
+  root(("顶层 Agent（路由）"))
+    HR["HR Agent（人事相关 Tool）"]
+      queryEmployee
+      queryDepartment
+    IT["IT Agent（IT 相关 Tool）"]
+      queryK8s
+      queryPrometheus
+    业务["业务 Agent（业务相关 Tool）"]
 ```
 
 实现见 [03-多 Tool 编排](./03-多Tool编排.md)。

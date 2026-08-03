@@ -635,16 +635,14 @@ sequenceDiagram
 
 租户管理员页面：
 
-```
-┌─ MCP Servers ────────────────────────────────┐
-│ [+ 添加 Server]                              │
-│                                              │
-│  ● github         stdio    12 tools    [管理]│
-│  ● filesystem     stdio     5 tools    [管理]│
-│  ● playwright     sse       8 tools    [管理]│
-│  ○ slack          stdio    disconnected [管理]│
-└──────────────────────────────────────────────┘
-```
+**MCP Servers**（`+ 添加 Server`）：
+
+| Server | 传输 | 工具数 | 状态 |
+|--------|------|--------|------|
+| github | stdio | 12 | 已连接 · 管理 |
+| filesystem | stdio | 5 | 已连接 · 管理 |
+| playwright | sse | 8 | 已连接 · 管理 |
+| slack | stdio | — | disconnected · 管理 |
 
 添加表单：
 - name
