@@ -6,7 +6,7 @@
 >
 > 本文所有代码均基于 **`spring-ai-alibaba-graph-core:2.0.0-M1.1`**（截至 2026-07，唯一匹配 Spring AI 2.0 版本线的稳定版），所有 API 都已经过 `javap` 核验。
 >
-> 前置：[`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) + [`./05-MCP协议全解.md`](./05-MCP协议全解.md)
+> 前提：你已会用 `@Tool` 跑通单 Agent（Agent Loop），并理解 MCP 如何让 Agent 跨进程调用工具（即 02、05 的能力）。
 > 预计：1.5 天
 
 ---
@@ -954,14 +954,7 @@ Collection<StateSnapshot> history = compiled.getStateHistory(rc);
 
 ## 13. 相关文档
 
-- [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) —— 单 Agent 基础
-- [`./05-MCP协议全解.md`](./05-MCP协议全解.md) —— 跨进程 Agent 协作
-- [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— 多 Agent trace
 - **GitHub 仓库**：[alibaba/spring-ai-alibaba](https://github.com/alibaba/spring-ai-alibaba)（仓库的 `spring-ai-alibaba-graph-core/` 模块有完整 example）
 - **Maven Central**：[spring-ai-alibaba-graph-core](https://repo.maven.apache.org/maven2/com/alibaba/cloud/ai/spring-ai-alibaba-graph-core/)
 
 > **注意**：原官方文档站 `java2ai.com/docs/dev/graph/overview/` 已经返回 404（站点 OSS bucket 改了配置），所以本节不引用该链接。最新文档请直接看 GitHub 仓库 README 和 example 代码。
-
----
-
-回到 [`./00-目录索引.md`](./00-目录索引.md)。

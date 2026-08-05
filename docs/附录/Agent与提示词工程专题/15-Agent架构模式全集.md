@@ -1,9 +1,9 @@
 # Agent 架构模式全集——架构师的"模式字典"
 
-> **这份文档是什么**：把所有 Agent 架构模式系统化收录成一本**字典**，分三层：**单 Agent 模式 / Workflow 模式 / 多 Agent 模式**，外加支撑架构。每个模式都写：一句话、结构、适用、何时不用、权衡、仓库里哪篇深挖。
-> **怎么用**：要"选型"看 [11-决策框架](./11-Agent系统设计决策框架.md)；要"查某个模式是什么"来这里。模式是字典，不是小说——用到再查，别一次全背。
+> **这份文档是什么**：把所有 Agent 架构模式系统化收录成一本**字典**，分三层：**单 Agent 模式 / Workflow 模式 / 多 Agent 模式**，外加支撑架构。每个模式都写：一句话、结构、适用、何时不用、权衡、深挖方向。
+> **怎么用**：要"选型"看决策框架（本专题）；要"查某个模式是什么"来这里。模式是字典，不是小说——用到再查，别一次全背。
 >
-> 前置：[02-Agent是什么](./02-Agent是什么与核心心智模型.md) + [11-Agent系统设计决策框架](./11-Agent系统设计决策框架.md)。
+> 前提：你理解 Agent 的循环与心智模型，并掌握"需求 → 结构 → 五层设计 → 权衡"的三层决策流程。
 
 ---
 
@@ -15,7 +15,7 @@
 
 ## 1. 三层结构总览（先记住这张图）
 
-> 这正好对应 [11 的决策树](./11-Agent系统设计决策框架.md)：**动态 → 单 Agent；固定 → Workflow；复杂到单 Agent 扛不住 → 多 Agent**。
+> 这正好对应决策框架的选型：**动态 → 单 Agent；固定 → Workflow；复杂到单 Agent 扛不住 → 多 Agent**。
 
 **三层结构总览**：
 
@@ -41,7 +41,7 @@ Thought: 我需要查订单 → Action: 调工具 → Observation: 结果 → Th
 | **适用** | 开放任务、需要动态决定"下一步用什么工具" |
 | **何时不用** | 流程固定（用 Workflow）；单次调用能解决（别上循环） |
 | **权衡** | 灵活，但可能绕圈 / 陷入局部最优；要配迭代上限 |
-| **深挖** | [02 §1](./02-Agent是什么与核心心智模型.md)、[spring-ai-2.0/23 §7](../../tutorials/spring-ai-2.0/23-Prompt工程深入.md) |
+| **深挖** | Agent 心智模型 §1、Prompt 工程深入 §7 |
 
 ### 2.2 Plan-and-Execute（先规划再执行）——长任务
 
@@ -54,7 +54,7 @@ Planner: 拆成 N 步 → Executor: 逐步执行 → Replanner: 看结果决定�
 | **适用** | 长流程、多步骤、要"先想清楚再动手"（研究、周报、多步骤查询） |
 | **何时不用** | 短任务（规划成本 > 收益）；流程固定（用 Workflow） |
 | **权衡** | 比 ReAct 有条理，但第一步规划错则全盘错，必须有 Replanner 纠偏 |
-| **深挖** | [34 号研究 Agent](../../tutorials/spring-ai-2.0/34-研究Agent与知识库实战.md) 的 Plan-Execute-Aggregate、[spring-ai-2.0/10](../../tutorials/spring-ai-2.0/10-多Agent编排实战.md) |
+| **深挖** | 研究 Agent 的 Plan-Execute-Aggregate、多 Agent 编排实战 |
 
 ### 2.3 Reflexion（自我反思）——高可靠
 
@@ -67,7 +67,7 @@ Planner: 拆成 N 步 → Executor: 逐步执行 → Replanner: 看结果决定�
 | **适用** | 写作、代码生成、离线高可靠场景 |
 | **何时不用** | 实时对话（延迟翻倍）；开放式闲聊 |
 | **权衡** | token 成本 ×2~3；换来的是"自我纠错" |
-| **深挖** | [spring-ai-2.0/23 §5](../../tutorials/spring-ai-2.0/23-Prompt工程深入.md) |
+| **深挖** | Prompt 工程深入 §5 |
 
 ### 2.4 Self-Consistency（多次采样投票）——有标准答案
 
@@ -80,7 +80,7 @@ Planner: 拆成 N 步 → Executor: 逐步执行 → Replanner: 看结果决定�
 | **适用** | 有明确答案的任务（数学、抽取、分类） |
 | **何时不用** | 开放式生成（没有"多数对"）；推理模型（内部已采样） |
 | **权衡** | 成本 ×K；K=5 是性价比拐点 |
-| **深挖** | [spring-ai-2.0/23 §4](../../tutorials/spring-ai-2.0/23-Prompt工程深入.md) |
+| **深挖** | Prompt 工程深入 §4 |
 
 ### 2.5 ToT / LATS（树 / 图搜索）——最难推理
 
@@ -93,13 +93,13 @@ Planner: 拆成 N 步 → Executor: 逐步执行 → Replanner: 看结果决定�
 | **适用** | 复杂规划、24 点、迷宫这类"有明确目标可评估"的问题 |
 | **何时不用** | 绝大多数业务任务（成本高 10 倍，收益为零） |
 | **权衡** | 效果上限最高，但**成本极高**；生产里几乎不用，是研究/竞赛向 |
-| **深挖** | [spring-ai-2.0/23 §6](../../tutorials/spring-ai-2.0/23-Prompt工程深入.md) |
+| **深挖** | Prompt 工程深入 §6 |
 
 ---
 
 ## 3. Workflow 模式（Anthropic 五模式）
 
-> 出处：Anthropic [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)。**Workflow = 固定代码路径 + LLM 只负责其中某些节点**，适合"流程可预测"的任务。中文展开在 [spring-ai-2.0/11](../../tutorials/spring-ai-2.0/11-五大Workflow模式与代码评审助手.md)。
+> 出处：Anthropic [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)。**Workflow = 固定代码路径 + LLM 只负责其中某些节点**，适合"流程可预测"的任务。中文展开在"五大 Workflow 模式"。
 
 | 模式 | 结构一句话 | 适用 | 何时不用 |
 |------|-----------|------|---------|
@@ -113,7 +113,7 @@ Planner: 拆成 N 步 → Executor: 逐步执行 → Replanner: 看结果决定�
 
 ## 4. 多 Agent 模式（5 个）
 
-> 铁律（[02 §3.3](./02-Agent是什么与核心心智模型.md)）：**95% 场景一个 Agent 就够**。上多 Agent 前先问"一个 Agent 为什么不行"。深挖在 [spring-ai-2.0/10-多Agent编排实战](../../tutorials/spring-ai-2.0/10-多Agent编排实战.md)。
+> 铁律：**95% 场景一个 Agent 就够**。上多 Agent 前先问"一个 Agent 为什么不行"。深挖在多 Agent 编排实战。
 
 | 模式 | 结构一句话 | 适用 | 主要代价 |
 |------|-----------|------|---------|
@@ -129,10 +129,10 @@ Planner: 拆成 N 步 → Executor: 逐步执行 → Replanner: 看结果决定�
 
 | 支撑 | 解决什么 | 去哪学 |
 |------|---------|--------|
-| **RAG** | 给 Agent "查知识库"的工具 | [04](./04-RAG入门-让Agent查自己的知识库.md) |
-| **Tool-use / Function Calling** | Agent "动手"的通道 | [08](./08-Agent开发的提示词实战.md) |
-| **MCP** | 工具跨进程 / 跨系统标准化 | [05](./05-MCP入门-Agent怎么接外部工具生态.md) |
-| **记忆架构** | 短期 / 长期 / 知识三类记忆 | [02 §2.1](./02-Agent是什么与核心心智模型.md)、[spring-ai-2.0/25](../../tutorials/spring-ai-2.0/25-Agent记忆架构.md) |
+| **RAG** | 给 Agent "查知识库"的工具 | RAG 入门 |
+| **Tool-use / Function Calling** | Agent "动手"的通道 | Agent 提示词实战 |
+| **MCP** | 工具跨进程 / 跨系统标准化 | MCP 入门 |
+| **记忆架构** | 短期 / 长期 / 知识三类记忆 | Agent 记忆架构 |
 
 ---
 
@@ -196,29 +196,29 @@ flowchart TD
 | **评估者-优化者** | "先生成一版；再按标准评估；不合格就带着评估意见重写。" |
 | **多 Agent 协作** | "你们是不同角色（研究 / 写作 / 审查），各司其职后汇总。"（靠框架编排） |
 
-> 提示词只是**种子**，真正的模式要靠**代码编排**（循环 / 并行 / 分工）来实现——这正是 [11](./11-Agent系统设计决策框架.md) 说的"Workflow 用代码编排，LLM 只干其中某些步骤"。双框架完整案例见 [16](./16-框架提示词案例库.md)。
+> 提示词只是**种子**，真正的模式要靠**代码编排**（循环 / 并行 / 分工）来实现——这正是决策框架说的"Workflow 用代码编排，LLM 只干其中某些步骤"。双框架完整案例见框架提示词案例库。
 
 ---
 
 ## 9. 理解检查
 
-1. 单 Agent / Workflow / 多 Agent 三层，分别对应 [11](./11-Agent系统设计决策框架.md) 决策树的哪个分支？
+1. 单 Agent / Workflow / 多 Agent 三层，分别对应决策框架选型的哪个分支？
 2. 为什么"动态 + 长任务"通常选 Plan-Execute 而不是裸 ReAct？
 3. Anthropic 五模式里，"评估者-优化者"和 Reflexion 的区别是什么？
 4. 多 Agent 五模式的共同前提是什么（先答哪个问题）？
-5. 用 §6 指引，给你 [09 的客服 Agent](./09-练手项目.md) 走一遍选型——它为什么是"单 Agent + 工具"而不是 Workflow？
+5. 用 §6 指引，给你自己的练手客服 Agent 走一遍选型——它为什么是"单 Agent + 工具"而不是 Workflow？
 
 ---
 
 ## 10. 相关文档
 
-- [11-Agent系统设计决策框架](./11-Agent系统设计决策框架.md) —— 怎么选（本篇是"有哪些"）
-- [spring-ai-2.0/11-五大Workflow模式](../../tutorials/spring-ai-2.0/11-五大Workflow模式与代码评审助手.md) —— Workflow 五模式的代码实现
-- [spring-ai-2.0/10-多Agent编排实战](../../tutorials/spring-ai-2.0/10-多Agent编排实战.md) —— 多 Agent 实现
-- [spring-ai-2.0/23-Prompt工程深入](../../tutorials/spring-ai-2.0/23-Prompt工程深入.md) —— ReAct / Reflexion / ToT 的代码模板
-- [34-研究Agent与知识库实战](../../tutorials/spring-ai-2.0/34-研究Agent与知识库实战.md) —— Plan-Execute-Aggregate 的完整实战
+- 系统设计决策框架 —— 怎么选（本篇是"有哪些"）
+- 五大 Workflow 模式 —— Workflow 五模式的代码实现
+- 多 Agent 编排实战 —— 多 Agent 实现
+- Prompt 工程深入 —— ReAct / Reflexion / ToT 的代码模板
+- 研究 Agent 与知识库实战 —— Plan-Execute-Aggregate 的完整实战
 - Anthropic [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents) —— Workflow 五模式 + 代理判据的权威出处
 
-模式记完了，回 [11](./11-Agent系统设计决策框架.md) 用起来——**字典背得再多，不如写对一张架构图。**
+模式记完了，回决策框架用起来——**字典背得再多，不如写对一张架构图。**
 
-下一篇：[16-框架提示词案例库](./16-框架提示词案例库.md)
+下一篇：**16-框架提示词案例库**——同一场景，Spring AI 和 LangChain4j 怎么写。

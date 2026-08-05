@@ -1,7 +1,7 @@
 # Spring AI 04 - RAG 实战
 
 > 用 Spring AI 重做 RAG。重点对比 LangChain4j 的差异。
-> 前置：已完成 [01-03]。
+> 前置：你会用 `ChatClient` 调用 LLM、用 Advisor 组合能力、能写带 `@Tool` 的 Bean（即 01-03 的能力）。
 >
 > ⚠️ **重要前置说明**：
 > 1. 本文基于 Spring AI **1.0.0**。0.x 时代的 `QuestionAnswerAdvisor` 已被 `RetrievalAugmentationAdvisor` 替代。
@@ -415,7 +415,7 @@ SearchRequest req = SearchRequest.builder()
         .build();
 ```
 
-详细混合检索参考 `reference/理论基础/02-RAG深度优化.md`。
+> 💡 混合检索进阶：想同时结合"关键词精确匹配"和"向量语义相似度"，业界常用 Elasticsearch 的 knn + rrf 融合，或先向量召回再用 BM25 二次过滤。这里先掌握 ES 一站式方案即可。
 
 ---
 
@@ -429,7 +429,7 @@ Spring AI 1.0.0 没有内置的 `RelevanceAdvisor`（0.x 有），评估请用�
 - **DeepEval**
 - **自建评估集 + LLM-as-a-Judge**
 
-详见 `reference/生产化与运营/11-LLMOps.md`。
+> 💡 LLMOps 是"LLM 应用的运维体系"，覆盖数据回流、评测集管理、监控告警、成本治理等。起步阶段先掌握 RAGAS 评估 + 人工抽检即可。
 
 ---
 
@@ -504,4 +504,4 @@ Spring AI 1.0.0 没有内置的 `RelevanceAdvisor`（0.x 有），评估请用�
 6. 准备 10 条 QA 测试集，统计召回准确率
 7. （进阶）实现多租户：每个租户独立 collection 或用元数据隔离
 
-完成后进入 [05-结构化输出与 Prompt 模板](./05-结构化输出与Prompt模板.md)。
+完成后进入下一节：**05-结构化输出与 Prompt 模板**——让 LLM 返回 Java 对象，把 prompt 当模板管理。

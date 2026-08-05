@@ -383,7 +383,7 @@ docker compose logs -f conduktor-console
 
 > ⚠️ 如果日志报 `database "conduktor" does not exist`：说明你还没建库——回到 3.2 说明 ① 执行 `CREATE DATABASE conduktor;`，再 `docker compose restart conduktor-console`。
 
-> ⚠️ 如果日志报数据库连不上（`Connection refused`），多半是你本地 Postgres 只监听 `127.0.0.1`。排查见第 6 章。
+> ⚠️ 如果日志报数据库连不上（`Connection refused`），多半是你本地 Postgres 只监听 `127.0.0.1`。排查见上文第 6 章。
 
 浏览器访问：**http://localhost:38080**
 
@@ -436,8 +436,8 @@ docker exec conduktor-console nc -vz kafka 29092
 | **Color / Icon** | 默认 | 给集群打个颜色标记，便于多集群时区分 |
 | **Bootstrap Servers** | `kafka:29092` | ⚠️ **必须是这个**！不是 `localhost:9092`，不是 `127.0.0.1:9092`，也不是 `host.docker.internal:9092` |
 | **Protocol** | `PLAINTEXT` | 本手册没开 SASL/SSL |
-| **Schema Registry URL** | 留空 | 本手册未部署；需要见第 7 章 |
-| **JMX URL / Port** | `kafka:9999`（可暂不填） | 开启监控用，详见第 5 章 |
+| **Schema Registry URL** | 留空 | 本手册未部署；需要时按上文第 7 章添加 |
+| **JMX URL / Port** | `kafka:9999`（可暂不填） | 开启监控用，方法见上文第 5 章 |
 
 > 🔑 **Bootstrap Servers 为什么是 `kafka:29092`？** 因为 Conduktor 在容器里，要走容器间的 PLAINTEXT 端口 29092，并用容器名 `kafka` 寻址（两者同在 `kafka-net` 才解析得了）。填 `localhost` 就是去 Conduktor 自己肚子里找，必失败。原理见第 0.5 章。
 
@@ -462,7 +462,7 @@ docker exec conduktor-console nc -vz kafka 29092
 | **Topics** | topic 列表（含第 2.4 步建的 `test-topic`，以及 internal topics 如 `__consumer_offsets`） | 建表/看分区 |
 | **Messages** | 点进某 topic 可按 offset/时间浏览消息，JSON 自动格式化高亮 | 最常用 |
 | **Consumer Groups** | 消费组列表及 lag（积压量） | 配合第 9 章代码看消费进度 |
-| **Monitoring** | 吞吐量、broker 图表（需配 JMX，见第 5 章） | 监控 |
+| **Monitoring** | 吞吐量、broker 图表（需配 JMX，方法见上文第 5 章） | 监控 |
 
 只要 **Topics** 里能看到你 Kafka 的 topic，就说明 **Kafka 已被 Conduktor 成功纳管** ✅
 
@@ -560,7 +560,7 @@ docker compose up -d
 > docker compose down     # 停掉并删除旧容器（保留数据卷）
 > docker compose up -d    # 用新配置重建
 > ```
-> 详见第 8 章"改配置后的标准流程"。
+> 详细步骤见上文第 8 章"改配置后的标准流程"。
 
 ### ❓ 6.0.5 启动日志报 "Failed to create admin client for 'localhost:9092'"
 

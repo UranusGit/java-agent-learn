@@ -6,7 +6,7 @@
 >
 > **核心心法**：**Workflow > Agent**。能用确定性代码路径解决的，不要用自主 Agent。80%+ 企业场景能用 Workflow 解决，更稳定、更便宜、更可观测。
 >
-> 前置：[`./01`](./01-2.0基础重塑.md) - [`./05`](./05-MCP协议全解.md)
+> 前提：你已会用 `@Tool` 跑通 Agent、理解 Advisor 链、会用流式响应与 MCP Client（即 01-05 的能力）。
 > 预计：2-3 天
 
 ---
@@ -1416,9 +1416,9 @@ LLM 评估器永远说"不合格"。设 maxIterations=3 强制退出。
 
 ---
 
-## 9. 与 09 篇（多 Agent 编排）的关系
+## 9. 与多 Agent 编排的关系
 
-| 维度 | 五大 Workflow 模式（本文） | 多 Agent / Graph（09 篇） |
+| 维度 | 五大 Workflow 模式（本文） | 多 Agent / Graph（多 Agent 编排篇） |
 |------|--------------------------|------------------|
 | 抽象层次 | `@Service` 编排（编译时确定） | 状态机图（运行时确定） |
 | 复杂度 | 低 | 中高 |
@@ -1456,11 +1456,5 @@ LLM 评估器永远说"不合格"。设 maxIterations=3 强制退出。
 
 ## 12. 相关文档
 
-- [`./10-多Agent编排实战.md`](./10-多Agent编排实战.md) —— 撑不住 Workflow 时升级到 Graph
-- [`./03-Advisor链全解.md`](./03-Advisor链全解.md) —— Advisor 基础（横切关注点）
 - [Anthropic Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents)
 - [Spring AI Reference — Prompt Engineering Patterns](https://docs.spring.io/spring-ai/reference/api/chat/prompt-engineering-patterns.html)
-
----
-
-回到 [`./00-目录索引.md`](./00-目录索引.md)。

@@ -1,7 +1,7 @@
 # LangChain4j 08 - DeepSeek API 集成
 
 > 目标：把 DeepSeek 作为云端主力模型，掌握成本控制、JSON Mode、缓存等生产技巧。
-> 前置：已完成 01-07。
+> 前提：你已会配置本地 LM Studio（即 07 的能力），能理解"远端 Chat + 本地 Embedding"的组合。
 
 ---
 
@@ -483,4 +483,4 @@ DeepSeek 返回结构与 OpenAI 略有差异（如 `reasoning_content`）。
 5. 写一个 Spring `@Bean` 配置，同时注入 DeepSeek Chat 和 LM Studio Embedding
 6. 用 `deepseek-reasoner` 解一道数学题，对比与 `deepseek-chat` 的速度差异
 
-完成后进入 [09-常见错误与排查手册](./09-常见错误与排查手册.md)。
+完成后进入下一节：**09-常见错误与排查手册**——遇到报错按症状查原因，快速定位解决。

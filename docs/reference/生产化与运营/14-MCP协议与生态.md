@@ -304,11 +304,9 @@ MCP 已被 Anthropic/OpenAI/Google 三家认可，Spring AI/LangChain 都已支�
 
 ---
 
-## 10. 相关文档
+## 10. 阅读提示
 
-- [`选型与对比/10-SpringAI-vs-LangChain4j何时用何框架.md`](../选型与对比/10-SpringAI-vs-LangChain4j何时用何框架.md) —— MCP Server 是 Spring AI 独占优势
-- [`生产化与运营/12-ClaudeCode源码启示录.md`](./12-ClaudeCode源码启示录.md) —— Claude Code 大量使用 MCP
-- [`生产化与运营/11-LLMOps.md`](./11-LLMOps.md) —— MCP 接入的可观测性
+本文讲清楚 MCP 协议本身和它的生态位置。三个要点记牢：**MCP = "AI 的 USB-C 接口"**（工具/资源/Prompt 的统一暴露标准）；**MCP Server 是 Spring AI 2.0 的独占优势**；接入 MCP 后要纳入全链路可观测（可观测性方法论见本专题 LLMOps 相关章节）。
 
 ---
 

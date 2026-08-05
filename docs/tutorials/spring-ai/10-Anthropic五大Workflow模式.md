@@ -1,9 +1,9 @@
 # Spring AI 10 - Anthropic 五大 Workflow 模式
 
 > 目标：把 Anthropic《Building Effective Agents》5 大 Workflow 模式用 Spring AI 2.0 单框架全部实现一遍。
-> 前置：已完成 [01-09](./01-快速起步.md)，理解 ChatClient、Advisor、Tool。
+> 前置：你会用 `ChatClient`、会配 Advisor、能写 `@Tool`，并已升级到 Spring AI 2.0（即 01-09 的能力）。
 >
-> 理论基础：[`reference/选型与对比/09-企业级Java-AI架构选型真相.md §4`](../../reference/选型与对比/09-企业级Java-AI架构选型真相.md)
+> 理论基础：本文的核心结论「能用工作流（确定性 DAG）解决的问题，不要用自主 Agent」出自 Anthropic《Building Effective Agents》，下文会反复用到。
 
 ---
 
@@ -371,7 +371,7 @@ flowchart TD
 
 - 必须设 `maxIter`（防死循环）
 - 必须有明确的 `passed()` 判断（不能让 LLM 永远"再改改"）
-- 详见 [`tutorials/agent/02-防止Agent失控`](../agent/02-防止Agent失控.md)
+- 防失控通用原则：给循环设上限、给 LLM 明确的终止条件；可预期的业务异常返回结构化结果而不是抛异常
 
 ---
 
@@ -410,7 +410,4 @@ flowchart TD
 
 ## 9. 相关文档
 
-- [`reference/选型与对比/09-企业级Java-AI架构选型真相.md`](../../reference/选型与对比/09-企业级Java-AI架构选型真相.md) —— Workflow > Agent 金科玉律
-- [`reference/生产化与运营/12-ClaudeCode源码启示录.md`](../../reference/生产化与运营/12-ClaudeCode源码启示录.md) §1.3 —— 5 大模式借鉴
-- [../agent/02-防止Agent失控.md](../agent/02-防止Agent失控.md) —— Evaluator-Optimizer 防失控
 - Anthropic 官方博客《Building Effective Agents》（2024-12-19）

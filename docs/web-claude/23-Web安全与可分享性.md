@@ -4,11 +4,11 @@
 > 完成后：URL / 粘贴 / 拖拽注入被拦截、artifact 不被恶意 SVG/HTML 反向 XSS、同事能通过公共链接只读 review、所有前端异常能回传到后端 / Sentry。
 >
 > **关联章节**：
-> - Artifacts 渲染入口：[09 章](./09-Artifacts.md)（iframe sandbox 强化）；
-> - CORS / Cookie / JWT：[10 章](./10-集成ai-serving.md)（本章扩展 CSRF / refresh token）；
-> - 前端可观测基础：[17 章](./17-全链路可观测前端.md)（本章加前端 Sentry / Web Vitals）；
-> - 跨用户协同：[22 章](./22-跨标签页与实时协作.md)（presence 隐私 / share token）；
-> - 智能体层安全（prompt injection / 凭据）：[24 章](./24-智能体安全.md)。
+> - Artifacts 渲染入口：09 章（iframe sandbox 强化）；
+> - CORS / Cookie / JWT：10 章（本章扩展 CSRF / refresh token）；
+> - 前端可观测基础：17 章（本章加前端 Sentry / Web Vitals）；
+> - 跨用户协同：22 章（presence 隐私 / share token）；
+> - 智能体层安全（prompt injection / 凭据）：24 章。
 
 ---
 
@@ -912,4 +912,4 @@ public WebFilter cspFilter() {
 
 ## 13. 下一步
 
-进入 [24-智能体安全](./24-智能体安全.md)，从 Agent 层面解决 prompt injection / 凭据泄露 / 沙箱逃逸 / 越权调用问题。
+进入下一节：**24-智能体安全**——从 Agent 层面解决 prompt injection / 凭据泄露 / 沙箱逃逸 / 越权调用问题。

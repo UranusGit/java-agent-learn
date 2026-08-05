@@ -1,7 +1,7 @@
 # LangChain4j 05 - RAG 实战（检索增强生成）
 
 > 目标：从零搭建一个能问答本地 PDF/Markdown 文档的应用，理解 RAG 全链路。
-> 前置：已完成 01-04。
+> 前提：你已会用 `AiServices` 声明式接口（即 04 的能力）。
 
 ---
 
@@ -263,7 +263,7 @@ public class Test01 {
 - `300`：每块目标 300 token
 - `30`：相邻块之间重叠 30 token（避免在边界处割裂语义）
 
-**分块策略对比**（参考 `reference/理论基础/02-RAG深度优化.md`）：
+**分块策略对比**：
 
 | 策略 | 适合 |
 |------|------|
@@ -486,7 +486,7 @@ segment.metadata().put("updated_at", "2026-07-01");
 2. 调整 `maxResults` 和 `minScore`
 3. 优化分块策略（chunk size、overlap）
 4. 引入 Query Rewriting
-5. 引入重排序（rerank，详见 `reference/理论基础/02-RAG深度优化.md`）
+5. 引入重排序（rerank）：用专门的"重排模型"（如 `bge-reranker-v2-m3`）对检索出的 Top-K 片段按相关性再排一次序，把真正相关的排到前面——这是提升检索质量最有效的一步
 
 **检索不准诊断决策**：
 
@@ -547,7 +547,7 @@ String chat(String userMessage);
 - **答案 Faithfulness**：答案是否只基于检索到的内容（无幻觉）
 - **答案 Relevance**：答案是否切题
 
-详见 `reference/生产化与运营/11-LLMOps.md` 的 RAGAS 章节。
+> 💡 这三种方式里，**RAGAS** 是业界标准的自动化评估框架：它用另一个 LLM 当"裁判"，对"检索质量 + 答案质量"打分，核心就是上表的 Faithfulness 和 Relevance 两个指标。等你项目做大了再接入它，起步阶段人工抽检 20 条就够了。
 
 ---
 
@@ -647,4 +647,4 @@ EmbeddingStore<TextSegment> store =
 5. 加 `@SystemMessage` 限制 LLM "只基于上下文回答"
 6. 准备 5 条 QA 测试集，统计检索准确率
 
-完成后写笔记，进入 [06-流式输出](./06-流式输出.md)。
+完成后写笔记，进入下一节：**06-流式输出**——让模型边生成边吐字，用户体验不卡顿。

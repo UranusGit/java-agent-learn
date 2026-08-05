@@ -2,9 +2,9 @@
 
 > **这份文档是什么**：一篇**独立专题**，讲 **Kafka Streams**——在消息流上做**有状态的实时计算**。它是 Kafka 自带的流处理库，spring-kafka 原生支持它（`@EnableKafkaStreams` + `StreamsBuilder`），**不需要任何 Stream Binder**，直接用 Kafka Streams DSL 写拓扑。
 >
-> **写给谁**：读完了 [Kafka 进阶实战第 3 章](../Kafka消息队列实战专题/02-Kafka进阶实战.md)（Kafka Streams 词频统计）的人。那章是入门，这篇是**深度展开**——窗口、JOIN、状态存储、交互式查询。
+> **写给谁**：已经写过 Kafka Streams 词频统计入门程序的人（会 `@EnableKafkaStreams` + `StreamsBuilder`）。那只是入门，这篇是**深度展开**——窗口、JOIN、状态存储、交互式查询。
 >
-> **和 Kafka 专题的关系**：Kafka 进阶实战第 3 章只讲了 Kafka Streams 的"hello world"（词频）。真正用 Kafka Streams 做实时计算（每分钟订单量、流 JOIN、会话统计），需要这篇。本篇用**原生 Kafka Streams DSL**（spring-kafka 直接托管），是第 3 章的深化。
+> **和 Kafka 专题的关系**：前面的入门只讲了 Kafka Streams 的"hello world"（词频）。真正用 Kafka Streams 做实时计算（每分钟订单量、流 JOIN、会话统计），需要这篇。本篇用**原生 Kafka Streams DSL**（spring-kafka 直接托管）。
 >
 > **版本前提（已校验）**：Spring Boot **4.1.0**（父工程，BOM 托管所有依赖版本）+ `spring-boot-starter-kafka` + `org.apache.kafka:kafka-streams` + Kafka。窗口/JOIN/交互式查询 API 对照 [Kafka 官方 Streams DSL](https://kafka.apache.org/41/streams/developer-guide/dsl-api.html) 校验。
 
@@ -447,7 +447,7 @@ flowchart LR
 
 ### 4.2 交互式查询（Interactive Queries）——直接查状态
 
-State store 不只是中间产物——你可以**直接查它**（Kafka 进阶实战第 3 章提过）。比如统计后，直接查"某商品累计订单量"，不用另存数据库。
+State store 不只是中间产物——你可以**直接查它**（入门时提过）。比如统计后，直接查"某商品累计订单量"，不用另存数据库。
 
 先建一个**非窗口**聚合（普通 KV store，方便演示最简单查询）：
 
@@ -771,11 +771,8 @@ flowchart TD
 
 ## 配套学习资料
 
-- [Kafka 进阶实战第 3 章](../Kafka消息队列实战专题/02-Kafka进阶实战.md)（Kafka Streams 词频入门，本篇是其深化；同一套原生 `@EnableKafkaStreams` + `StreamsBuilder` 写法）
 - [Kafka 官方 Streams DSL 文档](https://kafka.apache.org/41/streams/developer-guide/dsl-api.html)（窗口/JOIN 权威）
 - [Kafka 交互式查询文档](https://kafka.apache.org/41/streams/developer-guide/interactive-queries.html)（state store 查询）
-- [Kafka 核心概念与 Spring Boot 实战](../Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md)（Kafka 基础，分区/消费组是 Streams 前置）
-- [Reactor 响应式入门](../Reactor响应式编程/01-Reactor响应式入门.md)（Streams 用到响应式思维）
 
 ---
 

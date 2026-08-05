@@ -1,7 +1,7 @@
 # Spring AI 03 - Tool 调用
 
 > Function Calling 的 Spring AI 风格。重点对比 LangChain4j 的差异。
-> 前置：已完成 [01-快速起步](./01-快速起步.md) 和 [02-Advisor链](./02-Advisor链.md)。
+> 前置：你会用 `ChatClient` 跑通 LLM 调用、理解 Advisor 链的装配方式（即 01、02 的能力）。
 
 ---
 
@@ -504,4 +504,4 @@ spring:
 5. 故意写一个 Tool 描述模糊的版本，对比 LLM 调用准确率
 6. （进阶）实现 `K8sTools` 或 `PromTools`（用伪造数据），搭一个智能运维 Agent
 
-完成后进入 [04-RAG 实战](./04-RAG实战.md)。
+完成后进入下一节：**04-RAG 实战**——把文档知识检索进来，让模型基于资料回答。

@@ -1,9 +1,9 @@
 # MCP 入门——Agent 怎么接外部工具生态
 
-> **这份文档是什么**：Agent 最常见的两种落地方向之一（另一种是 [RAG](./04-RAG入门-让Agent查自己的知识库.md)）。讲清 MCP 解决什么问题、Client/Server 心智模型、什么时候用 MCP 而不是直接写 `@Tool`。不贴代码，代码在深处文档里。
+> **这份文档是什么**：Agent 最常见的两种落地方向之一（另一种是 RAG，让 Agent 查自己的知识库）。讲清 MCP 解决什么问题、Client/Server 心智模型、什么时候用 MCP 而不是直接写 `@Tool`。不贴代码，代码在深处文档里。
 >
-> 前置：[02-Agent是什么与核心心智模型](./02-Agent是什么与核心心智模型.md)（懂"工具"是什么即可）。
-> 进阶（要写代码）：[spring-ai-2.0/05-06-07 MCP 三部曲](../../tutorials/spring-ai-2.0/05-MCP协议全解.md)。
+> 前置：你理解 Agent 的"工具"是什么即可（即 02 的能力）。
+> 进阶（要写代码）：可以按 MCP 协议全解、Server 开发实战、高阶与生态三步学。
 
 ---
 
@@ -16,7 +16,7 @@
 
 ## 1. 为什么需要它：进程内 Tool 的天花板
 
-在 [02](./02-Agent是什么与核心心智模型.md) 里，你给 Agent 加工具是直接写一个 Java 方法：
+前面讲过，给 Agent 加工具是直接写一个 Java 方法：
 
 ```java
 @Component
@@ -60,7 +60,7 @@ MCP Client 把 Server 的 `listTools` 结果转成模型能读的格式——这
 参数：{"orderId": {"type": "string", "description": "订单号，如 ORD-1001"}}
 ```
 
-> 和对 `@Tool` 的要求完全一样（[08 §2](./08-Agent开发的提示词实战.md)）：**描述写得好不好，决定模型调不调得对**。MCP 只是把这段描述从"进程内"搬到了"跨进程"——内容没变，位置变了。双框架完整代码见 [16 场景四](./16-框架提示词案例库.md)。
+> 和对 `@Tool` 的要求完全一样：**描述写得好不好，决定模型调不调得对**。MCP 只是把这段描述从"进程内"搬到了"跨进程"——内容没变，位置变了。
 
 ---
 
@@ -90,7 +90,7 @@ flowchart TD
 
 ## 4. MCP 和整个 Agent 的关系
 
-把 [02](./02-Agent是什么与核心心智模型.md) 的五零件放回来看，MCP 只在"工具"这一个零件上做了扩展：
+把"五零件"（模型 / 工具 / 循环 / 记忆 / 护栏）放回来看，MCP 只在"工具"这一个零件上做了扩展：
 
 ```
 本地工具：@Tool Java 方法（进程内）
@@ -103,9 +103,9 @@ Agent 的循环（Thought → Action → Observation）完全不变，变的只�
 
 ## 5. 从哪动手
 
-1. 先读 [spring-ai-2.0/05-MCP协议全解](../../tutorials/spring-ai-2.0/05-MCP协议全解.md) —— 把一个已存在的 MCP Server 接进 Spring AI，当 Client 跑通。
-2. 再读 [06-MCP-Server开发实战](../../tutorials/spring-ai-2.0/06-MCP-Server开发实战.md) —— 自己写一个 Server 暴露工具。
-3. 最后 [07-MCP-Server高阶与生态](../../tutorials/spring-ai-2.0/07-MCP-Server高阶与生态.md) —— 端到端整合、Hub、性能、安全。
+1. 先把一个已存在的 MCP Server 接进框架，当 Client 跑通。
+2. 再自己写一个 Server 暴露工具。
+3. 最后做端到端整合、Hub、性能、安全。
 
 ---
 
@@ -117,13 +117,4 @@ Agent 的循环（Thought → Action → Observation）完全不变，变的只�
 4. 为什么说"对 Agent 而言，MCP 工具和本地工具没有区别"？
 5. 举一个"MCP 能解决、@Tool 解决不了"的真实场景。
 
----
-
-## 7. 相关文档
-
-- [spring-ai-2.0/05-MCP协议全解](../../tutorials/spring-ai-2.0/05-MCP协议全解.md) —— Client 通关
-- [spring-ai-2.0/06-MCP-Server开发实战](../../tutorials/spring-ai-2.0/06-MCP-Server开发实战.md) —— 自己造 Server
-- [spring-ai-2.0/07-MCP-Server高阶与生态](../../tutorials/spring-ai-2.0/07-MCP-Server高阶与生态.md) —— 端到端 + 生态
-- [reference/生产化与运营/14-MCP协议与生态](../../reference/生产化与运营/14-MCP协议与生态.md) —— MCP 生态全景
-
-下一篇：[06-怎么评估一个Agent](./06-怎么评估一个Agent.md)
+完成后进入下一节：**06-怎么评估一个 Agent**——从"凭感觉"到"通过率说话"。

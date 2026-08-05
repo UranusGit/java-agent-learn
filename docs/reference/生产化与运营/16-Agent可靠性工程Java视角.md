@@ -40,7 +40,7 @@
 
 ## 2. 三层错误模型
 
-来源：[`12-ClaudeCode源码启示录.md` §2.1](./12-ClaudeCode源码启示录.md)（Claude Code ch39）
+设计借鉴：Claude Code 的三层错误模型（源码 ch39）
 
 **三层降级路径**：请求从上到下逐层兜底，每层用对应 Spring 组件。
 
@@ -173,7 +173,7 @@ flowchart TD
 
 ## 4. Agent Loop 终止条件
 
-来源：[`12-ClaudeCode源码启示录.md` §1.1](./12-ClaudeCode源码启示录.md)（Claude Code ch05）
+设计借鉴：Claude Code 的 Agent Loop 终止条件设计（源码 ch05）
 
 ### 4.1 5 个终止条件
 
@@ -303,7 +303,7 @@ ChatMemory chatMemory(JdbcTemplate jdbc) {
 
 ## 6. 权限模型（Allow / Ask / Deny / Yolo）
 
-来源：[`12-ClaudeCode源码启示录.md` §2.4](./12-ClaudeCode源码启示录.md)（Claude Code ch20-22）
+设计借鉴：Claude Code 的四级权限模型（Allow/Ask/Deny/Yolo，源码 ch20-22）
 
 ### 6.1 四级模型
 
@@ -363,7 +363,7 @@ flowchart TD
 
 ## 7. 上下文压缩（防 context window 溢出）
 
-来源：[`12-ClaudeCode源码启示录.md` §2.3](./12-ClaudeCode源码启示录.md)（Claude Code ch12）
+设计借鉴：Claude Code 的上下文压缩设计（源码 ch12）
 
 ### 7.1 触发链
 
@@ -418,13 +418,9 @@ flowchart TD
 
 ---
 
-## 9. 相关文档
+## 9. 阅读提示
 
-- [`生产化与运营/12-ClaudeCode源码启示录.md`](./12-ClaudeCode源码启示录.md) §1-2 —— Claude Code 工程借鉴
-- [`生产化与运营/14-MCP协议与生态.md`](./14-MCP协议与生态.md) —— Tool 暴露的协议层
-- [`生产化与运营/15-成本工程与PromptCache.md`](./15-成本工程与PromptCache.md) —— 预算控制 Advisor
-- [`理论基础/03-Agent原理.md`](../理论基础/03-Agent原理.md) —— Agent 理论基础
-- [`../../tutorials/agent/02-防止Agent失控.md`](../../tutorials/agent/02-防止Agent失控.md) —— 防失控教程
+本文是"Agent 可靠性工程"的 Java 落地篇：三层错误 + 熔断重试（第 2 节）、Agent Loop 终止条件（第 4 节）、权限四级模型（第 6 节）、上下文压缩（第 7 节）、预算控制（第 8 节）。配合"边界管理"这个总纲（见本专题可靠性开篇的元认知），就是一套完整的防失控体系。
 
 ---
 
@@ -432,7 +428,7 @@ flowchart TD
 
 1. **Red Hat《Java Agents at Scale》**（2026-06）—— "类型系统 + 工程纪律"护城河论点
 2. **Anthropic《Building Effective Agents》**（2024-12-19）—— Workflow > Agent
-3. **Claude Code 源码分析**（本仓库 [`12-ClaudeCode源码启示录.md`](./12-ClaudeCode源码启示录.md)）
+3. **Claude Code 源码分析**（本文第 2/4/6/7 节的设计来源）
 4. **Resilience4j Documentation** —— 三层错误 + 熔断 + 重试
 5. **Temporal Java SDK** —— 长时工作流编排
 6. **Spring AI 2.0 spring-ai-session** —— event-sourced 会话

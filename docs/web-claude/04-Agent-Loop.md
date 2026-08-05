@@ -1,19 +1,19 @@
 # 04 - Agent Loop 深化：State + 终止条件 + 中断
 
-> 本章目标：把 03 章的最简 Agent Loop 升级到接近 Claude Code 源码的设计。
+> 本章目标：把上一章的最简 Agent Loop 升级到接近 Claude Code 源码的设计。
 > 完成后：thread-safe 的状态管理、5 个终止条件、3 层中断支持。
 >
-> **关联章节**：
-> - 本章不碰上下文压缩，详见 [14 章](./14-上下文工程.md)；
-> - 本章不碰工具调用，详见 [05 章](./05-工具系统与权限.md)；
-> - 本章不碰事件埋点，详见 [17 章](./17-全链路可观测前端.md)（Agent Loop 的每个原子操作都要 emit 事件）；
-> - 本章不碰错误恢复，详见 [18 章](./18-错误恢复与重试.md)（所有 IO 都要套 RetryTemplate）。
+> **本章范围**：
+> - 本章不碰上下文压缩（那是长任务触发自动压缩时的处理，涉及多级压缩与 compact boundary 语义）；
+> - 本章不碰工具调用（Read/Write/Bash 注册与权限中间件是后续内容）；
+> - 本章不碰事件埋点（Agent Loop 的每个原子操作都要 emit 事件，事件流持久化是后续内容）；
+> - 本章不碰错误恢复（所有 IO 都要套 RetryTemplate，属于错误恢复主题）。
 >
 > **v2.0 关联**：
-> - ContentBlock 上要挂 Provenance 标签（untrusted vs trusted），详见 [24 章 §2](./24-智能体安全.md)；
-> - system prompt 装配时要注入 [25 章记忆系统](./25-记忆与个性化系统.md) 的偏好；
-> - 给模型的请求过 SecretGuard 扫描，详见 [24 章 §3.4](./24-智能体安全.md)；
-> - 前端通过 [21 章](./21-Web前端工程化.md) 路由 + [22 章](./22-跨标签页与实时协作.md) 跨 tab 接收 Agent Loop 的 events。
+> - ContentBlock 上要挂 Provenance 标签（untrusted vs trusted，区分模型可信来源与工具结果）；
+> - system prompt 装配时要注入用户偏好（记忆与个性化系统的能力）；
+> - 给模型的请求过 SecretGuard 扫描（凭据不进 model context）；
+> - 前端通过路由 + 跨 tab 接收 Agent Loop 的 events。
 
 ---
 
@@ -21,35 +21,35 @@
 
 | 步 | 节 | 你要带走什么 |
 |----|----|---------|
-| ① 痛点 | §1 | 03 章的 `StringBuilder` 字段在并发下会串字；只有"完成"一个停止条件 |
+| ① 痛点 | §1 | 上一章的 `StringBuilder` 字段在并发下会串字；只有"完成"一个停止条件 |
 | ② 最小实现 | §2–§5 | AgentLoopV2（thread-safe）+ AbortHandle（3 层级联）+ 5 终止条件 + 前端取消按钮 |
 | ③ 验证 | §6 | 流式中点取消，立即停；关浏览器 WS 断但任务还在 |
-| ④ 对照 | §0（章末汇总）| 与 03 章的 State / 终止 / 中断对比表 |
+| ④ 对照 | §0（章末汇总）| 与上一章的 State / 终止 / 中断对比表 |
 | ⑤ 避坑 | §8 | 浏览器关闭 ≠ 取消任务；transition 字符串约定；abort 级联死循环 |
 
 ---
 
-## 0. 与 03 章的差异
+## 0. 与上一章的差异
 
-| 维度 | 03 章 | 04 章 |
+| 维度 | 上一章（骨架） | 本章 |
 |------|-------|-------|
 | State 累积 | `StringBuilder` 字段（线程不安全）| per-call builder |
 | 终止条件 | 只看 stream complete | 5 个完整条件 |
 | 中断 | 不支持 | 3 层中断 |
 | transition | 简化 | 完整状态机 |
-| 工具调用 | 无 | 无（05 章做）|
+| 工具调用 | 无 | 无（工具系统与权限篇做）|
 
 ---
 
-## 1. 痛点：03 章的 AgentLoop 在生产里会出三件事
+## 1. 痛点：上一章的 AgentLoop 在生产里会出三件事
 
-读完 03 章你会发现它的"骨架"其实是"独木桥"：
+读完上一章你会发现它的"骨架"其实是"独木桥"：
 
-1. **`StringBuilder buffer` 是字段不是局部变量**。两个请求并发跑同一个 `AgentLoop` Bean，A 的回复会拼到 B 的回复里——肉眼看不出错但答非所问。这是 03 章故意留的雷，本章必须修。
+1. **`StringBuilder buffer` 是字段不是局部变量**。两个请求并发跑同一个 `AgentLoop` Bean，A 的回复会拼到 B 的回复里——肉眼看不出错但答非所问。这是上一章故意留的雷，本章必须修。
 2. **只有"流式完成"一个停止条件**。模型卡死、超预算、用户想停——都没法主动终止。一次失败的请求会一直占着资源直到模型自己出完。
 3. **没有中断机制**。用户点了"取消"按钮，前端什么都做不了——只能干等模型说完。这在长输出（写代码、长文）场景下是体验灾难。
 
-> 还有一个**故意留的悬念**：03 章关浏览器时 `afterConnectionClosed` 是空的。本章要正面回答"关浏览器 ≠ 取消任务"——这是后面长程任务的语义基础。
+> 还有一个**故意留的悬念**：上一章关浏览器时 `afterConnectionClosed` 是空的。本章要正面回答"关浏览器 ≠ 取消任务"——这是后面长程任务的语义基础。
 
 ## 2. State 重构
 
@@ -271,7 +271,7 @@ private boolean shouldTerminate(State state, Throwable error) {
 }
 ```
 
-> 本章不实现条件 4 和 5 的完整逻辑（fallback 在 09 章，wait_for_input 在 05 章权限部分），只放占位符。
+> 本章不实现条件 4 和 5 的完整逻辑（fallback 与 wait_for_input 的完整实现见后续相关主题），只放占位符。
 
 **5 个终止条件评估**：
 
@@ -346,7 +346,7 @@ public void afterConnectionClosed(WebSocketSession session, CloseStatus status) 
 **关键决策**：
 - 浏览器关闭默认**不**取消任务；
 - 用户必须点"取消"按钮才发 abort；
-- 这是长程任务的核心语义（见调研笔记 §3.3）。
+- 这是长程任务的核心语义：任务生命周期超过单次会话生命周期，任务不会因为浏览器关闭而消失。
 
 ---
 
@@ -403,7 +403,7 @@ sequenceDiagram
 |------|------|
 | 流式刚开始就取消 | transition = "aborted"，几乎不输出文字 |
 | 流式完成后再点取消 | 按钮禁用（streaming=false）|
-| 关浏览器 | WS 断，但下次重连能看到上一条 end_turn（07 章实现）|
+| 关浏览器 | WS 断，但下次重连能看到上一条 end_turn（Session 持久化篇实现）|
 
 ---
 
@@ -422,9 +422,9 @@ stateDiagram-v2
     streaming --> aborted: abort（终止条件2）
     end_turn --> [*]
     aborted --> [*]
-    streaming --> wait_for_input: 工具调用待审批<br/>(终止条件5，05 章权限)
-    streaming --> budget_exceeded: 超出预算<br/>(终止条件3，11 章成本)
-    streaming --> fallback_exhausted: fallback 也失败<br/>(终止条件4，09 章模型降级)
+    streaming --> wait_for_input: 工具调用待审批<br/>(终止条件5)
+    streaming --> budget_exceeded: 超出预算<br/>(终止条件3)
+    streaming --> fallback_exhausted: fallback 也失败<br/>(终止条件4)
     wait_for_input --> [*]
     budget_exceeded --> [*]
     fallback_exhausted --> [*]
@@ -459,4 +459,4 @@ stateDiagram-v2
 
 ## 9. 下一步
 
-进入 [05-工具系统与权限](./05-工具系统与权限.md)，让 Agent 能调用 Read/Write/Bash 等工具，并加上权限中间件。
+进入下一节：**05-工具系统与权限**——让 Agent 能调用 Read/Write/Bash 等工具，并加上权限中间件。

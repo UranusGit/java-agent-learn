@@ -10,7 +10,7 @@
 
 | 步 | 节 | 你要带走什么 |
 |----|----|---------|
-| ① 痛点 | §1 | 05 章工具是内置的——生态闭，自己写工具成本高 |
+| ① 痛点 | §1 | 工具系统篇的工具是内置的——生态闭，自己写工具成本高 |
 | ② 最小实现 | §2–§7 | MCP 数据模型 + Client 管理器 + 三种 transport + ToolRegistry 整合 + 命名空间 + 生命周期 |
 | ③ 验证 | §12 | 配一个 GitHub MCP server，让 Agent 创建 issue |
 | ④ 对照 | §13 | 与"内置工具硬编码"的生态差异 |
@@ -22,7 +22,7 @@
 
 ### 0.1 内置工具的局限
 
-05 章我们做了 5 个内置工具（Read/Write/Bash/Edit/Grep），但真实业务需要：
+工具系统篇我们做了 5 个内置工具（Read/Write/Bash/Edit/Grep），但真实业务需要：
 - 接 GitHub PR / Issue；
 - 查数据库；
 - 发 Slack 通知；
@@ -453,7 +453,7 @@ mcp__<server>__<tool>
 - `mcp__filesystem__read_file`
 - `mcp__playwright__screenshot`
 
-模型调用时直接用全名。前端展示（17 章）分组：
+模型调用时直接用全名。前端展示按 server 分组：
 
 ```
 GitHub MCP:
@@ -528,7 +528,7 @@ public void shutdown() {
 | SSE 重连风暴 | 网络抖动疯狂重连 | 指数退避 + 上限 |
 | 命名空间冲突 | 两个 server 都叫 `read` | §7 强制前缀 `github__read` |
 | 不可信 MCP server | 用户配恶意 server | 沙箱化 + 权限审批（首次必须 ASK）|
-| 大 tool result 卡死 | 单工具返回 10MB | 复用 14 章 ToolResultBudget |
+| 大 tool result 卡死 | 单工具返回 10MB | 复用上下文工程篇 ToolResultBudget |
 | Server 调用阻塞 | http server 挂了主流程卡 | 所有调用加 timeout |
 | 协议版本不匹配 | 新 server 用 v2 老客户端不识别 | 启动时 negotiate version |
 | 凭据明文配置 | YAML 里写 PAT | 走 secret store + 注入环境变量 |
@@ -560,7 +560,7 @@ stdio server 的工作目录强制是沙箱内 `/workspace`，不允许访问外
 
 ### 9.4 权限
 
-每个 MCP 工具仍然走 PermissionMiddleware（05 章）。租户管理员可以配置规则：
+每个 MCP 工具仍然走 PermissionMiddleware（工具系统与权限篇）。租户管理员可以配置规则：
 
 ```
 mcp__github__*(*) ALLOW  # 允许所有 github 工具
@@ -575,7 +575,7 @@ mcp__*__delete_*(*) DENY  # 禁止所有"删除"类
 
 ---
 
-## 12. 可观测性（接 17 章）
+## 12. 可观测性
 
 每次 MCP 调用都产生事件：
 
@@ -694,14 +694,14 @@ void echoToolRoundTrip() {
 
 ## 15. 与已有章节的关系
 
-| 章节 | 关系 |
+| 主题 | 关系 |
 |------|------|
-| 05-工具系统 | MCP 工具通过 Adapter 加入 ToolRegistry |
-| 05-权限 | MCP 工具同样过 PermissionMiddleware |
-| 06-沙箱 | stdio server 跑在沙箱内 |
-| 10-集成ai-serving | MCP server 可作为模型代理网关的另一种入口 |
-| 17-全链路可观测 | mcp_call / mcp_result 事件 |
-| 18-错误恢复 | MCP 调用错误的重试策略 |
+| 工具系统 | MCP 工具通过 Adapter 加入 ToolRegistry |
+| 权限 | MCP 工具同样过 PermissionMiddleware |
+| 沙箱 | stdio server 跑在沙箱内 |
+| 集成 ai-serving | MCP server 可作为模型代理网关的另一种入口 |
+| 全链路可观测 | mcp_call / mcp_result 事件 |
+| 错误恢复 | MCP 调用错误的重试策略 |
 
 ---
 
@@ -733,4 +733,4 @@ void echoToolRoundTrip() {
 
 ## 16. 下一步
 
-进入 [17-全链路可观测前端](./17-全链路可观测前端.md)，把 Agent 内部所有事件暴露给用户。
+进入下一节：**17-全链路可观测前端**——把 Agent 内部所有事件暴露给用户。

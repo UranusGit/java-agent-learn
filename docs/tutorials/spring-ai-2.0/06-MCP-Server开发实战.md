@@ -5,13 +5,13 @@
 > 读完这一篇你能做到：**自己从零写一个 MCP Server**，暴露 Tools / Resources / Prompts / Completions 四类能力，并加上鉴权、限流、可观测性。
 >
 > 三部曲路线：
-> - [05 = 入门 + Client 通关](./05-MCP协议全解.md)：先用起来
+> - 05 = 入门 + Client 通关：先用起来
 > - **06（本文）= Server 开发实战**：自己造一个 Server
-> - [07 = 端到端整合 + 生态进阶](./07-MCP-Server高阶与生态.md)：把 05 的 Client 和本文的 Server 拼起来跑通完整链路
+> - 07 = 端到端整合 + 生态进阶：把 05 的 Client 和本文的 Server 拼起来跑通完整链路
 >
-> 前置：[05-MCP协议全解.md](./05-MCP协议全解.md) + [02-Tool与AgentLoop.md](./02-Tool与AgentLoop.md)
+> 前提：你已当过 MCP Client 用户，会配 `spring-ai-starter-model-mcp` 连一个 Server 并调用其中的工具（即 05、02 的能力）。
 >
-> **本文只讲 Server 端**。Server 写好后怎么被 Client 调用、怎么和 ChatClient 整合、跨进程链路怎么调试 → 见 [07 篇 §1](./07-MCP-Server高阶与生态.md)。
+> **本文只讲 Server 端**。Server 写好后怎么被 Client 调用、怎么和 ChatClient 整合、跨进程链路怎么调试，端到端整合实战在 MCP 高阶与生态篇 §1 有完整链路。
 >
 > 预计：2-3 天
 
@@ -19,7 +19,7 @@
 
 ## 0. 这篇怎么读
 
-如果你完全没接触过 MCP，**先读 [05 篇](./05-MCP协议全解.md)** 当一次 Client 用户，再回来造 Server。否则你会不知道自己写的 Server 谁来用。
+如果你完全没接触过 MCP，**先去当一次 Client 用户**——把现成 Server 接进 ChatClient、调用它的工具，再回来造 Server。否则你会不知道自己写的 Server 谁来用。
 
 ```mermaid
 mindmap
@@ -39,7 +39,7 @@ mindmap
       限流 / 熔断 / 配额
       可观测性（OTel GenAI）
       错误处理与失败传播
-    进 07 篇
+    进 MCP 高阶生态篇
       端到端整合 + 架构与生态
 ```
 
@@ -181,7 +181,7 @@ List<SyncToolSpecification> hrTools(HrService svc) {
 
 ## 2. Hello World：5 分钟跑起来
 
-> 这个简化版 Server 也是 [05 篇](./05-MCP协议全解.md) §4 "5 分钟第一个 MCP Client" 的对接目标。如果你按 05→06 顺序学，这里写完就能回到 05 验证。
+> 这个简化版 Server 也是 MCP 协议篇 §4 "5 分钟第一个 MCP Client" 的对接目标。按 Client → Server 顺序学的话，这里写完就能用前面的 Client 验证。
 
 ### 2.1 项目结构
 
@@ -343,9 +343,9 @@ curl -i http://localhost:8081/mcp
 # 期望：HTTP 200 或 400（带 method not allowed 之类），不是 Connection refused
 ```
 
-#### 验证 C（推荐）：用 05 篇的 Client 连过来
+#### 验证 C（推荐）：用现成的 Client 连过来
 
-回到 [05 篇 §4](./05-MCP协议全解.md)，按那篇的 yaml 配置 Client 连 `http://localhost:8081/mcp`。如果你在 05 已经写过 Client，**这一步直接 reuse，把 `url` 改成本 Server 的地址即可**。
+按 MCP 协议篇 §4 的 yaml 配置 Client 连 `http://localhost:8081/mcp`。如果你已经写过 Client，**这一步直接复用，把 `url` 改成本 Server 的地址即可**。
 
 期望日志：
 
@@ -357,7 +357,7 @@ curl -i http://localhost:8081/mcp
 
 然后用 `chatClient.prompt().user("现在几点").call()` 调到 `currentTime` 工具。
 
-**端到端整合的完整链路（多租户、跨进程 trace、调试技巧）见 [07 篇 §1](./07-MCP-Server高阶与生态.md)。**
+**端到端整合的完整链路（多租户、跨进程 trace、调试技巧）在 MCP 高阶与生态篇 §1。**
 
 ---
 
@@ -508,7 +508,7 @@ chatClient.prompt()
 
 `ToolContext` / `McpMeta` 都不算 LLM 的参数——LLM 看不到，但工具方法能用。**这是多租户 MCP Server 的核心**。
 
-> 完整的"ChatClient → MCP Client → MCP Server"上下文透传链路见 [07 篇 §1.5](./07-MCP-Server高阶与生态.md)。
+> 完整的"ChatClient → MCP Client → MCP Server"上下文透传链路在 MCP 高阶与生态篇 §1.5。
 
 #### 复杂对象返回
 
@@ -749,7 +749,7 @@ public void addDynamicTool(ToolCallback tool) {
 
 ### 7.3 何时该开 listChanged
 
-- 工具是按订阅动态注入（见 [07 篇](./07-MCP-Server高阶与生态.md) MCP Hub）
+- 工具是按订阅动态注入（见 MCP 高阶与生态篇的 MCP Hub）
 - 工具来自配置中心，运行时刷新
 - 多租户按权限动态暴露
 
@@ -965,7 +965,7 @@ CREATE TABLE mcp_quota (
 
 每次 tool call 前后更新 `used_today`。超额抛 `RequestNotPermitted`。
 
-详见 [18-大规模Agent平台与数据基础设施.md](./18-大规模Agent平台与数据基础设施.md) §MCP Hub 计费。
+这就是按租户配额计费的核心实现；平台级计费（多租户账单、阶梯定价、额度结算）在 MCP Hub 平台化部分有专门设计。
 
 ---
 
@@ -1115,7 +1115,7 @@ public Object searchPoi(String keyword) {
 }
 ```
 
-**为什么**：参考 Claude Code 设计——LLM 看到 stderr 会调整策略（[04-流式响应与Reactor深度.md](./04-流式响应与Reactor深度.md) 也讲过）。
+**为什么**：参考 Claude Code 设计——LLM 看到 stderr 会调整策略，这正是"让失败被模型看见"这一核心原则的体现：错误不是终点，而是模型自我修复的输入。
 
 ### 11.4 全局异常处理器
 
@@ -1223,7 +1223,7 @@ geo-mcp-server/
 
 各模块代码前面 §5-§11 都已展开。把 §2 的简化版按这个结构补全，就是一个生产级 MCP Server。
 
-> **客户端怎么连 geo-mcp-server**：见 [07 篇 §1 端到端整合实战](./07-MCP-Server高阶与生态.md)，那里有完整的两个进程配置 + ChatClient 调用 + 多租户 + 调试技巧。
+> **客户端怎么连 geo-mcp-server**：端到端整合实战篇 §1 有完整的两个进程配置 + ChatClient 调用 + 多租户 + 调试技巧。
 
 ---
 
@@ -1250,7 +1250,7 @@ geo-mcp-server/
 ## 14. L1-L3 实战任务
 
 1. 用风格 A 跑通 Hello World（§2），Inspector 验证。
-2. 用 [05 篇](./05-MCP协议全解.md)的 Client 连过来（§2.6 验证 C）。
+2. 用现成的 Client 连过来（§2.6 验证 C）。
 3. 把风格 A 改成风格 B（显式 Provider），对比代码量。
 4. 给 `searchPoi` 加 Resource 版本（`geo://search/{keyword}`），对比 Tool vs Resource。
 5. 写一个 `@McpPrompt` 让 Claude Desktop 能一键调用"行程规划"。
@@ -1262,7 +1262,7 @@ geo-mcp-server/
 11. 写一个全局异常处理器，把内部错误转换为 MCP 标准错误码。
 12. （进阶）实现动态工具：运行时根据配置加 / 删工具，触发 `listChanged`。
 13. （选做）对比 WebMVC 和 WebFlux 版本的性能（JMeter 压测）。
-14. **必做**：跑通 [07 篇 §1 端到端整合](./07-MCP-Server高阶与生态.md)，把本文 Server 接到 Client 完整链路。
+14. **必做**：跑通端到端整合实战（MCP 高阶与生态篇 §1），把本文 Server 接到 Client 完整链路。
 
 ---
 
@@ -1283,25 +1283,14 @@ geo-mcp-server/
 
 ## 16. 下一步
 
-- **必做**：[07 篇 §1 端到端整合实战](./07-MCP-Server高阶与生态.md) —— 把本文 Server 和 [05 篇](./05-MCP协议全解.md) Client 拼起来跑通完整链路
-- **进阶**：[07 篇](./07-MCP-Server高阶与生态.md)其余章节 —— HTTP API → MCP / Hub / 跨语言 / 性能安全测试
+- **必做**：端到端整合实战（MCP 高阶与生态篇 §1）—— 把本文 Server 和 Client 拼起来跑通完整链路
+- **进阶**：MCP 高阶与生态篇其余章节 —— HTTP API → MCP / Hub / 跨语言 / 性能安全测试
 
 ---
 
 ## 17. 相关文档
 
-- [02-Tool与AgentLoop.md](./02-Tool与AgentLoop.md) —— @Tool 注解基础
-- [05-MCP协议全解.md](./05-MCP协议全解.md) —— 入门 + Client 通关（先读）
-- [07-MCP-Server高阶与生态.md](./07-MCP-Server高阶与生态.md) —— 端到端整合 + 高阶与生态
-- [14-安全工程与红队.md](./14-安全工程与红队.md) —— MCP 安全深入
-- [15-可观测性与成本治理.md](./15-可观测性与成本治理.md) —— OTel + 可观测
-- [18-大规模Agent平台与数据基础设施.md](./18-大规模Agent平台与数据基础设施.md) —— MCP Hub 多租户
-- [32-多源检索Agent与MCP生态整合.md](./32-多源检索Agent与MCP生态整合.md) —— 综合压轴
 - [MCP Java SDK](https://github.com/modelcontextprotocol/java-sdk)
 - [Spring AI MCP Server Reference](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot.html)
 - [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 - [OTel GenAI Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
-
----
-
-回到 [00-目录索引.md](./00-目录索引.md)。

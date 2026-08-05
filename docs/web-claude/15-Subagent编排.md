@@ -1,6 +1,6 @@
 # 15 - Subagent 编排：并行加速与角色分工
 
-> 本章是长程任务**提速**的核心机制。CC 源码 ch13/14 + 调研笔记 §2.6 的 Multi-Agent Delegation 模式。
+> 本章是长程任务**提速**的核心机制。源自 Claude Code 源码与调研阶段的 Multi-Agent Delegation 模式。
 > 完成后：100 个 feature 的长程任务从顺序 50 小时 → 并行 10 小时。
 
 ---
@@ -9,10 +9,10 @@
 
 | 步 | 节 | 你要带走什么 |
 |----|----|---------|
-| ① 痛点 | §1 | 11 章长程任务一个 session 一个 feature——慢 |
+| ① 痛点 | §1 | 长程任务篇一个 session 一个 feature——慢 |
 | ② 最小实现 | §2–§7 | 4 种编排模式 + Delegate 工具 + DAG 调度 + 错误传播 |
 | ③ 验证 | §12 / §16 | 5 个 feature 并行跑，对照串行时长缩短 3-4 倍 |
-| ④ 对照 | §11 | 与 11 章串行 single-agent 的速度差异 |
+| ④ 对照 | §11 | 与长程任务篇串行 single-agent 的速度差异 |
 | ⑤ 避坑 | §14 | subagent 越权 / DAG 死锁 / 配额超支 / 上下文继承泄漏 |
 
 ---
@@ -21,7 +21,7 @@
 
 ### 0.1 单 agent 模式的瓶颈
 
-11/13 章的长程任务，是**顺序执行**：
+长程任务篇 / Harness 工程篇的长程任务，是**顺序执行**：
 
 ```
 session-1 → F001（30min）→ session-2 → F002（30min）→ ... → F100（30min）
@@ -450,9 +450,9 @@ flowchart TD
 
 ---
 
-## 9. 与 harness 多角色的整合（13 章）
+## 9. 与 harness 多角色的整合
 
-13 章 Layer 5 定义了 5 角色（Planner / Coder / Tester / Reviewer / Cleaner）。本章是它们的**运行时实现**：
+Harness 工程篇 Layer 5 定义了 5 角色（Planner / Coder / Tester / Reviewer / Cleaner）。本章是它们的**运行时实现**：
 
 | harness 角色 | subagent role | 工具调用 |
 |--------------|---------------|----------|
@@ -462,11 +462,11 @@ flowchart TD
 | Reviewer | reviewer | Delegate(role=reviewer, task=...) |
 | Cleaner | cleaner | Delegate(role=cleaner, task=...) |
 
-13 章的"消息总线"（`.harness/messages/`）= 本章的 `parent ↔ child` 注入机制。
+Harness 工程篇的"消息总线"（`.harness/messages/`）= 本章的 `parent ↔ child` 注入机制。
 
 ---
 
-## 10. 可观测性（接 17 章）
+## 10. 可观测性
 
 每个 subagent 都推送事件到主 session 的事件流：
 
@@ -477,7 +477,7 @@ flowchart TD
 {"type": "subagent_failed", "subagentId": "...", "reason": "..."}
 ```
 
-前端展示（详见 17 章）：subagent 拓扑图 + 每个子 agent 折叠的活动流。
+前端展示：subagent 拓扑图 + 每个子 agent 折叠的活动流。
 
 ---
 
@@ -539,7 +539,7 @@ function SubagentTopology({ subagents }: { subagents: Subagent[] }) {
 - 独立的 LLM 配额；
 - 独立 worktree（磁盘）。
 
-租户配额扩展（接 10 章的 ai-serving）：
+租户配额扩展（接入 ai-serving 的多租户配额系统）：
 
 ```sql
 ALTER TABLE tenant_quotas ADD COLUMN max_concurrent_subagents INT DEFAULT 5;
@@ -560,7 +560,7 @@ ALTER TABLE tenant_quotas ADD COLUMN max_subagents_per_session INT DEFAULT 20;
 | subagent 失败无人知 | 错误吞掉 | §8 错误传播必须有，失败上抛或重试 |
 | 无限递归 Delegate | subagent 再 Delegate | 最大嵌套深度限制 |
 | 结果聚合丢字段 | 主 agent 收到的 summary 不全 | 用 schema 强制 + 必填字段校验 |
-| subagent 各跑各的没协调 | 文件冲突 / 决策矛盾 | 13 章 Multi-Agent Topology 协议 |
+| subagent 各跑各的没协调 | 文件冲突 / 决策矛盾 | Harness 工程篇 Multi-Agent Topology 协议 |
 | 同 task 多次 Delegate | 重复执行浪费 | task_id 幂等 + 已完成跳过 |
 
 ## 15. 安全
@@ -600,15 +600,15 @@ void parallelDelegationCompletesFasterThanSequential() {
 
 ## 15. 与已有章节的关系
 
-| 章节 | 关系 |
+| 主题 | 关系 |
 |------|------|
-| 04-Agent-Loop | 子 agent 用相同的 Loop |
-| 06-沙箱接入 | 子 agent 用独立 worktree |
-| 07-Session持久化 | 子 session 独立持久化 |
-| 11-长程任务 | harness 任务可拆给多 subagent 并行 |
-| 13-Harness工程 | 5 角色映射 |
-| 17-全链路可观测 | subagent 事件并入主流 |
-| 18-错误恢复 | 子 agent 失败的重试策略 |
+| Agent-Loop | 子 agent 用相同的 Loop |
+| 沙箱接入 | 子 agent 用独立 worktree |
+| Session 持久化 | 子 session 独立持久化 |
+| 长程任务 | harness 任务可拆给多 subagent 并行 |
+| Harness 工程 | 5 角色映射 |
+| 全链路可观测 | subagent 事件并入主流 |
+| 错误恢复 | 子 agent 失败的重试策略 |
 
 ---
 
@@ -640,4 +640,4 @@ void parallelDelegationCompletesFasterThanSequential() {
 
 ## 18. 下一步
 
-进入 [16-MCP 协议集成](./16-MCP协议集成.md)，让 Tool Registry 能接入外部 MCP server 生态。
+进入下一节：**16-MCP 协议集成**——让 Tool Registry 能接入外部 MCP server 生态。

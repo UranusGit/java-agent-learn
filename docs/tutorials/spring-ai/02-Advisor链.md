@@ -1,7 +1,7 @@
 # Spring AI 02 - Advisor 链
 
 > Advisor 是 Spring AI 最具差异化的设计，理解了它你就理解了 Spring AI 的精髓。
-> 前置：已完成 [01-快速起步](./01-快速起步.md)。
+> 前置：你会用 `ChatClient` 跑通第一次 LLM 调用、能配 `application.yml` 里的模型参数（即 01 的能力）。
 >
 > **本文基于 Spring AI 1.0.0**。0.8/0.9 时代的 `aroundCall` / `AdvisedRequest` API 已彻底废弃，1.0.0 改用 `adviseCall` / `ChatClientRequest`，注意区分。
 
@@ -118,7 +118,7 @@ Spring AI 提供了几个开箱即用的 Advisor：
 | `SimpleLoggerAdvisor` | 日志记录 | `logRequests(true)` |
 | `SafeGuardAdvisor` | 敏感词拦截 | 无内置，需自己写 |
 
-> ⚠️ **注意**：旧版的 `QuestionAnswerAdvisor` 在 1.0.0 已**不在主依赖里**。RAG 改用独立的 `RetrievalAugmentationAdvisor`（来自 `spring-ai-rag` 模块），需要额外引入依赖，详见 [04-RAG实战](./04-RAG实战.md)。
+> ⚠️ **注意**：旧版的 `QuestionAnswerAdvisor` 在 1.0.0 已**不在主依赖里**。RAG 改用独立的 `RetrievalAugmentationAdvisor`（来自 `spring-ai-rag` 模块），需要额外引入依赖，装配方法见本文档第 7 节。
 
 ---
 
@@ -343,7 +343,7 @@ flowchart TD
 <!-- 还需要一个 VectorStore 实现，如 SimpleVectorStore（在 spring-ai-vector-store-simple） -->
 ```
 
-> ⚠️ **当前项目 pom 没有引入这些依赖**，下面代码仅供了解。完整实战见 [04-RAG实战](./04-RAG实战.md)。
+> ⚠️ **当前项目 pom 没有引入这些依赖**，下面代码仅供了解 RAG 在 Advisor 里的装配方式。完整的分块、索引、检索实战会在后续章节（04-RAG 实战）给出。
 
 ```java
 @Bean
@@ -505,4 +505,4 @@ flowchart TD
 4. 测试 Order：把日志 Advisor 的 order 从 0 改成 100，观察 before 顺序变化
 5. （进阶）写一个 `RateLimitAdvisor`，每秒最多 1 个请求
 
-完成后进入 [03-Tool 调用](./03-Tool调用.md)。
+完成后进入下一节：**03-Tool 调用**——把 Java 方法注册成工具，让 LLM 自己决定何时调用。

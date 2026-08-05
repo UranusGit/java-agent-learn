@@ -2,7 +2,7 @@
 
 > 传统 CI/CD 只管代码。AI 系统还要管 prompt、模型、数据三套"会变的东西"。本文给出一套可落地的 AI CI/CD 流水线。
 >
-> 前置：[`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) + [`./26-AI工程的SRE实践.md`](./26-AI工程的SRE实践.md)
+> 前提：你已实践过 prompt 版本化与评估闭环，并了解 SRE 的变更管理与回滚流程。
 > 预计：1.5 天
 
 ---
@@ -502,12 +502,8 @@ CI 里用 OIDC token + 短期凭证，不持久化 key。
 
 ---
 
-## 13. 相关文档
+## 13. 相关资源
 
-- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— Prompt 版本化
-- [`./13-测试工程化.md`](./13-测试工程化.md) —— WireMock LLM
-- [`./26-AI工程的SRE实践.md`](./26-AI工程的SRE实践.md) —— SRE + 变更管理
-- [`./28-AI项目的Git工作流.md`](./28-AI项目的Git工作流.md) —— Git 工作流配套
 - [DVC](https://dvc.org/)
 - [LakeFS](https://lakefs.io/)
 - [ArgoCD](https://argo-cd.readthedocs.io/)
@@ -516,4 +512,4 @@ CI 里用 OIDC token + 短期凭证，不持久化 key。
 
 ---
 
-回到 [`./00-目录索引.md`](./00-目录索引.md)。
+回到目录索引，继续下一个主题。

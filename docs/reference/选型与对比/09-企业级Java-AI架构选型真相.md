@@ -2,12 +2,9 @@
 
 > 一句话定位：**企业级 Java AI 项目目前以"单框架 + Anthropic Workflow 模式"为主流，"Spring AI + LangChain4j 混合"是理论范式，不是工程标配。**
 >
-> 本节是对 `10-SpringAI与LangChain4j分工模型.md` 的现实校正：第 10 篇描述的是理想分工模型，本篇描述的是**企业真实在做什么**，以及**未来 12-24 个月值得关注的方向**。读完先看本篇再看第 10 篇，避免把"理想"当"标准答案"。
+> 本文是对"两框架分工模型"这类理想想法的现实校正：理想分工模型描述的是"两框架各司其职、互相补充"，本文描述的是**企业真实在做什么**，以及**未来 12-24 个月值得关注的方向**。请以本文（企业实战视角）的结论为准，避免把"理想"当"标准答案"。
 >
 > 调研日期：2026-07-13。本仓库实际使用 **Spring AI 1.0.0 + Spring Boot 3.5.10 + JDK 21 + LangChain4j 1.0.1**（阶段 1-3 学习用），生产化阶段（阶段 5）建议升级到 **Spring AI 2.0.0 GA（2026-06-12 发布，基于 Spring Boot 4 + Jackson 3 + JSpecify）**。本文特性描述以 Spring AI 1.0 GA 为准，2.0 增量已在涉及处补充。所有版本号、官方立场基于公开资料，标注了来源。
->
-> **相关文档**：
-> - [`13-SpringAI-vs-LangChain4j何时用何框架.md`](./10-SpringAI-vs-LangChain4j何时用何框架.md) —— **选型决策手册（基于本文 + Spring AI 2.0 事实更新）**
 
 ---
 
@@ -93,7 +90,7 @@ Spring AI 1.0 GA（2025-05-20）发布以来的官方 reference application `spr
 | 会话持久化 | `MessageWindowChatMemory` | `spring-ai-session`（event-sourced，可重放） | **追平 LangChain4j** |
 | Spring Boot 基线 | 3.x | 4.x（+ Jackson 3 + JSpecify） | **升级成本需评估** |
 
-**结论强化**：2.0 GA 后，Spring AI 在企业 Spring Boot 项目中的优势进一步扩大，单框架选择更无悬念。**LangChain4j 仅在 Quarkus / 复杂状态机 / 无容器纯 Java 三个细分场景仍有明显优势**（详见第 13 篇 §2）。
+**结论强化**：2.0 GA 后，Spring AI 在企业 Spring Boot 项目中的优势进一步扩大，单框架选择更无悬念。**LangChain4j 仅在 Quarkus / 复杂状态机 / 无容器纯 Java 三个细分场景仍有明显优势**。
 
 **升级建议**：阶段 1-3 可继续用 1.0 学习（API 大体一致），阶段 5 生产化时应升级到 2.0 获取 Agent Loop / MCP Server / 可重放会话等能力。
 
@@ -357,18 +354,18 @@ flowchart LR
 
 ---
 
-## 9. 对现有第 10 篇文档的校正
+## 9. 对"分工模型"想法的校正
 
-`10-SpringAI与LangChain4j分工模型.md` 描述的"接入/兜底 vs 思考/编排"分工模型：
+"分工模型"（Spring AI 做"接入/兜底"、LangChain4j 做"思考/编排"）这类想法的现实情况：
 
 - ✅ **理论价值**：作为心智模型清晰，有助于理解两框架各自定位
 - ⚠️ **工程现实**：**不是企业标配**，属于"理论最优、实战罕见"
-- ⚠️ **第 9 节演进路径**：建议把"阶段 3 引入 LangChain4j"改为"阶段 3 引入 Alibaba Graph 或 LangGraph4j"（更贴近企业实战）
-- ⚠️ **第 7 节完整示例**：示例本身没错，但要标注"这是理论范式，企业实战以单框架为主"
+- ⚠️ **演进路径**：建议把"阶段 3 引入 LangChain4j"改为"阶段 3 引入 Alibaba Graph 或 LangGraph4j"（更贴近企业实战）
+- ⚠️ **完整示例**：示例本身没错，但要标注"这是理论范式，企业实战以单框架为主"
 
-**读法建议**：先把第 10 篇当"理解两框架定位差异"的教材；遇到真实项目选型时，参考本篇（第 11 篇）的结论。
+**读法建议**：先用"分工模型"一文当"理解两框架定位差异"的教材；遇到真实项目选型时，参考本文的结论（单框架 + Workflow 是主流）。
 
-**关于版本**：第 10 篇代码示例使用 `AiServices.builder()` 和 `ChatClient.Builder` 等通用 API，在 Spring AI 1.0 和 LangChain4j 1.0 下均可运行，无需调整。
+**关于版本**：分工模型一文中的代码示例使用 `AiServices.builder()` 和 `ChatClient.Builder` 等通用 API，在 Spring AI 1.0 和 LangChain4j 1.0 下均可运行，无需调整。
 
 ---
 
@@ -384,13 +381,9 @@ flowchart LR
 
 ---
 
-## 11. 相关文档
+## 11. 阅读提示
 
-- `10-SpringAI与LangChain4j分工模型.md` —— 理论分工模型（本篇是其现实校正）
-- `13-SpringAI-vs-LangChain4j何时用何框架.md` —— **决策手册（基于本篇 + Spring AI 2.0 事实更新）**
-- `04-Java与AI融合架构.md` —— Java 与 AI 融合的整体架构
-- `09-心智模型与决策树.md` —— 何时用啥的决策树
-- `tutorials/spring-ai/07-与LangChain4j对比.md` —— 两框架核心差异对比
+本文回答"企业真实在做什么"。**如果你要落地选型**，直接采用本文第 1 节的核心结论：Spring Boot 项目选 Spring AI（单框架 + Anthropic Workflow 模式），Quarkus / 纯 Java 场景选 LangChain4j。
 
 ---
 

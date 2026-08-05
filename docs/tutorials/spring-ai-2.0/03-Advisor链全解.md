@@ -4,7 +4,7 @@
 >
 > 一篇搞定 Advisor 的：自定义模板、顺序设计、实现选择（BaseAdvisor vs Call/Stream）、结构化校验。
 >
-> 前置：[`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md)
+> 前提：你已会用 `@Tool` 给 ChatClient 加工具、见过 `ToolCallingAdvisor` 的自动注册与 Agent Loop（即 02 的能力）。
 > 预计：1 天
 
 ---
@@ -506,10 +506,4 @@ Spring AI 在 `BaseAdvisorChain` 内部对同 order 的 advisor 用注册顺序�
 
 ## 11. 相关文档
 
-- [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) —— Tool 基础
-- [`./04-流式响应与Reactor深度.md`](./04-流式响应与Reactor深度.md) —— 流式下 Advisor 行为
 - [Spring AI Advisors Reference](https://docs.spring.io/spring-ai/reference/api/advisors.html)
-
----
-
-回到 [`./00-目录索引.md`](./00-目录索引.md)。

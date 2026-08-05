@@ -4,7 +4,7 @@
 >
 > 一篇搞定：流式响应怎么用、流式 + 工具调用怎么打通、Reactor 在 LLM 场景的所有操作符。
 >
-> 前置：[`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) + [`./03-Advisor链全解.md`](./03-Advisor链全解.md)
+> 前提：你已会用 `@Tool` 注册工具、理解 ToolCallingAdvisor 的 Agent Loop，并清楚 Advisor 的 order 与 BaseAdvisor/Call/Stream 选择（即 02、03 的能力）。
 > 预计：1.5 天
 
 ---
@@ -501,7 +501,7 @@ flux.flatMap(chunk -> Mono.fromCallable(() -> jdbc.queryForMap("..."))
 
 ### G.2 BaseAdvisor 的 getScheduler
 
-12 篇提到的 BaseAdvisor 有 `getScheduler()`：
+BaseAdvisor 抽象出 `getScheduler()`：
 
 ```java
 @Override
@@ -592,7 +592,7 @@ Spring AI 2.0.0 把 Advisor 拆成了两个接口：
 
 **解决**：
 
-- **方案一**：不用该 Advisor，改用手动管理。例如 `MessageChatMemoryAdvisor` 不支持 stream → 直接注入 `ChatMemory`，在 `Flux.defer()` 里手动 `memory.add()`/`memory.get()`，流结束时保存 AssistantMessage。详见 [附录：Reactor AI 流式核心模式](../../附录/Reactor响应式编程/05-Reactor-AI流式核心模式.md) 第 2 章。
+- **方案一**：不用该 Advisor，改用手动管理。例如 `MessageChatMemoryAdvisor` 不支持 stream → 直接注入 `ChatMemory`，在 `Flux.defer()` 里手动 `memory.add()`/`memory.get()`，流结束时保存 AssistantMessage。这套"手动 + defer"就是流式记忆管理的核心模式。
 - **方案二**：改用 `.call()` 代替 `.stream()`，放弃流式输出。
 
 ---
@@ -623,10 +623,4 @@ Spring AI 2.0.0 把 Advisor 拆成了两个接口：
 
 ## L. 相关文档
 
-- [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) —— 工具调用基础
-- [`./03-Advisor链全解.md`](./03-Advisor链全解.md) —— Advisor 在流中的顺序
 - [Project Reactor Reference](https://projectreactor.io/docs/core/release/reference/)
-
----
-
-回到 [`./00-目录索引.md`](./00-目录索引.md)。

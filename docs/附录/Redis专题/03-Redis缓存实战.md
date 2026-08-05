@@ -1,12 +1,12 @@
 # Redis 缓存实战（缓存模式、穿透/击穿/雪崩、Spring Cache）
 
-> **本篇定位**：Redis 最常用、最值得讲透的生产场景——**缓存**。同文件夹 [00-基础与SpringBoot使用](./00-Redis基础与SpringBoot使用.md) 讲的是"Redis 本身怎么用"，本篇讲"**怎么把缓存用对**"：缓存模式、三个经典坑（穿透/击穿/雪崩）、Spring Cache 抽象、手动缓存、和数据库的一致性。
+> **本篇定位**：Redis 最常用、最值得讲透的生产场景——**缓存**。同文件夹的基础篇（Redis 基础与 Spring Boot 使用）讲的是"Redis 本身怎么用"，本篇讲"**怎么把缓存用对**"：缓存模式、三个经典坑（穿透/击穿/雪崩）、Spring Cache 抽象、手动缓存、和数据库的一致性。
 >
-> **难度假设**：你会用 Redis 基础（`SET/GET/TTL`、RedisTemplate/ReactiveRedisTemplate，见 [00](./00-Redis基础与SpringBoot使用.md)）。本篇不管你是 MVC 还是 WebFlux 都能读——需要区分的地方我会明说。
+> **难度假设**：你会用 Redis 基础（`SET/GET/TTL`、RedisTemplate/ReactiveRedisTemplate 收发）。本篇不管你是 MVC 还是 WebFlux 都能读——需要区分的地方我会明说。
 >
-> **技术栈**：Spring Boot 4.x + Spring Data Redis 4.x（配置前缀 `spring.data.redis.*`，见 [00 第 4 章](./00-Redis基础与SpringBoot使用.md)）。
+> **技术栈**：Spring Boot 4.x + Spring Data Redis 4.x（配置前缀 `spring.data.redis.*`）。
 >
-> **读完这篇之后**：你能回答"缓存到底怎么设计才对"——用什么模式、防哪三个坑、用注解还是手动、怎么跟数据库保持一致。并对应 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 6-7 章：它把 run 状态、幂等映射存进 Redis KV（带 1 天 TTL），又在第 7 章迁去 PostgreSQL——这就是"缓存该做什么、不该做什么"的真实样板。
+> **读完这篇之后**：你能回答"缓存到底怎么设计才对"——用什么模式、防哪三个坑、用注解还是手动、怎么跟数据库保持一致。并对照管数分离实战的演进：它把 run 状态、幂等映射先存进 Redis KV（带 1 天 TTL），后来又迁去 PostgreSQL——这就是"缓存该做什么、不该做什么"的真实样板。
 
 ---
 
@@ -87,7 +87,7 @@ Cache-Aside 是"**应用自己管缓存**"。还有三种"**缓存中间件帮�
 
 ### 1.4 验证
 
-用 [00](./00-Redis基础与SpringBoot使用.md) 的 RedisTemplate 最小收发，手动走一遍 Cache-Aside：
+用 RedisTemplate 的最小收发，手动走一遍 Cache-Aside：
 
 ```bash
 # 模拟"写 DB 后删缓存"
@@ -276,7 +276,7 @@ flowchart TD
 
 **解决 ①：互斥锁重建（mutex，只让一个请求去查 DB）**
 
-谁 miss 了先抢一把锁（`SETNX`，见 [02-分布式锁](./02-Redis分布式锁实战.md)），**抢到锁的人去查 DB 回填**，其他人**等一下再读缓存**。这样 DB 最多被"一个请求"打一次。
+谁 miss 了先抢一把锁（`SETNX` 就是分布式锁最朴素的实现），**抢到锁的人去查 DB 回填**，其他人**等一下再读缓存**。这样 DB 最多被"一个请求"打一次。
 
 **互斥锁重建流程**：
 
@@ -355,9 +355,9 @@ public class UserCacheService {
 }
 ```
 
-> **要点**：① 锁要有 TTL（防持有者崩溃锁不释放，见 [02 第 2-3 章](./02-Redis分布式锁实战.md)）。② **双检**（抢到锁后再查一次缓存）是必须的，否则"抢锁期间别人已重建"会白查一次 DB。③ 递归重试要有上限（超时兜底），别无限递归。④ 这是**阻塞版**写法；WebFlux 响应式版见下方"响应式提示"。
+> **要点**：① 锁要有 TTL（防持有者崩溃锁不释放，分布式锁篇的核心结论）。② **双检**（抢到锁后再查一次缓存）是必须的，否则"抢锁期间别人已重建"会白查一次 DB。③ 递归重试要有上限（超时兜底），别无限递归。④ 这是**阻塞版**写法；WebFlux 响应式版见下方"响应式提示"。
 
-**响应式提示（本仓库是 WebFlux）**：上面的 `Thread.sleep` 在 WebFlux 里**会卡死事件循环线程**（见 [00 第 5 章铁律](./00-Redis基础与SpringBoot使用.md)）。响应式版用 `Mono.delay` 代替 sleep：
+**响应式提示（本仓库是 WebFlux）**：上面的 `Thread.sleep` 在 WebFlux 里**会卡死事件循环线程**（WebFlux 的铁律：事件循环线程上绝不能阻塞）。响应式版用 `Mono.delay` 代替 sleep：
 
 ```java
 public Mono<User> findByIdReactive(Long id) {
@@ -652,7 +652,7 @@ public class RedisCacheConfig {
 }
 ```
 
-> **为什么必须配序列化**：不配的话 value 用 JDK 序列化，`redis-cli` 里看是 `\xAC\xED...` 二进制乱码，而且跨语言/跨服务没法读（见 [00 第 4 章](./00-Redis基础与SpringBoot使用.md)）。`GenericJackson2JsonRedisSerializer` 会把对象序列化成 JSON，并带一个 `@class` 字段记录原类型，反序列化时能还原成 `User`。
+> **为什么必须配序列化**：不配的话 value 用 JDK 序列化，`redis-cli` 里看是 `\xAC\xED...` 二进制乱码，而且跨语言/跨服务没法读。`GenericJackson2JsonRedisSerializer` 会把对象序列化成 JSON，并带一个 `@class` 字段记录原类型，反序列化时能还原成 `User`。
 
 ### 3.4 @Cacheable 的 key、condition、unless
 
@@ -778,7 +778,7 @@ curl "http://localhost:8080/product/SKU-001"   # 看日志，没有 SELECT
 
 ### 3.8 诚实提示：Spring Cache 注解是"阻塞抽象"
 
-> **铁律回顾（[00 第 5 章](./00-Redis基础与SpringBoot使用.md)）**：WebFlux 响应式栈必须用响应式客户端。**Spring Cache 注解（@Cacheable）是阻塞 API**——它的缓存查询/写入是同步的。如果你在 WebFlux 的 `Mono`/`Flux` 方法上直接加 `@Cacheable`：
+> **铁律回顾**：WebFlux 响应式栈必须用响应式客户端。**Spring Cache 注解（@Cacheable）是阻塞 API**——它的缓存查询/写入是同步的。如果你在 WebFlux 的 `Mono`/`Flux` 方法上直接加 `@Cacheable`：
 >
 > - 方法返回 `Mono<User>` 时，注解缓存的是**这个 Mono 对象本身**（不是里面的 User）。对冷 Mono，第二次"命中"返回同一个 Mono，**重新订阅会重新执行方法**——缓存形同虚设，甚至更糟。
 > - 而且缓存读写发生在事件循环线程上，阻塞 Redis 调用会卡死事件循环（00 铁律）。
@@ -791,7 +791,7 @@ curl "http://localhost:8080/product/SKU-001"   # 看日志，没有 SELECT
 
 ## 第 4 章：Spring Data Redis 手动缓存（RedisTemplate + JSON）
 
-不想用注解？或者你是 WebFlux（@Cacheable 不适用）？那就在业务代码里**手动读缓存**。这是最直白、最好控制的方式，[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的 run 状态缓存（`run:{id}:status`）就是这么干的。
+不想用注解？或者你是 WebFlux（@Cacheable 不适用）？那就在业务代码里**手动读缓存**。这是最直白、最好控制的方式，管数分离实战的 run 状态缓存（`run:{id}:status`）就是这么干的。
 
 ### 4.1 配置 RedisTemplate + JSON 序列化
 
@@ -925,7 +925,7 @@ curl -X PUT "http://localhost:8080/user/1" -d '{"name":"李四"}'
 redis-cli GET user:1          # → (nil)，缓存已被删，下次读会重新回填新值
 ```
 
-> **关键认知**：手动缓存 = `RedisTemplate` + 你自己写"缓存→DB→回填→失效"的逻辑。它比 @Cacheable 啰嗦，但**可读、可控、能处理穿透/击穿**，且天然适配 WebFlux（用 `ReactiveRedisTemplate`，方法名几乎一样，见 [00 第 4.4 节](./00-Redis基础与SpringBoot使用.md)）。
+> **关键认知**：手动缓存 = `RedisTemplate` + 你自己写"缓存→DB→回填→失效"的逻辑。它比 @Cacheable 啰嗦，但**可读、可控、能处理穿透/击穿**，且天然适配 WebFlux（用 `ReactiveRedisTemplate`，方法名几乎一样）。
 
 ---
 
@@ -996,13 +996,13 @@ public void updateWithDoubleDelete(User user) {
 }
 ```
 
-> **双删的局限（诚实）**：sleep 时间要靠经验估，估短了盖不住慢读，估长了写变慢；也不是原子的。**它是"压小概率"的实用补丁，不是数学证明**。更强的方案：**监听数据库 binlog（如 Debezium/Canal）精确失效缓存**——本仓库 [Debezium-CDC 实战](../Debezium-CDC实战/) 就是这套路，等读到那里再深入。
+> **双删的局限（诚实）**：sleep 时间要靠经验估，估短了盖不住慢读，估长了写变慢；也不是原子的。**它是"压小概率"的实用补丁，不是数学证明**。更强的方案：**监听数据库 binlog（如 Debezium/Canal）精确失效缓存**——这是更进阶的套路，后续相关专题会深入。
 
 ### 5.3 最终一致才是目标
 
 - **能容忍短暂不一致（绝大多数读多写少业务）**：Cache-Aside（先写 DB → 删缓存）+ TTL 兜底。TTL 是"最后的保鲜期"——就算删缓存失败、就算窗口存在，**TTL 一到缓存自动过期，最终还是和 DB 一致**。这就是"最终一致"。
-- **不能容忍（金融、库存、强一致）**：**不要用缓存**，或用读时校验/版本号（fencing，见 [02 第 5 章](./02-Redis分布式锁实战.md) 的 token 思想）。
-- **数据形态判断**：**该当缓存用的**（热数据、读多写少、临时状态）放 Redis；**系统记录（system of record）**进数据库。看 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的演进：第 6 章把 run 状态、幂等映射存 Redis KV（带 1 天 TTL），第 7 章因为要 SQL 查询、ACID、长期保留、审计，**把它们迁去 PostgreSQL，Redis 退回锁 + 实时通知**——这就是"什么时候缓存够用、什么时候必须进数据库"的真实决策。
+- **不能容忍（金融、库存、强一致）**：**不要用缓存**，或用读时校验/版本号（fencing，即分布式锁篇讲的 token 思想）。
+- **数据形态判断**：**该当缓存用的**（热数据、读多写少、临时状态）放 Redis；**系统记录（system of record）**进数据库。看管数分离实战的演进：它把 run 状态、幂等映射先存 Redis KV（带 1 天 TTL），后来因为要 SQL 查询、ACID、长期保留、审计，**把它们迁去 PostgreSQL，Redis 退回锁 + 实时通知**——这就是"什么时候缓存够用、什么时候必须进数据库"的真实决策。
 
 ### 5.4 验证
 
@@ -1049,8 +1049,8 @@ redis-cli GET user:1            # → {"name":"v1"} 旧值！只能等 TTL
 
 **接下来按顺序读**：
 
-1. 缓存里经常要配合 **TTL 和锁**——复习 [00 第 3 章 TTL](./00-Redis基础与SpringBoot使用.md)、[02-分布式锁](./02-Redis分布式锁实战.md)。
-2. 缓存数据/状态的另一种载体——[01-Streams 与 Pub/Sub](./01-Redis-Streams与PubSub实战.md)（缓存之外，Redis 还当数据总线用）。
-3. 回头看 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 6-7 章：run 状态/幂等映射先放 Redis KV（第 6 章）、再迁 PostgreSQL（第 7 章）——对照本篇第 5 章，你会理解"缓存和数据库的分工"在真实项目里怎么落。
+1. 缓存里经常要配合 **TTL 和锁**——TTL 防止缓存过期不清理，锁防止并发下缓存被重复重建。
+2. 缓存之外，Redis 还当数据总线用——Stream 持久 + Pub/Sub 实时广播。
+3. 回头看管数分离实战：run 状态/幂等映射先放 Redis KV、再迁 PostgreSQL——对照本篇第 5 章，你会理解"缓存和数据库的分工"在真实项目里怎么落。
 
 > **一句话记住缓存**：**数据库是真源，缓存只是它一份带 TTL 的副本——用对模式（Cache-Aside）、防对三坑（穿透/击穿/雪崩）、认命一致性（最终一致），缓存就是性能和成本的甜区。**

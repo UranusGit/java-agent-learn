@@ -4,7 +4,7 @@
 >
 > 一篇搞定：把 AI 能力开放给整个公司（甚至外部客户）所需的平台化 + 数据基础设施。
 >
-> 前置：[`./17-AI原生系统设计.md`](./17-AI原生系统设计.md) + [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md)
+> 前提：你已设计过 AI 原生系统（事件溯源 + 领域 Agent），并搭过企业级 RAG（即 17、09 的能力）。
 > 预计：3 天
 
 ---
@@ -423,7 +423,7 @@ CREATE TABLE mcp_subscription (
 );
 ```
 
-详见 [`./07-MCP-Server高阶与生态.md`](./07-MCP-Server高阶与生态.md) §3（MCP Hub）。
+MCP Hub 的多租户订阅 + 注册发现 + 配额计费设计在 MCP 高阶与生态篇 §3 有完整实现。
 
 ---
 
@@ -1027,15 +1027,6 @@ public class UserDataDeletionService {
 
 ## 20. 相关文档
 
-- [`./17-AI原生系统设计.md`](./17-AI原生系统设计.md) —— 系统设计基础
-- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— RAG 数据基础
-- [`./07-MCP-Server高阶与生态.md`](./07-MCP-Server高阶与生态.md) —— MCP Hub 实现（§3）
-- [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— 平台可观测性 + 计费
-- [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— 多租户安全深入
 - [pgvector 文档](https://github.com/pgvector/pgvector)
 - [Milvus 文档](https://milvus.io/docs)
 - [Building LLM Apps for Production](https://www.oreilly.com/library/view/building-llm-apps/)
-
----
-
-回到 [`./00-目录索引.md`](./00-目录索引.md)。

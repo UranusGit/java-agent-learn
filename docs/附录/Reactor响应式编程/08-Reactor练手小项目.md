@@ -2,7 +2,7 @@
 
 > **本篇定位**：前面 01-07 都是"零件"——Mono/Flux 心智、操作符、Sinks、背压、线程、错误处理。本篇把零件**装成一辆车**：一个能跑、能验证、把 Reactor 大部分核心能力串起来的完整小项目——实时股票行情推送（WebFlux + SSE）。初学者照着敲完，会很有成就感。
 >
-> **难度假设**：你读完了 [01-Reactor响应式入门](./01-Reactor响应式入门.md)（Mono/Flux 心智、"菜谱不是结果"）、[06-Reactor调度器与线程模型](./06-Reactor调度器与线程模型.md)（`subscribeOn`/`publishOn`）、[07-Reactor错误处理详解](./07-Reactor错误处理详解.md)（`onErrorResume`/`retryWhen`）。若还没读，遇到不认识的词，按文档里的交叉引用回去翻即可。
+> **难度假设**：你读完了 Reactor 响应式入门（Mono/Flux 心智、"菜谱不是结果"）、调度器与线程模型（`subscribeOn`/`publishOn`）、错误处理详解（`onErrorResume`/`retryWhen`）。若还没读也没关系，本篇会把每个概念在用到的地方用大白话再讲一遍。
 >
 > **你将得到**：一个 Spring Boot 4.x + WebFlux 应用。`GET /api/quotes` 每秒推一条模拟股票报价（SSE），`GET /api/quotes/alert` 推"涨跌幅超过阈值"的告警。还有一段"一个类能跑"的控制台版，先不碰 Spring，纯 Reactor 就能看行情。
 >
@@ -146,15 +146,15 @@ public record Alert(
 
 ### 2.3 行情源：`Flux.interval` + `map`
 
-这是整个项目的第一行核心。回顾 [01-Reactor响应式入门](./01-Reactor响应式入门.md)：`Flux` 是一条会持续吐数据的"水管"。我们要**每秒吐一条报价**，用 `Flux.interval` 做定时器，再用 `map` 把"第几个 tick"变成"一条报价"：
+这是整个项目的第一行核心。回顾入门篇：`Flux` 是一条会持续吐数据的"水管"。我们要**每秒吐一条报价**，用 `Flux.interval` 做定时器，再用 `map` 把"第几个 tick"变成"一条报价"：
 
 ```java
 Flux.interval(Duration.ofSeconds(1))      // 每秒吐一个 tick: 0, 1, 2, 3 ...
     .map(i -> nextQuote())                 // 每个 tick 变成一条随机报价
 ```
 
-- **`Flux.interval(Duration.ofSeconds(1))`**：周期性发射的无限流。它是"热"的定时器，默认就跑在 `parallel` 线程池上（这点第 3 章第 5 层会细讲，对应 [06](./06-Reactor调度器与线程模型.md)）。
-- **`map(i -> nextQuote())`**：一对一转换，把 tick 编号变成报价对象。这正是 [01](./01-Reactor响应式入门.md) 3.1 节和 [02-Flux方法速查](./02-Flux方法速查.md) 第 1 个方法的用法。
+- **`Flux.interval(Duration.ofSeconds(1))`**：周期性发射的无限流。它是"热"的定时器，默认就跑在 `parallel` 线程池上（这点第 3 章第 5 层会细讲）。
+- **`map(i -> nextQuote())`**：一对一转换，把 tick 编号变成报价对象。这正是 map"一对一转换"的典型用法。
 
 `nextQuote()` 生成一条**带随机抖动**的报价（在 [-2%, +2%] 内随机漂移，涨跌幅相对上一条计算）：
 
@@ -202,7 +202,7 @@ Flux.interval(Duration.ofSeconds(1))
 [parallel-1] Quote[symbol=NVDA, price=100.11, changePercent=0.66, timestamp=1700000002123]
 ```
 
-> **验证结论**：行情真的在"每秒"产生；线程名是 `parallel-1`——印证了 [06](./06-Reactor调度器与线程模型.md) 第 2.3 节说的"`Flux.interval` 默认就跑在 `parallel` 上"。**到这里，能力① `Flux.interval` + `map` 已经落地。**
+> **验证结论**：行情真的在"每秒"产生；线程名是 `parallel-1`——印证了"`Flux.interval` 默认就跑在 `parallel` 上"这一结论。**到这里，能力① `Flux.interval` + `map` 已经落地。**
 
 ---
 
@@ -214,7 +214,7 @@ Flux.interval(Duration.ofSeconds(1))
 
 **为什么加**：真实行情源偶尔会吐出**负价格、零价格**这种数据毛刺（网络脏数据）。不能让它推给用户，得在源头挡掉。
 
-**概念**：`filter` = 关卡，满足条件的放过去，不满足的扔掉（[02-Flux方法速查](./02-Flux方法速查.md) 第 2 个方法）。
+**概念**：`filter` = 关卡，满足条件的放过去，不满足的扔掉。
 
 **加这一行**：
 
@@ -241,7 +241,7 @@ if (random.nextInt(20) == 0) {
 - **临时故障**（网络抖动、连接中断）——值得**重试**；
 - **不可恢复故障**（行情商永久下线）——重试也白搭，应该**降级**为兜底流。
 
-这正好对应 [07-Reactor错误处理详解](./07-Reactor错误处理详解.md) 第 3 章（重试）和第 2 章（恢复操作符）的心智：**错误是顺着链往下传的 `onError` 信号，处理 = 在信号路径上拦截它**。
+这正好对应错误处理主题的核心心智（重试 + 恢复操作符）：**错误是顺着链往下传的 `onError` 信号，处理 = 在信号路径上拦截它**。
 
 给 `nextQuote()` 加一段随机抛"临时故障"：
 
@@ -269,15 +269,15 @@ Flux.interval(Duration.ofSeconds(1))
 
 逐个解释（顺序很重要，别写反）：
 
-| 操作符 | 在这个项目里的作用 | 对应 [07](./07-Reactor错误处理详解.md) |
+| 操作符 | 在这个项目里的作用 | 对应概念 |
 |--------|-------------------|-------------------------------------|
-| `doOnNext(q -> log.info(...))` | 每条合法行情打日志，**只看不改** | do 系列=旁路观察（第 4 章） |
-| `retryWhen(Retry.backoff(3, ...))` | 遇到 `TransientException` 先**指数退避重试**：500ms、1s，最多总尝试 3 次 | 3.2 节 |
-| `.filter(e -> e instanceof TransientException)` | **只对临时故障重试**，其他异常直接放过去（不浪费重试） | 3.2 节精细配置 |
-| `doOnError(e -> log.error(...))` | 重试耗尽 / 非临时故障，到这里**看一眼、打日志**，错误继续传 | 第 4 章"doOnError 只看不改" |
-| `onErrorResume(e -> degradedStream())` | 错误到达这里被**接管**：切换成兜底流，下游再也收不到错误 | 2.1 节 |
+| `doOnNext(q -> log.info(...))` | 每条合法行情打日志，**只看不改** | do 系列=旁路观察 |
+| `retryWhen(Retry.backoff(3, ...))` | 遇到 `TransientException` 先**指数退避重试**：500ms、1s，最多总尝试 3 次 | 指数退避重试 |
+| `.filter(e -> e instanceof TransientException)` | **只对临时故障重试**，其他异常直接放过去（不浪费重试） | 重试过滤条件 |
+| `doOnError(e -> log.error(...))` | 重试耗尽 / 非临时故障，到这里**看一眼、打日志**，错误继续传 | "doOnError 只看不改" |
+| `onErrorResume(e -> degradedStream())` | 错误到达这里被**接管**：切换成兜底流，下游再也收不到错误 | onErrorResume 换流兜底 |
 
-> **⚠️ `Retry.backoff` 的参数坑**：`Retry.backoff(3, ...)` 的 `3` 是**总尝试次数（含首次）**，意思是"初始 1 次 + 重试 2 次"。跟操作符 `retry(3)` 的"重试 3 次"语义不同，别记混（详见 [07](./07-Reactor错误处理详解.md) 3.2 节的坑）。
+> **⚠️ `Retry.backoff` 的参数坑**：`Retry.backoff(3, ...)` 的 `3` 是**总尝试次数（含首次）**，意思是"初始 1 次 + 重试 2 次"。跟操作符 `retry(3)` 的"重试 3 次"语义不同，别记混。
 
 兜底流 `degradedStream()`——行情源不可用时降级为"平线报价"（价格不动、不产生告警），保证 `/api/quotes` 这条线不彻底断：
 
@@ -299,9 +299,9 @@ private Flux<Alert> degradedStream() {
 
 ### 3.3 第三层：加 `Sinks.Many` 广播 + `flatMap` 异步广播到多路
 
-**为什么加**：行情要同时喂给**多个订阅者**——`/api/quotes` 的浏览器、`/api/quotes/alert` 的告警评估、将来的统计模块。如果用冷流 `Flux`，**每多一个订阅者就重新跑一遍生成逻辑**（见 [01](./01-Reactor响应式入门.md) 坑 5）。我们需要一份行情、大家共享——这就是**热流** `Sinks.Many`。
+**为什么加**：行情要同时喂给**多个订阅者**——`/api/quotes` 的浏览器、`/api/quotes/alert` 的告警评估、将来的统计模块。如果用冷流 `Flux`，**每多一个订阅者就重新跑一遍生成逻辑**（冷流的特性）。我们需要一份行情、大家共享——这就是**热流** `Sinks.Many`。
 
-**概念**：[03-Reactor-Sinks入门](./03-Reactor-Sinks入门.md) 第 1 章——Sink 是"命令式世界"和"响应式世界"之间的桥，`tryEmitNext` 把数据塞进一条热流，所有订阅者立刻收到。
+**概念**：Sink 是"命令式世界"和"响应式世界"之间的桥，`tryEmitNext` 把数据塞进一条热流，所有订阅者立刻收到。
 
 在 `QuoteEngine` 里建两条总线：
 
@@ -317,7 +317,7 @@ private final Sinks.Many<Alert> alertBus =
 
 - `multicast()`：新订阅者只收到**订阅之后**的行情（历史行情没有意义，实时推送要的是"从当下开始"）。
 - `onBackpressureBuffer(1024, false)`：给每个慢订阅者独立缓冲 1024 条（第 3.4 节细讲）。
-- `false`（autoCancel）：即使所有订阅者都断开，总线也保持存活，下个订阅者连上来还能收（[03](./03-Reactor-Sinks入门.md) 3.2 节）。
+- `false`（autoCancel）：即使所有订阅者都断开，总线也保持存活，下个订阅者连上来还能收。
 
 **给订阅者看流**——`asFlux()` 返回普通 `Flux`，用法和任何 `Flux` 一样：
 
@@ -333,7 +333,7 @@ public Flux<Alert> alerts() {
 }
 ```
 
-**flatMap 登场**——每个报价要"异步广播到多路"：既要塞进 `quoteBus`，又要异步评估是否触发告警。这正是 `flatMap` 的用武之地（[02](./02-Flux方法速查.md) 第 3 个方法：箭头函数返回另一个 `Mono`/`Flux`，一对多展开）：
+**flatMap 登场**——每个报价要"异步广播到多路"：既要塞进 `quoteBus`，又要异步评估是否触发告警。这正是 `flatMap` 的用武之地（箭头函数返回另一个 `Mono`/`Flux`，一对多展开）：
 
 ```java
 /** flatMap 的目标：一个报价展开成"多路" */
@@ -373,7 +373,7 @@ private Alert evaluateAlert(Quote quote) {
 }
 ```
 
-> **这里同时验证了 `map` vs `flatMap` 的选择**（[01](./01-Reactor响应式入门.md) 3.2 节）：`dispatch` 里要调"异步评估"这种返回 `Mono` 的操作，所以用 `flatMap`；如果写成 `map(this::dispatch)`，你会得到一个 `Flux<Flux<Alert>>` 的嵌套地狱。
+> **这里同时验证了 `map` vs `flatMap` 的选择**：`dispatch` 里要调"异步评估"这种返回 `Mono` 的操作，所以用 `flatMap`；如果写成 `map(this::dispatch)`，你会得到一个 `Flux<Flux<Alert>>` 的嵌套地狱。
 
 > **验证：** 把完整代码跑起来后（第 5 章），**同时开两个浏览器窗口**访问 `localhost:8080/api/quotes`，两个窗口看到的是**同一份**行情（同一时刻价格一致），而不是各自生成一套——这就是"热流共享"。**能力③ `flatMap`、能力⑧ `Sinks.Many` 落地。**
 
@@ -396,9 +396,9 @@ flowchart TD
 
 **为什么加**：假如有个订阅者（比如网络很慢的手机、或正在做繁重计算的统计模块）消费速度跟不上，行情每秒来一条，它消化不完，数据就会积压，最后 OOM 或丢数据。
 
-**概念**：[04-Reactor背压详解](./04-Reactor背压详解.md) 第 1 章——背压就是"消费者告诉生产者：我处理不过来了，先存着"。
+**概念**：背压就是"消费者告诉生产者：我处理不过来了，先存着"。
 
-**我们已经用上了**：`Sinks.many().multicast().onBackpressureBuffer(1024, false)` 这行代码，`onBackpressureBuffer(1024)` 就是背压策略——**给每个订阅者一个 1024 条的独立缓冲**。行情源是命令式 `tryEmitNext`（不可被拉慢，见 [04](./04-Reactor背压详解.md) 第 4 章），所以必须用 `onBackpressureBuffer` 这类策略兜住慢消费者。
+**我们已经用上了**：`Sinks.many().multicast().onBackpressureBuffer(1024, false)` 这行代码，`onBackpressureBuffer(1024)` 就是背压策略——**给每个订阅者一个 1024 条的独立缓冲**。行情源是命令式 `tryEmitNext`（不可被拉慢），所以必须用 `onBackpressureBuffer` 这类策略兜住慢消费者。
 
 > **为什么 1024 够了**：行情每秒 1 条，缓冲 1024 条 = 能扛住约 **17 分钟**的消费停滞；真满了会向**那个慢订阅者**发 `onError`（背压信号），不影响其他订阅者。
 
@@ -421,7 +421,7 @@ engine.quotes()
 - **行情生成/处理**（`interval` + `map` + `filter` + `flatMap`）→ 切到 `parallel`（CPU 核数个线程的纯计算池）；
 - **SSE 推送**（把数据写回浏览器）→ 由 WebFlux/Netty 的**事件循环线程**完成，业务链全程非阻塞，不占它的时间。
 
-**概念**：[06-Reactor调度器与线程模型](./06-Reactor调度器与线程模型.md) 第 3 章——`subscribeOn` 管"源在哪个线程起跑"，`publishOn` 是一道"闸门"，管**它之后**的操作符在哪个线程执行。
+**概念**：`subscribeOn` 管"源在哪个线程起跑"，`publishOn` 是一道"闸门"，管**它之后**的操作符在哪个线程执行。
 
 在流水线上加两处：
 
@@ -438,9 +438,9 @@ Flux.interval(Duration.ofSeconds(1))
         ...
 ```
 
-> **为什么 `subscribeOn` 和 `publishOn` 都指向 `parallel`？** `Flux.interval` 默认就跑在 `parallel`（[06](./06-Reactor调度器与线程模型.md) 2.3 节），这里显式写 `subscribeOn` 是为了"点明"源的线程归属；`publishOn` 则是划出"处理段"的边界。**真正重要的是这条链上没有任何阻塞调用**——所以 Netty 事件循环线程永远不会被我们卡住。若哪天你在链里混入了 `Thread.sleep` 或阻塞 JDBC，就必须按 [06](./06-Reactor调度器与线程模型.md) 第 4 章用 `boundedElastic` 隔离。
+> **为什么 `subscribeOn` 和 `publishOn` 都指向 `parallel`？** `Flux.interval` 默认就跑在 `parallel`（定时器的默认线程池），这里显式写 `subscribeOn` 是为了"点明"源的线程归属；`publishOn` 则是划出"处理段"的边界。**真正重要的是这条链上没有任何阻塞调用**——所以 Netty 事件循环线程永远不会被我们卡住。若哪天你在链里混入了 `Thread.sleep` 或阻塞 JDBC，就必须用 `boundedElastic` 隔离（把阻塞调用丢进弹性线程池）。
 
-> **SSE 推送在哪个线程？** 请求进来时由 Netty 事件循环线程 `reactor-http-nio-N` 接收；我们 return 的 `Flux` 由 WebFlux 替我们 `subscribe`（[01](./01-Reactor响应式入门.md) 第 4 章）。数据从 `quoteBus` 出来时，业务链跑在 `parallel` 上，WebFlux 把 SSE 帧写回 socket 的动作由事件循环线程完成——**两条线程各司其职，互不阻塞**。第 5 章验证时，你会看到日志里两种线程名同时出现。
+> **SSE 推送在哪个线程？** 请求进来时由 Netty 事件循环线程 `reactor-http-nio-N` 接收；我们 return 的 `Flux` 由 WebFlux 替我们 `subscribe`（框架替你订阅）。数据从 `quoteBus` 出来时，业务链跑在 `parallel` 上，WebFlux 把 SSE 帧写回 socket 的动作由事件循环线程完成——**两条线程各司其职，互不阻塞**。第 5 章验证时，你会看到日志里两种线程名同时出现。
 
 > **验证：** 观察日志，行情生成/推送的业务日志线程名都是 `parallel-N`；而在请求日志里能看到 `reactor-http-nio-N`（Netty 事件循环线程）在处理 HTTP 连接。**能力⑥ `subscribeOn`/`publishOn` 落地。**
 
@@ -526,7 +526,7 @@ public class QuoteController {
 
 ### 4.3 为什么直接 `return Flux` 就行
 
-> **关键认知**（[01](./01-Reactor响应式入门.md) 第 4 章）：Controller 把 `Flux` return 出去，**Spring 框架替我们 `subscribe`**，我们不需要写 `.subscribe()`。框架订阅后，行情才开始真正流动，然后被序列化成 SSE 写回响应。**铁律：WebFlux 里永远不要 `.block()`**——这里我们没有，所以全程非阻塞。
+> **关键认知**：Controller 把 `Flux` return 出去，**Spring 框架替我们 `subscribe`**，我们不需要写 `.subscribe()`。框架订阅后，行情才开始真正流动，然后被序列化成 SSE 写回响应。**铁律：WebFlux 里永远不要 `.block()`**——这里我们没有，所以全程非阻塞。
 
 **SSE 推送时序**：
 
@@ -899,27 +899,27 @@ public class ReactorQuotesConsoleDemo {
 
 把本篇用到的 11 个 Reactor 能力，对照到项目的具体位置和对应文档，**合上书能自己讲出来**：
 
-| # | Reactor 能力 | 项目里的落点 | 复习文档 |
+| # | Reactor 能力 | 项目里的落点 | 核心知识点 |
 |:-:|-------------|------------|---------|
-| 1 | `Flux.interval` | `QuoteEngine.start()` 里 `Flux.interval(Duration.ofSeconds(1))`：每秒吐一个 tick，驱动整条流水线 | [01](./01-Reactor响应式入门.md) 2.2 / [02](./02-Flux方法速查.md) |
-| 2 | `map` | `.map(i -> nextQuote())`：tick → 报价；Controller 里 `map(q -> ServerSentEvent.builder(q)...)`：报价 → SSE 帧 | [02](./02-Flux方法速查.md) 第 1 个 |
-| 3 | `filter` | `.filter(q -> q.price() > 0)`：挡掉负价格/零价格毛刺 | [02](./02-Flux方法速查.md) 第 2 个 |
-| 4 | `flatMap` | `.flatMap(this::dispatch)`：一个报价异步展开成"塞进 quoteBus + 评估告警"两路 | [01](./01-Reactor响应式入门.md) 3.2 / [02](./02-Flux方法速查.md) 第 3 个 |
-| 5 | `doOnNext` | `.doOnNext(q -> log.info("[行情] 生成 {}"))` 和 Controller 里的推送日志：旁路观察不改数据 | [02](./02-Flux方法速查.md) do 系列 |
-| 6 | `doOnError` | `.doOnError(e -> log.error("[行情] 重试耗尽..."))`：只看一眼、打日志，不消费错误 | [07](./07-Reactor错误处理详解.md) 第 4 章 |
-| 7 | `onErrorResume` | `.onErrorResume(e -> degradedStream())`：行情源出错 → 降级为平线报价兜底流 | [07](./07-Reactor错误处理详解.md) 2.1 |
-| 8 | `retryWhen` | `.retryWhen(Retry.backoff(3, ...).filter(TransientException))`：临时故障指数退避重试，只重试指定异常 | [07](./07-Reactor错误处理详解.md) 3.2 |
-| 9 | `subscribeOn` | `.subscribeOn(Schedulers.parallel())`：行情源在 parallel 上起跑 | [06](./06-Reactor调度器与线程模型.md) 第 3 章 |
-| 10 | `publishOn` | `.publishOn(Schedulers.parallel())`：闸门，把"处理段"明确切到 parallel | [06](./06-Reactor调度器与线程模型.md) 第 3 章 |
-| 11 | `onBackpressureBuffer` | `Sinks.many().multicast().onBackpressureBuffer(1024, false)`：慢订阅者缓冲不丢数据 | [03](./03-Reactor-Sinks入门.md) 3.4 / [04](./04-Reactor背压详解.md) |
-| 12 | `Sinks.Many` | `quoteBus` / `alertBus` 两条热流总线：多订阅者共享同一份行情 | [03](./03-Reactor-Sinks入门.md) 第 3 章 |
+| 1 | `Flux.interval` | `QuoteEngine.start()` 里 `Flux.interval(Duration.ofSeconds(1))`：每秒吐一个 tick，驱动整条流水线 | 定时器每秒吐一个 tick |
+| 2 | `map` | `.map(i -> nextQuote())`：tick → 报价；Controller 里 `map(q -> ServerSentEvent.builder(q)...)`：报价 → SSE 帧 | 一对一转换 |
+| 3 | `filter` | `.filter(q -> q.price() > 0)`：挡掉负价格/零价格毛刺 | 按条件过滤 |
+| 4 | `flatMap` | `.flatMap(this::dispatch)`：一个报价异步展开成"塞进 quoteBus + 评估告警"两路 | 一对多异步展开 |
+| 5 | `doOnNext` | `.doOnNext(q -> log.info("[行情] 生成 {}"))` 和 Controller 里的推送日志：旁路观察不改数据 | 旁路观察不改数据 |
+| 6 | `doOnError` | `.doOnError(e -> log.error("[行情] 重试耗尽..."))`：只看一眼、打日志，不消费错误 | 看一眼、打日志，不消费错误 |
+| 7 | `onErrorResume` | `.onErrorResume(e -> degradedStream())`：行情源出错 → 降级为平线报价兜底流 | 出错切换兜底流 |
+| 8 | `retryWhen` | `.retryWhen(Retry.backoff(3, ...).filter(TransientException))`：临时故障指数退避重试，只重试指定异常 | 指数退避重试、按异常过滤 |
+| 9 | `subscribeOn` | `.subscribeOn(Schedulers.parallel())`：行情源在 parallel 上起跑 | 源在哪个线程起跑 |
+| 10 | `publishOn` | `.publishOn(Schedulers.parallel())`：闸门，把"处理段"明确切到 parallel | 闸门，切"处理段"线程 |
+| 11 | `onBackpressureBuffer` | `Sinks.many().multicast().onBackpressureBuffer(1024, false)`：慢订阅者缓冲不丢数据 | 慢订阅者缓冲不丢数据 |
+| 12 | `Sinks.Many` | `quoteBus` / `alertBus` 两条热流总线：多订阅者共享同一份行情 | 热流多订阅者共享 |
 
 > **复盘提问（自测）**：
-> 1. 行情是"冷流"还是"热流"？为什么两个浏览器看到同一份行情？（热流，Sinks.Many 广播——03）
-> 2. `doOnError` 和 `onErrorResume` 谁真正"处理"了错误？（后者；前者只看不改——07）
-> 3. 行情生成跑在哪个线程？SSE 写回 socket 在哪个线程？（parallel 和 Netty 事件循环——06）
-> 4. 慢消费者为什么一开始不丢数据？（`onBackpressureBuffer(1024)` 给它独立缓冲——04）
-> 5. 为什么 `dispatch` 用 `flatMap` 而不是 `map`？（因为要返回另一个 `Mono`，用 `map` 会嵌套——01 3.2）
+> 1. 行情是"冷流"还是"热流"？为什么两个浏览器看到同一份行情？（热流，Sinks.Many 广播）
+> 2. `doOnError` 和 `onErrorResume` 谁真正"处理"了错误？（后者；前者只看不改）
+> 3. 行情生成跑在哪个线程？SSE 写回 socket 在哪个线程？（parallel 和 Netty 事件循环）
+> 4. 慢消费者为什么一开始不丢数据？（`onBackpressureBuffer(1024)` 给它独立缓冲）
+> 5. 为什么 `dispatch` 用 `flatMap` 而不是 `map`？（因为要返回另一个 `Mono`，用 `map` 会嵌套）
 
 ---
 
@@ -953,7 +953,7 @@ public Flux<ServerSentEvent<Quote>> top3() {
 |--------|------|--------|
 | `window(Duration.ofSeconds(10))` | 把无限流切成"每 10 秒一段"的子流，返回 `Flux<Flux<Quote>>` | 处理无限流时"分批"的通用套路 |
 | `sort(Comparator...)` | 每个窗口内部排序（有限子流才能排序） | 排序操作符，只对"有限的流"有意义 |
-| `take(3)` | 只取排序后的前 3 个就结束该窗口 | [02](./02-Flux方法速查.md) 里的"取前 N 个" |
+| `take(3)` | 只取排序后的前 3 个就结束该窗口 | 取前 N 个 |
 | `flatMap(...)` | 把每个窗口的结果展平回 `Flux<Quote>` | 再次实战 `flatMap` 的"一对多展开" |
 
 **top3 窗口处理流程**：
@@ -972,7 +972,7 @@ flowchart LR
 **再进一步（想清楚为什么）**：
 
 - 如果把 `sort` 放在 `window` **外面**会怎样？（报错——无限流无法排序）
-- 如果把 `flatMap` 换成 `concatMap` 会怎样？（每个窗口串行处理，顺序保证但吞吐降低——[04](./04-Reactor背压详解.md) 坑 2 提过 `concatMap`）
+- 如果把 `flatMap` 换成 `concatMap` 会怎样？（每个窗口串行处理，顺序保证但吞吐降低——串行操作符的取舍）
 
 ---
 
@@ -983,4 +983,4 @@ flowchart LR
 - **错误是信号不是异常**：`doOnError` 打日志、`retryWhen` 重试临时故障、`onErrorResume` 降级兜底，三层各司其职。
 - **线程不阻塞**：业务链全在 `parallel`，SSE 写回由 Netty 事件循环完成；WebFlux 里永不 `.block()`。
 
-> **下一步**：去读 [README](./README.md) 的完整学习路线，或回到 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 看企业级项目里同一个套路（`Sinks.Many` + SSE + `onErrorResume` 映射 HTTP 状态码）被放大后的样子——你会发现，企业级代码里那几十行"看不懂的响应式"，其实就是你这辆车放大后的模样。
+> **下一步**：你已经把这辆"车"装好了。回头看企业级项目里同一个套路（`Sinks.Many` + SSE + `onErrorResume` 映射 HTTP 状态码）被放大后的样子——你会发现，企业级代码里那几十行"看不懂的响应式"，其实就是你这辆车放大后的模样。之后可以按本系列的学习路线继续深入。

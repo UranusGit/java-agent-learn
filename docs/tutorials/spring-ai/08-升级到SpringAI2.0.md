@@ -1,7 +1,7 @@
 # Spring AI 08 - 升级到 Spring AI 2.0
 
 > 目标：把仓库从 Spring AI 1.0.0 + Spring Boot 3.5.10 升级到 Spring AI 2.0.0 + Spring Boot 4.x。
-> 前置：已完成 [01-07](./01-快速起步.md)，对 Spring AI 1.0 有完整理解。
+> 前置：你已经完整用过 Spring AI 1.0（ChatClient、Advisor、Tool、RAG、流式），并了解升级带来的差异（即 01-07 的能力）。
 >
 > 调研日期：2026-07-13。Spring AI 2.0.0 GA 于 2026-06-12 发布。
 
@@ -208,7 +208,7 @@ Foo foo = client.prompt()
 
 ### 2.6 Step 6：MCP 接入
 
-详见 [09-MCP接入实战](./09-MCP接入实战.md)。
+> 💡 MCP（Model Context Protocol）是一套让 AI 应用统一接入外部工具/数据源的开放协议。2.0 通过 `@McpTool` 注解把普通 Spring Bean 方法暴露成 MCP Server 能力。完整的 MCP Client/Server 实战在下一节 09 展开，这里只需知道接入入口即可。
 
 ---
 
@@ -263,7 +263,7 @@ Advisor budgetAdvisor = new BudgetControlAdvisor(maxTokens, maxCost);
 Advisor maxTurnsAdvisor = new MaxTurnsAdvisor(20);
 ```
 
-详见 [reference/生产化与运营/15-Agent可靠性工程Java视角.md](../../reference/生产化与运营/16-Agent可靠性工程Java视角.md)。
+> 💡 预算控制与 maxTurns：2.0 里通过自定义 Advisor 拦截即可实现——`BudgetControlAdvisor` 限制 token/成本上限，`MaxTurnsAdvisor` 限制最大迭代轮数，防止 Agent 失控。
 
 ---
 
@@ -276,12 +276,3 @@ Advisor maxTurnsAdvisor = new MaxTurnsAdvisor(20);
 - [ ] 至少 1 个 Tool 通过 `ToolCallingAdvisor` 自动迭代
 - [ ] 至少 1 处使用 `StructuredOutputValidationAdvisor`
 - [ ] 性能回归（P95 延迟持平或更优）
-
----
-
-## 6. 相关文档
-
-- [09-MCP接入实战](./09-MCP接入实战.md)
-- [10-Anthropic五大Workflow模式](./10-Anthropic五大Workflow模式.md)
-- [`reference/选型与对比/10-SpringAI-vs-LangChain4j何时用何框架.md`](../../reference/选型与对比/10-SpringAI-vs-LangChain4j何时用何框架.md) —— 2.0 改变格局的详细分析
-- [`reference/生产化与运营/14-MCP协议与生态.md`](../../reference/生产化与运营/14-MCP协议与生态.md)

@@ -4,7 +4,7 @@
 >
 > **为什么不一次性给完整代码**：一次性把 WebFlux + Reactor Context + Observation + ContextPropagation + Memory 五件事摆出来，新人会认知过载。演进式让每步只引入 1 个新概念，始终在「跑得起来的代码」上前进。
 >
-> **和 33 的关系**：[33-方案](./33-Agent子过程实时可见性方案.md) 是理论全本，本 demo 是它的最小可跑版；[33b](./33b-Agent可观测性企业级演进实践.md) 是终极项目。
+> **和 33 的关系**：同主题的"Agent 子过程实时可见性方案"是理论全本，本 demo 是它的最小可跑版；"企业级演进实践"是终极项目。
 >
 > **技术栈**：Spring Boot 4.1 · Spring AI 2.0.0 · Java 21 · WebFlux · Micrometer Observation · Micrometer ContextPropagation · 流式（`.stream()`）· DeepSeek。
 
@@ -1509,7 +1509,7 @@ public class ObservableAgent {
             if (!m.endsWith('```')) return m;   // 未闭合，留给后续当普通文本
             const i = blocks.length;
             blocks.push('<pre><code>' + escapeHtml(code.replace(/\n$/, '')) + '</code></pre>');
-            return ' BLOCK' + i + ' ';
+            return '\x00BLOCK' + i + '\x00';
         });
         // 2. 转义剩余文本（防 XSS）
         text = escapeHtml(text);
@@ -1534,7 +1534,7 @@ public class ObservableAgent {
                     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
         }
         // 5. 还原代码块占位
-        return html.replace(/ BLOCK(\d+) /g, (_, i) => blocks[+i]);
+        return html.replace(/\x00BLOCK(\d+)\x00/g, (_, i) => blocks[+i]);
     }
     function setSending(v) {
         sending = v;
@@ -1550,11 +1550,10 @@ public class ObservableAgent {
 
 ---
 
-## 相关文档
+## 相关资源
 
-- [33-Agent子过程实时可见性方案](./33-Agent子过程实时可见性方案.md) —— 完整方案（本 demo 的理论全本）
-- [33b-Agent可观测性企业级演进实践](./33b-Agent可观测性企业级演进实践.md) —— 终极项目
+- Spring AI 官方文档（`docs.spring.io/spring-ai`）—— Observation、ChatClient、Streaming API 参考
 
 ---
 
-> **回到**：[`./00-目录索引.md`](./00-目录索引.md) · [`./33-Agent子过程实时可见性方案.md`](./33-Agent子过程实时可见性方案.md)
+> **回到**：目录索引 · 仓库首页 README。

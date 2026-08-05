@@ -3,17 +3,17 @@
 > 本章目标：Agent 写文件后，浏览器侧能实时看到代码 / Markdown / HTML / SVG 等。
 > 完成后：右侧面板展示产出物，与对话联动。
 >
-> **关联章节**：
-> - artifact 事件并入 [17 章活动流](./17-全链路可观测前端.md)（artifact 作为一类事件渲染在时间线）；
-> - artifact 由 Write/Edit 工具产出，详见 [05 章](./05-工具系统与权限.md)；
-> - 工件审核（Diff Review）：[20 章](./20-审批与审核流.md)。
+> **本章范围**：
+> - artifact 事件并入活动流（artifact 作为一类事件渲染在时间线）；
+> - artifact 由 Write/Edit 工具产出；
+> - 工件审核（Diff Review，用户对改动逐条确认）。
 >
-> **Web 安全升级（[23 章](./23-Web安全与可分享性.md)）**：
+> **Web 安全升级**：
 > - HTML artifact iframe 必须 sandbox 严格 + postMessage 验来源；
 > - SVG 用 `<img>` 渲染（不 inline），如必须 inline 用 DOMPurify；
 > - Markdown 用 rehype-sanitize 白名单，禁 rehype-raw；
 > - Mermaid `securityLevel: strict`；
-> - artifact 可分享公共 URL（[23 章 §4](./23-Web安全与可分享性.md) 分享链接）。
+> - artifact 可分享公共 URL（短期签名链接）。
 
 ---
 
@@ -29,9 +29,9 @@
 
 ---
 
-## 1. 痛点：05/06 章的 Agent 能写文件，但用户看不到
+## 1. 痛点：前几章的 Agent 能写文件，但用户看不到
 
-05/06 章结束时 Agent 已经能 `Write("hello.py", ...)`，但**用户只能通过对话气泡里 Agent 的口头描述知道写了什么**——文件实际在沙箱容器里，用户看不见。
+前几章结束时 Agent 已经能 `Write("hello.py", ...)`，但**用户只能通过对话气泡里 Agent 的口头描述知道写了什么**——文件实际在沙箱容器里，用户看不见。
 
 这导致 Agent 类产品最尴尬的局面：
 - 用户问"帮我写个网站"，Agent 说"写好了"，用户**看不到效果**
@@ -40,7 +40,7 @@
 
 > "网页版 Claude" 相对 "CLI Claude" 最大的体验优势就是 **Artifacts**：右侧面板实时渲染 Agent 产出的代码 / 文档 / 图表 / 网页。这一章就是这个能力。
 >
-> 注意：本章的 §7 安全只是**最小化提示**。完整 Web 安全方案（DOMPurify、CSP、SRI 等）在 23 章。
+> 注意：本章的 §7 安全只是**最小化提示**。完整 Web 安全方案（DOMPurify、CSP、SRI 等）见本章 §8 安全注意。
 
 ## 2. 设计要点
 
@@ -399,7 +399,7 @@ return (
 
 ## 6. 对照：与"纯文本对话"的体验差异
 
-| 维度 | 05/06 章（无 artifact） | 09 章（有 artifact） |
+| 维度 | 前几章（无 artifact） | 本章（有 artifact） |
 |------|------------------------|---------------------|
 | 用户能否看到产出 | ❌ 只能听 Agent 说 | ✅ 右侧实时渲染 |
 | 代码 | 文本气泡 | ✅ Monaco 高亮 |
@@ -407,7 +407,7 @@ return (
 | HTML | 看不到效果 | ✅ iframe 实时预览 |
 | SVG | 看不到 | ✅ 图片预览 |
 | Mermaid | 看不到 | ✅ 流程图渲染 |
-| 可分享 | ❌ | ⚠️ v1 简化（23 章做签名 URL） |
+| 可分享 | ❌ | ⚠️ v1 简化（生产版做签名 URL） |
 
 ## 7. 避坑：Artifacts 渲染常踩的雷
 
@@ -423,7 +423,7 @@ return (
 | 大文件（>10MB）一次性 fetch | 浏览器卡死 | 分块加载 / 限制 artifact 大小 |
 | 写同一文件多个版本 | 用户看不到旧版 | 加 `version` 字段，UI 支持版本切换 |
 
-> 本章 §8 是最小化安全提示，完整方案在 **[23 章](./23-Web安全与可分享性.md)**。
+> 本章 §8 是最小化安全提示；更完整的安全清单（DOMPurify、CSP、SRI、postMessage 白名单、签名 URL）已列在文首"Web 安全升级"中。
 
 ## 8. 安全注意
 
@@ -433,7 +433,7 @@ return (
 
 > **重要**：本章 §4 是最简化的安全提示。完整 Web 安全方案（DOMPurify SVG、
 > rehype-sanitize Markdown、Mermaid strict、postMessage 白名单、CSP 头、
-> SRI / 自托管、可分享链接）见 **[23 章](./23-Web安全与可分享性.md)** §2 §3 §4 §5 §7。
+> SRI / 自托管、可分享链接）就是文首"Web 安全升级"里列的那套，实施时逐条落实即可。
 
 ---
 
@@ -441,7 +441,7 @@ return (
 
 - React 组件实时渲染（沙箱执行）：用 Sandpack 或自研 iframe + esbuild.wasm；
 - 多版本 diff（同一逻辑 artifact 的不同版本）；
-- 协同编辑（接入 Yjs）：[22 章 §6](./22-跨标签页与实时协作.md) 给出基础接入示例。
+- 协同编辑（接入 Yjs）：用 BroadcastChannel / Yjs 做多端实时同步。
 
 **v2 升级路线**：
 
@@ -449,7 +449,7 @@ return (
 flowchart LR
     V1["v1 现状<br/>只读渲染 + version 字段"] --> R1["React 组件实时渲染<br/>Sandpack / 自研 iframe + esbuild.wasm"]
     V1 --> R2["多版本 diff<br/>同一 artifact 的不同版本对比"]
-    V1 --> R3["协同编辑<br/>Yjs 接入（22 章 §6）"]
+    V1 --> R3["协同编辑<br/>Yjs 接入"]
 ```
 
 ---
@@ -470,4 +470,4 @@ flowchart LR
 
 ## 11. 下一步
 
-进入 [10-集成ai-serving](./10-集成ai-serving.md)，把单租户 MVP 接入企业级 AI 网关与多租户基础设施。
+进入下一节：**10-集成 ai-serving**——把单租户 MVP 接入企业级 AI 网关与多租户基础设施。

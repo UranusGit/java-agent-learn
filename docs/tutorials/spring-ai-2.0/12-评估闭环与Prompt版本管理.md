@@ -4,7 +4,7 @@
 >
 > 没有评估闭环的 AI 工程等于盲改 —— 改一行 prompt 可能让 80% 的 case 通过变成 60%。
 >
-> 前置：[`./09-RAG工程化实战.md`](./09-RAG工程化实战.md)
+> 前提：你已搭出一套能跑的 RAG 系统，理解检索 + 生成链路（即 09 的能力）。
 > 预计：1 天
 
 ---
@@ -904,9 +904,9 @@ flowchart LR
 
 ## 14. 练习任务
 
-1. 为你的 RAG 系统（13 篇的）建一个 20 条 case 的 YAML 测试集。
+1. 为你在 RAG 工程化实战篇搭的 RAG 系统建一个 20 条 case 的 YAML 测试集。
 2. 实现一个 `RagEvaluator`，跑出 EvalReport，包含 faithfulness / relevance / docHitRate。
-3. 把你 13 篇的 prompt 抽到 `prompts/v1/` 资源文件，用配置驱动版本切换。
+3. 把你的 RAG 系统的 prompt 抽到 `prompts/v1/` 资源文件，用配置驱动版本切换。
 4. 改 chunk size 从 500 → 800，跑离线评估，对比 baseline，写出哪些指标涨了哪些退步。
 5. （进阶）实现 `ABPromptRouter`，让 10% 流量走 v2 prompt，记录日志做胜率分析。
 6. （选做）集成 Langfuse，把 trace 和 eval 数据自动上报。
@@ -928,12 +928,5 @@ flowchart LR
 
 ## 16. 相关文档
 
-- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— RAG 系统是被测对象
-- [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— 在线评估与 trace 的深度集成
-- [`./19-自研vs框架的边界.md`](./19-自研vs框架的边界.md) —— 自研 eval 还是用 Langfuse
 - [Langfuse 文档](https://langfuse.com/docs) —— 开源 LLM 评估平台
 - [OpenAI Evals](https://github.com/openai/evals) —— OpenAI 官方评估框架（思路参考）
-
----
-
-回到 [`./00-目录索引.md`](./00-目录索引.md)。

@@ -2,7 +2,7 @@
 
 > **这份文档是什么**：一份**只讲「管数分离」一件事**的专题手册。它围绕一个最朴素的场景——**"用户点一下按钮，后端用 LLM 逐字生成一段文本，前端实时看到"**——把这个场景一步步从**单进程内存**演进到 **Redis 多设备同步**、再到**多实例集群**、最后升级到 **Kafka 持久总线**和**微服务拆分**。数据源用 **Spring AI 2.0 的 `ChatClient` 流式调用真 LLM**（默认 DeepSeek，OpenAI 兼容协议），让你把全部注意力放在"触发与订阅如何解耦、如何从单机走向分布式"这条主线上。
 >
-> **它和 34 系列的关系**：[34-轻依赖版](./34-轻依赖版-Agent与知识库实战.md) 是一个"什么都讲"的大全（Agent 循环、RAG、审计、记忆、管数分离、微服务……），信息密度极高，**对初学者来说一次性吞下太难**。本文是把其中**最核心、最常被问到的一条主线——「管数分离」**单独抽出来、把步子切得更细、砍掉一切支线，做成一份**专注、可线性跟读**的实践文档。学完本文，你再回去看 34 系列的架构演进章节会非常轻松。
+> **它和 34 系列的关系**："34-轻依赖版"（研究 Agent 与知识库实战的轻依赖改编）是一个"什么都讲"的大全（Agent 循环、RAG、审计、记忆、管数分离、微服务……），信息密度极高，**对初学者来说一次性吞下太难**。本文是把其中**最核心、最常被问到的一条主线——「管数分离」**单独抽出来、把步子切得更细、砍掉一切支线，做成一份**专注、可线性跟读**的实践文档。学完本文，你再回去看那套系列的架构演进章节会非常轻松。
 >
 > **技术栈**：**Spring Boot 4.0.6 · Spring AI 2.0.0** · Java 21 · WebFlux（响应式）· Reactor Sinks · **PostgreSQL**（run 状态/幂等/会话持久化，`postgresql` 驱动）· **MyBatis-Flex**（PG 的 ORM 访问层，`mybatis-flex-spring-boot3-starter`）· **Redis**（Streams + Pub/Sub，`spring-boot-starter-data-redis-reactive`）· **Redisson**（分布式锁，看门狗自动续期，`redisson-spring-boot-starter`）· **Kafka**（chunk 持久总线，`spring-boot-starter-kafka`）· Spring Cloud Gateway（网关）。LLM 默认用 DeepSeek（OpenAI 兼容协议，国内直连、价格低）。
 >
@@ -743,7 +743,7 @@ flowchart TD
 
 > **为什么是 `multicast().onBackpressureBuffer()`？** `multicast` 表示"支持多个订阅者"。`onBackpressureBuffer` 表示"如果某个订阅者消费太慢来不及处理，先把数据缓存起来"——避免慢订阅者拖垮或丢数据。这是 Reactor 官方推荐的多订阅广播写法。
 >
-> 📌 **想深入"消费太慢怎么办"**：这就是响应式编程里的**背压（Backpressure）**概念——消费者反过来控制生产者速率。本章用最简写法，原理详见附录 [Reactor 背压详解](../../附录/Reactor响应式编程/04-Reactor背压详解.md)。
+> 📌 **想深入"消费太慢怎么办"**：这就是响应式编程里的**背压（Backpressure）**概念——消费者反过来控制生产者速率。本章用最简写法；原理上，背压通过 `onBackpressureBuffer`（缓冲）、`onBackpressureDrop`（丢弃）等策略，让慢消费者告诉上游"慢点发"。
 
 **本章设计**：StreamService 触发时，创建一个 `Sinks.Many`，让生成器往里面塞字；订阅时返回 `sink.asFlux()`。这样多个标签页订阅同一个 token，共享同一个 Sink，生成器只跑一次。
 
@@ -1136,7 +1136,7 @@ public LettuceConnectionFactory lettuceConnectionFactory(DataRedisProperties pro
 
 > 为什么不用 yaml 配？Spring Boot 4.1.0 已经**移除了** `spring.data.redis.lettuce.share-native-connection` 这个属性（`DataRedisProperties.Lettuce` 里只有 `shutdownTimeout/readFrom/pool/cluster`），所以必须在代码里 `setShareNativeConnection(false)`。
 
-> 代价要知道：关闭后连接数 = `redisTemplate` 1 条 + 每个在线 SSE 订阅各 1 条。demo/中低并发无压力；到"同实例上千并发 SSE"量级，应改为"每实例对每 channel 订阅一次 + 实例内 fan-out"（见第 10 章 Kafka 的按 key 分发思路），而不是退回共享连接。
+> 代价要知道：关闭后连接数 = `redisTemplate` 1 条 + 每个在线 SSE 订阅各 1 条。demo/中低并发无压力；到"同实例上千并发 SSE"量级，应改为"每实例对每 channel 订阅一次 + 实例内 fan-out"（见本文档第 10 章 Kafka 的按 key 分发思路），而不是退回共享连接。
 
 #### 4.2.5 StreamService 改用 StreamBus
 
@@ -1770,7 +1770,7 @@ flowchart TD
 </dependency>
 ```
 
-> **为什么会话锁用 Redisson 而不是手写 SETNX？** 会话锁要在**整个 run 的生命周期**里锁住会话（可能几分钟）。手写 `SETNX + 固定 TTL` 有两个坑：① run 生成很慢（LLM 卡顿）时 TTL 可能过期，锁被别人抢走，并发闸门失效；② `DELETE` 释放不校验持有者，旧锁过期被抢走后，原持有者可能误删别人的锁。Redisson 的**看门狗**每 10s 把锁续期到 30s（只要实例活着锁不过期），释放走 Lua **先比对 owner 再删**——两个坑都解了（详见第 9 章的对比）。
+> **为什么会话锁用 Redisson 而不是手写 SETNX？** 会话锁要在**整个 run 的生命周期**里锁住会话（可能几分钟）。手写 `SETNX + 固定 TTL` 有两个坑：① run 生成很慢（LLM 卡顿）时 TTL 可能过期，锁被别人抢走，并发闸门失效；② `DELETE` 释放不校验持有者，旧锁过期被抢走后，原持有者可能误删别人的锁。Redisson 的**看门狗**每 10s 把锁续期到 30s（只要实例活着锁不过期），释放走 Lua **先比对 owner 再删**——两个坑都解了（详见本文档第 9 章的对比）。
 
 **【新建文件】** `research-stream/src/main/java/com/example/stream/run/RunStore.java`：
 
@@ -1802,7 +1802,7 @@ import java.util.concurrent.TimeUnit;
  * 状态机：queued → RUNNING → DONE / FAILED / CANCELLED
  *
  * ⚠️ 会话锁是分布式锁，用 Redisson RLock（企业级）：看门狗自动续期，业务没跑完锁不过期；
- *    释放走 Lua 校验 owner 才删，不会误删别人的锁（详见第 9 章对比）。
+ *    释放走 Lua 校验 owner 才删，不会误删别人的锁（详见本文档第 9 章对比）。
  */
 @Component
 public class RunStore {
@@ -1892,7 +1892,7 @@ public class RunStore {
 
 > **`switchIfEmpty(Mono.defer(...))` 的细节**：`switchIfEmpty` 接收的 Mono 会**立即求值**（即使上游有值）。用 `Mono.defer(() -> ...)` 包一层，让它**延迟到真正需要时**才执行 `newRun()`——避免每次查询都白创建一个 run。这是 Reactor 的常见坑。
 
-> **`getRunId(sessionId)`：多页面加入的关键（借鉴真实项目 demo04）**。第二个页面没有 runId（它没做过 POST），但它有 sessionId——查 `GET /api/runs/current?sessionId=X`（内部调 `getRunId`）就能拿到当前 runId，再订阅流。这正好补上了"**幂等键解决不了、sessionId 才能解决**"的多页面场景（详见第 12 章）。
+> **`getRunId(sessionId)`：多页面加入的关键（借鉴真实项目 demo04）**。第二个页面没有 runId（它没做过 POST），但它有 sessionId——查 `GET /api/runs/current?sessionId=X`（内部调 `getRunId`）就能拿到当前 runId，再订阅流。这正好补上了"**幂等键解决不了、sessionId 才能解决**"的多页面场景（详见本文档第 12 章）。
 
 > **会话锁靠看门狗自动续期**：用 Redisson 后，只要实例活着、run 没到终态，锁就每 10s 续到 30s——**生成再慢锁也不会过期**（这正是手写 `SETNX + 固定 TTL` 在长生成时会失效的坑）。实例崩溃时看门狗随之死亡，锁 30s 后自动过期，会话不会永久锁死。
 
@@ -2524,7 +2524,7 @@ public class RunStore {
 > 2. **会话独占锁保留 Redis（Redisson）**：`acquireSession`/`releaseSession` 用 Redisson（第 6 章引入）——它是"短命并发闸门"，锁本身就是 Redis 的强项（低延迟 + 看门狗续期），没必要落 PG。
 > 3. **每个 DB 调用包 `Schedulers.boundedElastic()`**：MyBatis-Flex 是阻塞的，必须隔离出 reactor 线程，否则卡事件循环。
 >
-> ⚠️ **教学简化处（诚实标注）**：为聚焦"管数分离主线"，`IdempotencyEntity`/`IdempotencyMapper`/`GEN_IDEMPOTENCY`（MyBatis-Flex 编译期生成的表元数据）只示意用法、未全部展开源码；`insertRun` 里的"run 插入 + 幂等插入"应用 `@Transactional` 包成一个事务（生产级必须，否则半失败会脏）。这些 ORM/事务细节非本文重点，详见 [数据库事务与 @Transactional 详解](../../附录/协议与数据库/02-数据库事务与Transactional详解.md) 附录。
+> ⚠️ **教学简化处（诚实标注）**：为聚焦"管数分离主线"，`IdempotencyEntity`/`IdempotencyMapper`/`GEN_IDEMPOTENCY`（MyBatis-Flex 编译期生成的表元数据）只示意用法、未全部展开源码；`insertRun` 里的"run 插入 + 幂等插入"应用 `@Transactional` 包成一个事务（生产级必须，否则半失败会脏）。这些 ORM/事务细节非本文重点，简单说：`@Transactional` 让"run 插入 + 幂等插入"在同一数据库事务里要么全部成功、要么全部回滚，避免半失败产生脏数据。
 
 ### 7.3 验证
 
@@ -3342,7 +3342,7 @@ research-stream/src/main/resources/
 | Redis Redlock | 跨多 Redis 实例 | 更抗单点，但有著名的时钟漂移批评（Martin Kleppmann） |
 | lease + fencing token | 锁带租约+单调 token，存储层拒绝旧 token 写 | 业界最稳（Google Chubby 思路），复杂 |
 
-**Redisson 解决了手写 SETNX 的三个经典坑**（详见 [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md) 附录）：
+**Redisson 解决了手写 SETNX 的三个经典坑**：
 
 1. **误删别人的锁**：手写 `releaseLock` 直接 `DEL`，不校验持有者——A 的锁过期后 B 抢到，A 此时跑完会误删 B 的锁。Redisson 释放走 Lua 脚本，**先比对 value=自己再删**。
 2. **业务没跑完锁过期**：手写锁的 TTL 是死的，生成器跑得慢（LLM 卡顿）就会在锁过期后被别人抢走。Redisson 的**看门狗**默认每 10s 把锁续期到 30s，只要实例活着，锁就不过期。
@@ -4521,7 +4521,7 @@ flowchart LR
 
 你现在的代码库 `research-stream` + `gateway` 是一个**完整的、可复现的、企业级分布式管数分离系统**。把 `TextGenerator` 换成真 LLM（返回 `Flux<String>`），**业务代码一行不用改**——这就是管数分离 + 持久总线架构的价值：**它和具体的"生成器"解耦**。
 
-如果想要更全的企业级演进（Agent 循环、RAG、审计、多租户、可观测性），回到 [34-轻依赖版](./34-轻依赖版-Agent与知识库实战.md)——它的架构演进章节，你现在看会很轻松。
+如果想要更全的企业级演进（Agent 循环、RAG、审计、多租户、可观测性），回到"34-轻依赖版"那套实战手册——它的架构演进章节，你现在看会很轻松。
 
 ---
 
@@ -4612,19 +4612,19 @@ docker/
 
 **现象**：极端情况下（JVM 长 GC / 进程冻结）两个实例同时写同一 run（结果分叉）。
 **原因**：Redisson 看门狗虽然能续期，但**GC 停顿期间看门狗线程也被冻结无法续期**，锁过期被别人抢走；旧持有者 GC 恢复后不知道锁已丢，继续写。这是 Redis 分布式锁的固有理论缺陷（Martin Kleppmann 的批评）。
-**解决**：严格场景上 fencing token（锁带单调递增 token，存储层拒绝旧 token 写）。本文作为进阶扩展点，详见 [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md)。
+**解决**：严格场景上 fencing token（锁带单调递增 token，存储层拒绝旧 token 写）。本文作为进阶扩展点，原理是：每次加锁拿到一个单调递增的令牌，写入时携带并校验，旧令牌的写会被存储层拒绝。
 
 #### 坑 8：`switchIfEmpty` 立即求值导致误创建
 
 **现象**：查幂等映射时，明明已有值，却还是创建了新 run。
 **原因**：`switchIfEmpty(newRun())` 中 `newRun()` **立即执行**（方法调用先于 switchIfEmpty 判断）。
-**解决**：用 `switchIfEmpty(Mono.defer(() -> newRun()))` 延迟到真正需要时。见第 6 章 `RunStore`。
+**解决**：用 `switchIfEmpty(Mono.defer(() -> newRun()))` 延迟到真正需要时。见本文档第 6 章 `RunStore`。
 
 #### 坑 9：切换会话后，LLM 还"记得"上一个会话（上下文泄漏）
 
 **现象**：用户切到历史会话 B 提问，模型的回答却带着会话 A 的上下文。
 **原因**：上下文注入没有跟着 sessionId 走——比如把上下文缓存成了"最后一次会话"，或把 `loadContext(sessionId)` 的 sessionId 传错成固定值。**上下文是"当前会话"的属性，不是全局状态。**
-**解决**：每次触发都用**请求里的 sessionId** 重新 `loadContext(sessionId)`（第 8 章 `HistoryStore.loadContext`）。验证方法：新开会话问同一个问题，模型必须答"你没告诉过我"——见第 8 章 8.3 验证第 7 步。
+**解决**：每次触发都用**请求里的 sessionId** 重新 `loadContext(sessionId)`（本文档第 8 章 `HistoryStore.loadContext`）。验证方法：新开会话问同一个问题，模型必须答"你没告诉过我"——见本文档第 8 章 8.3 验证第 7 步。
 
 ### A.3 外部依赖一键起
 
@@ -4643,30 +4643,30 @@ docker run -d --name kafka -p 9092:9092 \
 
 ### A.4 配套学习资料（按需深入）
 
-本文聚焦"管数分离"主线，用到但没展开的底层知识，都在 `docs/附录/` 下有独立专题。**遇到看不懂的概念，或想深入某个点，按下表找对应附录。**
+本文聚焦"管数分离"主线，用到但没展开的底层知识（ID 体系、Flux/Mono 操作符、Sinks、背压、线程模型、Redis、Kafka、SSE 协议等）都有独立专题可查。这里给一张**本文内索引**：遇到不懂的概念，看它在本文哪一章展开。
 
-| 你想深入的点 | 对应附录 | 对应本文章节 |
-|------------|---------|------------|
-| 这套系统里所有的 ID（sessionId/runId/幂等键/seq/offset…谁生成、何时用、存哪） | [管数分离 ID 体系全解析](../../附录/管数分离专题/01-管数分离ID体系全解析.md) | 全文 |
-| `Flux`/`Mono` 的各种操作符（map/flatMap/concatWith...） | [Flux 方法速查](../../附录/Reactor响应式编程/02-Flux方法速查.md) | 全文 |
-| `Sinks.Many` 是什么、怎么用 | [Reactor Sinks 入门](../../附录/Reactor响应式编程/03-Reactor-Sinks入门.md) | 第 3、11 章 |
-| "消费太慢怎么办"——背压（Backpressure） | [Reactor 背压详解](../../附录/Reactor响应式编程/04-Reactor背压详解.md) | 第 3 章 `onBackpressureBuffer` |
-| 到底在哪个线程跑——subscribeOn/publishOn、阻塞隔离 | [Reactor 调度器与线程模型](../../附录/Reactor响应式编程/06-Reactor调度器与线程模型.md) | 第 8 章 `boundedElastic` 隔离 |
-| 流式错误怎么处理——onErrorResume/retry/doOnError | [Reactor 错误处理详解](../../附录/Reactor响应式编程/07-Reactor错误处理详解.md) | 第 2-6 章 流式错误 |
-| Redis 基础数据结构 + Spring Boot 响应式收发 | [Redis 基础 + Spring Boot 使用](../../附录/Redis专题/00-Redis基础与SpringBoot使用.md) | 第 4 章 |
-| Redis Stream（XADD/XRANGE/消费组）与 Pub/Sub | [Redis Streams 与 Pub/Sub 实战](../../附录/Redis专题/01-Redis-Streams与PubSub实战.md) | 第 4、9 章 |
-| 缓存怎么用对——Cache-Aside、穿透/击穿/雪崩 | [Redis 缓存实战](../../附录/Redis专题/03-Redis缓存实战.md) | 第 6 章 run 状态缓存 |
-| PostgreSQL + MyBatis-Flex（ORM/事务/连接池） | [数据库事务与 @Transactional 详解](../../附录/协议与数据库/02-数据库事务与Transactional详解.md) | 第 7、8 章持久化 |
-| 分布式锁（SETNX/Lua/Redisson/fencing token） | [Redis 分布式锁实战](../../附录/Redis专题/02-Redis分布式锁实战.md) | 第 6 章会话锁 / 第 9 章单一写者 |
-| Kafka 消息队列（topic/分区/offset/消费组）与 Spring Boot 实战 | [Kafka 消息队列从入门到架构师](../../附录/Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md) | 第 10 章 |
-| Kafka 进阶（生产调优、Kafka Streams、EDA、响应式真相） | [Kafka 进阶实战](../../附录/Kafka消息队列实战专题/02-Kafka进阶实战.md) | 第 10 章扩展 |
-| 事件驱动微服务端到端实战（Saga、幂等、多服务落地） | [事件驱动微服务端到端实战](../../附录/Kafka消息队列实战专题/03-事件驱动微服务端到端实战.md) | 第 10 章扩展 |
-| 生产级进阶（Outbox 模式、Schema Registry、分区调优） | [生产级进阶：Outbox 与 Schema 与分区调优](../../附录/Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md) | 第 10 章扩展 |
-| Kafka 全知识点实践（每个 API 都有可跑代码） | [Kafka 全知识点实践项目](../../附录/Kafka消息队列实战专题/05-全知识点实践项目.md) | 第 10 章扩展 |
-| 事件溯源与 CQRS（用事件当数据源、读写分离） | [事件溯源与 CQRS 专题](../../附录/事件溯源与CQRS专题/README.md) | 第 10 章扩展 |
-| Kafka Streams 流处理（窗口、JOIN、状态查询） | [Kafka Streams 流处理专题](../../附录/Kafka-Streams流处理专题/README.md) | 第 10 章扩展 |
-| Debezium CDC（变更数据捕获、Outbox 投递落地） | [Debezium CDC 实战专题](../../附录/Debezium-CDC实战/README.md) | 第 10 章扩展 |
-| SSE 协议（id/event/Last-Event-ID/心跳/代理穿透） | [SSE 协议详解](../../附录/协议与数据库/01-SSE协议详解.md) | 第 1、5 章 |
+| 你想深入的点 | 对应本文章节 |
+|------------|------------|
+| 这套系统里所有的 ID（sessionId/runId/幂等键/seq/offset…谁生成、何时用、存哪） | 全文 |
+| `Flux`/`Mono` 的各种操作符（map/flatMap/concatWith...） | 全文 |
+| `Sinks.Many` 是什么、怎么用 | 第 3、11 章 |
+| "消费太慢怎么办"——背压（Backpressure） | 第 3 章 `onBackpressureBuffer` |
+| 到底在哪个线程跑——subscribeOn/publishOn、阻塞隔离 | 第 8 章 `boundedElastic` 隔离 |
+| 流式错误怎么处理——onErrorResume/retry/doOnError | 第 2-6 章 流式错误 |
+| Redis 基础数据结构 + Spring Boot 响应式收发 | 第 4 章 |
+| Redis Stream（XADD/XRANGE/消费组）与 Pub/Sub | 第 4、9 章 |
+| 缓存怎么用对——Cache-Aside、穿透/击穿/雪崩 | 第 6 章 run 状态缓存 |
+| PostgreSQL + MyBatis-Flex（ORM/事务/连接池） | 第 7、8 章持久化 |
+| 分布式锁（SETNX/Lua/Redisson/fencing token） | 第 6 章会话锁 / 第 9 章单一写者 |
+| Kafka 消息队列（topic/分区/offset/消费组）与 Spring Boot 实战 | 第 10 章 |
+| Kafka 进阶（生产调优、Kafka Streams、EDA、响应式真相） | 第 10 章扩展 |
+| 事件驱动微服务端到端实战（Saga、幂等、多服务落地） | 第 10 章扩展 |
+| 生产级进阶（Outbox 模式、Schema Registry、分区调优） | 第 10 章扩展 |
+| Kafka 全知识点实践（每个 API 都有可跑代码） | 第 10 章扩展 |
+| 事件溯源与 CQRS（用事件当数据源、读写分离） | 第 10 章扩展 |
+| Kafka Streams 流处理（窗口、JOIN、状态查询） | 第 10 章扩展 |
+| Debezium CDC（变更数据捕获、Outbox 投递落地） | 第 10 章扩展 |
+| SSE 协议（id/event/Last-Event-ID/心跳/代理穿透） | 第 1、5 章 |
 
 > **建议学习顺序**：先跟完本文 0→12 章（主线），遇到卡点再翻对应附录。附录之间相互独立，可按需挑读。
 

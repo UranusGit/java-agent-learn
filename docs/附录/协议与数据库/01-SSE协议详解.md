@@ -1,6 +1,6 @@
 # SSE 协议详解（Server-Sent Events）
 
-> **配套文档**：[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 从第 1 章到第 11 章全程用 SSE 做流式推送——`ServerSentEvent`、`id`、`event`、`Last-Event-ID`、心跳。但主线没把 SSE 协议本身讲透。本篇把 SSE 从协议层讲到生产细节。
+> **配套文档**：管数分离实战（从 Sinks 到 Kafka 演进）从第 1 章到第 11 章全程用 SSE 做流式推送——`ServerSentEvent`、`id`、`event`、`Last-Event-ID`、心跳。但主线没把 SSE 协议本身讲透。本篇把 SSE 从协议层讲到生产细节。
 >
 > **难度假设**：你用过 `return Flux<String>` 做接口，但不清楚 SSE 协议长什么样、和 WebSocket 啥区别、断线重连怎么自动工作。
 
@@ -323,7 +323,7 @@ Spring Cloud Gateway 是响应式的，**原生支持 SSE 流式透传**，一�
 
 ### 坑 3：断线重连丢内容 / 重复
 
-**解决**：每条带 `id`，服务端读 `Last-Event-ID` 续推（见第 3 章）。
+**解决**：每条带 `id`，服务端读 `Last-Event-ID` 续推（做法见上文第 3 章）。
 
 ### 坑 4：连接被代理 60 秒掐断
 
@@ -351,4 +351,4 @@ Spring Cloud Gateway 是响应式的，**原生支持 SSE 流式透传**，一�
 - **生产要点**：心跳防掐断、`doFinally` 防泄漏、`id` 配合续传、nginx 关缓冲。
 - **Spring Boot**：WebFlux 用 `Flux<ServerSentEvent>`，传统 MVC 用 `SseEmitter`。
 
-学完本篇，[管数分离文档](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 里所有的 `ServerSentEvent`、`Last-Event-ID`、心跳、CANCEL 就都通透了。
+学完本篇，管数分离实战 里所有的 `ServerSentEvent`、`Last-Event-ID`、心跳、CANCEL 就都通透了。

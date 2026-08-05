@@ -1,7 +1,7 @@
 # LangChain4j 02 - ChatMemory（多轮对话）
 
 > 目标：理解为什么 LLM 是"无状态"的，用 `ChatMemory` 实现多轮对话。
-> 前置：已完成 [01-快速起步](./01-快速起步.md)，能调通单次 LLM。
+> 前提：你已经会配置模型并用 `model.chat("...")` 跑通单次 LLM 调用（如果还没跑通，先回到 01 快速起步）。
 
 ---
 
@@ -338,4 +338,4 @@ memory.add(UserMessage.from("北京有什么好玩的？"));
 3. 加一个 `SystemMessage`，定义 AI 是"海盗风格的助手"
 4. （进阶）实现一个简单的"重置对话"命令：输入 `/reset` 时清空 memory
 
-完成后进入 [03-Tool 调用](./03-Tool调用.md)。
+完成后进入下一节：**03-Tool 调用**——让 LLM 自己决定调用你的 Java 方法。

@@ -1,6 +1,6 @@
 # 学习进度追踪
 
-> 对照 [`00-整体路线.md`](./00-整体路线.md)。每完成一项把 `[ ]` 改成 `[x]`，填上完成日期。
+> 对照 `00-整体路线`。每完成一项把 `[ ]` 改成 `[x]`，填上完成日期。
 > 不要赶进度，前一阶段没跑通不要急着进下一阶段。
 >
 > **项目阶梯（P1-P6）**：每个项目对应一个阶段，从易到难演进。
@@ -49,7 +49,7 @@ flowchart LR
 
 ## 阶段 0.5：LLM 基础速通（Day 1-3）
 
-- [ ] 读 [`reference/心智模型与决策树/01-心智模型与决策树.md`](../reference/心智模型与决策树/01-心智模型与决策树.md) 的"心智模型"部分
+- [ ] 读 `reference/心智模型与决策树/01-心智模型与决策树` 的"心智模型"部分
 - [ ] 手动测 temperature=0 vs 1 的输出差异
 - [ ] 观察一次 LLM 输出的 function call JSON
 - [ ] 理解"上下文窗口" vs "输出窗口"
@@ -66,7 +66,7 @@ flowchart LR
 
 ## 阶段 1：LangChain4j 入门（Week 1）—【项目 P1】
 
-> 对照教程：[`tutorials/langchain4j/`](../tutorials/langchain4j/)
+> 对照教程：`tutorials/langchain4j/`
 
 ### Day 1-2：第一次调用
 - [ ] 在 `pom.xml` 加 LangChain4j 依赖

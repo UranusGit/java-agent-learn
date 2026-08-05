@@ -2,7 +2,7 @@
 
 > LLM 系统的 SRE 比传统 Web 难一倍：延迟分布厚尾、输出不确定、依赖第三方 API、prompt 改动会破坏行为。本文给出一套可落地的 SRE 框架。
 >
-> 前置：[`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md)
+> 前提：你了解 LLM 可观测性的基本用法（指标 / trace / Langfuse），能把延迟、token 用量与成本量化出来。
 > 预计：2 天
 
 ---
@@ -112,7 +112,7 @@ flowchart TD
 
 - **应用层**：K8s HPA 按 QPS / 并发数扩。
 - **上游配额**：提前 1 周向 OpenAI / Anthropic 申请提额，否则扩了也白发。
-- **本地推理**：用 vLLM 自建推理集群做"溢出"，参考 [`./16-多模型路由与国产化.md`](./16-多模型路由与国产化.md)。
+- **本地推理**：用 vLLM 自建推理集群做"溢出"（流量峰值溢出自托管 / 国产化模型），配合多模型路由层的降级与 fallback 策略使用。
 
 ---
 
@@ -139,7 +139,7 @@ flowchart TD
 
 OpenAI / Anthropic 升级 model snapshot 会改行为。每次升级前：
 
-1. 跑完整 eval 集（[`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md)）。
+1. 跑完整 eval 集（评估闭环里维护的一组"问题 + 期望答案"标注数据，用于自动回归）。
 2. 对比 top-N 失败 case，看是新模型 bug 还是新行为。
 3. 灰度 1 周，监控 SLO。
 4. 全量后保留旧版本 fallback 1 个月。
@@ -168,7 +168,7 @@ OpenTelemetry 2024 推出 GenAI 标准 attribute：
 - `gen_ai.response.finish_reason`
 - `gen_ai.tool.name` / `gen_ai.tool.call.id`
 
-Spring AI 2.0 自动埋点（Micrometer + OTel），见 [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md)。
+Spring AI 2.0 自动埋点（Micrometer + OTel），会直接产出上述 `gen_ai.*` 语义指标，无需自己手工埋点。
 
 ### 4.2 三层 trace
 
@@ -224,7 +224,7 @@ OTel 解决"调用链"，但 LLM 还需要"prompt 血缘 / eval 关联"。Langfu
 | Embedding 量化（INT8） | -75% 存储 | recall 掉点 |
 | Tool 结果缓存 | 工具调用 -80% | 数据陈旧 |
 
-详见 [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) §Prompt Cache。
+其中 Prompt Cache 是指对相同前缀的 prompt 复用上游缓存，显著降低重复输入 token 的成本。
 
 ### 5.3 预算告警
 
@@ -347,7 +347,7 @@ flowchart TD
 
 ### 7.5 Prompt Injection 攻击
 
-见 [`./14-安全工程与红队.md`](./14-安全工程与红队.md)。
+Prompt Injection 攻击的防御要点：对工具输入做边界校验、在系统提示中声明"忽略内联注入指令"、对关键操作加人工确认，并定期做红队测试。
 
 ---
 
@@ -442,13 +442,8 @@ flowchart TD
 
 ---
 
-## 12. 相关文档
+## 12. 相关资源
 
-- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— eval 闭环
-- [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— 安全 + 防失控
-- [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md) —— 观测栈
-- [`./16-多模型路由与国产化.md`](./16-多模型路由与国产化.md) —— fallback 策略
-- [`./27-CICD-for-AI.md`](./27-CICD-for-AI.md) —— CI/CD 配套
 - [Google SRE Book](https://sre.google/sre-book/table-of-contents/)
 - [OTel GenAI Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 - [Langfuse](https://langfuse.com/)
@@ -456,4 +451,4 @@ flowchart TD
 
 ---
 
-回到 [`./00-目录索引.md`](./00-目录索引.md)。
+回到目录索引，继续下一个主题。

@@ -25,66 +25,66 @@ flowchart LR
 
 | # | 主题 | 重点 |
 |---|------|------|
-| [00](./00-调研笔记.md) | 调研笔记 | CC 源码 6 章精读 + 官方文档三件套 + 业界对照 + 复用 ai-serving |
-| [01](./01-项目设计.md) | 项目设计 | 3 候选方案 + v1 架构 + 数据模型 + MVP 切片 + 模块图（含 Harness / Subagent / MCP / Events）|
+| 00 | 调研笔记 | CC 源码 6 章精读 + 官方文档三件套 + 业界对照 + 复用 ai-serving |
+| 01 | 项目设计 | 3 候选方案 + v1 架构 + 数据模型 + MVP 切片 + 模块图（含 Harness / Subagent / MCP / Events）|
 
 ### Phase 1：v1.0 MVP 骨架（单租户能跑通）
 
 | # | 主题 | 关键产物 |
 |---|------|----------|
-| [02](./02-环境准备.md) | 环境准备 | JDK21 / Spring Boot 4 / Docker / 前端 / MinIO |
-| [03](./03-项目骨架.md) | 项目骨架 | WS + ping/pong + 最简 AgentLoop |
-| [04](./04-Agent-Loop.md) | Agent Loop 深化 | State + 5 终止条件 + 3 层中断 |
-| [05](./05-工具系统与权限.md) | 工具系统与权限 | 5 内置工具 + 6 模式 + 3 行为 + DSL |
-| [06](./06-沙箱接入.md) | 沙箱接入 | Docker 容器调度 + 隔离 + 安全加固 |
-| [07](./07-Session持久化.md) | Session 持久化 | JSONL DAG + DB 索引 + Compact boundary |
-| [08](./08-WebSocket重连.md) | WebSocket 重连 | seq + 断线重放 |
-| [09](./09-Artifacts.md) | Artifacts | 代码/MD/HTML/SVG/Mermaid 渲染 |
+| 02 | 环境准备 | JDK21 / Spring Boot 4 / Docker / 前端 / MinIO |
+| 03 | 项目骨架 | WS + ping/pong + 最简 AgentLoop |
+| 04 | Agent Loop 深化 | State + 5 终止条件 + 3 层中断 |
+| 05 | 工具系统与权限 | 5 内置工具 + 6 模式 + 3 行为 + DSL |
+| 06 | 沙箱接入 | Docker 容器调度 + 隔离 + 安全加固 |
+| 07 | Session 持久化 | JSONL DAG + DB 索引 + Compact boundary |
+| 08 | WebSocket 重连 | seq + 断线重放 |
+| 09 | Artifacts | 代码/MD/HTML/SVG/Mermaid 渲染 |
 
 ### Phase 2：v1.1 企业接入
 
 | # | 主题 | 关键产物 |
 |---|------|----------|
-| [10](./10-集成ai-serving.md) | 集成 ai-serving | 推理网关 + 多租户 + 配额 + OTel |
-| [11](./11-长程任务.md) | 长程任务 | feature_list + Cron（Harness 最简实例）|
-| [12](./12-Hooks系统.md) | Hooks 系统 | 事件 + http hook + defer |
+| 10 | 集成 ai-serving | 推理网关 + 多租户 + 配额 + OTel |
+| 11 | 长程任务 | feature_list + Cron（Harness 最简实例）|
+| 12 | Hooks 系统 | 事件 + http hook + defer |
 
 ### Phase 3：v1.2+ 机制深化（核心工程范式）
 
 | # | 主题 | 关键产物 | 备注 |
 |---|------|----------|------|
-| [13](./13-Harness工程.md) | Harness 工程 | 5 层模型 + Guardrails + Protocol + Multi-Agent | harness 完整范式 |
-| [14](./14-上下文工程.md) | 上下文工程 | 4 级压缩管线 + Prompt 装配 + fallback | **决定长程任务能否跑完** |
-| [15](./15-Subagent编排.md) | Subagent 编排 | 4 种模式 + DAG 调度 + 隔离 + 聚合 | **长程任务提速** |
-| [16](./16-MCP协议集成.md) | MCP 协议集成 | 3 种 transport + ToolRegistry 接入 | **工具生态** |
-| [17](./17-全链路可观测前端.md) | 全链路可观测前端 | 12 类事件 + 活动流 + 3 档显示级别 | **解决用户焦虑** |
-| [18](./18-错误恢复与重试.md) | 错误恢复与重试 | 分类 + 重试 + fallback + 对账 + 断路器 | **长程任务自愈** |
-| [19](./19-AskUser与澄清式交互.md) | AskUser 澄清交互 | 5 种 question kind + 挂起-恢复 + 超时降级 | **对话式收敛** |
-| [20](./20-审批与审核流.md) | 审批与审核流 | 工具审批 + Diff Review + 多角色 + 审批中心 | HITL 全场景 |
+| 13 | Harness 工程 | 5 层模型 + Guardrails + Protocol + Multi-Agent | harness 完整范式 |
+| 14 | 上下文工程 | 4 级压缩管线 + Prompt 装配 + fallback | **决定长程任务能否跑完** |
+| 15 | Subagent 编排 | 4 种模式 + DAG 调度 + 隔离 + 聚合 | **长程任务提速** |
+| 16 | MCP 协议集成 | 3 种 transport + ToolRegistry 接入 | **工具生态** |
+| 17 | 全链路可观测前端 | 12 类事件 + 活动流 + 3 档显示级别 | **解决用户焦虑** |
+| 18 | 错误恢复与重试 | 分类 + 重试 + fallback + 对账 + 断路器 | **长程任务自愈** |
+| 19 | AskUser 澄清交互 | 5 种 question kind + 挂起-恢复 + 超时降级 | **对话式收敛** |
+| 20 | 审批与审核流 | 工具审批 + Diff Review + 多角色 + 审批中心 | HITL 全场景 |
 
 ### Phase 4：v2.0 Web 工程化（Web 项目专属）
 
 | # | 主题 | 关键产物 | 备注 |
 |---|------|----------|------|
-| [21](./21-Web前端工程化.md) | Web 前端工程化 | 路由 / Zustand / 代码分割 / ErrorBoundary / 移动端 / 快捷键 / i18n / 主题 | **产品化前端** |
-| [22](./22-跨标签页与实时协作.md) | 跨标签页与实时协作 | BroadcastChannel / SharedWorker / Visibility / IndexedDB / presence | **Web 实时性** |
-| [23](./23-Web安全与可分享性.md) | Web 安全与可分享性 | 注入防护 / artifact XSS / CSP / 分享链接 / Sentry / Web Vitals | **Web 安全 + 分享** |
-| [24](./24-智能体安全.md) | 智能体安全 | Provenance / SecretGuard / PromptInjection 检测 / Subagent guardrail | **Agent 专属风险** |
-| [25](./25-记忆与个性化系统.md) | 记忆与个性化 | 跨 session 偏好 / CLAUDE.md 导入 / 任务经验复用 / GDPR | **CLAUDE.md 等价物** |
-| [26](./26-测试与评估.md) | 测试与评估 | 单元 / 集成 / Playwright / Eval 框架 / LLM Judge / CI 门禁 | **质量门禁** |
-| [27](./27-生产部署深度.md) | 生产部署深度 | K8s / HPA / WS 跨节点 / 沙箱调度 / 归档 / SLO / DR | **集群生产** |
+| 21 | Web 前端工程化 | 路由 / Zustand / 代码分割 / ErrorBoundary / 移动端 / 快捷键 / i18n / 主题 | **产品化前端** |
+| 22 | 跨标签页与实时协作 | BroadcastChannel / SharedWorker / Visibility / IndexedDB / presence | **Web 实时性** |
+| 23 | Web 安全与可分享性 | 注入防护 / artifact XSS / CSP / 分享链接 / Sentry / Web Vitals | **Web 安全 + 分享** |
+| 24 | 智能体安全 | Provenance / SecretGuard / PromptInjection 检测 / Subagent guardrail | **Agent 专属风险** |
+| 25 | 记忆与个性化 | 跨 session 偏好 / CLAUDE.md 导入 / 任务经验复用 / GDPR | **CLAUDE.md 等价物** |
+| 26 | 测试与评估 | 单元 / 集成 / Playwright / Eval 框架 / LLM Judge / CI 门禁 | **质量门禁** |
+| 27 | 生产部署深度 | K8s / HPA / WS 跨节点 / 沙箱调度 / 归档 / SLO / DR | **集群生产** |
 
 ### Phase 5：v2.1 商业化（P0 已写，P1 待补）
 
 | # | 主题 | 关键产物 | 状态 |
 |---|------|----------|------|
-| [28](./28-限流与防滥用.md) | 限流与防滥用 | 多维度限流 / 注册防爆破 / 邀请制 / 公平调度 / 分享防遍历 | ✅ P0 |
-| [29](./29-成本治理与计费.md) | 成本治理与计费 | 多级预算 / 模型路由 / 实时余额 / Stripe / 发票 / 退款 | ✅ P0 |
+| 28 | 限流与防滥用 | 多维度限流 / 注册防爆破 / 邀请制 / 公平调度 / 分享防遍历 | ✅ P0 |
+| 29 | 成本治理与计费 | 多级预算 / 模型路由 / 实时余额 / Stripe / 发票 / 退款 | ✅ P0 |
 | 30 | 多供应商 / 模型路由 / 跨家灾备 | Anthropic/OpenAI/国产/自托管切换 | P1 待写 |
-| [31](./31-多租户产品层.md) | 多租户产品层 | tenant/project/角色/邀请/SSO/SCIM/跨租户迁移 | ✅ P0 |
+| 31 | 多租户产品层 | tenant/project/角色/邀请/SSO/SCIM/跨租户迁移 | ✅ P0 |
 | 32 | 国际化与合规地理 | 数据驻留 / 多语言 / RTL / 审查 | P1 待写 |
 | 33 | 开发者生态 | Chrome 扩展 / VS Code / CLI / SDK / Webhook | P1 待写 |
-| [34](./34-数据治理与合规审计.md) | 数据治理与合规审计 | 加密 / KMS / 审计 / SOC2 / GDPR / 事件响应 | ✅ P0 |
+| 34 | 数据治理与合规审计 | 加密 / KMS / 审计 / SOC2 / GDPR / 事件响应 | ✅ P0 |
 | 35 | 版本兼容 | API 版本化 / schema 演进 / 迁移 | P1 待写 |
 | 36 | 用户引导 / 模板库 | Onboarding / 模板 / 教程 / 反馈通道 | P1 待写 |
 | 37 | 沙箱到生产 / Git 集成 | 自动 PR / CI/CD / Code Review | P1 待写 |
@@ -93,7 +93,7 @@ flowchart LR
 
 | # | 主题 |
 |---|------|
-| [99](./99-附录-部署与排错.md) | docker-compose + 性能调优 + 监控告警 + 安全清单 |
+| 99 | docker-compose + 性能调优 + 监控告警 + 安全清单 |
 
 ---
 
@@ -260,10 +260,10 @@ demo01/
 
 ## 反馈与勘误
 
-- 先看 `99-附录-部署与排错.md`；
+- 先看 99-附录-部署与排错；
 - 再看对应章节末尾的「常见问题」；
-- 对照 `00-调研笔记.md` 找原始出处。
+- 对照 00-调研笔记 找原始出处。
 
 ---
 
-**开始实验 → [02-环境准备](./02-环境准备.md)**
+**开始实验 → 02-环境准备**

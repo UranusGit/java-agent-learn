@@ -1,15 +1,15 @@
 # Kafka 消息可靠性：从 at-least-once 到恰好一次（编码落地）
 
-> **这份文档是什么**：[Kafka 消息队列实战专题](./README.md) 的第 06 篇，**可靠性专题**，而且**只讲怎么把代码写对**。前面五篇你已经会收发、懂原理、能搭系统、能做生产级 Outbox，这篇把**可靠性**这几个字拆成五段可抄的代码：幂等消费、恰好一次（EOS）全链路、延迟消息、请求-响应、可观测性埋点。**概念只做铺垫，代码占大头**。
+> **这份文档是什么**：Kafka 消息队列实战专题 的第 06 篇，**可靠性专题**，而且**只讲怎么把代码写对**。前面五篇你已经会收发、懂原理、能搭系统、能做生产级 Outbox，这篇把**可靠性**这几个字拆成五段可抄的代码：幂等消费、恰好一次（EOS）全链路、延迟消息、请求-响应、可观测性埋点。**概念只做铺垫，代码占大头**。
 >
-> **和 01-05 的关系**（先对号入座，别重复读）：
-> - [01 概念篇](./01-Kafka消息队列从入门到架构师.md) 第 8.4/9.1/9.2 章把 at-least-once、幂等生产者、消费幂等的**概念**讲透了，本篇把第 9 章挖的坑**一行一行填上**。
-> - [02 调优篇](./02-Kafka进阶实战.md) 第 2.6 章给了 `@RetryableTopic` 重试/死信的**注解用法**，本篇第 1.6、3.3 章把"重试 + 幂等怎么配合"和"用重试 topic 做阶梯延迟"展开。
-> - [03 实战篇](./03-事件驱动微服务端到端实战.md) 第 4.3 章的幂等表是**简化版**（`existsById` 先查），本篇第 1.3 章补上**多实例并发的唯一约束兜底**和事务边界。
-> - [04 生产级篇](./04-生产级进阶-Outbox与Schema与分区调优.md) 方向 A 讲的是"写库 + 发消息"原子化的 Outbox（可靠性的一半：**发送端不丢**），本篇第 2 章补可靠性的另一半：**事务消息 + 消费幂等 = 恰好一次**，并明确"Kafka 事务为什么替代不了 Outbox"。
-> - [05 实践篇](./05-全知识点实践项目.md) 阶段 9 是事务 + 幂等的**最小演示**，本篇把它升级成完整 EOS 链路。
+> **和前面五篇的关系**（先对号入座，别重复读）：
+> - **概念铺垫**：at-least-once、幂等生产者、消费幂等的**概念**你已经学过，本篇把"如何写对"**一行一行填上**。
+> - **注解铺垫**：`@RetryableTopic` 重试/死信的**注解用法**你已经见过，本篇第 1.6、3.3 章把"重试 + 幂等怎么配合"和"用重试 topic 做阶梯延迟"展开。
+> - **幂等表铺垫**：`existsById` 先查的**简化版**幂等表你已经写过，本篇第 1.3 章补上**多实例并发的唯一约束兜底**和事务边界。
+> - **Outbox 铺垫**：方向 A 的 Outbox 解决"写库 + 发消息"原子化（可靠性的一半：**发送端不丢**），本篇第 2 章补可靠性的另一半：**事务消息 + 消费幂等 = 恰好一次**，并明确"Kafka 事务为什么替代不了 Outbox"。
+> - **事务铺垫**：事务 + 幂等的**最小演示**你已经跑过，本篇把它升级成完整 EOS 链路。
 >
-> **版本前提（已校验）**：Spring Boot 4.1.0 + `spring-boot-starter-kafka`（BOM 托管版本）+ Kafka 3.x。所有 API 已对照 spring-kafka 3.x 校验，照抄能编译。本专题一律用 **`KafkaTemplate` 发、`@KafkaListener` 收**（见 [README](./README.md) 的说明）。
+> **版本前提（已校验）**：Spring Boot 4.1.0 + `spring-boot-starter-kafka`（BOM 托管版本）+ Kafka 3.x。所有 API 已对照 spring-kafka 3.x 校验，照抄能编译。本专题一律用 **`KafkaTemplate` 发、`@KafkaListener` 收**。
 
 ---
 
@@ -37,7 +37,7 @@ flowchart LR
     B -. "这个时刻崩溃<br/>→ 重启后 offset 没变" .-> D["同一条消息再投递一次<br/>(at-least-once 重复窗口)"]
 ```
 
-> **结论一句话**：**Kafka 保证消息"至少被处理一次"，但不保证"只被处理一次"。重复消费是常态，不是事故。** 所以消费者侧**必须幂等**——同一条消息处理 N 次，效果必须和 1 次一样。（概念详见 [01 第 6.3 章 ack-mode](./01-Kafka消息队列从入门到架构师.md) 和 [01 第 9.2 章](./01-Kafka消息队列从入门到架构师.md)。）
+> **结论一句话**：**Kafka 保证消息"至少被处理一次"，但不保证"只被处理一次"。重复消费是常态，不是事故。** 所以消费者侧**必须幂等**——同一条消息处理 N 次，效果必须和 1 次一样。
 
 ### 1.2 深坑演示：不幂等的消费者会重复扣款
 
@@ -178,7 +178,7 @@ public class WalletService {
 
 **为什么多实例并发也不会重复扣**——这是本方案的精髓（时序见下方）：
 
-> **要点**：`existsById` 先查只是**优化**（少写一次），真正的保证是**唯一约束 + 同一事务**。因为 `@Id` 建了唯一索引，两个实例都插同一主键时第二个必然冲突、事务整体回滚，**重复的业务也被回滚**。这就是 [03 第 4.3 章](./03-事件驱动微服务端到端实战.md) 说的"唯一约束是双保险"。
+> **要点**：`existsById` 先查只是**优化**（少写一次），真正的保证是**唯一约束 + 同一事务**。因为 `@Id` 建了唯一索引，两个实例都插同一主键时第二个必然冲突、事务整体回滚，**重复的业务也被回滚**。这就是"唯一约束是双保险"。
 
 **多实例并发时序**：两个实例同时 poll 到同一条 `evt-1`，唯一约束保证只有一次生效：
 
@@ -384,7 +384,7 @@ stateDiagram-v2
 
 ### 1.6 重试时如何不重复处理（幂等 × 重试的配合）
 
-有了 `@RetryableTopic`（[02 第 2.6 章](./02-Kafka进阶实战.md)、[05 阶段 3](./05-全知识点实践项目.md)），消息失败会被**重投**——但重投的还是**同一条消息、同一个 `eventId`**。所以：**幂等检查必须放在业务最前面，且"已处理过"要正常 return，不要抛异常**（抛异常会被当成"处理失败"继续重试）。
+有了 `@RetryableTopic`（重试死信注解），消息失败会被**重投**——但重投的还是**同一条消息、同一个 `eventId`**。所以：**幂等检查必须放在业务最前面，且"已处理过"要正常 return，不要抛异常**（抛异常会被当成"处理失败"继续重试）。
 
 ```java
 package com.example.order;
@@ -468,7 +468,7 @@ flowchart TD
 
 ### 2.2 幂等生产者：`enable.idempotence`
 
-Kafka 3.0+ 默认开启（Kafka 协议层自动给每条消息打上 **producerId + 序列号**，broker 端去重）。概念见 [01 第 9.1 章](./01-Kafka消息队列从入门到架构师.md)，代码层**显式写出来**并配上 `acks=all`：
+Kafka 3.0+ 默认开启（Kafka 协议层自动给每条消息打上 **producerId + 序列号**，broker 端去重）。概念你已经学过，代码层**显式写出来**并配上 `acks=all`：
 
 ```yaml
 spring:
@@ -550,7 +550,7 @@ public class PaymentPublisher {
 }
 ```
 
-> **重要**：配了 `transaction-id-prefix` 之后，`KafkaTemplate.send()` **必须**在事务里调用，否则抛 `No transaction is in process`（[01 附录坑 8](./01-Kafka消息队列从入门到架构师.md)）。
+> **重要**：配了 `transaction-id-prefix` 之后，`KafkaTemplate.send()` **必须**在事务里调用，否则抛 `No transaction is in process`（这是常见坑）。
 
 ### 2.5 消费端隔离级别：`isolation.level: read_committed`
 
@@ -720,12 +720,12 @@ public class WalletService {
 
 ### 2.7 局限与诚实结论（别把 Kafka 事务当万能药）
 
-**必须说清楚 Kafka 事务解决不了什么**（呼应 [04 方向 A](./04-生产级进阶-Outbox与Schema与分区调优.md) 的 Outbox 讨论）：
+**必须说清楚 Kafka 事务解决不了什么**（呼应方向 A 的 Outbox 讨论）：
 
 | 需求 | Kafka 事务能吗 | 正解 |
 |------|:---:|------|
 | 一批 Kafka 消息原子可见 | ✅ | 本节代码 |
-| **"写 DB + 发 Kafka"原子** | ❌ 要 ChainedTransactionManager 跨资源两阶段提交，性能差、易出问题 | **Outbox 模式**（[04 方向 A](./04-生产级进阶-Outbox与Schema与分区调优.md)），把"发消息"降级成"事务里写 outbox 表" |
+| **"写 DB + 发 Kafka"原子** | ❌ 要 ChainedTransactionManager 跨资源两阶段提交，性能差、易出问题 | **Outbox 模式**（方向 A），把"发消息"降级成"事务里写 outbox 表" |
 | 消费端重复投递 | ❌ 这是 at-least-once 语义决定的 | **消费幂等**（第 1 章） |
 
 > **进阶（可选）**：如果连"消费 + 发消息 + 提交 offset"都想原子，可以上**事务性消费者**——在 `@KafkaListener` 方法上加 `@Transactional("kafkaTransactionManager")`，**前提是给 listener 容器工厂配好同一个 `KafkaTransactionManager`**（`factory.setTransactionManager(kafkaTransactionManager)`），这样 Spring Kafka 会把 **offset 提交也并入 Kafka 事务**：处理失败 → 事务回滚 → offset 不提交 → 消息被重投。但**它依然是 Kafka 内部原子，不跨 DB**，跨 DB 仍要靠 Outbox。
@@ -914,7 +914,7 @@ public class SchedulingConfig {
 
 > **多实例部署的坑**：应用扩到多实例后，**每个实例都会跑这个扫描器** → 同一条到期记录可能被多个实例发出去。解法（按复杂度选）：
 > 1. 把扫描 SQL 改成 `SELECT ... FOR UPDATE SKIP LOCKED`（悲观锁，DB 自带，推荐）；
-> 2. 用分布式锁包住扫描任务（[Redis 分布式锁实战](../Redis专题/02-Redis分布式锁实战.md)）；
+> 2. 用分布式锁（如 Redis 分布式锁）包住扫描任务；
 > 3. 接受重复发送，靠**消费端幂等**兜底（把第 1 章的 `eventId` 去重用上）。
 > 真实生产一般 **1 + 3 组合**：发送端少重复，消费端不怕重复。
 
@@ -1010,7 +1010,7 @@ public class BadDelayConsumer {
 ```
 
 **为什么坏**：
-1. **占住容器线程**：`@KafkaListener` 容器线程被 `sleep` 占住，不再 `poll` → 心跳超时被踢出消费组、触发 rebalance（[02 第 1.5 章](./02-Kafka进阶实战.md) 讲过的消费组机制）。
+1. **占住容器线程**：`@KafkaListener` 容器线程被 `sleep` 占住，不再 `poll` → 心跳超时被踢出消费组、触发 rebalance（消费组机制）。
 2. **吞吐崩塌**：睡 10 分钟 = 这个分区 10 分钟内一条都处理不了，lag 直线飙升。
 3. **崩溃即重来**：睡到一半实例挂了，重启后消息重投，`sleep` 从头开始——延迟被"重置"。
 4. **无法横向扩容**：sleep 不释放线程，加实例只是增加"集体睡觉"的线程。
@@ -1406,7 +1406,7 @@ public class StockServer {
 
 ### 5.1 开箱即用的 `kafka_*` 指标（零代码）
 
-`spring-boot-starter-kafka` + Actuator 就自动暴露 Kafka 客户端指标（[02 第 2.7 章](./02-Kafka进阶实战.md)、[01 第 9.5 章](./01-Kafka消息队列从入门到架构师.md)）。加依赖：
+`spring-boot-starter-kafka` + Actuator 就自动暴露 Kafka 客户端指标（`kafka_producer_*` / `kafka_consumer_*` 等）。加依赖：
 
 ```xml
 <dependency>
@@ -1524,7 +1524,7 @@ public class OrderConsumer {
 
 **目标**：订单服务发的消息，到库存服务消费、再发出新消息，到支付服务……整条链共享**同一个 traceId**，在 Zipkin/Tempo 里能串成一条链路。**原理就是 W3C 的 `traceparent` 头**（`00-<traceId>-<spanId>-01`）：生产端把当前 trace 上下文写进消息头，消费端读出来续上。
 
-**加依赖**（[01 第 9.5 章](./01-Kafka消息队列从入门到架构师.md)、[03 第 8.2 章](./03-事件驱动微服务端到端实战.md) 已经铺垫）：
+**加依赖**（链路追踪概念前面已经铺垫）：
 
 ```xml
 <dependency>
@@ -1547,7 +1547,7 @@ management:
       endpoint: http://localhost:9411/api/v2/spans   # Zipkin 地址
 ```
 
-**先看自动版（0 行埋点）**：classpath 有 Micrometer Tracing 时，Spring Kafka 的 Observation **自动**给 `KafkaTemplate` 发送注入 `traceparent`、给 `@KafkaListener` 消费时提取并续 span（[03 第 8.2 章](./03-事件驱动微服务端到端实战.md)）。**默认就有，别重复埋。**
+**先看自动版（0 行埋点）**：classpath 有 Micrometer Tracing 时，Spring Kafka 的 Observation **自动**给 `KafkaTemplate` 发送注入 `traceparent`、给 `@KafkaListener` 消费时提取并续 span。**默认就有，别重复埋。**
 
 **再看手动版（把机制讲透，或你需要完全掌控时）**——用 `io.micrometer.tracing.Tracer`：
 
@@ -1913,19 +1913,11 @@ class IdempotentConsumerTest {
 
 可靠性是"能上生产"的地基，本篇把五段代码落地了：**幂等消费（第 1 章）、EOS 全链路（第 2 章）、延迟消息（第 3 章）、请求-响应（第 4 章）、可观测性（第 5 章）**。继续深入的方向：
 
-- 把第 1 章幂等和第 2 章事务应用到你的订单/支付场景，配合 [04 的 Outbox](./04-生产级进阶-Outbox与Schema与分区调优.md) 做"写库 + 发消息"原子化。
-- 延迟消息 3.2 的 DB 扫描 + `FOR UPDATE SKIP LOCKED` 多实例改造，参考 [Redis 分布式锁实战](../Redis专题/02-Redis分布式锁实战.md)。
+- 把第 1 章幂等和第 2 章事务应用到你的订单/支付场景，配合 Outbox 做"写库 + 发消息"原子化。
+- 延迟消息 3.2 的 DB 扫描 + `FOR UPDATE SKIP LOCKED` 多实例改造，配合 Redis 分布式锁（同一把锁的思路）。
 - 第 4 章请求-响应 + 第 5 章追踪，拼出完整的同步转异步 RPC 服务。
-- 想在 35 号文档的管数分离架构里落地 Kafka 可靠性，看 [35 管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 6 章的幂等键与第 10 章的 Kafka 持久总线——把本篇的幂等/事务/EOS 接进去。
 
 ## 配套学习资料
 
-- [Kafka 消息队列实战专题 README](./README.md)（本专题学习顺序）
-- [01 概念篇：事务、幂等生产者、消费幂等](./01-Kafka消息队列从入门到架构师.md)（第 8.4 / 9.1 / 9.2 章）
-- [02 进阶篇：重试与死信、可观测性](./02-Kafka进阶实战.md)（第 2.6 / 2.7 章）
-- [03 实战篇：幂等表、链路追踪](./03-事件驱动微服务端到端实战.md)（第 4.3 / 8.2 章）
-- [04 生产级篇：Outbox、Schema、分区调优](./04-生产级进阶-Outbox与Schema与分区调优.md)（方向 A）
-- [05 全知识点实践项目](./05-全知识点实践项目.md)（阶段 9 事务 + 幂等）
-- [35 管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md)（幂等键、Kafka 持久总线）
 - [Spring 官方：Spring for Apache Kafka 参考文档](https://docs.spring.io/spring-kafka/reference/)（事务、请求-回复、重试 topic 权威）
 - [Apache Kafka 官方：Transactions](https://kafka.apache.org/documentation/#semantics)（EOS 语义权威）

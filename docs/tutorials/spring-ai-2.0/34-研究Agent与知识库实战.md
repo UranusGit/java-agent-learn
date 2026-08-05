@@ -6,7 +6,7 @@
 >
 > **它讲什么**：从"固定 workflow"升级到"**自主研究 Agent**"，再到"**会规划、多 Worker 并发调研、流程可追溯、有记忆、可管理的产品级问答系统**"。涉及 Agent 循环、知识库（pgvector RAG）、MCP 工具、Plan-Execute-Aggregate 编排（含 Reactor 多 Worker 并发）、结构化审计日志、会话持久化（ChatMemory 落库 + 会话 CRUD）、外部用户治理。
 >
-> **前置**：你会 Spring AI + WebFlux 基础（调过 ChatClient、写过 Controller、对 Reactor 的 `Flux`/`Mono`/`flatMap` 有基本认识）。本文自包含——所需的东西都在文档里一步步搭出来，不依赖你先做别的项目。如果你做过可观测主题的实战（[33a](./33a-Agent可观测性最小实战.md)/[33b](./33b-Agent可观测性企业级演进实践.md)），部分章节会更轻松，但不是必须。
+> **前置**：你会 Spring AI + WebFlux 基础（调过 ChatClient、写过 Controller、对 Reactor 的 `Flux`/`Mono`/`flatMap` 有基本认识）。本文自包含——所需的东西都在文档里一步步搭出来，不依赖你先做别的项目。如果你做过可观测主题的实战（最小实战 / 企业级演进两版），部分章节会更轻松，但不是必须。
 >
 > **项目结构**：本文围绕一个主项目——
 > - **主项目 `research-agent`**：会话化研究问答系统（本文主体，含知识库、Agent 循环、Plan-Execute 并发编排、审计日志、会话持久化）。
@@ -366,7 +366,7 @@ public class WebSearchTool {
 [用户消息] 研究 XX
 ```
 
-LLM 读到这段"工具清单"，结合用户问题，**自己判断**"该不该调 search、传什么 query"——如果决定调，就输出结构化的 tool_call（见第 1 章 ReAct 原理）。
+LLM 读到这段"工具清单"，结合用户问题，**自己判断**"该不该调 search、传什么 query"——如果决定调，就输出结构化的 tool_call（见本文档第 1 章 ReAct 原理）。
 
 **所以 description 写得好坏，直接决定 LLM 会不会调、调得对不对**：
 - 写清楚（"搜索互联网，用于查公开/最新信息"）→ LLM 知道何时该用。
@@ -775,7 +775,7 @@ public class WebSearchTool {
 
 > **为什么先用日志、不用事件总线/SSE**：那是"一点点演进"——第 1 章的痛点只是"Agent 黑箱"，打印日志就够透光。等后面（你自己做的时候）觉得"日志不够、要前端实时看、要可追溯"，再演进到事件总线 + SSE。**本文不预先搬那套**——第 1 章用最小手段解决当下的痛点，不为想象中的需求写代码。
 >
-> 如果你已经做过可观测主题的实战（有 EventBus/SSE/ToolObservationHandler 那套，见 [33b](./33b-Agent可观测性企业级演进实践.md)），这里直接用你的那套，效果更好；如果没有，日志足够让你看清 Agent 在干什么。
+> 如果你已经做过可观测主题的实战（有 EventBus/SSE/ToolObservationHandler 那套），这里直接用你的那套，效果更好；如果没有，日志足够让你看清 Agent 在干什么。
 
 #### 1.2.4 Controller：本章无需改动
 
@@ -9460,17 +9460,14 @@ flowchart TD
 
 ---
 
-## 相关文档
+## 相关资源
 
-- [33-Agent子过程实时可见性方案](./33-Agent子过程实时可见性方案.md) —— Agent 可观测性的理论全本
-- [33a-Agent可观测性最小实战](./33a-Agent可观测性最小实战.md) / [33b-Agent可观测性企业级演进实践](./33b-Agent可观测性企业级演进实践.md) —— 可观测主题实战
-- [03-Tool调用](./02-Tool与AgentLoop.md) —— 工具调用基础（第 1 章前置）
-- [22-跨标签页与实时协作](../../web-claude/22-跨标签页与实时协作.md) —— Web 前端的三层同步架构
-- [16-Agent可靠性工程Java视角](../../reference/生产化与运营/16-Agent可靠性工程Java视角.md) —— Agent 可靠性设计
+- Reactor 官方文档（`projectreactor.io/docs`）—— `Flux`/`Mono`/`flatMap` 操作符参考
+- Spring AI 官方文档（`docs.spring.io/spring-ai`）—— ChatClient、Tool、Streaming API 参考
 
 ---
 
-> **回到**：[`./00-目录索引.md`](./00-目录索引.md)
+> **回到**：目录索引，继续下一个主题。
 
 ---
 

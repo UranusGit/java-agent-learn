@@ -1,7 +1,7 @@
 # LangChain4j 03 - Tool 调用（Function Calling）
 
 > 目标：理解 Function Calling 协议，写一个自定义 Tool，让 LLM 自己决定何时调用。
-> 前置：已完成 [01-快速起步](./01-快速起步.md) 和 [02-ChatMemory](./02-ChatMemory.md)。
+> 前提：你会配置模型、会用 `ChatMemory` 实现多轮对话（即 01、02 的能力）。
 
 ---
 
@@ -392,4 +392,4 @@ Assistant agent = AiServices.builder(Assistant.class)
 4. **观察日志**：开启 `logRequests`，看 LangChain4j 发给 LLM 的 Tool 描述长什么样
 5. 故意写一个描述模糊的 Tool，观察 LLM 是否会误调用
 
-完成后进入 [04-AiServices 声明式](./04-AiServices声明式.md)。
+完成后进入下一节：**04-AiServices 声明式**——用"声明接口"的方式把记忆、工具、系统提示全自动装配起来。

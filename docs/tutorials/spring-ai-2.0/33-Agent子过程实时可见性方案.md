@@ -4,9 +4,9 @@
 >
 > **一句话**：用一个统一的事件总线（Sinks.Many）+ 统一事件协议（`AgentEvent`），把 Workflow / Graph / ChatClient 自主循环三种编排模式里发生的工具调用、MCP 调用、子 Agent、阶段跳转、状态机节点、token 消耗，全部转成结构化事件，经 SSE 实时推给前端。
 >
-> 本文是 32 篇体系的「可观测性」专题深化篇，把 [15-可观测性与成本治理](./15-可观测性与成本治理.md)（离线/采样 trace）和 [04-流式响应与Reactor深度](./04-流式响应与Reactor深度.md)（SSE 流）的能力，升级为**在线、实时、面向前端**的子过程可见性方案。
+> 本文是 32 篇体系的「可观测性」专题深化篇，把"可观测性与成本治理"（离线 / 采样 trace）和"流式响应与 Reactor 深度"（SSE 流）两篇的能力，升级为**在线、实时、面向前端**的子过程可见性方案。
 >
-> **前置阅读**：[`./03`](./03-Advisor链全解.md) · [`./04`](./04-流式响应与Reactor深度.md) · [`./10`](./10-多Agent编排实战.md) · [`./11`](./11-五大Workflow模式与代码评审助手.md) · [`./15`](./15-可观测性与成本治理.md)
+> **前置阅读**：你已了解 Advisor 链的 order 与横切关注点、SSE 流与 cold/hot Flux、多 Agent 编排（GraphLifecycleListener）、五大 Workflow 抽象基类，以及可观测性（OTel / 成本 / Langfuse）。
 >
 > **技术栈**：Spring AI 2.0.0 + Spring Boot 4.x + Reactor 3.7 + Java 21。
 
@@ -156,7 +156,7 @@ flowchart LR
 | 成本可控性 | 强（步骤固定） | 中（节点固定但分支多） | **弱**（可能死循环） |
 | 推荐度 | ⭐ 企业 80% 场景首选 | 复杂决策/长程任务 | 不推荐但必须覆盖 |
 
-> 这正是 [11-五大Workflow模式](./11-五大Workflow模式与代码评审助手.md) 反复强调的「Workflow > Agent」：可见性差异是核心原因之一——确定性 DAG 每一步都能提前埋点，自主循环只能事后观测。
+> 这正是"五大 Workflow 模式"一篇反复强调的「Workflow > Agent」：可见性差异是核心原因之一——确定性 DAG 每一步都能提前埋点，自主循环只能事后观测。
 
 ---
 
@@ -231,7 +231,7 @@ sequenceDiagram
 | 背压 | `onBackpressureBuffer` 统一兜底 | 每段流各自处理，易失控 |
 | 生命周期 | 事件发射与订阅完全解耦 | `Flux.create(sink -> ... subscribe())` 生命周期纠缠，易泄漏 |
 
-**核心论据**（来自 [04-流式响应与Reactor深度](./04-流式响应与Reactor深度.md) §A.3）：
+**核心论据**（来自流式响应与 Reactor 深度一篇 §A.3 的 cold/hot 原理）：
 
 > 业务里一个请求一个流，不要复用。但「事件总线」不是「请求流」——它是**一个进程级共享的 Hot 源**，所有请求的事件都往里 `emit`，所有消费者（SSE / Langfuse / OTel）按需订阅过滤。这正是 `Sinks.Many.multicast()` 的设计用途。
 
@@ -259,7 +259,7 @@ public Flux<String> run(String input) {
 | 基础设施 | Nginx / CDN / 防火墙原生支持 | 需额外配置 `Upgrade` 头、超时 |
 | 与 Reactor 契合 | `Flux<ServerSentEvent>` 天然契合 | 需 `WebSocketHandler` 手动管理 session |
 | 断线恢复 | 浏览器自动重连 + `Last-Event-ID` | 需自研重连 + 状态同步 |
-| 适用场景 | **事件流推送（本文）** | 实时双向协作（[22-跨标签页协作](../../web-claude/22-跨标签页与实时协作.md)） |
+| 适用场景 | **事件流推送（本文）** | 实时双向协作（跨标签页与实时协作，Web 前端章节） |
 
 > **结论**：Agent 子过程是「服务端推、前端只读展示」，SSE 是最匹配的。WebSocket 仅在需要「前端中途取消 / 注入消息」时作为可选扩展（§16.5）。
 
@@ -579,7 +579,7 @@ public final class Truncator {
 
 ### 4.3 采集点二：Workflow 阶段钩子
 
-> 思路：[11](./11-五大Workflow模式与代码评审助手.md) 的五大模式都是「抽象基类 + 模板方法」（`steps()` / `works()` / `worker()` / `classifier()` / `generator()`）。我们新增一层 `Observable*` 基类，在模板方法里 `emit(WORKFLOW_PHASE)`，**具体业务子类零改动**。完整代码见 [§7](#7-workflow-service-改造五大模式)。
+> 思路：五大 Workflow 模式的抽象基类都是「抽象基类 + 模板方法」（`steps()` / `works()` / `worker()` / `classifier()` / `generator()`）。我们新增一层 `Observable*` 基类，在模板方法里 `emit(WORKFLOW_PHASE)`，**具体业务子类零改动**。完整代码见 [§7](#7-workflow-service-改造五大模式)。
 
 骨架示意：
 
@@ -621,7 +621,7 @@ interface GraphLifecycleListener {
 }
 ```
 
-> ⚠️ 注意：[10-多Agent编排实战](./10-多Agent编排实战.md) §7.1 旧文档写的 `onNodeStart/onNodeEnd` 在本版本 jar 中**不存在**，真实方法是 `before/after`。本文已校正。
+> ⚠️ 注意：多 Agent 编排一篇 §7.1 旧文档写的 `onNodeStart/onNodeEnd` 在本版本 jar 中**不存在**，真实方法是 `before/after`。本文已校正。
 
 适配器代码：
 
@@ -1259,7 +1259,7 @@ flowchart TD
 
 ## 7. Workflow Service 改造（五大模式）
 
-> [11-五大Workflow模式](./11-五大Workflow模式与代码评审助手.md) 的五大抽象基类（`ChainingService` / `ParallelizationService` / `RoutingService` / `OrchestratorService` / `EvaluatorOptimizerService`）位于 `org.demo06.workflows`。我们新增 `Observable*` 子类，在模板方法里埋点，**业务子类（`ArticleChainingService` 等）零改动即可获得可见性**。
+> 五大 Workflow 模式的抽象基类（`ChainingService` / `ParallelizationService` / `RoutingService` / `OrchestratorService` / `EvaluatorOptimizerService`）位于 `org.demo06.workflows`。我们新增 `Observable*` 子类，在模板方法里埋点，**业务子类（`ArticleChainingService` 等）零改动即可获得可见性**。
 
 ### 7.1 ObservableChainingService（Prompt Chaining）
 
@@ -1483,7 +1483,7 @@ public abstract class ObservableEvaluatorOptimizerService extends EvaluatorOptim
 
 ### 8.1 接入 GraphLifecycleListener
 
-> [10-多Agent编排实战](./10-多Agent编排实战.md) 用 `spring-ai-alibaba-graph-core`。监听器已在 §4.4 写好，这里只展示如何注入。
+> 多 Agent 编排一篇用 `spring-ai-alibaba-graph-core`。监听器已在 §4.4 写好，这里只展示如何注入。
 
 ```java
 // 设计示意：说明类职责与调用关系，落地需补全 import/异常/配置
@@ -1504,7 +1504,7 @@ public CompiledGraph compileWithObservability(/*StateGraph graph,*/ AgentEventEm
 }
 ```
 
-> ⚠️ 旧文档（[10](./10-多Agent编排实战.md) §7.1）写的 `CompileConfig.builder().saverConfig(...)` 与 `withLifecycleListener` 可链式，但 `GraphLifecycleListener` 用的方法名 `onNodeStart/onNodeEnd` **在本版本不存在**——本文已用真实的 `before/after/onError`。
+> ⚠️ 旧文档（多 Agent 编排一篇 §7.1）写的 `CompileConfig.builder().saverConfig(...)` 与 `withLifecycleListener` 可链式，但 `GraphLifecycleListener` 用的方法名 `onNodeStart/onNodeEnd` **在本版本不存在**——本文已用真实的 `before/after/onError`。
 
 ### 8.2 条件边跳转事件
 
@@ -1639,9 +1639,9 @@ public class TracingToolCallingManager implements ToolCallingManager {
 }
 ```
 
-> 注：`ToolCallingManager` 在 Spring AI 2.0 是工具执行的统一入口，但**默认是否直接可注入为 Bean 替换**取决于 ChatClient 的装配路径（[22-框架源码精读](./22-框架源码精读.md)）。若当前版本 ChatClient 内部自建 manager，可在「工具注册层」用 §4.2 的 `ObservableToolCallback` 包装代替——两者二选一，效果等价（都拦截到工具 call）。
+> 注：`ToolCallingManager` 在 Spring AI 2.0 是工具执行的统一入口，但**默认是否直接可注入为 Bean 替换**取决于 ChatClient 的装配路径（详见框架源码精读一篇的 `ToolCallingAdvisor` 自动注册逻辑）。若当前版本 ChatClient 内部自建 manager，可在「工具注册层」用 §4.2 的 `ObservableToolCallback` 包装代替——两者二选一，效果等价（都拦截到工具 call）。
 
-### 9.2 循环次数限制（防失控，[14-安全工程与红队](./14-安全工程与红队.md) 三重保护之一）
+### 9.2 循环次数限制（防失控，安全与红队一篇的三重保护之一）
 
 ```java
 // 设计示意：说明类职责与调用关系，落地需补全 import/异常/配置
@@ -1783,7 +1783,7 @@ flowchart LR
 
 ### 11.1 总体集成
 
-> Spring AI 2.0 内置基于 **Micrometer Observation** + OpenTelemetry 的 trace（见 [15-可观测性](./15-可观测性与成本治理.md) §2）。我们的 `AgentEvent` 携带 `traceId/spanId/parentSpanId`，与 OTel 的 W3C TraceContext 对齐，实现「事件」和「trace span」双向关联。
+> Spring AI 2.0 内置基于 **Micrometer Observation** + OpenTelemetry 的 trace（即可观测性一篇 §2 的机制）。我们的 `AgentEvent` 携带 `traceId/spanId/parentSpanId`，与 OTel 的 W3C TraceContext 对齐，实现「事件」和「trace span」双向关联。
 
 ```mermaid
 flowchart TD
@@ -1950,7 +1950,7 @@ public String runBlocking(String input, String sessionId) {
 
 ### 12.2 成本计量（TokenMeterAdvisor）
 
-> 在 Advisor 链统一算 token，三种编排模式共用。基于 [15](./15-可观测性与成本治理.md) §6.2 的思路。
+> 在 Advisor 链统一算 token，三种编排模式共用。基于可观测性一篇 §6.2 成本计量的思路。
 
 ```java
 // 设计示意：说明类职责与调用关系，落地需补全 import/异常/配置
@@ -1997,7 +1997,7 @@ public class TokenMeterAdvisor {
 }
 ```
 
-`SessionCostRegistry`（按 model 单价表算钱，单价来自 [15](./15-可观测性与成本治理.md) §6.1）的完整实现——含预扣/核销的并发安全版本——在 §12.3 给出。下面先讲配额控制。
+`SessionCostRegistry`（按 model 单价表算钱，单价来自可观测性一篇 §6.1 的定价表）的完整实现——含预扣/核销的并发安全版本——在 §12.3 给出。下面先讲配额控制。
 
 ### 12.3 QuotaService（配额控制 + 预扣，解决并发超支）
 
@@ -2106,7 +2106,7 @@ public class SessionCostRegistry {
 > 2. 发起 LLM 调用
 > 3. 旁路 `LLM_TOKENS` 到达 → `costRegistry.add` 算实际成本 → `quota.settle` 核销
 >
-> 这样即使 token 事件延迟到达，预扣也已经占了预算，不会并发超支。三重保护（[14-安全工程与红队](./14-安全工程与红队.md)）：`maxTurns`（§9.2）+ 预算预扣（本节）+ 死循环检测（重复 tool args 检测），本方案把前两者的决策点都可视化成事件。
+> 这样即使 token 事件延迟到达，预扣也已经占了预算，不会并发超支。三重保护（安全红队一篇）：`maxTurns`（§9.2）+ 预算预扣（本节）+ 死循环检测（重复 tool args 检测），本方案把前两者的决策点都可视化成事件。
 
 **预扣与核销时序**（reserve → 调用 → settle）：
 
@@ -2307,7 +2307,7 @@ public class LangfuseCollector {
 
 ### 15.3 与 Spring AI 内置 Observation 的关系
 
-- Spring AI 2.0 的 `ChatModel` / `Advisor` 自带 Micrometer Observation（[15](./15-可观测性与成本治理.md) §2），会自动产 span。
+- Spring AI 2.0 的 `ChatModel` / `Advisor` 自带 Micrometer Observation（可观测性一篇 §2），会自动产 span。
 - 我们的 `AgentEvent` 是**业务语义层**（「第 3 步」「调了 weather 工具」），OTel span 是**技术层**（「一次 HTTP 到 LLM 的调用」）。两者通过 `traceId` 关联——前端点 traceId 能在 Jaeger 看到 span 细节，在时间线看到业务语义。
 
 ---
@@ -2665,11 +2665,11 @@ public class AuditSink {
 }
 ```
 
-> 金融/医疗场景（[29](./29-金融风控Agent.md)/[30](./30-医疗问诊Agent.md)）审计要求「事件不可篡改 + 可追溯」，cold path 还要配 [34-数据治理与合规审计](../../web-claude/34-数据治理与合规审计.md) 的写入校验和日志链。
+> 金融 / 医疗场景（金融风控 Agent、医疗问诊 Agent 两篇）审计要求「事件不可篡改 + 可追溯」，cold path 还要配数据治理与合规审计（Web 平台章节）的写入校验和日志链。
 
 ### 17.6 PII 与敏感数据脱敏
 
-**问题**：工具参数/结果里可能含手机号、身份证、密钥、用户隐私（[24-智能体安全](../../web-claude/24-智能体安全.md)）。初版直接 `Truncator.truncate` 后发 SSE，raw 数据泄漏到前端/审计库。
+**问题**：工具参数 / 结果里可能含手机号、身份证、密钥、用户隐私（智能体安全章节的常见风险面）。初版直接 `Truncator.truncate` 后发 SSE，raw 数据泄漏到前端 / 审计库。
 
 **方案**：`PiiRedactor`——在截断之后、emit 之前脱敏。可复用本仓库 [demo02 的 PiiMaskAdvisor](../../../src/main/java/org/demo02/advisor/PiiMaskAdvisor.java) 的正则规则。
 
@@ -2728,7 +2728,7 @@ public class VersionedConsumer {
 }
 ```
 
-> 长期演进建议引入 Avro/Protobuf + Schema Registry（Confluent/Apiguana），把 `data` 从无 schema 的 `Map<String,Object>` 升级为强类型——这是企业级事件系统的标配，[18-大规模Agent平台](./18-大规模Agent平台与数据基础设施.md) 的数据基础设施会展开。
+> 长期演进建议引入 Avro/Protobuf + Schema Registry（Confluent/Apiguana），把 `data` 从无 schema 的 `Map<String,Object>` 升级为强类型——这是企业级事件系统的标配，平台数据基础设施章节会展开。
 
 ### 17.8 多租户隔离强化（与 §12 联动）
 
@@ -2746,7 +2746,7 @@ Flux<AgentEvent> live = bus.asFlux()
         });
 ```
 
-> 配 [23-Web安全与可分享性](../../web-claude/23-Web安全与可分享性.md) 的 sessionId 权限校验：SSE 订阅前验证「当前用户是否有权看该 sessionId」（防枚举他人 sessionId 窥探）。
+> 配 Web 安全与可分享性一节的 sessionId 权限校验：SSE 订阅前验证「当前用户是否有权看该 sessionId」（防枚举他人 sessionId 窥探）。
 
 ### 17.9 治理面与健康检查（Actuator）
 
@@ -2875,7 +2875,7 @@ public class SessionStateStore {
 
 ### 17.12 多租户配额与限流（解决「只有 per-session 预算」）
 
-**问题**：§12.3 只有 `budgetPerSessionUsd`。企业 SaaS 要多级配额：per-tenant 日/月成本上限、per-user QPS、per-tenant SSE 连接数。现在完全没有租户维度聚合。接 [28-限流与防滥用](../../web-claude/28-限流与防滥用.md)、[31-多租户产品层](../../web-claude/31-多租户产品层.md)。
+**问题**：§12.3 只有 `budgetPerSessionUsd`。企业 SaaS 要多级配额：per-tenant 日/月成本上限、per-user QPS、per-tenant SSE 连接数。现在完全没有租户维度聚合。需要接入限流与防滥用、多租户产品层（Web 平台章节）的成熟方案。
 
 **方案**：`TenantQuotaService`，基于 Redis 滑动窗口（不引 Bucket4j 等新依赖，符合"不擅自引依赖"原则）。
 
@@ -2931,7 +2931,7 @@ public class TenantQuotaService {
 }
 ```
 
-> `opsForValue().increment/decrement`、`opsForZSet().removeRangeByScore/zCard` 均为 `spring-data-redis` 真实 API。三层配额（session/tenant/user）对应 [15](./15-可观测性与成本治理.md) §6.3 的「配额三层」，本文补全了其中的租户/用户维度。
+> `opsForValue().increment/decrement`、`opsForZSet().removeRangeByScore/zCard` 均为 `spring-data-redis` 真实 API。三层配额（session/tenant/user）对应可观测性一篇 §6.3 的「配额三层」，本文补全了其中的租户/用户维度。
 
 ### 17.13 事件节流与聚合（解决「事件风暴」）
 
@@ -2993,7 +2993,7 @@ public class EventThrottler {
 }
 ```
 
-> ⚠️ 上面 `Flux.merge(deltas, others)` 两次消费同一 `in`——若 `in` 是 cold 流会执行两次。生产必须先 `in.publish().refCount()` 或 `in.share()` 转成共享源（[04](../spring-ai-2.0/04-流式响应与Reactor深度.md) §A.3）。前端也可做对等节流（`requestAnimationFrame` 合并），服务端节流省的是带宽。
+> ⚠️ 上面 `Flux.merge(deltas, others)` 两次消费同一 `in`——若 `in` 是 cold 流会执行两次。生产必须先 `in.publish().refCount()` 或 `in.share()` 转成共享源（流式响应与 Reactor 深度一篇 §A.3 的 cold/hot 原理）。前端也可做对等节流（`requestAnimationFrame` 合并），服务端节流省的是带宽。
 
 > **能力开关**（§17.14）：节流强度可配（`sse.throttle.delta-window-ms=50`，移动端可调大到 200）。
 
@@ -3091,7 +3091,7 @@ void everyEventTypeProducesValidSchemaEvent() throws Exception {
 
 ### 17.16 与 Spring AI 原生 Observation 的去重与融合
 
-**问题**：§11 让 `AgentEvent` 带 traceId 关联 OTel，但 Spring AI 2.0 的 `ChatModel`/`Advisor`/tool execution **本来就发 Micrometer Observation span**（[15](../spring-ai-2.0/15-可观测性与成本治理.md) §2 自动产 `gen_ai.*` span）。两套并行：我的 `LLM_TOKENS` 和 span 里的 `gen_ai.client.token.usage` **重复计量**；`TOOL_CALL_*` 和 tool execution observation **重复**。Langfuse/OTel 收双份 → 双倍成本、数据打架。
+**问题**：§11 让 `AgentEvent` 带 traceId 关联 OTel，但 Spring AI 2.0 的 `ChatModel`/`Advisor`/tool execution **本来就发 Micrometer Observation span**（可观测性一篇 §2 自动产 `gen_ai.*` span）。两套并行：我的 `LLM_TOKENS` 和 span 里的 `gen_ai.client.token.usage` **重复计量**；`TOOL_CALL_*` 和 tool execution observation **重复**。Langfuse/OTel 收双份 → 双倍成本、数据打架。
 
 **方案**：明确分工，不做重复计量。
 
@@ -3162,11 +3162,11 @@ public class ResilientExternal {
 }
 ```
 
-> 这五项（Redis/Langfuse/MCP/背压/OTel）的降级 Runbook 配合 §17.9 健康检查 + §16.6 监控告警，构成完整的生产 SRE 闭环，呼应 [26-AI工程的SRE实践](../spring-ai-2.0/26-AI工程的SRE实践.md)。
+> 这五项（Redis/Langfuse/MCP/背压/OTel）的降级 Runbook 配合 §17.9 健康检查 + §16.6 监控告警，构成完整的生产 SRE 闭环（呼应 AI 工程的 SRE 实践一篇）。
 
 ### 17.18 测试工程化（可观测系统自身必须可测）
 
-**问题**：本方案几百行响应式代码，全文档没有一个测试。可观测系统自己不可测、不可观测 = 上线后出问题没法定位。企业级要求四层测试（呼应 [13-测试工程化](../spring-ai-2.0/13-测试工程化.md)）。
+**问题**：本方案几百行响应式代码，全文档没有一个测试。可观测系统自己不可测、不可观测 = 上线后出问题没法定位。企业级要求四层测试（单元 / 集成 / 契约 / eval，呼应测试工程化一篇）。
 
 **单测（纯 Reactor，用 `StepVerifier`）**：验证总线 multicast/背压/脱敏/重排。
 
@@ -3290,7 +3290,7 @@ class AgentEventSseControllerIT {
 
 3. §4.2 用装饰器模式包 `ToolCallback`，而不是写 AOP 或改 `@Tool` 方法。这个选择的好处是什么？什么场景下 AOP 会更合适？
 
-4. §4.5 的 `ChatClientMessageAggregator.aggregateChatClientResponse` 为什么叫「旁路聚合」？如果直接对主流 `subscribe()` 两次会出什么问题（结合 [04](./04-流式响应与Reactor深度.md) §A.3 的 cold/hot）？
+4. §4.5 的 `ChatClientMessageAggregator.aggregateChatClientResponse` 为什么叫「旁路聚合」？如果直接对主流 `subscribe()` 两次会出什么问题（结合流式响应与 Reactor 深度一篇 §A.3 的 cold/hot 原理）？
 
 5. 三种编排模式（Workflow / Graph / ChatClient 自主循环）的可见性入口分别是哪三个？为什么不能统一成一个？
 
@@ -3326,16 +3326,7 @@ class AgentEventSseControllerIT {
 
 ---
 
-## 20. 相关文档
-
-**前置教程（本仓库）**：
-- [03-Advisor链全解](./03-Advisor链全解.md) —— Advisor order、横切关注点（本方案 token/cost Advisor 的基础）
-- [04-流式响应与Reactor深度](./04-流式响应与Reactor深度.md) —— SSE、cold/hot Flux、`ChatClientMessageAggregator`（本方案 §4.5 / §13 的基础）
-- [10-多Agent编排实战](./10-多Agent编排实战.md) —— `GraphLifecycleListener`、`CompileConfig`（本方案 §8 的基础，注意其 §7.1 方法名已过时，本文已校正）
-- [11-五大Workflow模式与代码评审助手](./11-五大Workflow模式与代码评审助手.md) —— 五大 Workflow 抽象基类（本方案 §7 改造对象）
-- [14-安全工程与红队](./14-安全工程与红队.md) —— 三重保护（maxTurns/预算/死循环，本方案 §9.2 / §12.3）
-- [15-可观测性与成本治理](./15-可观测性与成本治理.md) —— OTel、成本计量、Langfuse（本方案 §11 / §12 / §15 的基础）
-- [22-框架源码精读](./22-框架源码精读.md) —— `ToolCallingAdvisor` 自动注册、工具执行链路
+## 20. 相关参考
 
 **外部参考**：
 - Anthropic《Building Effective Agents》(2024-12-19) —— Workflow > Agent 的理论依据
@@ -3345,4 +3336,4 @@ class AgentEventSseControllerIT {
 
 ---
 
-> **回到**：[`./00-目录索引.md`](./00-目录索引.md) · [`../00-README.md`](../../00-README.md)
+> **回到**：目录索引 · 仓库首页 README。

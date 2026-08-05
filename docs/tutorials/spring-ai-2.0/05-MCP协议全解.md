@@ -6,10 +6,10 @@
 >
 > 三部曲路线：
 > - **05（本文）= 入门 + Client 通关**：先用起来，理解协议
-> - [06 = MCP Server 开发实战](./06-MCP-Server开发实战.md)：自己造一个 Server
-> - [07 = 端到端整合 + 生态进阶](./07-MCP-Server高阶与生态.md)：把 05 和 06 拼起来跑通完整链路，再做 Hub/跨语言/性能/安全
+> - 06 = MCP Server 开发实战：自己造一个 Server
+> - 07 = 端到端整合 + 生态进阶：把 05 和 06 拼起来跑通完整链路，再做 Hub/跨语言/性能/安全
 >
-> 前置：[02-Tool与AgentLoop.md](./02-Tool与AgentLoop.md) + [03-Advisor链全解.md](./03-Advisor链全解.md)
+> 前提：你已会用 `@Tool` 给 ChatClient 加进程内工具，并理解 ToolCallingAdvisor 的 Agent Loop（即 02、03 的能力）。
 > 预计：1 天
 
 ---
@@ -25,7 +25,7 @@
 
 ### 1.1 进程内 Tool 的天花板
 
-在 [02 篇](./02-Tool与AgentLoop.md) 里你学会了用 `@Tool` 给 ChatClient 加工具：
+你已经知道怎么用 `@Tool` 给 ChatClient 加进程内工具：
 
 ```java
 @Component
@@ -153,11 +153,11 @@ flowchart LR
 
 我们从最小可运行示例开始：写一个 Spring AI 应用，作为 MCP Client 接入一个**同仓库的、最小化的 MCP Server**。
 
-> 这个最小 Server 的完整开发见 [06 篇 §2](./06-MCP-Server开发实战.md)。本章先用它的成品。如果你只想跑 Client，可以**先把 06 篇 §2 那个 Server clone 跑起来**（一行 `mvn spring-boot:run`），再回到本章。
+> 这个最小 Server 的完整开发在 MCP Server 开发实战篇 §2；本章先用它的成品。如果你只想跑 Client，可以**先把那个 Server 跑起来**（一行 `mvn spring-boot:run`），再回到本章。
 
 ### 4.1 准备：起一个 Server（30 秒）
 
-按 [06 篇 §2](./06-MCP-Server开发实战.md) 起一个 Server，监听 `http://localhost:8081/mcp`，暴露一个 `currentTime` 工具。本章 Client 就连它。
+按 MCP Server 开发实战篇 §2 起一个 Server，监听 `http://localhost:8081/mcp`，暴露一个 `currentTime` 工具。本章 Client 就连它。
 
 > 如果你嫌麻烦，也可以用任意一个社区 MCP Server，只要它支持 Streamable HTTP 即可。把下面 yaml 里的 URL 换掉就行。
 
@@ -576,7 +576,7 @@ sequenceDiagram
 
 `McpMeta` 是 Map 类型，LLM **看不到**它的内容——只是给工具方法用的元信息。这就是多租户 MCP Server 的基础。
 
-> Server 端怎么写、`McpMeta` 之外还有哪些特殊参数（`McpSyncRequestContext`、`McpTransportContext` 等），见 [06 篇 §5.1](./06-MCP-Server开发实战.md)。
+> Server 端怎么写、`McpMeta` 之外还有哪些特殊参数（`McpSyncRequestContext`、`McpTransportContext` 等），见 MCP Server 开发实战篇 §5.1。
 
 ---
 
@@ -606,22 +606,22 @@ Client 端还可在 Bean 方法上加这些注解订阅 Server 推送的事件�
 
 | 报错 | 原因 | 解决 |
 |------|------|------|
-| `Connection refused: localhost/127.0.0.1:8081` | Server 没起 | 先起 Server（见 [06 篇 §2](./06-MCP-Server开发实战.md)） |
+| `Connection refused: localhost/127.0.0.1:8081` | Server 没起 | 先起 Server（见 MCP Server 开发实战篇 §2） |
 | `MCP server did not respond to initialize within timeout` | Server 鉴权失败 / 网络断 | `curl` 验证 Server 是否可达 |
 | 启动后工具列表为空 | `enabled: false` / yaml 缩进错 | 检查 yaml + 看 debug 日志 |
 | LLM 没调用工具 | 工具 description 写得不清楚 | 把 description 写得更像"什么时候该用它" |
-| `McpErrorException: -32000` | Server 内部异常 | 看 Server 日志（[06 篇 §11](./06-MCP-Server开发实战.md)） |
+| `McpErrorException: -32000` | Server 内部异常 | 看 Server 日志（MCP Server 开发实战篇 §11） |
 | 调用一次后挂起 | `request-timeout` 太短 / Server 长任务没回 | 改 `request-timeout: 60s` |
 | 中文工具名报错 | LLM 对中文工具名支持差 | 工具名用英文，description 中文 |
 
-更多报错速查见 [07 篇附录 C](./07-MCP-Server高阶与生态.md)。
+更多报错速查见 MCP 高阶与生态篇附录 C。
 
 ---
 
 ## 12. 实战任务
 
 1. **跑通 §4**：5 分钟 Client demo 跑起来，看到工具被调用的日志。
-2. **加第二个工具**：让 06 篇的 Server 多暴露一个 `add(a, b)` 工具，在 Client 端验证 LLM 能算 `12+34`。
+2. **加第二个工具**：让 Server 多暴露一个 `add(a, b)` 工具，在 Client 端验证 LLM 能算 `12+34`。
 3. **多 Server**：起两个 Server（不同端口），Client 同时连，验证两个工具都被注册。
 4. **多租户**：在 Client 调用 `prompt().toolContext(Map.of("userId", "u001"))`，在 Server 打印 `McpMeta` 验证透传成功。
 5. **切传输**：把 §4 的 Streamable HTTP 改成 stdio（§5.1），看 Client 启动时是否 fork 了 Server 子进程。
@@ -646,21 +646,12 @@ Client 端还可在 Bean 方法上加这些注解订阅 Server 推送的事件�
 ## 14. 下一步
 
 读到这里你已经能"用"MCP。下一步：
-- **自己造一个 Server**：[06-MCP-Server开发实战.md](./06-MCP-Server开发实战.md)
-- **把 05 和 06 拼成完整链路**：[07-MCP-Server高阶与生态.md](./07-MCP-Server高阶与生态.md)（强烈推荐，§1 就是端到端整合实战）
+- **自己造一个 Server**：进入 MCP Server 开发实战——用注解 / Provider / 原生三层风格写出带鉴权、限流、可观测的 Server。
+- **把 Client 和 Server 拼成完整链路**：进入 MCP 高阶与生态篇——端到端整合实战（§1）、Hub 注册发现、跨语言、性能与安全测试。
 
 ---
 
 ## 15. 相关文档
 
-- [02-Tool与AgentLoop.md](./02-Tool与AgentLoop.md) —— @Tool 注解基础（进程内）
-- [03-Advisor链全解.md](./03-Advisor链全解.md) —— ToolCallingAdvisor
-- [06-MCP-Server开发实战.md](./06-MCP-Server开发实战.md) —— 自己写 Server
-- [07-MCP-Server高阶与生态.md](./07-MCP-Server高阶与生态.md) —— 端到端整合 + 生态
-- [14-安全工程与红队.md](./14-安全工程与红队.md) —— MCP 安全深入
 - [MCP 协议规范](https://modelcontextprotocol.io/)
 - [Spring AI MCP Client Reference](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-client-boot.html)
-
----
-
-回到 [00-目录索引.md](./00-目录索引.md)。

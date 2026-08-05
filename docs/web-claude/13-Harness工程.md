@@ -1,8 +1,8 @@
 # 13 - Harness 工程：长程任务的工程脚手架
 
-> 本章把 11 章扁平化的"长程任务"还原成它本来的样子：**Harness 工程**。
+> 本章把长程任务篇扁平化的"长程任务"还原成它本来的样子：**Harness 工程**。
 > Harness 不是一个 feature，而是一层独立工程，它定义了"如何让 Agent 在跨多个 session 的情况下仍然能可靠完成长程任务"。
-> 依据：Anthropic *Effective Harnesses for Long-Running Agents* + 调研笔记 §3.3。
+> 依据：Anthropic *Effective Harnesses for Long-Running Agents* 与调研阶段的 Harness 分析。
 
 ---
 
@@ -10,21 +10,21 @@
 
 | 步 | 节 | 你要带走什么 |
 |----|----|---------|
-| ① 痛点 | §1 | 11 章跑通但靠 Agent 自觉——它会作弊、跨 feature、谎报完成 |
+| ① 痛点 | §1 | 长程任务篇跑通但靠 Agent 自觉——它会作弊、跨 feature、谎报完成 |
 | ② 五层模型 | §2–§6 | Initializer / Scaffold / Guardrails / Protocol / Multi-Agent |
-| ③ 验证 | §9 | 用五层组件跑一遍 todo app，对照 11 章的差异 |
-| ④ 对照 | §0（章末）| 11 章扁平化 vs 13 章 Harness 化的可靠性差距 |
+| ③ 验证 | §9 | 用五层组件跑一遍 todo app，对照长程任务篇的差异 |
+| ④ 对照 | §0（章末）| 长程任务篇扁平化 vs 本章 Harness 化的可靠性差距 |
 | ⑤ 避坑 | §11 | 测试作弊 / 跨 feature / progress 漂移 / agent 自评 |
 
-> **本文是"工程设计文档"型**——本章不给完整代码（Harness 是个体系，代码分散在 11 / 14 / 15 / 18 / 20 等章），而是给"五层模型 + 每层的设计原则 + 验收清单"。读完知道每层管什么、怎么验收就够了。
+> **本文是"工程设计文档"型**——本章不给完整代码（Harness 是个体系，代码分散在长程任务、上下文工程、Subagent 编排、错误恢复、审批流等主题中），而是给"五层模型 + 每层的设计原则 + 验收清单"。读完知道每层管什么、怎么验收就够了。
 
 ---
 
 ## 1. 为什么单独拉一章
 
-11 章实现的是 "feature_list + Cron + 自动续跑" 这条**最具体的执行路径**。但 Anthropic 的 Harness 范式抽象层级更高，它包含五个相互独立、可组合的工程组件：
+长程任务篇实现的是 "feature_list + Cron + 自动续跑" 这条**最具体的执行路径**。但 Anthropic 的 Harness 范式抽象层级更高，它包含五个相互独立、可组合的工程组件：
 
-| 组件 | 11 章覆盖情况 | 本章补完 |
+| 组件 | 长程任务篇覆盖情况 | 本章补完 |
 |------|--------------|---------|
 | Initializer Agent | ✓ | — |
 | Scaffold Artifacts（feature_list / progress / init.sh）| 部分 | ✓ |
@@ -38,7 +38,7 @@
 
 → 工程含义：Harness = 把"无记忆的多个 session"用外部状态串起来，**并保证串联的可靠性**。
 
-如果只做 Cron + feature_list（11 章的样子），agent 仍然会失败在以下地方：
+如果只做 Cron + feature_list（长程任务篇的样子），agent 仍然会失败在以下地方：
 - 删测试作弊；
 - 一个 session 偷偷改多个 feature；
 - 跨 session 进度对不上；
@@ -109,7 +109,7 @@ workspace/
 
 ### 3.1 feature_list.json（核心）
 
-**字段升级**（比 11 章更严格）：
+**字段升级**（比长程任务篇更严格）：
 
 ```json
 {
@@ -406,7 +406,7 @@ stateDiagram-v2
 
 ## 7. Layer 5：Multi-Agent Topology
 
-### 6.1 单 agent 模式（11 章做法，harness 文章里也提到了它的局限）
+### 6.1 单 agent 模式（长程任务篇做法，harness 文章里也提到了它的局限）
 
 ```mermaid
 flowchart LR
@@ -488,9 +488,9 @@ flowchart TD
 
 ---
 
-## 8. 与 11 章的关系
+## 8. 与长程任务篇的关系
 
-11 章 = 本章 **Layer 1 + Layer 2 + 部分 Layer 4** 的最简实现。
+长程任务篇 = 本章 **Layer 1 + Layer 2 + 部分 Layer 4** 的最简实现。
 
 要升级到完整 Harness：
 
@@ -513,7 +513,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    V11["11 章最简实现<br/>Layer 1-2 + 部分 Layer 4"] --> V12["v1.2<br/>constraints + TestVerifier<br/>+ 协议状态机<br/>单 agent 带护栏"]
+    V11["长程任务篇最简实现<br/>Layer 1-2 + 部分 Layer 4"] --> V12["v1.2<br/>constraints + TestVerifier<br/>+ 协议状态机<br/>单 agent 带护栏"]
     V12 --> V13["v1.3<br/>+ Tester Agent<br/>自动化 e2e 覆盖"]
     V13 --> V14["v1.4<br/>+ Reviewer Agent"]
     V14 --> V20["v2.0<br/>完整 5 角色<br/>+ Planner 动态调整 feature_list"]
@@ -525,10 +525,10 @@ flowchart LR
 
 | 文档 | 实现层 |
 |------|--------|
-| `00-调研笔记.md` §3.3 | Harness 范式的来源 |
-| `01-项目设计.md` | Harness 作为独立模块（需回补）|
-| `11-长程任务.md` | Harness 最简实现（Layer 1-2 部分）|
-| **`13-Harness工程.md`**（本文档）| Harness 完整模型 |
+| 调研笔记（Harness 一节） | Harness 范式的来源 |
+| 项目设计 | Harness 作为独立模块（需回补）|
+| 长程任务篇 | Harness 最简实现（Layer 1-2 部分）|
+| **本文档** | Harness 完整模型 |
 
 ---
 
@@ -574,7 +574,7 @@ harness_multiagent_message_lag        # 多 agent 模式下消息处理延迟
 ```
 概念：
   ✅ Harness 五层模型
-  ✅ 与 11 章的关系明确
+  ✅ 与长程任务篇的关系明确
   ✅ Multi-Agent Topology 三档（单 / 三 / 五）
 
 待实现的代码骨架：
@@ -587,6 +587,6 @@ harness_multiagent_message_lag        # 多 agent 模式下消息处理延迟
 
 ## 13. 下一步
 
-- 若已完成 11 章 → 回去补 §3-5 的护栏与协议状态机；
-- 若刚起步 → 先把 02-11 章跑通，再回头加 harness 完整模型；
-- 多 agent 拓扑建议在 v1.4+，需要先有 13 章《多 Agent 协作》基础。
+- 若已完成长程任务篇 → 回去补 §3-5 的护栏与协议状态机；
+- 若刚起步 → 先把环境准备到长程任务那批实验手册跑通，再回头加 harness 完整模型；
+- 多 agent 拓扑建议在 v1.4+，需要先有 Subagent 编排基础。

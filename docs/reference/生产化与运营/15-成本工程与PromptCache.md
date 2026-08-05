@@ -68,7 +68,7 @@ class PromptCacheConfig {
 }
 ```
 
-**关键原则**（参考 [`12-ClaudeCode源码启示录.md` §1.5](./12-ClaudeCode源码启示录.md)）：
+**关键原则**：
 - system prompt 拆**静态前缀**（基础指令 + 工具说明）+ **动态后缀**（用户身份 + 当前任务）
 - 静态前缀打 cache 标记，跨请求稳定
 - 动态后缀不打 cache 标记，每请求变化
@@ -244,7 +244,7 @@ public class CostTrackingAdvisor implements BaseAdvisor {
 
 ### 3.3 收益递减检测（防 Agent 烧钱空转）
 
-参考 [`12-ClaudeCode源码启示录.md` §2.2](./12-ClaudeCode源码启示录.md)：
+常见做法（参考 Claude Code 的成本追踪设计）：
 - 连续 3 次续跑每次 < 500 token → 自动停止
 - 用 `EnumMap<Model, BigDecimal[]>` 建成本表
 - 会话级成本持久化（`@PreDestroy` 写 Redis）
@@ -281,7 +281,7 @@ Stripe 2025 公开数据：用 vLLM 自部署 Llama 3.1 替代 GPT-4o，**省 73
 - 能接受开源模型质量（Llama/Qwen/DeepSeek）
 - 有 DevOps 团队运维
 
-详见 [`工程架构/06-模型服务部署.md`](../工程架构/06-模型服务部署.md)。
+如果上面三条都满足，自部署 vLLM 就是值得走的路：vLLM 是当前生产级推理引擎的事实标准，支持 PagedAttention、KV Cache、连续批处理，能在大模型上做到高并发低延迟，是自部署场景的首选。
 
 ---
 
@@ -315,12 +315,9 @@ Stripe 2025 公开数据：用 vLLM 自部署 Llama 3.1 替代 GPT-4o，**省 73
 
 ---
 
-## 7. 相关文档
+## 7. 阅读提示
 
-- [`生产化与运营/12-ClaudeCode源码启示录.md`](./12-ClaudeCode源码启示录.md) §1.5 / §2.2 —— Prompt Cache 边界 + 成本追踪
-- [`生产化与运营/11-LLMOps.md`](./11-LLMOps.md) —— 可观测性基础设施
-- [`生产化与运营/15-Agent可靠性工程Java视角.md`](./16-Agent可靠性工程Java视角.md) —— 预算控制 Advisor
-- [`工程架构/06-模型服务部署.md`](../工程架构/06-模型服务部署.md) —— vLLM 自部署
+本文讲透"AI 应用的钱花在哪、怎么省"：**L1 Prompt Cache**（静态前缀跨请求命中，省 50-90%）→ **L2 Semantic Cache**（语义复用）→ **成本追踪与预算告警**（不失控）。把本文的缓存边界原则和成本表方案落实，就是生产级成本治理的地基。
 
 ---
 

@@ -1,8 +1,8 @@
 # Reactor 调度器与线程模型：subscribeOn / publishOn 到底是啥
 
-> **配套文档**：[Reactor 响应式入门](./01-Reactor响应式入门.md) 教你 `Mono`/`Flux` 是"菜谱不是结果"、`subscribe` 才执行、WebFlux 里永不 `block`——但留了一个**最大的坑没填**：到底在哪个线程上跑？管数分离文档里到处是 `Schedulers.boundedElastic()`，[Reactor 背压详解](./04-Reactor背压详解.md) 第 6 章也警告"subscribeOn/publishOn 控制的是**线程**不是速率"，但一直没人系统讲清楚**线程**这一层。本篇就是来填这个坑的。
+> **配套文档**：Reactor 响应式入门教你 `Mono`/`Flux` 是"菜谱不是结果"、`subscribe` 才执行、WebFlux 里永不 `block`——但留了一个**最大的坑没填**：到底在哪个线程上跑？管数分离实战代码里到处是 `Schedulers.boundedElastic()`，背压主题里也警告"subscribeOn/publishOn 控制的是**线程**不是速率"，但一直没人系统讲清楚**线程**这一层。本篇就是来填这个坑的。
 >
-> **难度假设**：你读完了 [01-Reactor响应式入门](./01-Reactor响应式入门.md)，懂 `Mono`/`Flux`/订阅，会写 `.map().flatMap()`，但一打印 `Thread.currentThread().getName()` 就懵：怎么一会儿 `main`、一会儿 `parallel-1`、一会儿 `boundedElastic-1`？这正是本篇要解决的。所有代码基于 Spring Boot 4.x + WebFlux + Reactor 3.7，照抄能跑。
+> **难度假设**：你读完了 Reactor 响应式入门，懂 `Mono`/`Flux`/订阅，会写 `.map().flatMap()`，但一打印 `Thread.currentThread().getName()` 就懵：怎么一会儿 `main`、一会儿 `parallel-1`、一会儿 `boundedElastic-1`？这正是本篇要解决的。所有代码基于 Spring Boot 4.x + WebFlux + Reactor 3.7，照抄能跑。
 >
 > **本篇用一句话回答标题**：`subscribeOn` 影响**上游**（源/事件产生）在哪个线程，`publishOn` 影响**下游**（它之后的操作符）在哪个线程。
 
@@ -280,7 +280,7 @@ public class ThreadSwitchDemo {
             .doOnNext(s -> log("map3(下游)", s))          // ⑤
             .subscribe(s -> log("subscribe(消费)", s));   // ⑥
 
-        Thread.sleep(1000);  // 等异步线程跑完（见第 6 章坑 2）
+        Thread.sleep(1000);  // 等异步线程跑完（见本文档第 6 章坑 2）
     }
 }
 ```
@@ -459,7 +459,7 @@ userDao.findByIdReactive(id)
 
 **误区四：拿 subscribeOn/publishOn 当限流**
 
-> **这两个操作符只切线程，不控速率。** 想控制消费速率，用 `flatMap(fn, 并发度)` / `limitRate` / `onBackpressureXxx`——见 [Reactor 背压详解](./04-Reactor背压详解.md) 第 6 章坑 5。
+> **这两个操作符只切线程，不控速率。** 想控制消费速率，用 `flatMap(fn, 并发度)` / `limitRate` / `onBackpressureXxx`（背压策略）。
 
 ---
 
@@ -484,7 +484,7 @@ flowchart LR
     Q4 --> TO["全部排队超时"]
 ```
 
-**一个线程被卡住 = 一批请求排队超时。** 线程越少，越不能容忍阻塞。这就是 [01-入门](./01-Reactor响应式入门.md) 第 1 章讲的"线程干等"老问题，在响应式世界里直接表现为**请求大面积超时**。
+**一个线程被卡住 = 一批请求排队超时。** 线程越少，越不能容忍阻塞。这就是传统阻塞模型里"线程干等 I/O"的老问题，在响应式世界里直接表现为**请求大面积超时**。
 
 > **判据**：响应式栈里，**一切可能阻塞的操作**（JDBC、MyBatis-Flex、RestTemplate、`Thread.sleep`、文件读写、加解密大文件）**都必须丢出事件循环线程**，丢到 `boundedElastic()`。
 
@@ -541,8 +541,8 @@ main 线程: main
 
 ### 4.4 实战对照：项目里就是这么用的
 
-- **管数分离实战**（[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md)）：MyBatis-Flex/JDBC 是阻塞的，每个 DB 调用都用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` 包一层；Redisson 的 `RLock`（阻塞 API）也一样处理。
-- **Redis reactive**（[Redis Streams 与 Pub/Sub 实战](../Redis专题/01-Redis-Streams与PubSub实战.md)）：用的是 `ReactiveRedisTemplate`，**天然非阻塞**，不用包 `boundedElastic`。但一旦在链里混入阻塞的 `JdbcTemplate`/`RestTemplate`，就要立刻隔离。
+- **管数分离实战**：MyBatis-Flex/JDBC 是阻塞的，每个 DB 调用都用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` 包一层；Redisson 的 `RLock`（阻塞 API）也一样处理。
+- **Redis reactive**：用的是 `ReactiveRedisTemplate`，**天然非阻塞**，不用包 `boundedElastic`。但一旦在链里混入阻塞的 `JdbcTemplate`/`RestTemplate`，就要立刻隔离。
 
 > **判断一个 API 要不要包 boundedElastic**：看它是"阻塞"还是"非阻塞"。`ReactiveRedisTemplate`/`WebClient`/R2DBC 非阻塞，直接链式用；`JdbcTemplate`/`RestTemplate`/`Thread.sleep` 阻塞，**必须**用 `fromCallable + subscribeOn(boundedElastic)` 包。
 
@@ -623,7 +623,7 @@ java.lang.IllegalStateException: block()/blockFirst()/blockLast() are blocking, 
 
 > **这个异常是 Reactor 的保护机制**：它知道在事件循环线程上阻塞等于自杀，干脆让你立刻崩，而不是拖着整台机器超时。
 
-**哪里可以 block**：普通 `main()` 方法、传统 MVC（Tomcat 线程）里可以；**WebFlux 的任何 reactor 线程上都不行**。详见 [01-Reactor响应式入门](./01-Reactor响应式入门.md) 第 4.2 节的铁律。
+**哪里可以 block**：普通 `main()` 方法、传统 MVC（Tomcat 线程）里可以；**WebFlux 的任何 reactor 线程上都不行**（这就是"WebFlux 里永不 block"的铁律）。
 
 ---
 
@@ -680,7 +680,7 @@ return Flux.range(1, 1000)
 
 ### 坑 5：把 `subscribeOn`/`publishOn` 当限流
 
-**真相**：它们只切线程，不控速率。限流用 `flatMap(fn, 并发度)`/`limitRate`/`onBackpressureXxx`——见 [Reactor 背压详解](./04-Reactor背压详解.md) 第 6 章坑 5。
+**真相**：它们只切线程，不控速率。限流用 `flatMap(fn, 并发度)`/`limitRate`/`onBackpressureXxx`（背压策略）。
 
 ### 坑 6：在 `map` 里做阻塞调用，白切了线程
 
@@ -715,13 +715,3 @@ return Mono.fromCallable(jdbc::query)
 3. 多个 `subscribeOn` 谁生效？多个 `publishOn` 呢？
 4. 为什么阻塞调用必须丢 `boundedElastic`？不丢会怎样？
 5. WebFlux 里 `block()` 会怎样？`@Async` 为什么不能用？
-
----
-
-## 参考
-
-- [Reactor 响应式入门](./01-Reactor响应式入门.md) —— Mono/Flux 心智、永不 block 铁律
-- [Reactor 背压详解](./04-Reactor背压详解.md) —— 背压机制；"subscribeOn/publishOn 只切线程不控速率"的坑
-- [Flux 方法速查](./02-Flux方法速查.md) —— doOnNext / map / flatMap / blockLast 语法
-- [管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) —— 大量 `subscribeOn(boundedElastic)` 隔离阻塞 DB/锁的真实用法
-- [Redis Streams 与 Pub/Sub 实战](../Redis专题/01-Redis-Streams与PubSub实战.md) —— `ReactiveRedisTemplate` 非阻塞链的实际写法

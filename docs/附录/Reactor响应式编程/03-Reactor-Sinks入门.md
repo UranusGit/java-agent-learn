@@ -1,6 +1,6 @@
 # Reactor Sinks 入门——从原理到企业级实践
 
-> **33b 文档（Agent 可观测性）大量使用 `Sinks.Many`**：AgentEventBus、ShardedEventBus 都靠它做事件广播。但 Sinks 本身是独立的知识体系，没系统学过的话，看到"热流""背压""multicast"这些术语容易晕。
+> **本仓库的 Agent 可观测性企业级演进实践（常称 33b）大量使用 `Sinks.Many`**：AgentEventBus、ShardedEventBus 都靠它做事件广播。但 Sinks 本身是独立的知识体系，没系统学过的话，看到"热流""背压""multicast"这些术语容易晕。
 >
 > 这份文档从零开始，由浅入深，带你完整掌握 Reactor Sinks——不仅是 API，更是理解"响应式事件驱动架构"的核心认知。
 
@@ -270,7 +270,7 @@ EmitResult result = sink.tryEmitNext(event);
 | 返回值 | 含义 | 怎么办 |
 |--------|------|--------|
 | `OK` | 成功 | 什么都不用做 |
-| `FAIL_OVERFLOW` | 缓冲满了 | 记录溢出事件（33b 第 2 章事故 1 的根因） |
+| `FAIL_OVERFLOW` | 缓冲满了 | 记录溢出事件（33b 事故 1 的根因） |
 | `FAIL_TERMINATED` | Sink 已关闭 | 放弃或重建 Sink |
 | `FAIL_CANCELLED` | 下游取消订阅了 | 不需要做什么 |
 | `FAIL_ZERO_SUBSCRIBER` | 零订阅者 + autoCancel=true | 一般忽略 |
@@ -443,7 +443,7 @@ bus.emit("step3");  // 订阅者1 和 2 都能收到 step3
 
 ## 第 8 章：常见坑与排查方法
 
-### 坑 1：缓冲满丢事件（33b 第 2 章事故 1）
+### 坑 1：缓冲满丢事件（33b 的典型事故）
 
 **现象**：`SESSION_COMPLETED` 没到前端，页面一直转圈。
 
@@ -451,7 +451,7 @@ bus.emit("step3");  // 订阅者1 和 2 都能收到 step3
 
 **修复**：
 1. 检查返回值并 log 溢出（至少），方便排查
-2. 关键事件落 Redis 兜底（33b 第 2 章的做法）
+2. 关键事件落 Redis 兜底（33b 的做法）
 3. 生产里按 metrics 调 buffer 大小
 
 ### 坑 2：autoCancel=true 导致新订阅者收不到事件
@@ -493,23 +493,22 @@ Sinks 保证单次 emit 的原子性（不会两个事件内容混在一起）�
 
 ---
 
-## 第 9 章：和 33b 文档的逐章对照
+## 第 9 章：Sinks 在企业级实战里的用法对照
 
-| 33b 章节 | Sinks 相关用法 | 学习到的知识点 |
+| 实战位置 | Sinks 相关用法 | 学习到的知识点 |
 |---------|--------------|--------------|
-| **第 1 章** AgentEventBus | `Sinks.many().multicast().onBackpressureBuffer(256, false)` | multicast + autoCancel=false + tryEmitNext |
-| **第 2 章** 事故 1 | `tryEmitNext` 返回 `FAIL_OVERFLOW` 没检查 | 必须检查 EmitResult |
-| **第 2 章** CriticalEventStore | 关键事件落 Redis | 不要依赖 Sink 内存缓存 — 持久化靠外部存储 |
-| **第 4 章** ShardedEventBus | 16 个 `Sinks.Many` 数组 + hash 路由 | 多个 Sink 分片，减小单点缓冲压力 |
-| **第 1 章旧版** Flux.create | `FluxSink` | Flux.create 是冷流 -> 不适合多消费者 |
+| AgentEventBus | `Sinks.many().multicast().onBackpressureBuffer(256, false)` | multicast + autoCancel=false + tryEmitNext |
+| 事故 1（缓冲满丢事件） | `tryEmitNext` 返回 `FAIL_OVERFLOW` 没检查 | 必须检查 EmitResult |
+| CriticalEventStore | 关键事件落 Redis | 不要依赖 Sink 内存缓存 — 持久化靠外部存储 |
+| ShardedEventBus | 16 个 `Sinks.Many` 数组 + hash 路由 | 多个 Sink 分片，减小单点缓冲压力 |
+| 旧版 Flux.create | `FluxSink` | Flux.create 是冷流 -> 不适合多消费者 |
 
 ---
 
 ## 第 10 章：深入学习
 
 - [Project Reactor Sinks 官方文档](https://projectreactor.io/docs/core/release/reference/#sinks) —— 最权威的参考（英文）
-- [33b-Agent可观测性企业级演进实践](../../tutorials/spring-ai-2.0/33b-Agent可观测性企业级演进实践.md) —— 33b 全套源码，Sinks 的企业级实战
-- [Flux方法速查](./02-Flux方法速查.md) —— 配套的 Reactor 操作符参考
+- 想在企业级看 Sinks 的完整用法，可以直接读本仓库的 Agent 可观测性企业级演进实践源码。
 
 ---
 

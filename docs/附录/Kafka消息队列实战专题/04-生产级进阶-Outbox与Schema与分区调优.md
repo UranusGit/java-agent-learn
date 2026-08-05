@@ -1,15 +1,15 @@
 # 生产级进阶：Outbox 模式、Schema Registry、分区深度调优
 
-> **这份文档是什么**：[Kafka 消息队列实战专题](./README.md) 的第 04 篇，**生产级进阶**。前三篇你学会了"收发消息、懂原理、搭系统"。这一篇补上**事件驱动系统真正上线后会撞上的三个硬骨头**——都是 [03 实战](./03-事件驱动微服务端到端实战.md) 里我明确标注为"演进方向"、但当时没展开的。
+> **这份文档是什么**：Kafka 消息队列实战专题 的第 04 篇，**生产级进阶**。前三篇你学会了"收发消息、懂原理、搭系统"。这一篇补上**事件驱动系统真正上线后会撞上的三个硬骨头**——都是"事件驱动微服务端到端实战"里明确标注为"演进方向"、但当时没展开的。
 >
-> **写给谁**：读完 01-03 的人。你已能搭一个事件驱动系统,但这篇让你把它做成**生产可用**。
+> **写给谁**：已经会用 Kafka 收发消息、能搭一个事件驱动系统的人。你已能搭系统,但这篇让你把它做成**生产可用**。
 >
-> **三个方向**（都是 03 实战留下的真实痛点,不是凑内容）：
-> - **方向 A：Outbox 模式**——解决"写数据库 + 发事件"不原子的难题（03 的 9.3 我白纸黑字标注的"进阶必修课"）。
-> - **方向 B：Schema Registry**——事件结构怎么改而不崩消费者（02 的 5.3 只讲概念,这里落地）。
+> **三个方向**（都是实战篇留下的真实痛点,不是凑内容）：
+> - **方向 A：Outbox 模式**——解决"写数据库 + 发事件"不原子的难题（实战篇 9.3 标注的"进阶必修课"）。
+> - **方向 B：Schema Registry**——事件结构怎么改而不崩消费者（进阶篇 5.3 只讲概念,这里落地）。
 > - **方向 C：分区深度调优**——并发、顺序、热分区,把吞吐做到生产级。
 >
-> **版本前提（已校验）**：Spring Boot 4.1.0 + `spring-boot-starter-kafka` + Kafka。所有 API、配置项已对照官方文档校验。本专题一律用 **`KafkaTemplate` 发、`@KafkaListener` 收**（详见 [README](./README.md) 的说明，本专题前身是 Spring Cloud Stream，已统一改为直接 Kafka，Stream 专属内容不在本专题出现）。
+> **版本前提（已校验）**：Spring Boot 4.1.0 + `spring-boot-starter-kafka` + Kafka。所有 API、配置项已对照官方文档校验。本专题一律用 **`KafkaTemplate` 发、`@KafkaListener` 收**（本专题前身是 Spring Cloud Stream，已统一改为直接 Kafka，Stream 专属内容不在本专题出现）。
 
 ---
 
@@ -24,9 +24,9 @@
 
 ## 方向 A：Outbox 模式——让"写数据 + 发事件"原子化
 
-### A.1 问题：回顾 03 实战埋的坑
+### A.1 问题：回顾实战篇埋的坑
 
-[03 实战第 3 章](./03-事件驱动微服务端到端实战.md) 的订单服务,创建订单时做了两件事（这里用本专题的直接 Kafka 表述改写 03 的代码）:
+实战篇第 3 章的订单服务,创建订单时做了两件事（这里用本专题的直接 Kafka 表述）:
 
 ```java
 repo.save(order);                                        // ① 写数据库
@@ -203,8 +203,8 @@ flowchart TD
 
 #### A.3.4 轮询投递的两个坑（必看）
 
-1. **可能重复发送**:投递器发了 Kafka、但 `setProcessed(true)` 之前崩溃 → 重启后这条又会被发。所以**消费者仍然必须幂等**（[03 实战第 4 章](./03-事件驱动微服务端到端实战.md) 的幂等表不能省）。Outbox 解决的是"不丢",不是"不重"。
-2. **多实例投递要加锁**:如果订单服务扩成 3 个实例,3 个投递器都会扫 outbox → 同一事件被发 3 次。要么用 [Redisson 锁](../Redis专题/02-Redis分布式锁实战.md)让只有一个投递,要么用 `SELECT ... FOR UPDATE SKIP LOCKED`（PostgreSQL 支持,只锁未被锁的行）。
+1. **可能重复发送**:投递器发了 Kafka、但 `setProcessed(true)` 之前崩溃 → 重启后这条又会被发。所以**消费者仍然必须幂等**（实战篇第 4 章的幂等表不能省）。Outbox 解决的是"不丢",不是"不重"。
+2. **多实例投递要加锁**:如果订单服务扩成 3 个实例,3 个投递器都会扫 outbox → 同一事件被发 3 次。要么用 Redisson 锁让只有一个投递,要么用 `SELECT ... FOR UPDATE SKIP LOCKED`（PostgreSQL 支持,只锁未被锁的行）。
 
 > **`SKIP LOCKED` 是多实例轮询投递的标准解法**（已校验,PostgreSQL/MySQL 8+ 支持）:
 > ```sql
@@ -273,7 +273,7 @@ Debezium 默认会把 outbox 表的整行（含 id/aggregate_id/event_type/paylo
 
 ### B.1 问题：事件结构一改就崩
 
-[01 入门篇](./01-Kafka消息队列从入门到架构师.md) 里事件是 POJO + JSON 序列化。假设 `OrderCreated` 有 `orderId`/`productId`/`quantity`/`amount`。某天产品说"加个 `couponCode` 字段"。
+入门篇 里事件是 POJO + JSON 序列化。假设 `OrderCreated` 有 `orderId`/`productId`/`quantity`/`amount`。某天产品说"加个 `couponCode` 字段"。
 
 你改了 POJO、重新部署订单服务。**但库存服务还跑着老版本**——它反序列化时,要么忽略新字段（还好）,要么遇到不兼容的改动（如改了字段类型）直接**反序列化失败、消息处理不了、堆积、雪崩**。
 
@@ -432,7 +432,7 @@ Registry 对每个 schema 维护版本,并可配置**兼容性规则**:
 
 ### C.1 复习：分区是 Kafka 的并行单元
 
-[进阶篇第 1 章](./02-Kafka进阶实战.md) 讲过:Kafka topic 分多个 partition,一个 partition 同一时间只能被消费组内**一个消费者线程**消费。所以:
+前面讲过:Kafka topic 分多个 partition,一个 partition 同一时间只能被消费组内**一个消费者线程**消费。所以:
 
 > **并行度上限 = min(分区数, 消费者线程数)**
 
@@ -618,9 +618,9 @@ public class KafkaTopicConfig {
 
 | 方向 | 专题 | 深入什么 |
 |------|------|---------|
-| 数据架构 | [事件溯源与 CQRS 专题](../事件溯源与CQRS专题/README.md) | 用事件当数据源、读写分离（金融/审计级） |
-| 实时计算 | [Kafka Streams 流处理专题](../Kafka-Streams流处理专题/README.md) | 窗口/JOIN/状态查询（本篇方向 C 的深化） |
-| 数据集成 | [Debezium CDC 实战专题](../Debezium-CDC实战/README.md) | CDC 投递落地（本篇方向 A.4 的深化） |
+| 数据架构 | 事件溯源与 CQRS 专题 | 用事件当数据源、读写分离（金融/审计级） |
+| 实时计算 | Kafka Streams 流处理专题 | 窗口/JOIN/状态查询（本篇方向 C 的深化） |
+| 数据集成 | Debezium CDC 实战专题 | CDC 投递落地（本篇方向 A.4 的深化） |
 
 这三个不属于 Kafka 客户端框架本身，而是事件驱动系统的进阶领域。各按需深入。
 
@@ -628,16 +628,13 @@ public class KafkaTopicConfig {
 
 ## 配套学习资料
 
-- [Kafka 消息队列实战专题 README](./README.md)(本专题学习顺序)
-- [03 事件驱动微服务端到端实战](./03-事件驱动微服务端到端实战.md)(本篇是其 9.3 演进方向的展开)
 - [Spring 官方博客:Transactional Outbox](https://spring.io/blog/2023/10/24/a-use-case-for-transactions-adapting-to-transactional-outbox-pattern)(方向 A 权威)
 - [Debezium:Outbox 模式](https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/)(CDC+Outbox 经典文章)
 - [Baeldung:Spring Kafka 教程](https://www.baeldung.com/spring-kafka)(方向 B 实战)
 - [Confluent 官方:Schema Registry 文档](https://docs.confluent.io/platform/current/schema-registry/index.html)(方向 B 权威)
 - [Spring 官方:Spring for Apache Kafka 参考文档](https://docs.spring.io/spring-kafka/reference/)(方向 C 权威)
 - [Apache Kafka 官方文档:Topic 与分区](https://kafka.apache.org/documentation/#intro_topics)(方向 C 原理)
-- [Redis 分布式锁实战](../Redis专题/02-Redis分布式锁实战.md)(Outbox 多实例投递加锁用)
 
 ---
 
-> **写在最后**:这是 Kafka 消息队列实战专题的**生产级毕业篇**。从 01 的"会发会收"、02 的"懂原理"、03 的"装成系统",到这一篇的"做成生产级"——Outbox 保一致性、Schema Registry 管契约、分区调优撑吞吐。**真正让你从"能搭 demo"到"能扛生产"的就是这三个**(尤其 Outbox,几乎是事件驱动系统的分水岭)。记住:生产级不是堆技术,而是**在合适的阶段引入合适的方案**——Outbox 尽早、Schema/分区按需。到此,你已经具备完整的"事件驱动系统架构师"能力链。祝你做成真正的生产级系统。
+> **写在最后**:这是 Kafka 消息队列实战专题的**生产级毕业篇**。从入门篇的"会发会收"、进阶篇的"懂原理"、实战篇的"装成系统",到这一篇的"做成生产级"——Outbox 保一致性、Schema Registry 管契约、分区调优撑吞吐。**真正让你从"能搭 demo"到"能扛生产"的就是这三个**(尤其 Outbox,几乎是事件驱动系统的分水岭)。记住:生产级不是堆技术,而是**在合适的阶段引入合适的方案**——Outbox 尽早、Schema/分区按需。到此,你已经具备完整的"事件驱动系统架构师"能力链。祝你做成真正的生产级系统。

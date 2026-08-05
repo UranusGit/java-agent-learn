@@ -1,6 +1,6 @@
 # Redis Streams 与 Pub/Sub 实战（Spring Boot 响应式）
 
-> **配套文档**：[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 4、7 章大量使用了 Redis Streams（持久）+ Pub/Sub（实时），但主线聚焦"管数分离"，没展开讲这两个数据结构本身。本篇把它们单独拎出来，从零讲透——是什么、怎么用、和 Kafka 比怎么选。
+> **背景**：本仓库的管数分离实战里大量使用了 Redis Streams（持久）+ Pub/Sub（实时），但主线聚焦业务架构，没展开讲这两个数据结构本身。本篇把它们单独拎出来，从零讲透——是什么、怎么用、和 Kafka 比怎么选。
 >
 > **难度假设**：你会基本的 Spring Boot，听过 Redis，但不熟 Streams/Pub/Sub。所有代码基于 Spring Boot 4.0.6 + `spring-boot-starter-data-redis-reactive`（默认 Lettuce 客户端），照抄能跑。Redis Streams/Pub/Sub 的 API 从 Spring Data Redis 2.x 到 4.x 一直稳定。
 
@@ -39,7 +39,7 @@ flowchart LR
     end
 ```
 
-这就是为什么管数分离文档里**两个都用**：Stream 管持久回放（晚加入/断线重连能补看前文），Pub/Sub 管实时通知（新 chunk 立刻推给在线订阅者）。**各司其职，不是二选一。**
+这就是为什么管数分离实战里**两个都用**：Stream 管持久回放（晚加入/断线重连能补看前文），Pub/Sub 管实时通知（新 chunk 立刻推给在线订阅者）。**各司其职，不是二选一。**
 
 ---
 
@@ -60,7 +60,7 @@ redis-cli PUBLISH chat "你好"
 
 ### 2.2 Spring Boot 响应式实现
 
-**配置**（和主文档第 4 章一致）：
+**配置**：
 
 ```java
 @Configuration
@@ -169,7 +169,7 @@ public Flux<MapRecord<String, String, String>> readAll(String streamKey) {
 }
 ```
 
-每条 `MapRecord` 里，`r.getValue()` 是个 `Map<String,String>`（就是 field→value）。**这就是管数分离文档第 4 章"回放历史"的原理**——晚加入的设备调这个，能看到所有已生成的 chunk。
+每条 `MapRecord` 里，`r.getValue()` 是个 `Map<String,String>`（就是 field→value）。**这就是"回放历史"的原理**——晚加入的设备调这个，能看到所有已生成的 chunk。
 
 ### 3.5 按游标续读（XREAD）——断线重连的"接着看"
 
@@ -179,7 +179,7 @@ redis.opsForStream().read(StreamOffset.create(streamKey,
         ReadOffset.from("1689000000000-5")));
 ```
 
-> **管数分离文档第 5 章用 `seq` 单调号 + INCR**，而不是直接用 Stream 自动 ID，是因为自动 ID 是个长时间戳串、不直观，做 SSE `Last-Event-ID` 不好处理。但原理一样：**单调递增的 ID + 从 ID 之后读 = 断线续传**。
+> **本仓库管数分离实战用 `seq` 单调号 + INCR**，而不是直接用 Stream 自动 ID，是因为自动 ID 是个长时间戳串、不直观，做 SSE `Last-Event-ID` 不好处理。但原理一样：**单调递增的 ID + 从 ID 之后读 = 断线续传**。
 
 ---
 
@@ -320,7 +320,7 @@ redis.opsForStream().trim("orders", 10000, true);   // true = 近似裁剪（~�
 redis.expire("orders", Duration.ofHours(24)).subscribe();
 ```
 
-> **管数分离文档第 4-5 章的 chunk 流**用了 MAXLEN + TTL 双保险：MAXLEN 防止单个 run 的流无限涨，TTL 让老 run 的数据自动清理。
+> **管数分离实战的 chunk 流**用了 MAXLEN + TTL 双保险：MAXLEN 防止单个 run 的流无限涨，TTL 让老 run 的数据自动清理。
 
 ---
 
@@ -343,7 +343,7 @@ redis.expire("orders", Duration.ofHours(24)).subscribe();
 
 - **吞吐不高（万级以内）、要低延迟、不想多引中间件、数据保留不需要很久** → **Redis Stream**。比如管数分离的 chunk 流（每次 run 几百条、跑完就清）。
 - **高吞吐、跨多个服务消费、数据要长期保留（审计/回溯）、需要横向扩展** → **Kafka**。比如全站用户行为日志、订单事件总线。
-- **管数分离文档的演进正好体现这个**：第 4-8 章用 Redis Stream（轻量、够用），第 9 章因为"要跨服务消费 + 保留 30 天"才升级 Kafka。
+- **管数分离实战的演进正好体现这个**：前期用 Redis Stream（轻量、够用），后期因为"要跨服务消费 + 保留 30 天"才升级 Kafka。
 
 **选型决策**：
 
@@ -351,8 +351,8 @@ redis.expire("orders", Duration.ofHours(24)).subscribe();
 flowchart TD
     Q{"怎么选？"} --> A["吞吐不高（万级以内）<br/>要低延迟、不想多引中间件<br/>数据保留不需要很久"]
     Q --> B["高吞吐<br/>跨多个服务消费<br/>数据要长期保留（审计/回溯）<br/>需要横向扩展"]
-    A --> R["Redis Stream<br/>（管数分离第 4-8 章用）"]
-    B --> K["Kafka<br/>（第 9 章升级）"]
+    A --> R["Redis Stream<br/>（轻量、够用就用它）"]
+    B --> K["Kafka<br/>（海量、跨服务时升级）"]
 ```
 
 > **一句话**：**Redis Stream 是"够用就好"的轻量队列，Kafka 是"为海量而生"的重型平台。** 别一上来就 Kafka——很多场景 Redis Stream 足够，且省一个中间件。
@@ -364,7 +364,7 @@ flowchart TD
 ### 坑 1：Pub/Sub 用了，发现新订阅者收不到历史消息
 
 **原因**：Pub/Sub 天然不持久。
-**解决**：需要历史回放就用 Stream。管数分离文档是 Stream + Pub/Sub 配合（Stream 补历史，Pub/Sub 推实时）。
+**解决**：需要历史回放就用 Stream。管数分离实战是 Stream + Pub/Sub 配合（Stream 补历史，Pub/Sub 推实时）。
 
 ### 坑 2：消费组消费者崩了，消息卡在 PEL 里
 
@@ -403,7 +403,7 @@ flowchart TD
 - **MAXLEN/TTL**：防 Stream 撑爆。
 - **选型**：轻量用 Redis Stream，海量用 Kafka——不是越重越好，是够用就好。
 
-学完本篇，再回头看 [管数分离文档第 4-7 章](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md)，你会发现那些"为什么这么写"都豁然开朗。
+学完本篇，再回头看管数分离实战里 Stream + Pub/Sub 的配合写法，你会发现那些"为什么这么写"都豁然开朗。
 
 ---
 

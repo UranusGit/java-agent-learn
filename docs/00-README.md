@@ -8,7 +8,7 @@
 ## 目录结构
 
 ```
-desc/
+docs/
 ├── 00-README.md                              # 你正在看的这个文件
 │
 ├── plan/                                     # 📋 学习计划（任务导向，按这个走）
@@ -144,21 +144,19 @@ flowchart LR
 - Agent = `while(true) { decide(); act(); observe(); }` 循环
 - LangChain4j / Spring AI = AI 版的 Spring Framework
 
-更多类比见 [reference/心智模型与决策树/01-心智模型与决策树.md](./reference/心智模型与决策树/01-心智模型与决策树.md)
-
 ---
 
 ## 立即开始
 
-1. 打开 [plan/00-整体路线.md](./plan/00-整体路线.md) 看完整路线
+1. 打开 plan/ 下的「00-整体路线」看完整路线
 2. 从"阶段 0：环境准备"开始
-3. 进入阶段 1 时，对照 [tutorials/langchain4j/01-快速起步.md](./tutorials/langchain4j/01-快速起步.md) 手搓代码
+3. 进入阶段 1 时，对照 tutorials/langchain4j/ 下的「01-快速起步」手搓代码
 
 ---
 
 ## 附录（底层知识库）
 
-学主线时遇到概念卡壳（响应式/Redis/Kafka/SSE/事务……），去 **附录** 找对应专题。先读 [附录/00-学习路线总览](./附录/00-学习路线总览.md)（给初学者的跨文件夹阅读顺序：Reactor → Redis → Kafka → 35 实战），再按需深挖各专题文件夹。
+学主线时遇到概念卡壳（响应式/Redis/Kafka/SSE/事务……），去 **附录** 找对应专题。先读附录/ 下的「00-学习路线总览」（给初学者的跨文件夹阅读顺序：Reactor → Redis → Kafka → 管数分离实战），再按需深挖各专题文件夹。
 
 ---
 
@@ -166,7 +164,7 @@ flowchart LR
 
 - **手搓优先**：不复制粘贴框架搭好的骨架，自己写 pom.xml 和 Main
 - **每周 Git 提交**：至少 5 次，commit message 写清楚
-- **每周学习笔记**：写一篇 200-500 字，存到 `desc/notes/`（按需创建）
+- **每周学习笔记**：写一篇 200-500 字，存到 `docs/notes/`（按需创建）
 - **不追新框架**：盯死 LangChain4j + Spring AI
 - **不跳阶段**：前一阶段没跑通，不要急着进下一阶段
 
@@ -178,7 +176,7 @@ flowchart LR
 - ❌ 不要陷在 Python 教程里：你是 Java 工程师，每个概念都用 Java 实现一遍才算掌握
 - ❌ 不要追新框架：每周都有新框架，盯死 **Spring AI 2.0**（LangChain4j 仅作入门与对照）
 - ❌ 没跑通就上复杂特性（RAG/Agent）：基础不牢地动山摇
-- ❌ **不要一上来就搞"Spring AI + LangChain4j 混用"**：理论范式，企业不这么做（详见 `reference/选型与对比/09`）
+- ❌ **不要一上来就搞"Spring AI + LangChain4j 混用"**：理论范式，企业实战以单框架 + Workflow 为主流，不这么做
 - ❌ **盲目追求自主 Agent**：能用 Workflow（确定性 DAG）解决的不要用 Agent
 - ❌ **过早押注 Beta 框架**（Embabel/Koog/Google ADK）：跟进不押注
 - ✅ 写文章输出：博客/笔记是最佳学习加速器

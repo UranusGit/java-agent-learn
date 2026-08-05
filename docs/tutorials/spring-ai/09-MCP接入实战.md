@@ -1,9 +1,9 @@
 # Spring AI 09 - MCP 接入实战
 
 > 目标：从零跑通 MCP Client 消费第三方 Server，再用 `@McpTool` 暴露一个企业内部 MCP Server。
-> 前置：已完成 [08-升级到SpringAI2.0](./08-升级到SpringAI2.0.md)（Spring AI 2.0 已 GA）。
+> 前置：你已升级到 Spring AI 2.0（GA 版），会配 `ChatClient`、会写 `@Tool`（即 08 的能力）。
 >
-> 理论基础：[`reference/生产化与运营/14-MCP协议与生态.md`](../../reference/生产化与运营/14-MCP协议与生态.md)
+> 理论基础速览：MCP（Model Context Protocol）是 Anthropic 于 2024-11 提出的开放协议，把"AI 应用 ↔ 工具/数据源"的集成方式标准化。本文直接实战，理论细节穿插在正文里。
 
 ---
 
@@ -373,14 +373,6 @@ MCP Tool 同 Function Calling，描述写不好 LLM 就不会调。**描述必�
 
 ## 7. 下一步
 
-- 把阶段 4 的所有 Tool 改造成 MCP Server（参考 [`reference/生产化与运营/14-MCP协议与生态.md` §7.3](../../reference/生产化与运营/14-MCP协议与生态.md)）
+- 把阶段 4 的所有 Tool 改造成 MCP Server（按本文 Part 2 的 `@McpTool` 方式逐个暴露即可）
 - 接入更多官方 Server（git / github / slack）
 - 把企业内部 MCP Server 发布到 Maven 仓库供团队复用
-
----
-
-## 8. 相关文档
-
-- [`reference/生产化与运营/14-MCP协议与生态.md`](../../reference/生产化与运营/14-MCP协议与生态.md) —— MCP 理论与生态全景
-- [08-升级到SpringAI2.0](./08-升级到SpringAI2.0.md) —— 升级前置
-- [`reference/生产化与运营/12-ClaudeCode源码启示录.md`](../../reference/生产化与运营/12-ClaudeCode源码启示录.md) —— Claude Code 大量使用 MCP

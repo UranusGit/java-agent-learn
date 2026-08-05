@@ -1,12 +1,12 @@
 # Spring Kafka 进阶实战（从 Kafka 零基础到流式架构师）
 
-> **这份文档是什么**：**直接用 Spring Kafka（`spring-boot-starter-kafka`）** 的**进阶续篇**——手写 `KafkaTemplate` 发、`@KafkaListener` 收。前一篇 [01-Kafka消息队列从入门到架构师](./01-Kafka消息队列从入门到架构师.md) 带你入门**直接 Kafka**，这一篇带你进入**生产调优、流式计算、响应式真相、事件驱动架构**——达到真正的架构师水平。
+> **这份文档是什么**：**直接用 Spring Kafka（`spring-boot-starter-kafka`）** 的**进阶续篇**——手写 `KafkaTemplate` 发、`@KafkaListener` 收。前一篇 01-Kafka消息队列从入门到架构师 带你入门**直接 Kafka**，这一篇带你进入**生产调优、流式计算、响应式真相、事件驱动架构**——达到真正的架构师水平。
 >
 > **写给谁**：**Kafka 零基础也能读**。你说"Kafka 也没学过"——没关系，本文第 1 章专门为你补 Kafka 地基，后面所有高级用法都建立在这个地基上。读完你能分清"哪些是 Kafka 的概念、哪些是 Spring Kafka 客户端的 API"，不会再混淆。
 >
-> **和 01 篇的关系（别困惑）**：[01 入门篇](./01-Kafka消息队列从入门到架构师.md) 教的是**直接用 `spring-boot-starter-kafka`（KafkaTemplate / @KafkaListener）从零入门**。**本文是它的进阶**：更深的 Kafka 地基、生产调优、Kafka Streams、背压、EDA 设计。两者都是直接 Kafka 路线（不用 Stream 抽象），01 打底、本文往上走。
+> **和入门篇的关系（别困惑）**：入门篇教的是**直接用 `spring-boot-starter-kafka`（KafkaTemplate / @KafkaListener）从零入门**。**本文是它的进阶**：更深的 Kafka 地基、生产调优、Kafka Streams、背压、EDA 设计。两者都是直接 Kafka 路线（不用 Stream 抽象），入门篇打底、本文往上走。
 >
-> **前置要求**：先读完 [01 入门篇](./01-Kafka消息队列从入门到架构师.md) 的 0-5 章（至少知道 **topic / 分区 / offset / 消费组** 这些 Kafka 地基概念）。01 的函数式 API 不是本篇前置——本篇用的是更直接的 `KafkaTemplate` + `@KafkaListener`。
+> **前置要求**：你已了解 **topic / 分区 / offset / 消费组** 这些 Kafka 地基概念（会用 KafkaTemplate 发消息、@KafkaListener 收消息）。函数式 API 不是本篇前置——本篇用的是更直接的 `KafkaTemplate` + `@KafkaListener`。
 >
 > **版本前提（已校验）**：基于 **Spring Boot 4.1.0**，依赖只用 **`spring-boot-starter-kafka`**（版本由 Boot 的 BOM 托管，不写版本号）。**纯 Kafka 场景不需要 Spring Cloud BOM、不需要 Spring Cloud Stream**——直接 Kafka 里没有 Binder/Binding/Destination 那层抽象。**重要：2025 年 5 月 Spring 官方宣布 `reactor-kafka` 停止维护、Spring Cloud Stream 的响应式 Kafka Binder 废弃**——本文第 4 章会专门讲这件事，并给出官方推荐替代方案。所有 API 已对照官方文档校验。
 
@@ -27,7 +27,7 @@
 
 > 你用 `spring-boot-starter-kafka` 时，底层就是 Kafka 本体（kafka-clients）。不懂透 Kafka 就调优 Spring Kafka，等于盲人摸象。这一章用最短篇幅把 Kafka 的**必须懂的概念**讲透。**注意分清：哪些是 Kafka 自有的（换 RabbitMQ 就不一样），哪些只是 Spring Kafka 客户端 API（`KafkaTemplate` / `@KafkaListener` / `spring.kafka.*`）。**
 
-> **和入门篇的关系**：[01 入门篇第 6 章](./01-Kafka消息队列从入门到架构师.md) 让你"能用"——讲了 topic/分区/offset 在 Spring Kafka 里怎么配、怎么用。**本章从更深的视角**把它们讲透——为什么有分区、offset 的 at-least-once 怎么来的、副本怎么保高可用。**两者不矛盾**：01 是"怎么用"，本章是"为什么底层是这样"。如果你只想调优和理解原理，本章是地基。
+> **和入门篇的关系**：入门篇第 6 章让你"能用"——讲了 topic/分区/offset 在 Spring Kafka 里怎么配、怎么用。**本章从更深的视角**把它们讲透——为什么有分区、offset 的 at-least-once 怎么来的、副本怎么保高可用。**两者不矛盾**：入门篇是"怎么用"，本章是"为什么底层是这样"。如果你只想调优和理解原理，本章是地基。
 
 ### 1.1 Kafka 是什么——一句话和一个比喻
 
@@ -103,7 +103,7 @@ flowchart LR
 
 ### 1.5 Consumer Group（消费组）——负载均衡 vs 发布订阅
 
-一个消费组是**一组共同消费某些 topic 的消费者**。机制（01 入门篇 5.2 讲过，这里补 Kafka 视角）：
+一个消费组是**一组共同消费某些 topic 的消费者**。这里补 Kafka 视角：
 
 - **同组**：一个 partition 只被组内**一个**消费者消费 → 负载均衡。
 - **不同组**：每组**各自独立**收到全量消息 → 发布订阅。
@@ -191,7 +191,7 @@ Kafka 的概念**换了中间件（如 RabbitMQ）就不一样**（RabbitMQ 没�
 
 ## 进阶 第 2 章：Spring Kafka 生产调优实战
 
-01 入门篇讲了"能跑"。这一章讲"**生产环境怎么调好**"。这些都是真实项目里会踩的坑。
+前面已经讲了"能跑"。这一章讲"**生产环境怎么调好**"。这些都是真实项目里会踩的坑。
 
 > **技术栈**：`spring-boot-starter-kafka`（Boot 4.1.0 托管版本，不写版本号）。所有配置都在 `spring.kafka.*` 下。
 
@@ -1131,12 +1131,9 @@ KStream<K,V>  → GlobalKTable<K,V> // 流→全局表
 
 ## 配套学习资料
 
-- [Kafka 消息队列从入门到架构师](./01-Kafka消息队列从入门到架构师.md)（姊妹篇：01 入门、本篇进阶；01 第 6 章的 Kafka 概念可与本篇第 1 章对照读）
-- [Kafka 核心概念与 Spring Boot 实战](../Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md)（第 1 章 Kafka 基础的展开）
 - [spring-kafka 官方文档](https://docs.spring.io/spring-kafka/reference/)（`@KafkaListener` / `KafkaTemplate` / 重试 DLT 权威参考）
 - [Kafka Streams 官方文档](https://kafka.apache.org/documentation/streams/)（第 3 章流式计算权威参考）
 - [reactor-kafka 停止维护公告](https://spring.io/blog/2025/05/20/reactor-kafka-discontinued)（第 4 章必读）
-- [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md)（同为 `KafkaTemplate` + `@KafkaListener` 的生产实战，互相对照）
 
 ---
 
@@ -1144,7 +1141,7 @@ KStream<K,V>  → GlobalKTable<K,V> // 流→全局表
 
 理论学到这里，你已经"懂原理、懂设计"了。但还差最后一跃——**把这些零散知识组装成一个真正能跑的完整系统**。这是从"懂"到"会做"的跨越：
 
-➡️ **[事件驱动微服务端到端实战](./03-事件驱动微服务端到端实战.md)**
+➡️ **事件驱动微服务端到端实战**
 
 那篇带你从零搭一个电商下单系统（订单/库存/支付三服务），落地本篇讲过的 **Saga 补偿事务、幂等表、消费组隔离**，补上"装一辆车"的实战经验。读完你才真正具备设计事件驱动系统的能力。
 

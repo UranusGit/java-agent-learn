@@ -1,6 +1,6 @@
 # Reactor 背压（Backpressure）详解
 
-> **配套文档**：[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 3 章用了 `Sinks.many().multicast().onBackpressureBuffer()`，现有附录 [Reactor Sinks入门](./03-Reactor-Sinks入门.md) 也反复提到"背压"。但"背压"到底是什么、为什么需要、Reactor 怎么处理，一直没系统讲。本篇补上这个认知缺口。
+> **背景**：本仓库的管数分离实战里用了 `Sinks.many().multicast().onBackpressureBuffer()` 做广播，附录的 Reactor Sinks 入门也反复提到"背压"。但"背压"到底是什么、为什么需要、Reactor 怎么处理，一直没系统讲。本篇补上这个认知缺口。
 >
 > **难度假设**：你用过 `Flux`/`Mono`，能写 `.map().flatMap()`，但不清楚"背压""下游需求""onBackpressureBuffer"这些词的确切含义。
 
@@ -132,7 +132,7 @@ flux.onBackpressureLatest();
 
 ---
 
-## 第 4 章：Sinks 与背压（管数分离文档的关键）
+## 第 4 章：Sinks 与背压（管数分离实战里的关键用法）
 
 ### 4.1 Sinks 为什么特殊
 
@@ -146,7 +146,7 @@ Sinks.many().multicast().onBackpressureBuffer();
 - `multicast`：支持多个订阅者。
 - `onBackpressureBuffer`：如果某个订阅者消费慢，**给这个订阅者缓冲**待发数据。
 
-> **管数分离文档第 3 章为什么用它**：生成器往 Sink 塞字，多个 SSE 订阅者读。某个订阅者（比如网络慢的设备）读得慢，`onBackpressureBuffer` 帮它缓冲，不至于丢字。
+> **为什么这样用**：生成器往 Sink 塞字，多个 SSE 订阅者读。某个订阅者（比如网络慢的设备）读得慢，`onBackpressureBuffer` 帮它缓冲，不至于丢字。
 
 **Sinks 的背压**：
 
@@ -214,9 +214,9 @@ flux.onBackpressureDrop(i -> metrics.dropped.increment());
 flux.onBackpressureLatest();
 ```
 
-### 5.5 真实场景：管数分离的 chunk 流
+### 5.5 真实场景：SSE 流式生成的 chunk 流
 
-管数分离文档的 chunk 流其实**几乎不担心背压**，因为：
+这类流式生成的 chunk 流其实**几乎不担心背压**，因为：
 
 - 生成器每 100ms 吐一个字——**很慢**。
 - SSE 推给浏览器——浏览器消费极快。
@@ -268,4 +268,4 @@ flowchart TD
 - **实战策略**：限并发（`flatMap(fn,n)`）、缓冲、丢弃、只留最新。
 - **Sinks**：`onBackpressureBuffer` 给慢订阅者缓冲；检查 `tryEmitNext` 返回值的 `FAIL_OVERFLOW`。
 
-学完本篇，回头看 [管数分离文档第 3 章](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的 `onBackpressureBuffer` 和 [Reactor Sinks入门](./03-Reactor-Sinks入门.md) 里的"背压"讨论，就真正理解了。
+学完本篇，回头看管数分离实战里的 `onBackpressureBuffer` 用法和 Sinks 主题里的"背压"讨论，就真正理解了。

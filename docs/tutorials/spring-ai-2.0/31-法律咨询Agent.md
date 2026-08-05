@@ -2,7 +2,7 @@
 
 > 法律是 LLM 的天然主场（语言密集 + 引用严格），但幻觉在法律场景零容忍。本文以法条检索、合同审查、案例检索为例，讲清法律 Agent 的核心：**引用溯源 + 拒答策略 + 律师在回路**。
 >
-> 前置：[`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) + [`./14-安全工程与红队.md`](./14-安全工程与红队.md)
+> 前提：你已跑通基础 RAG（检索 + 基于检索上下文回答），并了解 prompt injection 等常见安全攻击面。
 > 预计：2 天
 
 ---
@@ -545,13 +545,8 @@ flowchart TD
 
 ---
 
-## 12. 相关文档
+## 12. 相关资源
 
-- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— RAG 基础
-- [`./20-RAG高级篇.md`](./20-RAG高级篇.md) —— Hybrid Search / RRF
-- [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— Prompt Injection
-- [`./23-Prompt工程深入.md`](./23-Prompt工程深入.md) —— 结构化输出
-- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— 引用指标评估
 - [中国裁判文书网](https://wenshu.court.gov.cn/)
 - [北大法宝](https://www.pkulaw.com/)
 - [Westlaw](https://legal.thomsonreuters.com/en/westlaw)
@@ -559,4 +554,4 @@ flowchart TD
 
 ---
 
-回到 [`./00-目录索引.md`](./00-目录索引.md)。
+回到目录索引，继续下一个主题。

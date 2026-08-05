@@ -1,10 +1,10 @@
 # Reactor 错误处理详解：onErrorResume / retry / doOnError 到底怎么用
 
-> **配套文档**：你已经读完本系列 [Reactor 响应式入门](./01-Reactor响应式入门.md)，会写基本的 `Mono`/`Flux` 链，对 [Flux 方法速查](./02-Flux方法速查.md) 里的 `map`/`flatMap`/`filter` 也不陌生。但**一遇到异常就懵**：`onErrorResume`、`onErrorReturn`、`onErrorMap`、`onErrorContinue`、`retry`、`doOnError`……一堆名字长得差不多，到底该用哪个？本篇就把响应式错误处理这一块彻底讲透。
+> **配套文档**：你已经读完本系列 Reactor 响应式入门，会写基本的 `Mono`/`Flux` 链，对 Flux 方法速查里的 `map`/`flatMap`/`filter` 也不陌生。但**一遇到异常就懵**：`onErrorResume`、`onErrorReturn`、`onErrorMap`、`onErrorContinue`、`retry`、`doOnError`……一堆名字长得差不多，到底该用哪个？本篇就把响应式错误处理这一块彻底讲透。
 >
-> **难度假设**：传统 `try-catch` 玩得很熟，但不知道"响应式里怎么抓异常"；知道异常会变成 500，但不知道 Controller 里该怎么优雅地把它映射成 404/409/400。本篇假设你已理解 01 里的心智模型：**Mono/Flux 是"菜谱"不是"结果"，订阅才执行**。若还不熟，先回去读 [01](./01-Reactor响应式入门.md) 第 2 章。
+> **难度假设**：传统 `try-catch` 玩得很熟，但不知道"响应式里怎么抓异常"；知道异常会变成 500，但不知道 Controller 里该怎么优雅地把它映射成 404/409/400。本篇假设你已理解"菜谱不是结果、订阅才执行"的心智模型（本文第 1 章也会回顾）。
 >
-> **本篇配套实践**：教程 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 是一份错误处理"实战现场"——里面的 Controller 用 `onErrorResume` 把业务冲突映射成 HTTP 409、把幂等冲突映射成回查。学完本篇再去看 35 里的错误处理代码，你会秒懂它为什么那么写。
+> **本篇配套实践**：本仓库的管数分离实战是一份错误处理"实战现场"——里面的 Controller 用 `onErrorResume` 把业务冲突映射成 HTTP 409、把幂等冲突映射成回查。学完本篇，你会秒懂它为什么那么写。
 
 ---
 
@@ -26,7 +26,7 @@ try {
 
 **关键**：传统代码里，调用方法的那一刻**代码就真的在执行**，所以异常当场发生、当场能被 catch 住。
 
-响应式完全不同。回顾 [01](./01-Reactor响应式入门.md) 的心智模型：
+响应式完全不同。回顾一下心智模型：
 
 ```java
 Mono<User> u = userDao.findByIdReactive(id);   // ① 这行只是"声明"，没有真的查库
@@ -94,7 +94,7 @@ flowchart TD
 ### 1.4 两个关键推论
 
 1. **"没抓到异常" ≠ 异常被吞了**——它只是变成了 onError 信号，你可能没接住。`subscribe()` 不带错误回调，或框架兜底成 500，都算"接住了"（虽然接得难看）。
-2. **普通方法里 try-catch 依然有用**，但只对"同步、当场执行"的部分有用（比如 `Mono.fromCallable(() -> { ... 里面可以 try-catch ... })`）。对异步链，要靠操作符。详见第 6 章坑 2。
+2. **普通方法里 try-catch 依然有用**，但只对"同步、当场执行"的部分有用（比如 `Mono.fromCallable(() -> { ... 里面可以 try-catch ... })`）。对异步链，要靠操作符。详见本文档第 6 章坑 2。
 
 ---
 
@@ -145,7 +145,7 @@ public class OnErrorResumeDemo {
 
 - **查库失败想走缓存**：`userDao.findById(id).onErrorResume(e -> cacheDao.findById(id))`——数据库挂了，读缓存兜底。
 - **调用下游服务失败想降级**：`priceClient.getPrice(sku).onErrorResume(e -> Mono.just(0.0))`——拿不到价格给个兜底价。
-- **想把某个错误映射成别的结果**：比如 35 号文档里，会话冲突异常被 `onErrorResume` 接住后返回一个 409 响应体（见第 5 章）。
+- **想把某个错误映射成别的结果**：比如管数分离实战里，会话冲突异常被 `onErrorResume` 接住后返回一个 409 响应体（本文第 5 章会详述如何映射状态码）。
 
 > **精准拦截的进阶用法**：`onErrorResume` 有两个重载——不指定类型（接住**所有**异常）和指定类型（只接住**某一类**异常，其他的原样往下传）：
 >
@@ -438,7 +438,7 @@ public class RetryBackoffDemo {
 
 **什么时候用它**：
 
-- **调用外部 API / 真 LLM 流式**（[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 里就是真 LLM）：网络抖动太常见，指数退避是标配。
+- **调用外部 API / 真 LLM 流式**（真实流式项目里就是真 LLM）：网络抖动太常见，指数退避是标配。
 - **任何"我不确定下游啥时候恢复"的远程调用**。
 
 **验证**：运行上面的 `RetryBackoffDemo`，观察每次尝试的时间戳间隔约等于 200ms、400ms、800ms、1600ms，第 5 次输出"成功"。
@@ -462,7 +462,7 @@ return paymentService.deduct(userId, amount, "order_" + orderId)   // 服务端�
 - 幂等：**查询、读缓存、按业务单号去重的写** → 可以放心重试。
 - 不幂等：**扣款、发消息、创建资源（没有去重键）、发送邮件** → **严禁无脑 `retry`**，要么先保证幂等，要么改用"人工补偿"（记录失败，稍后重放）。
 
-> 35 号文档的"幂等键 + 会话级独占"正是为了配合这类"重试安全"而设计的——创建 run 时带 `Idempotency-Key`，同一个 key 只创建一个 run，重试/重复提交都不会重复触发 LLM 调用（烧两次钱）。想深入看 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 6 章。
+> 管数分离实战的"幂等键 + 会话级独占"正是为了配合这类"重试安全"而设计的——创建 run 时带 `Idempotency-Key`，同一个 key 只创建一个 run，重试/重复提交都不会重复触发 LLM 调用（烧两次钱）。
 
 ---
 
@@ -542,7 +542,7 @@ Flux.just(1, 2, 0, 4)
 
 ### 4.4 do 系列全家福提醒
 
-`doOnError` 属于 02 里讲的 `do*` 旁路观察家族（`doOnNext`/`doOnComplete`/`doOnError`/`doFinally`/`doOnSubscribe`……）。**判断标准只有一条：方法名以 `do` 开头 → 只看不改**。想让错误"消失"，必须用 `onError*` 系列或 `retry`。完整速查见 [Flux 方法速查](./02-Flux方法速查.md) 的 do 系列与 onError 系列。
+`doOnError` 属于 `do*` 旁路观察家族（`doOnNext`/`doOnComplete`/`doOnError`/`doFinally`/`doOnSubscribe`……）。**判断标准只有一条：方法名以 `do` 开头 → 只看不改**。想让错误"消失"，必须用 `onError*` 系列或 `retry`。
 
 ---
 
@@ -623,8 +623,8 @@ public class UserController {
 **要点**：
 
 1. **"空"和"错"分开处理**：`switchIfEmpty(Mono.error(new ResponseStatusException(NOT_FOUND)))`——把"查无此人"先变成 404 异常，再被下面的 `onErrorResume` 接住转成 404 响应。这条链路清晰：空 → 404，业务异常 → 4xx，其他 → 500。
-2. **`onErrorResume` 按类型分派**：`ResponseStatusException` → 用它的状态码；`Exception` → 500。**兜底那条一定要 `log.error`**，否则错误被吞、线上难排查（见第 6 章坑 3）。
-3. 这正是 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 里 `RunController` 的做法——`onErrorResume(IllegalStateException.class, e -> ...409...)` 把"会话忙"映射成 `409 Conflict`。
+2. **`onErrorResume` 按类型分派**：`ResponseStatusException` → 用它的状态码；`Exception` → 500。**兜底那条一定要 `log.error`**，否则错误被吞、线上难排查（见本文档第 6 章坑 3）。
+3. 这正是管数分离实战里 `RunController` 的做法——`onErrorResume(IllegalStateException.class, e -> ...409...)` 把"会话忙"映射成 `409 Conflict`。
 
 ### 5.3 方式二：@ExceptionHandler 全局兜底
 
@@ -653,7 +653,7 @@ public class GlobalExceptionHandler {
                 .body(Map.of("error", e.getMessage())));
     }
 
-    /** 会话冲突 → 409（35 号文档里的语义） */
+    /** 会话冲突 → 409（管数分离实战里的语义） */
     @ExceptionHandler(IllegalStateException.class)
     public Mono<ResponseEntity<Map<String, String>>> handleConflict(IllegalStateException e) {
         return Mono.just(ResponseEntity.status(HttpStatus.CONFLICT)
@@ -699,7 +699,7 @@ flowchart TD
 
 > **这是最隐蔽的坑**：**SSE/流式响应一旦开始吐数据，HTTP 状态码就已经是 200 了**。如果流中途出错，**你没法再把状态码改成 500**——错误只能以"连接中断"的形式出现。
 
-看 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的场景：`GET /generate/stream` 返回 `Flux<ServerSentEvent<String>>`，正在逐字推 token。如果生成中途 LLM 报错，链里的异常 → `onError` 传到框架 → **连接被掐断，前端看到流戛然而止，没有任何错误信息**。这就是"错误被吞掉，前端无感"。
+在管数分离实战的流式接口里，`GET /generate/stream` 返回 `Flux<ServerSentEvent<String>>`，正在逐字推 token。如果生成中途 LLM 报错，链里的异常 → `onError` 传到框架 → **连接被掐断，前端看到流戛然而止，没有任何错误信息**。这就是"错误被吞掉，前端无感"。
 
 **流式错误处理的三个分支**：
 
@@ -746,7 +746,7 @@ public class StreamController {
 
 **这样前端就能**：`es.addEventListener("error", e => 显示错误提示)`——前端有感知，而不是"卡住没下文"。
 
-> **企业级做法更进一步**：像 35 号文档那样引入 **run 状态机**，出错时把任务状态置为 `FAILED`，前端轮询 `GET /api/runs/{id}` 就能看到失败原因——**错误既要有"流内事件"的即时通知，也要有"状态可查"的持久记录**，两边都不丢。详见 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 6 章。
+> **企业级做法更进一步**：像管数分离实战那样引入 **run 状态机**，出错时把任务状态置为 `FAILED`，前端轮询 `GET /api/runs/{id}` 就能看到失败原因——**错误既要有"流内事件"的即时通知，也要有"状态可查"的持久记录**，两边都不丢。
 
 ### 5.6 小结
 
@@ -887,9 +887,9 @@ return userDao.findByIdReactive(id)
 
 **四句话收尾**：
 
-1. **错误是信号不是异常**：`onError` 和 `onNext`/`onComplete` 并列，顺着链往下传，到订阅者才算完（[01](./01-Reactor响应式入门.md) 的"菜谱"心智）。
+1. **错误是信号不是异常**：`onError` 和 `onNext`/`onComplete` 并列，顺着链往下传，到订阅者才算完（入门篇的"菜谱"心智）。
 2. **处理 = 在信号路径上拦截**：`onErrorResume`/`onErrorReturn`/`onErrorMap` 消化错误，`onErrorContinue` 跳过元素，`retry*` 重跑一遍。
 3. **`do*` 只看不改**：`doOnError` 记日志 ≠ 处理错误，真想恢复必须 `onErrorResume` 或 `retry`。
 4. **重试的前提是幂等，兜底的前提是打日志**：不幂等别重试，兜底分支必须 `log.error`——否则错误在日志里消失、在前端无感，线上事故都不知道从哪查。
 
-> **下一步**：去读 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 的 `RunController`（`onErrorResume` 映射 409）和 run 状态机（`FAILED` 状态），看错误处理在企业级流式项目里是怎么落地的。若对"错误发生在哪个线程、重试/超时对线程的影响"有疑问，可以配合 [Reactor 调度器与线程模型](./06-Reactor调度器与线程模型.md) 一起看——线程模型是响应式新手第一大坎，错误处理是第二大坎，两篇合起来基本就通关了。
+> **下一步**：你已经见过用 `onErrorResume` 把"会话忙"映射成 409、用 run 状态 `FAILED` 做持久记录的企业级做法。若对"错误发生在哪个线程、重试/超时对线程的影响"有疑问，可以配合本系列的线程模型主题一起看——线程模型是响应式新手第一大坎，错误处理是第二大坎，两篇合起来基本就通关了。

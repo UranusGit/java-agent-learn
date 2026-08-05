@@ -1,6 +1,6 @@
 # Reactor AI 流式核心模式——从"为什么"到逐行精讲
 
-> **这篇文档解决什么问题**：你已经读过 [Reactor 响应式入门](./01-Reactor响应式入门.md)、[Flux 方法速查](./02-Flux方法速查.md)、[Redis Streams/PubSub 实战](../Redis专题/01-Redis-Streams与PubSub实战.md)，单篇都懂，但把它们拼起来写一个真实 AI 流式架构时，反复卡在几个固定模式上——`Flux.defer` 到底什么时候用、`concatWith` 为什么不能反过来、`takeUntil` 怎么当流终结器、出错时为什么连接会挂死。
+> **这篇文档解决什么问题**：你已经掌握 `Mono`/`Flux` 心智、常用操作符（`defer`/`concatWith`/`takeUntil`）和 Redis Stream + Pub/Sub 的读写，单篇都懂，但把它们拼起来写一个真实 AI 流式架构时，反复卡在几个固定模式上——`Flux.defer` 到底什么时候用、`concatWith` 为什么不能反过来、`takeUntil` 怎么当流终结器、出错时为什么连接会挂死。
 >
 > **本文把 5 个核心模式用真实代码串起来讲，不讲语法，讲因果链。**
 
@@ -149,7 +149,7 @@ sequenceDiagram
 
 生产者崩了（LLM 超时、网络断）→ `__END__` 没写 → `takeUntil` 永不满足 → Flux 永不 complete → **SSE 连接永久挂死**。
 
-这就是为什么必须在出错时也写 `__END__`——见第 6 章。
+这就是为什么必须在出错时也写 `__END__`——见本文档第 6 章。
 
 **一句话**：`takeUntil` 是流的唯一出口。生产者不写终止标记，订阅方就永远等。
 
@@ -282,12 +282,3 @@ flowchart TD
 3. `takeUntil` 当流终结器，最关键的前提是什么？（终止标记的必达性）
 4. `ended` 标志 + `Flux.defer` 堵住了什么竞态窗口？
 5. 为什么 `doOnComplete` 不够，`doOnError` 也要写终止标记？
-
----
-
-## 参考
-
-- [Reactor 响应式入门](./01-Reactor响应式入门.md) —— Reactor 基础心智
-- [Flux 方法速查](./02-Flux方法速查.md) —— defer / concatWith / takeUntil / doFinally 语法
-- [Redis Streams 与 Pub/Sub 实战](../Redis专题/01-Redis-Streams与PubSub实战.md) —— Stream + Pub/Sub 原理
-- [管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) —— 完整架构演进

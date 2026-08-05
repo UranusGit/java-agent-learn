@@ -116,7 +116,7 @@ public class IterationLimitAdvisor implements CallAdvisor {
 }
 ```
 
-> 📌 1.0.0 的 Advisor API：方法名是 `adviseCall`（不是 `aroundCall`），入参是 `ChatClientRequest`（不是 `AdvisedRequest`），共享上下文通过 `req.context()` 拿（不是 `req.adviseContext()`），链推进用 `chain.nextCall(req)`（不是 `chain.nextAroundCall(req)`）。详见 [spring-ai/02-Advisor链](../spring-ai/02-Advisor链.md)。
+> 📌 1.0.0 的 Advisor API：方法名是 `adviseCall`（不是 `aroundCall`），入参是 `ChatClientRequest`（不是 `AdvisedRequest`），共享上下文通过 `req.context()` 拿（不是 `req.adviseContext()`），链推进用 `chain.nextCall(req)`（不是 `chain.nextAroundCall(req)`）。
 
 ---
 
@@ -463,4 +463,4 @@ public String ask(String q) { ... }
 5. （进阶）用 Spring AI Advisor 实现完整的"防失控链"
 6. （进阶）接 Prometheus + Grafana，做实时监控
 
-完成后进入 [03-多 Tool 编排](./03-多Tool编排.md)。
+完成后进入下一节：**03-多 Tool 编排**——当 Tool 数量超过 10 个，学会用路由、状态机、并行调用让 Agent 依然准确、高效。

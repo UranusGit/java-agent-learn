@@ -1,6 +1,6 @@
 # 34-轻依赖版：Agent 与知识库实战（Spring AI 2.0 + 管数分离 + 多端同步，演进式落地）
 
-> **这份文档是什么**：基于 [34-研究Agent与知识库实战.md](./34-研究Agent与知识库实战.md) 改编的一份**实践手册**。它保留了原项目的全部企业级演进脉络（固定 workflow → 自主 Agent → 知识库 → Plan-Execute 并发 → 审计 → 会话持久化 → 多端同步 → 管数分离 → 高可用 → Kafka → 微服务拆分），并坚持"**基础设施尽量轻、AI 能力用真的**"：
+> **这份文档是什么**：基于"研究 Agent 与知识库实战"改编的一份**实践手册**。它保留了原项目的全部企业级演进脉络（固定 workflow → 自主 Agent → 知识库 → Plan-Execute 并发 → 审计 → 会话持久化 → 多端同步 → 管数分离 → 高可用 → Kafka → 微服务拆分），并坚持"**基础设施尽量轻、AI 能力用真的**"：
 >
 > - ✅ **用 Spring AI 2.0 真 LLM**（`ChatClient`，默认 DeepSeek，OpenAI 兼容协议）—— 不再用模拟。一个 `LlmClient` 抽象接口 + `SpringAiLlmClient`（基于 ChatClient）实现，工具调用、Agent 循环、Plan-Execute 全部由真实 function calling 驱动。**学了即能用。**
 > - ❌ **不依赖任何数据库**（PostgreSQL/pgvector/MySQL 都不要）—— 会话记忆、知识库、审计日志**全部落 Redis**（Redis 既当缓存又当持久层）。知识库检索用**内存 TF-IDF + Redis 存储**，不需要 embedding、不需要向量库。

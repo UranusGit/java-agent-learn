@@ -2,7 +2,7 @@
 
 > **这份文档是什么**：一份**从零开始、循序渐进、最终达到架构师水平**的 Kafka + Spring Kafka 专题手册。你不需要懂消息队列、不需要懂微服务，只要会 Java 和 Spring Boot 基础，跟着读、跟着抄代码，就能从"它到底是什么"一路学到"企业级为什么直接用 Kafka、它怎么扛住千万级消息、生产环境怎么不出事"。
 >
-> **它和 35 号文档的关系**：[35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 10 章用了**原生 `spring-boot-starter-kafka`**（手写 `KafkaTemplate` 发、`@KafkaListener` 收）做 chunk 持久总线。那份文档教的是"消息总线"这个**概念**。本文教的是**那套写法的系统化升级版**——把"会用 KafkaTemplate / @KafkaListener"展开成完整的知识体系：topic/分区/offset/消费组、生产者全解、消费者全解、重试死信、客户端调优、幂等事务、可观测。**35 号文档第 10 章的手写 Kafka 就是本文的方式**；学完本文，你会明白手写 Kafka 在生产环境怎么从"能用"变成"生产级"。
+> **它和"管数分离实战"的关系**："管数分离实战"第 10 章用了**原生 `spring-boot-starter-kafka`**（手写 `KafkaTemplate` 发、`@KafkaListener` 收）做 chunk 持久总线。那份文档教的是"消息总线"这个**概念**。本文教的是**那套写法的系统化升级版**——把"会用 KafkaTemplate / @KafkaListener"展开成完整的知识体系：topic/分区/offset/消费组、生产者全解、消费者全解、重试死信、客户端调优、幂等事务、可观测。**"管数分离实战"第 10 章的手写 Kafka 就是本文的方式**；学完本文，你会明白手写 Kafka 在生产环境怎么从"能用"变成"生产级"。
 >
 > **版本前提（重要）**：本文基于 **Spring Boot 4.1.0 + `spring-boot-starter-kafka`**。纯 Kafka **不需要引入 Spring Cloud 依赖**——`spring-kafka` 与 `kafka-clients` 的版本由 Boot 父工程 BOM 统一托管，你只管写业务。如果你还在用 Boot 3.x，用法**几乎完全一致**（见文末版本对照表），本文代码可直接照抄。
 
@@ -73,7 +73,7 @@ flowchart LR
 | **生态** | 最广（Kafka Streams / Connect / Flink / Spark 全支持） | 通用 AMQP | 各有绑定 |
 | **典型场景** | 日志、埋点、削峰填谷、事件流、大数据管道 | 业务消息、RPC 解耦、任务队列 | 金融/阿里系、云原生流 |
 
-> **一句话**：RabbitMQ 是"业务消息的瑞士军刀"，Kafka 是"海量数据的搬运河"。当你要处理**千万级消息**、要**削峰填谷**（秒杀瞬间 10 倍流量全打到 MQ，下游慢慢消费）、要**长期留存重放**（流式计算、数据管道），Kafka 是默认答案。**这也正是 35 号文档选 Kafka 做 chunk 持久总线的原因**——chunk 会高频产出大量消息，需要一个扛得住的队列。
+> **一句话**：RabbitMQ 是"业务消息的瑞士军刀"，Kafka 是"海量数据的搬运河"。当你要处理**千万级消息**、要**削峰填谷**（秒杀瞬间 10 倍流量全打到 MQ，下游慢慢消费）、要**长期留存重放**（流式计算、数据管道），Kafka 是默认答案。**这也正是 "管数分离实战"选 Kafka 做 chunk 持久总线的原因**——chunk 会高频产出大量消息，需要一个扛得住的队列。
 
 ### 0.3 那为什么用 Spring Kafka？直接用 kafka-clients 不行吗？
 
@@ -204,7 +204,7 @@ spring:
     bootstrap-servers: localhost:9092   # ▼ Kafka 地址
     consumer:
       group-id: log-group                # ▼ 消费组（方法上也写了，二选一；此处是全局默认）
-      auto-offset-reset: earliest         # ▼ 新消费组从最早开始读（见第 2 章 offset）
+      auto-offset-reset: earliest         # ▼ 新消费组从最早开始读（见后文第 2 章 offset）
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
 ```
@@ -228,7 +228,7 @@ docker run -d --name kafka -p 9092:9092 \
 ./mvnw spring-boot:run
 ```
 
-> **topic 从哪来？** Kafka 默认 `auto.create.topics.enable=true`，客户端首次往一个不存在的 topic 发消息时 broker 会自动创建它（生产环境建议预建，见第 2 章 `NewTopic`）。
+> **topic 从哪来？** Kafka 默认 `auto.create.topics.enable=true`，客户端首次往一个不存在的 topic 发消息时 broker 会自动创建它（生产环境建议预建，见后文第 2 章 `NewTopic`）。
 
 ### 1.5 发一条消息试试
 
@@ -950,7 +950,7 @@ flowchart TD
     C -->|"否"| K
 ```
 
-> **35 号文档为什么选 Kafka**：chunk 持久总线高频产出大量消息，需要**扛得住、可留存、可重放**——这是 Kafka 的主场。如果是低频业务通知，RabbitMQ 也完全够用。
+> **"管数分离实战"为什么选 Kafka**：chunk 持久总线高频产出大量消息，需要**扛得住、可留存、可重放**——这是 Kafka 的主场。如果是低频业务通知，RabbitMQ 也完全够用。
 
 ---
 
@@ -1209,7 +1209,7 @@ flowchart TD
 ```
 
 
-> **和 35 号文档的呼应**：35 号文档第 6 章讲的"幂等键（Idempotency-Key）"就是这个思想——用唯一键保证"同一操作只执行一次"。在消息系统里，**幂等是底线，不是优化**。更工程化的做法是 Outbox + 唯一约束（见 [04-生产级进阶](./04-生产级进阶-Outbox与Schema与分区调优.md)）。
+> **幂等的思想**：用唯一键保证"同一操作只执行一次"，正是 HTTP 幂等键（Idempotency-Key）那套思路。在消息系统里，**幂等是底线，不是优化**。更工程化的做法是 Outbox 模式 + 唯一约束：把要发的事件先写入与业务同库的 outbox 表（与业务同一个本地事务原子提交），再由后台进程读取投递到 Kafka，从根上避免"业务已提交、事件没发出"；消费端仍配合幂等表去重兜底。
 
 ### 9.3 分区与 key 设计
 
@@ -1332,7 +1332,7 @@ spring-kafka 3.x 会自动用 Micrometer Observation 给 `KafkaTemplate` 发送�
 3. **学习成本低**：一份知识体系（topic/分区/offset/消费组）通吃客户端 + 运维，不用学"binding/binder"那套映射。
 4. **Spring Cloud Stream 的"换中间件不改代码"在你不需要换中间件时=零收益**。
 
-> **这就是本专题（和 35 号文档）一律用 `spring-boot-starter-kafka` 的根本原因**。
+> **这就是本专题（和 "管数分离实战"）一律用 `spring-boot-starter-kafka` 的根本原因**。
 
 ### 10.2 什么时候才该考虑 Stream 抽象
 
@@ -1357,9 +1357,9 @@ flowchart TD
     S --> S1["换中间件不改代码<br/>Kafka-only 时它是负资产"]
 ```
 
-### 10.3 和 35 号文档手写 Kafka 的对比
+### 10.3 和 "管数分离实战"手写 Kafka 的对比
 
-| 维度 | 35 号文档手写 Kafka | 本文系统化的 Spring Kafka |
+| 维度 | "管数分离实战"手写 Kafka | 本文系统化的 Spring Kafka |
 |------|--------------------|--------------------------|
 | API | `KafkaTemplate` + `@KafkaListener`（同款） | 同一个 API，**系统化展开** |
 | 重试/死信 | 没细讲（概念演示） | `DefaultErrorHandler` + DLT，**生产级兜底** |
@@ -1368,7 +1368,7 @@ flowchart TD
 | 可观测 | 没讲 | Micrometer 指标 + 追踪 |
 | 定位 | 讲"消息总线"概念 | 讲"生产级事件系统怎么造" |
 
-> **架构师判断**：35 号文档用手写 Kafka 是**教学最佳选择**（让读者聚焦"消息总线"概念，不被框架抽象分心）。本文把**同一套写法**升级成完整知识体系。**两者是同一套技术栈，不冲突**——35 号文档是"点"，本文是"面"。
+> **架构师判断**："管数分离实战"用手写 Kafka 是**教学最佳选择**（让读者聚焦"消息总线"概念，不被框架抽象分心）。本文把**同一套写法**升级成完整知识体系。**两者是同一套技术栈，不冲突**——"管数分离实战"是"点"，本文是"面"。
 
 ### 10.4 不要用消息系统的场景
 
@@ -1662,7 +1662,7 @@ spring:
 ### B.7 跑起来
 
 ```bash
-# 起 Kafka（见第 1 章）
+# 起 Kafka（见前文第 1 章）
 # 跑应用
 ./mvnw spring-boot:run
 
@@ -1775,9 +1775,6 @@ docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 \
 ## 配套学习资料
 
 - [Spring for Apache Kafka 官方参考文档](https://docs.spring.io/spring-kafka/reference/)（权威，英文）
-- [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 10 章（手写 Kafka 做消息总线，理解概念后回来读本文更顺）
-- [Kafka 核心概念与 Spring Boot 实战](../Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md)（Kafka 基础概念补充）
-- [Reactor 响应式入门](../Reactor响应式编程/01-Reactor响应式入门.md)（第 8.5 节 `Schedulers.boundedElastic()` 前置）
 
 ---
 
@@ -1785,7 +1782,7 @@ docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 \
 
 学完本文（0-10 章），你已经"会用"Spring Kafka 了。如果你想达到**真正的架构师水平**——Kafka 原理、生产调优、流式计算、事件驱动架构——继续读进阶篇：
 
-➡️ **[Kafka 进阶实战](./02-Kafka进阶实战.md)**
+➡️ **Kafka 进阶实战**
 
 进阶篇专门为**Kafka 零基础**的人设计（第 1 章补 Kafka 地基），带你从"会用"走到"会设计事件驱动系统"。
 

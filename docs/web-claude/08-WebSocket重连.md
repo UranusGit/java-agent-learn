@@ -4,18 +4,18 @@
 > 完成后：弱网体验稳定，长会话不丢消息。
 >
 > **重要升级**：本章只重放 `messages`。
-> 完整版应当重放 [17 章的 agent_events](./17-全链路可观测前端.md)（12 类事件），
+> 完整版应当重放 `agent_events` 事件流（12 类原子事件），
 > 让前端重连后能恢复完整活动流，而不只是消息列表。
 > 重放范围建议：`SELECT * FROM agent_events WHERE session_id=? AND seq>?`。
 >
-> **Web 项目专项升级**（[22 章](./22-跨标签页与实时协作.md)）：
-> - 跨 tab 同步用 BroadcastChannel（22 §3）；
-> - iOS Safari 后台冻结用 Visibility API + 25s 心跳（22 §2）；
-> - localStorage 5MB 不够用，活动流上 IndexedDB（22 §2）；
-> - 离线消息队列（22 §2）；
-> - 跨节点 WebSocket 广播用 Redis pub/sub（[27 章 §3](./27-生产部署深度.md)）。
+> **Web 项目专项升级**：
+> - 跨 tab 同步用 BroadcastChannel；
+> - iOS Safari 后台冻结用 Visibility API + 25s 心跳；
+> - localStorage 5MB 不够用，活动流上 IndexedDB；
+> - 离线消息队列；
+> - 跨节点 WebSocket 广播用 Redis pub/sub。
 >
-> 本章先做"单 tab 单进程"的最简重连，Web 工程层在 22 章补回。
+> 本章先做"单 tab 单进程"的最简重连，Web 工程层在后面补回。
 
 ---
 
@@ -23,17 +23,17 @@
 
 | 步 | 节 | 你要带走什么 |
 |----|----|---------|
-| ① 痛点 | §1 | 07 章虽然持久化了，但 WS 一断消息就丢——没有"重连重放"机制 |
+| ① 痛点 | §1 | 上一章虽然持久化了，但 WS 一断消息就丢——没有"重连重放"机制 |
 | ② 最小实现 | §2–§4 | Redis seq 分配 + WS 协议加 `?last_seq=` + 前端指数退避重连 |
 | ③ 验证 | §5 | 拔网线 / 关浏览器再开，消息一条不丢 |
-| ④ 对照 | §6 | 与 07 章的"消息可达性"对比 |
+| ④ 对照 | §6 | 与上一章（消息可达性）对比 |
 | ⑤ 避坑 | §7 | 退避风暴 / 多设备 / seq 跳跃 / iOS 后台冻结 |
 
 ---
 
-## 1. 痛点：07 章只解决了"服务端存住"，没解决"客户端看到"
+## 1. 痛点：上一章只解决了"服务端存住"，没解决"客户端看到"
 
-07 章让消息落了 DB / JSONL，但只在**前端恰好在线**时才能收到——一旦下面任一情况发生，**当前正在流式的消息就丢了**：
+上一章让消息落了 DB / JSONL，但只在**前端恰好在线**时才能收到——一旦下面任一情况发生，**当前正在流式的消息就丢了**：
 
 - 网络抖动：手机切 4G/Wi-Fi
 - 浏览器 tab 切到后台：iOS Safari 30s 后冻结 WS
@@ -308,9 +308,9 @@ sequenceDiagram
 
 ---
 
-## 7. 对照：与 07 章的消息可达性差异
+## 7. 对照：与上一章的消息可达性差异
 
-| 维度 | 07 章 | 08 章 |
+| 维度 | 上一章 | 本章 |
 |------|-------|-------|
 | 服务端存储 | ✅ JSONL + DB 索引 | ✅ 同 |
 | 在线接收 | ✅ WS 推送 | ✅ 同 |
@@ -327,7 +327,7 @@ sequenceDiagram
 | seq 用 MySQL 自增 | 单点性能瓶颈 / 主从延迟 | Redis `INCR` 单线程原子 |
 | `last_seq` 持久在 sessionStorage | 关浏览器就丢 | 用 localStorage |
 | seq 跳跃检测缺位 | 中间消息永久丢 | 检测跳跃时触发全量重放 |
-| iOS Safari 后台冻结 30s | 重连不及时 | 本章不解决，22 章 Visibility + 心跳 |
+| iOS Safari 后台冻结 30s | 重连不及时 | 本章不解决，Web 工程专项升级时用 Visibility + 心跳 |
 | 多设备同时连 | seq 推送冲突 / 一台收到另一台没收到 | v1 限制单 session 单连接 |
 | 重连时旧订阅没清 | Flux 泄漏 / 重复消息 | `onclose` 必须取消订阅 |
 | 退避上界太小 | 长断网时一直重试失败 | 上界 30s，重连超过 10 次提示"网络异常" |
@@ -356,19 +356,19 @@ sequenceDiagram
   ✅ last_seq 跟踪 + localStorage
 ```
 
-## 10. Web 项目专项升级（22 章预告）
+## 10. Web 项目专项升级（生产升级预告）
 
 本章的重连是单 tab 单进程，生产 Web 项目要补的：
 
-| 升级 | 章节 | 解决问题 |
-|------|------|---------|
-| BroadcastChannel 跨 tab | 22 §3 | 多 tab 状态不同步 |
-| Visibility API + 25s 心跳 | 22 §2 | iOS Safari 后台 30s 冻结 |
-| IndexedDB 缓存 events | 22 §2 | localStorage 5MB 限制 |
-| 离线消息队列 | 22 §2 | 断网期间消息丢失 |
-| Leader 选举 | 22 §3 | 每 tab 都连 WS 浪费 |
-| Redis pub/sub 跨节点广播 | 27 §3 | K8s 多 Pod 部署 |
+| 升级 | 解决问题 |
+|------|---------|
+| BroadcastChannel 跨 tab | 多 tab 状态不同步 |
+| Visibility API + 25s 心跳 | iOS Safari 后台 30s 冻结 |
+| IndexedDB 缓存 events | localStorage 5MB 限制 |
+| 离线消息队列 | 断网期间消息丢失 |
+| Leader 选举 | 每 tab 都连 WS 浪费 |
+| Redis pub/sub 跨节点广播 | K8s 多 Pod 部署 |
 
 ## 11. 下一步
 
-进入 [09-Artifacts](./09-Artifacts.md)，让 Agent 写的代码 / Markdown 在浏览器侧实时渲染。
+进入下一节：**09-Artifacts**——让 Agent 写的代码 / Markdown 在浏览器侧实时渲染。

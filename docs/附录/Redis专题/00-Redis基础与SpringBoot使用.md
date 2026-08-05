@@ -1,12 +1,12 @@
 # Redis 基础 + Spring Boot 使用（地基文档）
 
-> **本篇定位**：Redis 专题的**地基文档，最先读**。同文件夹的 [01-Streams 与 Pub/Sub](./01-Redis-Streams与PubSub实战.md)、[02-分布式锁](./02-Redis分布式锁实战.md) **都假设你已经会用 Redis 基础**（会起 Redis、会用五种数据结构、会在 Spring Boot 里收发）——它们上来就讲 Stream/锁这些进阶能力。本篇把这块地基补齐。
+> **本篇定位**：Redis 专题的**地基文档，最先读**。同文件夹的 Streams 与 Pub/Sub 篇、分布式锁篇 **都假设你已经会用 Redis 基础**（会起 Redis、会用五种数据结构、会在 Spring Boot 里收发）——它们上来就讲 Stream/锁这些进阶能力。本篇把这块地基补齐。
 >
 > **难度假设**：完全没接触过 Redis。读完本篇，你能做到三件事：**起一个 Redis、在 `redis-cli` 里把五种数据结构敲一遍、在 Spring Boot（WebFlux）里跑通收发**。
 >
 > **技术栈**：Spring Boot 4.x + Spring Data Redis 4.x（响应式栈用 `spring-boot-starter-data-redis-reactive`，默认 Lettuce 客户端）。
 >
-> **读完这篇之后**：去读 [01-Streams 与 Pub/Sub](./01-Redis-Streams与PubSub实战.md)（数据流载体，对应 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 4-8 章的 Redis 部分）和 [02-分布式锁](./02-Redis分布式锁实战.md)（第 8-9 章的 Redisson/SETNX）。如果你对"响应式到底是什么"还不放心，先补 [Reactor 响应式入门](../Reactor响应式编程/01-Reactor响应式入门.md)。
+> **读完这篇之后**：下一步进入 Streams 与 Pub/Sub 篇（数据流载体，对应管数分离实战里用 Redis 做数据总线的部分）和分布式锁篇（Redisson/SETNX 做并发控制）。如果你对"响应式到底是什么"还不放心，可以先补响应式入门（`Mono`/`Flux` 心智、冷流热流、订阅机制）。
 
 ---
 
@@ -100,7 +100,7 @@ Redis 有五种**基础**数据结构。每种我都给：**一句话本质 + �
 
 **本质**：key → 一个字符串（也可以存数字，`INCR` 原子自增）。
 
-**什么时候用**：**缓存**（存 JSON、HTML、token）、**计数器**（浏览量、库存、序号——管数分离文档第 5 章用 `INCR` 生成 `seq` 单调序号）。
+**什么时候用**：**缓存**（存 JSON、HTML、token）、**计数器**（浏览量、库存、序号——管数分离实战里用 `INCR` 生成 `seq` 单调序号）。
 
 ```bash
 # SET 写入 / GET 读取
@@ -151,7 +151,7 @@ LTRIM feed 0 2    # 只留前 3 条
 LRANGE feed 0 -1  # 1, 2, 3
 ```
 
-> **验证**：`LRANGE queue 0 -1` 能按顺序看到 3 条。`LPUSH`+`RPOP` 就是最朴素的队列：一头进、另一头出，FIFO。**注意**：List 做队列是"弹出即删"，消息被消费后就不在了——需要持久回放、消费确认用 Stream（见 [01-Streams 与 Pub/Sub](./01-Redis-Streams与PubSub实战.md)）。
+> **验证**：`LRANGE queue 0 -1` 能按顺序看到 3 条。`LPUSH`+`RPOP` 就是最朴素的队列：一头进、另一头出，FIFO。**注意**：List 做队列是"弹出即删"，消息被消费后就不在了——需要持久回放、消费确认时改用 Stream（它会存下消息，支持按 ID 回放和消费组确认）。
 
 ### 2.3 Set（集合）——去重 + 集合运算
 
@@ -243,7 +243,7 @@ ZREVRANGE leaderboard 0 2        # bob 直接登顶
 | **Hash** | key 下的小字典 | `HSET` `HGET` `HINCRBY` | 存对象、字段级操作 |
 | **ZSet** | 带分数排序的集合 | `ZADD` `ZRANGEBYSCORE` `ZREVRANGE` | 排行榜、延迟队列 |
 
-> **本仓库用到哪些**：35 号文档（Stream/Pub/Sub/锁）、[01-Streams 与 Pub/Sub](./01-Redis-Streams与PubSub实战.md)、[02-分布式锁](./02-Redis分布式锁实战.md) 主要吃 **String（`INCR` seq、`SETNX` 锁）** 和 **Stream**；五种基础结构里 **String 是最常用的**，请重点掌握。
+> **本仓库用到哪些**：管数分离实战、Streams 与 Pub/Sub 篇、分布式锁篇主要吃 **String（`INCR` seq、`SETNX` 锁）** 和 **Stream**；五种基础结构里 **String 是最常用的**，请重点掌握。
 
 ---
 
@@ -273,7 +273,7 @@ PERSIST session:abc      # 取消过期，永不过期
 
 1. **内存会被吃光**：Redis 是内存数据库，key 只增不减，最终 OOM。TTL 是 Redis 的"垃圾回收"。
 2. **数据会过期变陈旧**：缓存的是"数据库的副本"，上游数据变了，缓存要自动失效，否则一直给旧数据。TTL 是"最短的保鲜期"。
-3. **防止 key 永远活着**：临时数据（验证码、session、分布式锁）如果不设过期，一旦持有者崩溃就永远删不掉——**分布式锁必须带过期，这是 [02-分布式锁](./02-Redis分布式锁实战.md) 的核心之一**。
+3. **防止 key 永远活着**：临时数据（验证码、session、分布式锁）如果不设过期，一旦持有者崩溃就永远删不掉——**分布式锁必须带过期，这是分布式锁篇的核心之一**。
 
 > **典型 TTL 策略**：验证码 5 分钟、session 30 分钟、临时 token 1 小时、热点数据 10 分钟~1 天。**没有银弹，按业务保鲜期定**。
 
@@ -295,7 +295,7 @@ redis.expire("session:abc", Duration.ofMinutes(30));                // EXPIRE
 | `spring-boot-starter-data-redis` | Lettuce/Jedis | `RedisTemplate`（同步） | 传统 MVC/阻塞栈 |
 | `spring-boot-starter-data-redis-reactive` | Lettuce（默认） | `ReactiveRedisTemplate`（`Mono`/`Flux`） | **WebFlux 响应式栈（本仓库）** |
 
-**本仓库 WebFlux 栈必须用 reactive 版**（为什么是铁律，第 5 章讲透）。35 号文档就是这么引的：
+**本仓库 WebFlux 栈必须用 reactive 版**（为什么是铁律，第 5 章讲透）。管数分离实战就是这么引的：
 
 ```xml
 <dependency>
@@ -599,14 +599,14 @@ flowchart TD
 
 > **铁律：WebFlux 响应式栈必须配响应式客户端。** 用 `spring-boot-starter-data-redis-reactive` + `ReactiveRedisTemplate`，绝对不要引 `spring-boot-starter-data-redis` 阻塞版。
 
-这条铁律不只对 Redis——**JDBC（MyBatis-Flex）、Redisson 的 `RLock` 也是阻塞 API**，在 WebFlux 里都必须用 `Schedulers.boundedElastic()` 隔离到弹性线程池，不能直接在 reactor 线程里调。35 号文档第 7 章、第 9 章就是这么处理的（`Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`）。
+这条铁律不只对 Redis——**JDBC（MyBatis-Flex）、Redisson 的 `RLock` 也是阻塞 API**，在 WebFlux 里都必须用 `Schedulers.boundedElastic()` 隔离到弹性线程池，不能直接在 reactor 线程里调。管数分离实战里就是这么处理的（`Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`）。
 
 **那什么时候可以用阻塞版？**
 
 - 你是**传统 MVC（Tomcat）项目**——用阻塞版完全合理（还要 `RedisTemplate`）。
 - 你是 WebFlux，但某个**低频、必须用阻塞 API**的调用（如 Redisson 锁）——用 `boundedElastic()` 隔离，别在事件循环线程里裸调。
 
-> **本仓库的答案**：全文（35 号文档及本专题）都是 WebFlux 响应式栈，Redis 一律 `ReactiveRedisTemplate`，阻塞 API（JDBC/Redisson）一律 `boundedElastic()` 隔离。
+> **本仓库的答案**：全文（管数分离实战及本专题）都是 WebFlux 响应式栈，Redis 一律 `ReactiveRedisTemplate`，阻塞 API（JDBC/Redisson）一律 `boundedElastic()` 隔离。
 
 ---
 
@@ -627,9 +627,9 @@ flowchart TD
 
 **接下来按顺序读**：
 
-1. [01-Streams 与 Pub/Sub](./01-Redis-Streams与PubSub实战.md)——Redis 的**数据流载体**（Stream 持久日志 + Pub/Sub 实时广播），对应 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 4、7 章的 Redis 部分。
-2. [02-分布式锁](./02-Redis分布式锁实战.md)——从 `SETNX` 到 Redisson 看门狗、fencing token，对应 35 号文档第 8-9 章。
-3. 如果对"响应式到底怎么流转"还想补，读 [Reactor 响应式入门](../Reactor响应式编程/01-Reactor响应式入门.md)（`Mono`/`Flux`、冷流热流、订阅机制）。
-4. 看完 01/02 再回头看 [35-管数分离实战](../../tutorials/spring-ai-2.0/35-管数分离实战-从Sinks到Kafka演进.md) 第 4-9 章，你会发现 Stream/锁/响应式的每个"为什么"都有答案了。
+1. Streams 与 Pub/Sub 篇——Redis 的**数据流载体**（Stream 持久日志 + Pub/Sub 实时广播）。
+2. 分布式锁篇——从 `SETNX` 到 Redisson 看门狗、fencing token 的完整演进。
+3. 如果对"响应式到底怎么流转"还想补，先看响应式入门（`Mono`/`Flux`、冷流热流、订阅机制）。
+4. 学完 Stream 和锁，再去对照管数分离实战里的 Redis 用法，你会发现 Stream/锁/响应式的每个"为什么"都有答案了。
 
 > **一句话记住 Redis**：**比数据库快、比 HashMap 大（跨进程共享）、数据结构丰富、命令原子**。地基打好了，后面 Stream 和锁都是在这五种结构上长出来的。

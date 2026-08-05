@@ -2,16 +2,16 @@
 
 > 这是 MCP 三部曲的下篇。
 >
-> **本文的核心价值是 §1：把 [05 篇](./05-MCP协议全解.md)的 Client 和 [06 篇](./06-MCP-Server开发实战.md)的 Server 真正拼起来跑通**——两个进程、配置、调用、调试、多租户上下文透传、跨进程 trace，一条龙讲清。
+> **本文的核心价值是 §1：把 MCP 协议篇配好的 Client 和 MCP Server 开发实战篇写好的 Server 真正拼起来跑通**——两个进程、配置、调用、调试、多租户上下文透传、跨进程 trace，一条龙讲清。
 >
 > §2 之后是高阶与生态（L4 + L5 + 附录），讲怎么把 MCP 从"一个 Server"做成"一个生态"。
 >
 > 三部曲路线：
-> - [05 = 入门 + Client 通关](./05-MCP协议全解.md)
-> - [06 = Server 开发实战](./06-MCP-Server开发实战.md)
+> - 05 = 入门 + Client 通关
+> - 06 = Server 开发实战
 > - **07（本文）= 端到端整合 + 高阶与生态**
 >
-> 前置：[05 篇](./05-MCP协议全解.md) + [06 篇](./06-MCP-Server开发实战.md)
+> 前提：你已按 MCP 协议篇配好一个 Client、按 MCP Server 开发实战篇写好一个 Server（即 05、06 的能力）。
 > 预计：1.5-2 天
 
 ---
@@ -73,7 +73,7 @@ flowchart LR
 
 ```
 demo-repo/
-├── time-mcp-server/         ← 进程 B（06 篇 §2 已写好）
+├── time-mcp-server/         ← 进程 B（Server 实战篇 §2 已写好）
 │   └── pom.xml
 └── agent-app/                ← 进程 A（本节会扩展）
     └── pom.xml
@@ -83,7 +83,7 @@ demo-repo/
 
 ### 1.2.1 进程 B：MCP Server（time-mcp-server）
 
-完整代码见 [06 篇 §2](./06-MCP-Server开发实战.md)。要点回顾：
+完整代码在 Server 实战篇 §2。要点回顾：
 
 ```yaml
 # application.yaml
@@ -255,7 +255,7 @@ public class ChatClientConfig {
 }
 ```
 
-> 注意注入的是 `ToolCallbackProvider[]`（数组），不是 `List<McpToolCallbackProvider>`——后者这个类型在 2.0 不存在。详见 [05 篇 §4.6](./05-MCP协议全解.md)。
+> 注意注入的是 `ToolCallbackProvider[]`（数组），不是 `List<McpToolCallbackProvider>`——后者这个类型在 2.0 不存在。详见 MCP 协议篇 §4.6。
 
 ---
 
@@ -470,7 +470,7 @@ mindmap
 
 **用 Jaeger / Zipkin 打开**就能看到一条横跨两个进程的链路。W3C Trace Context 的 `traceparent` header 会随 HTTP 请求透传——**这是 MCP 跨进程可观测性的核心**。
 
-> 详细的 OTel GenAI 埋点 attribute 见 [06 篇 §10](./06-MCP-Server开发实战.md)。
+> 详细的 OTel GenAI 埋点 attribute 见 MCP Server 开发实战篇 §10。
 
 ---
 
@@ -523,7 +523,7 @@ curl -X POST http://localhost:8080/api/chat/ask \
 | Agent App 启动后工具列表是空的 | 进程 A 启动日志 | yaml 缩进 / `enabled: false` / Server URL 写错 | 比对 §1.2.2 的 yaml |
 | LLM 没调用工具 | curl 返回时 | 工具 description 写得不清楚 / LLM 模型不支持 tool calling | 改 description（更像"什么时候该用"），换支持 tool calling 的模型 |
 | Server 收到调用但 `McpMeta` 是空 Map | 进程 B 业务方法 | 进程 A 没传 `toolContext` | 检查 Controller 里 `.toolContext(...)` 是否调用 |
-| HTTP 401 / 403 | 协议层 | 进程 B 加了鉴权但进程 A 没带 token | 见 [06 篇 §8](./06-MCP-Server开发实战.md) 配 token |
+| HTTP 401 / 403 | 协议层 | 进程 B 加了鉴权但进程 A 没带 token | 见 MCP Server 开发实战篇 §8 配 token |
 | 调用一次后挂起 20 秒超时 | 进程 A | Server 处理慢 / `request-timeout` 不够 | 改 `request-timeout: 60s` 或异步化 |
 | `protocolVersion mismatch` | 握手期 | 两边 SDK 版本差太多 | 升级较老的一方 |
 
@@ -537,9 +537,9 @@ curl -X POST http://localhost:8080/api/chat/ask \
 2. **多租户验证**：调 `/api/chat/askAsUser`，在 Server 端打印 `McpMeta`，看到 userId 透传成功。
 3. **跨进程 trace**：开 OTLP + Zipkin（docker 一行起），看到横跨两个进程的链路。
 4. **断点验证**：按 §1.8.1 的 5 个断点位置逐个打断点，看完整链路。
-5. **加第二个 Server**：再起一个 06 篇 §2 的 Server（改端口为 8082），Client 同时连两个，验证工具列表合并。
+5. **加第二个 Server**：再起一个 Server 实战篇 §2 的 Server（改端口为 8082），Client 同时连两个，验证工具列表合并。
 6. **失败传播**：让 Server 业务方法抛异常，看 Client 侧的报错是什么、LLM 能否自修复。
-7. **生产化**：给 Server 加 Bearer Token（[06 篇 §8.2](./06-MCP-Server开发实战.md)），Client 侧配 `McpSyncClientCustomizer` 注入 token，验证 401。
+7. **生产化**：给 Server 加 Bearer Token（Server 实战篇 §8.2），Client 侧配 `McpSyncClientCustomizer` 注入 token，验证 401。
 
 ---
 
@@ -1117,7 +1117,7 @@ public ReportStatus getReportStatus(@McpToolParam(description = "任务 ID") Str
 }
 ```
 
-**配合 Progress 通知**（06 篇 §6 讲过）：Server 主动推 `notifications/progress`，Client 拿到展示进度条。
+**配合 Progress 通知**（Server 实战篇 §6 讲过）：Server 主动推 `notifications/progress`，Client 拿到展示进度条。
 
 ### 6.5 启动性能
 
@@ -1134,7 +1134,7 @@ stdio 模式下，Client 每次启动会拉起 Server 进程。Spring Boot 启�
 
 ## 7. 安全红线（L5 加深版）
 
-[06 篇](./06-MCP-Server开发实战.md) §8-§9 讲了基础鉴权和限流，本节讲**深水区**。
+Server 实战篇 §8-§9 讲了基础鉴权和限流，本节讲**深水区**。
 
 ### 7.1 Prompt Injection 防护
 
@@ -1236,7 +1236,7 @@ public class HrTools {
 
 ### 7.4 红队测试
 
-详见 [14-安全工程与红队.md](./14-安全工程与红队.md)。MCP Server 红队的常见测试项：
+MCP Server 红队的常见测试项：
 
 1. **越权**：用 tenantA 的 token 调用 tenantB 的数据。
 2. **参数注入**：orderId 传 `'; DROP TABLE orders;--`。
@@ -1628,7 +1628,7 @@ spring:
 
 | 报错 | 原因 | 解决 |
 |------|------|------|
-| `Claude Desktop 看不到工具` | 配置文件路径 / 格式 | 看 [06 §13](./06-MCP-Server开发实战.md) |
+| `Claude Desktop 看不到工具` | 配置文件路径 / 格式 | 看 Server 实战篇 §13 |
 | `Inspector 显示 "Failed to fetch"` | CORS / 网络 | 加 CORS 配置 |
 | `Tool description 显示乱码` | 编码问题 | UTF-8 |
 | `Inspector 连不上 SSE` | 防火墙 | 开端口 |
@@ -1797,16 +1797,6 @@ class OrderTools {                          // 给 Agent / LLM
 
 ## 11. 相关文档
 
-- [05-MCP协议全解.md](./05-MCP协议全解.md) —— 入门 + Client 通关
-- [06-MCP-Server开发实战.md](./06-MCP-Server开发实战.md) —— Server 开发实战
-- [14-安全工程与红队.md](./14-安全工程与红队.md) —— 红队深入
-- [15-可观测性与成本治理.md](./15-可观测性与成本治理.md) —— OTel + 监控
-- [18-大规模Agent平台与数据基础设施.md](./18-大规模Agent平台与数据基础设施.md) —— Hub 平台化
-- [32-多源检索Agent与MCP生态整合.md](./32-多源检索Agent与MCP生态整合.md) —— 综合压轴
 - [MCP 协议规范](https://modelcontextprotocol.io/)
 - [MCP Java SDK](https://github.com/modelcontextprotocol/java-sdk)
 - [Spring AI MCP Reference](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot.html)
-
----
-
-回到 [00-目录索引.md](./00-目录索引.md)。

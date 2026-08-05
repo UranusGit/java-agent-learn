@@ -2,9 +2,9 @@
 
 > **这份文档是什么**：一篇**独立专题**，讲 **Debezium**——业界主流的 **CDC（Change Data Capture，变更数据捕获）** 工具。它监听数据库的变更日志，把"数据库的每一次改动"自动变成事件流。
 >
-> **写给谁**：读完了 [Spring Cloud Stream 专题 04 生产级进阶](../Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md) 方向 A（Outbox 模式）的人。那篇讲了 Outbox 的"轮询投递"，并提到"CDC 是更优雅但更重的方案"。**本篇就是那个 CDC 的深度落地。**
+> **写给谁**：已经理解 Outbox 模式（业务数据 + outbox 事件写同一事务、再由投递器轮询扫表发 Kafka）的人。那套方案用的是"轮询投递"，并提到"CDC 是更优雅但更重的方案"。**本篇就是那个 CDC 的深度落地。**
 >
-> **和消息框架的关系**：CDC 是 Outbox 模式的进阶投递方式（04 方向 A.4 只讲概念，本篇落地）。它本身不是 Spring Cloud Stream，但常和消息框架配合——Debezium 把变更发到 Kafka，下游服务用 Kafka（`@KafkaListener`）消费。
+> **和消息框架的关系**：CDC 是 Outbox 模式的进阶投递方式（Outbox 原本靠轮询扫表，CDC 改用读变更日志，本篇讲后者落地）。它本身不是 Spring Cloud Stream，但常和消息框架配合——Debezium 把变更发到 Kafka，下游服务用 Kafka（`@KafkaListener`）消费。
 >
 > **版本前提（已校验）**：Debezium 3.x（2025 最新）+ Kafka Connect + PostgreSQL 16。配置对照 [Confluent Debezium PG 文档](https://docs.confluent.io/kafka-connectors/debezium-postgres-source/current/overview.html) 和 [Debezium 官方示例](https://github.com/debezium/debezium-examples/blob/main/tutorial/docker-compose-postgres.yaml) 校验。
 
@@ -23,9 +23,9 @@
 
 ## 第 1 章：为什么需要 CDC——轮询的痛点
 
-### 1.1 回顾 Outbox 轮询投递（04 方向 A.3）
+### 1.1 回顾 Outbox 轮询投递
 
-[04 生产级进阶](../Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md) 讲过：Outbox 模式里，业务数据 + outbox 事件写同一事务，再用一个 `@Scheduled` 投递器定时扫 outbox 表发 Kafka。
+先回顾一下：Outbox 模式里，业务数据 + outbox 事件写同一事务，再用一个 `@Scheduled` 投递器定时扫 outbox 表发 Kafka。
 
 轮询投递有两个痛点：
 
@@ -257,7 +257,7 @@ flowchart LR
 
 ### 4.4 Outbox Event Router SMT（专门给 Outbox 用）
 
-04 方向 A.4 提过，Debezium 有专门给 Outbox 模式的 SMT。它把 outbox 表的行**自动路由**：用 `aggregate_id` 当 Kafka key、`payload` 当消息体、`event_type` 决定 topic。
+Debezium 有专门给 Outbox 模式的 SMT——Outbox Event Router。它把 outbox 表的行**自动路由**：用 `aggregate_id` 当 Kafka key、`payload` 当消息体、`event_type` 决定 topic。
 
 ```json
 "transforms": "outbox",
@@ -276,11 +276,11 @@ flowchart LR
 
 ## 第 5 章：Outbox + CDC 落地
 
-把 04 方向 A 的 Outbox 模式用 CDC 投递（而不是轮询）。
+把 Outbox 模式用 CDC 投递（而不是轮询）。
 
 ### 5.1 业务代码（和轮询方案完全一样）
 
-业务代码不变——还是事务里写业务数据 + outbox 表（见 [04 方向 A.3.2](../Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md)）。**没有 `@Scheduled` 投递器了**——Debezium 监听 outbox 表自动投递。
+业务代码不变——还是事务里写业务数据 + outbox 表。**没有 `@Scheduled` 投递器了**——Debezium 监听 outbox 表自动投递。
 
 ### 5.2 Debezium 监听 outbox 表 + Outbox SMT
 
@@ -315,7 +315,7 @@ flowchart TD
 
 ### 5.3 效果对比轮询
 
-| 维度 | 轮询投递（04 A.3） | CDC 投递（本篇） |
+| 维度 | 轮询投递 | CDC 投递（本篇） |
 |------|------------------|----------------|
 | 延迟 | 秒级（轮询间隔） | **毫秒级** |
 | DB 压力 | 有（定时查表） | **无**（读 WAL） |
@@ -373,11 +373,9 @@ flowchart TD
 
 ## 配套学习资料
 
-- [Spring Cloud Stream 专题 04 生产级进阶 方向 A](../Kafka消息队列实战专题/04-生产级进阶-Outbox与Schema与分区调优.md)（Outbox 轮询投递，本篇是其 CDC 升级）
 - [Confluent：Debezium PG connector 文档](https://docs.confluent.io/kafka-connectors/debezium-postgres-source/current/overview.html)（配置权威）
 - [Debezium 官方 docker-compose 示例](https://github.com/debezium/debezium-examples/blob/main/tutorial/docker-compose-postgres.yaml)（搭建模板）
 - [Debezium 官方博客：Outbox 模式](https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/)（Outbox+CDC 经典）
-- [Docker 与 Docker-Compose 入门](../Docker与工具/01-Docker与Docker-Compose入门.md)（本章 docker-compose 的基础）
 
 ---
 

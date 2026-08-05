@@ -2,7 +2,7 @@
 
 > 把 L1 提到的 `ToolCallingAdvisor` 彻底吃透。本文是 Agent 应用的基石。
 >
-> 前置：[`./01-2.0基础重塑.md`](./01-2.0基础重塑.md)
+> 前提：你已跑通一个最小 Spring AI 2.0 项目，见过 `ToolCallingAdvisor` 的默认自动注册（即 01 的能力）。
 > 预计：半天
 
 ---
@@ -215,7 +215,7 @@ ToolCallingManager toolCallingManager() {
 | `alwaysThrow=true` | 工具失败直接抛，调用方 catch | 工具失败必须中止流程（如支付） |
 | `alwaysThrow=false`（默认） | 把异常塞回 LLM，让 LLM 自我修复 | 大部分场景，参考 Claude Code 设计 |
 
-**Anthropic 推荐**：让 LLM 看到失败（[Claude Code 源码启示录](../../reference/生产化与运营/12-ClaudeCode源码启示录.md)）。
+**Anthropic 推荐**：让 LLM 看到失败——把异常信息（含 stderr）回填给模型，让它基于错误自我修复，而不是直接中断。
 
 ### 4.3 配置项
 
@@ -513,7 +513,7 @@ sequenceDiagram
 
 **原因**：手动模式忘了加 `AdvisorParams.toolCallingAdvisorAutoRegister(false)`。
 
-**解决**：见 [`./04-流式响应与Reactor深度.md`](./04-流式响应与Reactor深度.md) §6。
+**解决**：手动模式每次调用都要显式传 `AdvisorParams.toolCallingAdvisorAutoRegister(false)`，并确认 ChatModel 没有自己处理工具执行（2.0 已 deprecate）；流式（`.stream()`）场景下工具执行阶段不输出 token，只有最终自然语言回答流式返回，别把这两段混淆。
 
 ### 10.3 ToolContext 丢失
 
@@ -583,6 +583,6 @@ chatClient.prompt()
 >
 > 因此历史上某些社区文章（包括早期版本的本系列）说"写 `@Bean ChatClient` 会短路 ToolCallingAdvisor 自动注册"是**错误归因**。早期你在自定义 ChatClient 下遇到的 `.stream()` 不调工具的真实原因通常是：(1) 自己覆盖了 `defaultAdvisors(...)` 但漏装了 `ToolCallingAdvisor`（实际上即使没装也会被 `build()` 兜底注入，问题更可能出在 tool 注册路径）；(2) ChatModel 自己处理了工具执行（2.0 已 deprecate）；(3) provider 的 stop-reason 不符合默认 `ToolExecutionEligibilityChecker`。遇到类似现象请从这三点排查，而不是去给 ChatClient 加 Bean。
 >
-> 如果你想显式控制工具循环（比如自定义观测、打断），可以手动构造 `ToolCallingAdvisor.builder().toolCallingManager(...).advisorOrder(...).build()`，参见 [`./04-流式响应与Reactor深度.md` §C](./04-流式响应与Reactor深度.md)。
+> 如果你想显式控制工具循环（比如自定义观测、打断），可以手动构造 `ToolCallingAdvisor.builder().toolCallingManager(...).advisorOrder(...).build()` 并设置 order，再把该 Advisor 挂到 ChatClient 的 advisors 上。
 
-完成后进入 [`./03-Advisor链全解.md`](./03-Advisor链全解.md)。
+完成后进入下一节：**03-Advisor 链全解**——理解 BaseAdvisor vs Call/Stream、order 设计，把记忆、日志、校验等横切关注点织进调用链。

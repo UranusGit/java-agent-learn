@@ -1,7 +1,7 @@
 # LangChain4j 04 - AiServices 声明式接口
 
 > 目标：理解 `AiServices` 如何把"组装零件"变成"声明接口"，掌握 SystemMessage、结构化输出、Tool 整合。
-> 前置：已完成 01-03。
+> 前提：你已经手动用过 `ChatModel`、`ChatMemory`、`@Tool`（即 01-03 的能力）。
 
 ---
 
@@ -423,4 +423,4 @@ class CommentService {
 - [ ] AiServices 比"手动拼装"好在哪里？
 - [ ] 在生产场景，你会怎么把 AiServices 和 Spring Boot 结合？
 
-写一篇 300-500 字的学习笔记存到 `desc/notes/W1-LangChain4j基础.md`。
+写一篇 300-500 字的学习笔记存到 `docs/notes/W1-LangChain4j基础.md`。

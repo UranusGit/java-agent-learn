@@ -1038,7 +1038,7 @@ public class MultiQueryTransformer implements QueryTransformer {
 }
 ```
 
-> 注意：`MultiQueryTransformer` 是本文设计的简化版，真正 RAG-Fusion 需要在 retriever 层做并行检索 + RRF 融合。完整实现见第 5 章。
+> 注意：`MultiQueryTransformer` 是本文设计的简化版，真正 RAG-Fusion 需要在 retriever 层做并行检索 + RRF 融合（第 5 章给出完整实现）。
 
 ### 4.4 验证
 
@@ -1951,7 +1951,7 @@ public Map<String, RagMetrics> compareChunkSize() {
 
 ### 8.8 典型量化结果（参考）
 
-> 以下数字基于 [`docs/reference/理论基础/02-RAG深度优化.md`](../../reference/理论基础/02-RAG深度优化.md) 的多轮对照实验，仅供参考，你的数据集结论可能不同：
+> 以下数字来自前期针对同一数据集的对照实验，仅供参考，你的数据集结论可能不同：
 
 ```
 chunk_400:   faithfulness=0.78  relevance=0.82  precision=0.71
@@ -2174,7 +2174,7 @@ curl -X POST 'http://localhost:8080/rag/ask?q=退款政策' -w '\n%{time_total}s
 
 | 方向 | 说明 | 参考资源 |
 |------|------|---------|
-| Embedding 微调 | 用业务数据微调 Embedding 模型，提升召回 | [reference/工程架构/07-模型微调.md](../../reference/工程架构/07-模型微调.md) |
+| Embedding 微调 | 用业务数据微调 Embedding 模型，提升召回 | 模型微调专题（LoRA / hard negative） |
 | ColBERT / late-interaction | 比 cross-encoder 快、比 bi-encoder 准 | RAGatouille 项目 |
 | Graph RAG | 用知识图谱增强 RAG | Microsoft GraphRAG |
 | Agentic RAG | 让 Agent 决定检索策略、多轮检索 | LangGraph / Alibaba Graph |
@@ -2184,9 +2184,6 @@ curl -X POST 'http://localhost:8080/rag/ask?q=退款政策' -w '\n%{time_total}s
 
 ## 相关文档
 
-- [`./05-MCP协议全解.md`](./05-MCP协议全解.md) —— 会话持久化（与 RAG 共用向量库场景）
-- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— 通用评估闭环（本文是 RAG 专用）
-- [`../../reference/理论基础/02-RAG深度优化.md`](../../reference/理论基础/02-RAG深度优化.md) —— RAG 理论深度版
 - [Spring AI RAG Reference](https://docs.spring.io/spring-ai/reference/api/retrieval-augmented-generation.html)
 - [Spring AI ETL Pipeline](https://docs.spring.io/spring-ai/reference/api/etl-pipeline.html)
 
@@ -2197,5 +2194,3 @@ curl -X POST 'http://localhost:8080/rag/ask?q=退款政策' -w '\n%{time_total}s
 2. 一步步把"5 分钟 demo"升级成生产系统（持久化 / 切分 / 改写 / 混合检索 / rerank / 引用 / 评估 / 多租户）
 3. 用 LLM-as-Judge 评估闭环量化对比不同策略
 4. 做出生产化决策（增量索引、多租户隔离、缓存、监控）
-
-回到 [`./00-目录索引.md`](./00-目录索引.md) 继续后续等级学习。

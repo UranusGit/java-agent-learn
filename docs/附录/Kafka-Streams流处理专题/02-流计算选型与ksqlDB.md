@@ -2,9 +2,9 @@
 
 > **这份文档是什么**：一篇**独立专题**，把"在消息流上做实时计算"这件事放回**十字路口**——`Kafka Streams`、`Flink`、`ksqlDB` 三条路怎么选？选完怎么落地？本篇给出**三方案选型对比** + **ksqlDB 实操**（用 SQL 写流处理）+ **Kafka Streams 高级编程**（自定义状态存储、聚合优化、交互式查询 REST 化）。
 >
-> **写给谁**：已经读完了 [01 Kafka Streams 流处理实战](./01-Kafka-Streams流处理实战.md)（窗口/JOIN/状态查询）的人。01 是"Kafka Streams 怎么用"，本篇是"**什么时候用 Kafka Streams、什么时候用别人**"+"Kafka Streams 用到生产级该知道的高级姿势"。
+> **写给谁**：已经会 Kafka Streams 的窗口/JOIN/状态查询（前一篇的能力）的人。前一篇是"Kafka Streams 怎么用"，本篇是"**什么时候用 Kafka Streams、什么时候用别人**"+"Kafka Streams 用到生产级该知道的高级姿势"。
 >
-> **和 Kafka 专题的关系**：[Kafka 进阶实战第 3 章](../Kafka消息队列实战专题/02-Kafka进阶实战.md) 只教了 Kafka Streams 的"hello world"（词频统计三步走）。01 是它的深度展开（窗口、JOIN、状态查询）。**本篇是再往上一层**：从"一种方案怎么用"上升到"多种方案怎么选"，并补齐 01 没讲的**自定义状态存储、聚合优化、分布式交互查询**。
+> **和 Kafka 专题的关系**：前面的入门只教了 Kafka Streams 的"hello world"（词频统计三步走）。前一篇是它的深度展开（窗口、JOIN、状态查询）。**本篇是再往上一层**：从"一种方案怎么用"上升到"多种方案怎么选"，并补齐前一篇没讲的**自定义状态存储、聚合优化、分布式交互查询**。
 >
 > **版本前提（已校验）**：Spring Boot **4.1.0**（父工程，BOM 托管所有依赖版本）+ `spring-boot-starter-kafka` + `org.apache.kafka:kafka-streams` + Kafka 3.x + ksqlDB（Confluent 7.7.x，`cp-ksqldb-server`）。Kafka Streams DSL 对照 [Kafka 官方 Streams DSL](https://kafka.apache.org/41/streams/developer-guide/dsl-api.html) 校验。
 
@@ -47,7 +47,7 @@ flowchart LR
 
 ### 1.2 Kafka Streams：库（和 01 同一套）
 
-[01 第 1 章](./01-Kafka-Streams流处理实战.md#-第-1-章为什么需要流处理批处理-vs-流处理) 已铺过：`@EnableKafkaStreams` + `StreamsBuilder`，`builder.stream("orders")` 读流 → 算子链 → `to()` 写回。它是**库**意味着：
+前面第 1 章已铺过：`@EnableKafkaStreams` + `StreamsBuilder`，`builder.stream("orders")` 读流 → 算子链 → `to()` 写回。它是**库**意味着：
 
 - **零额外部署**：跑在 Spring Boot 进程里，依赖 `kafka-streams` 即可。
 - **和 Spring Boot 天然集成**：配置走 `spring.kafka.streams.*`，结果 store 直接交互查询。
@@ -104,13 +104,13 @@ flowchart TD
     Q2 -->|"规模大、要重 ETL / 批流统一"| R4["Flink<br/>（哪怕进出都是 Kafka 也得换）"]
 ```
 
-> **本篇的立场**：主推 **Kafka Streams**（和 01 一致，因为我们的数据源就是 Kafka、团队是 Spring 技术栈），但**用第 2 章把 ksqlDB 也讲透**——很多"临时分析"场景，起一个 ksqlDB 容器比写一整套 Java 拓扑快得多。第 3~5 章则把 Kafka Streams 推到生产级。
+> **本篇的立场**：主推 **Kafka Streams**（和前一篇一致，因为我们的数据源就是 Kafka、团队是 Spring 技术栈），但**用第 2 章把 ksqlDB 也讲透**——很多"临时分析"场景，起一个 ksqlDB 容器比写一整套 Java 拓扑快得多。第 3~5 章则把 Kafka Streams 推到生产级。
 
 **本章验证（选型不是写代码，是一道决策题演练）**：
 
 ```text
 场景 A：订单流(orders) JOIN 用户流(users)，补全信息后写回 enriched-orders，团队全是 Java。
-        → 选 Kafka Streams（01 第 3 章就是现成答案）
+        → 选 Kafka Streams（前一篇第 3 章就是现成答案）
 
 场景 B：业务想"看一眼前 10 商品每 5 分钟销量"，不想写 Java，就想用 SQL。
         → 选 ksqlDB（第 2 章现成答案）
@@ -123,11 +123,11 @@ flowchart TD
 
 ## 第 2 章：ksqlDB 实操——用 SQL 写流处理
 
-> 前置认知：ksqlDB 是**独立服务**，不跑在 Spring Boot 里。所以这一章**没有 Java 代码**，全是 SQL + Docker。但和 01 的场景完全复用——还是 `orders` / `users` 两个 topic，你会直观看到"同一个需求，Java DSL 写了三章，SQL 三行搞定"。
+> 前置认知：ksqlDB 是**独立服务**，不跑在 Spring Boot 里。所以这一章**没有 Java 代码**，全是 SQL + Docker。但和 前一篇的场景完全复用——还是 `orders` / `users` 两个 topic，你会直观看到"同一个需求，Java DSL 写了三章，SQL 三行搞定"。
 
 ### 2.1 起 ksqlDB 服务（Docker，连接到已有的 Kafka）
 
-假设你已经有一个 Kafka 在 `localhost:9092`（01 用的就是这个）。用 Docker 起 ksqlDB server：
+假设你已经有一个 Kafka 在 `localhost:9092`（前一篇用的就是这个）。用 Docker 起 ksqlDB server：
 
 ```bash
 # 起 ksqlDB server（连已有的 Kafka）
@@ -166,7 +166,7 @@ CREATE STREAM orders (
 );
 ```
 
-这等价于 01 里的 `builder.stream("orders", Consumed.with(Serdes.String(), new JsonSerde<>(Order.class)))`——**只是把 Java 换成了 SQL**。
+这等价于前一篇里的 `builder.stream("orders", Consumed.with(Serdes.String(), new JsonSerde<>(Order.class)))`——**只是把 Java 换成了 SQL**。
 
 ### 2.3 即时查询：SELECT ... EMIT CHANGES
 
@@ -201,7 +201,7 @@ CREATE TABLE orders_per_product AS
   EMIT CHANGES;
 ```
 
-窗口版（滚动窗口，等价于 01 第 2 章的 `TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(5))`）：
+窗口版（滚动窗口，等价于 前一篇第 2 章的 `TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(5))`）：
 
 ```sql
 CREATE TABLE orders_per_5min AS
@@ -231,11 +231,11 @@ SELECT productId, cnt FROM orders_per_product WHERE ROWKEY = 'p001';
 SELECT productId, cnt FROM orders_per_product EMIT CHANGES;
 ```
 
-> **KStream/KTable 在 SQL 里就是 STREAM/TABLE**，和 01 第 3.1 节的概念一一对应。`ROWKEY` 是隐式主键列（就是 Kafka 记录的 key）。
+> **KStream/KTable 在 SQL 里就是 STREAM/TABLE**，和前一篇第 3.1 节的概念一一对应。`ROWKEY` 是隐式主键列（就是 Kafka 记录的 key）。
 
-### 2.5 ksqlDB 的 JOIN：和 01 第 3 章同一个需求
+### 2.5 ksqlDB 的 JOIN：和前一篇第 3 章同一个需求
 
-01 用 Java 做"订单流 JOIN 用户表补全信息"，ksqlDB 三行：
+前一篇用 Java 做"订单流 JOIN 用户表补全信息"，ksqlDB 三行：
 
 ```sql
 -- 先声明用户表（注意 TABLE 要声明 PRIMARY KEY，即 Kafka 记录的 key）
@@ -274,7 +274,7 @@ SELECT productId, userId, name, level FROM enriched_orders EMIT CHANGES;
 # p001 | u001 | Alice | gold
 ```
 
-> **对比 01 的 Java 实现**：同样的"流 JOIN 表 + co-partition 前提"（第 3 章 3.2/3.3），ksqlDB 完全隐藏了 `GlobalKTable`/co-partition 这些概念——代价是"为什么能 JOIN"对你透明了。**这正是选型的本质：可维护性 vs 控制力。**
+> **对比前一篇的 Java 实现**：同样的"流 JOIN 表 + co-partition 前提"（前一篇第 3 章 3.2/3.3），ksqlDB 完全隐藏了 `GlobalKTable`/co-partition 这些概念——代价是"为什么能 JOIN"对你透明了。**这正是选型的本质：可维护性 vs 控制力。**
 
 ### 2.6 ksqlDB 与 Kafka Streams 的关系——底层是同一个引擎
 
@@ -289,9 +289,9 @@ flowchart LR
     TOPO --> CL["changelog topic 容错"]
 ```
 
-- 状态存储：都是本地 RocksDB（01 第 4 章那个概念）。
+- 状态存储：都是本地 RocksDB（前一篇第 4 章那个概念）。
 - 容错：都靠 Kafka changelog topic 重建状态。
-- 所以 01 学的"窗口/JOIN/状态"概念，在 ksqlDB 里**全部复用**。
+- 所以前一篇学的"窗口/JOIN/状态"概念，在 ksqlDB 里**全部复用**。
 
 **什么时候用 ksqlDB、什么时候用 Kafka Streams**：
 
@@ -306,7 +306,7 @@ flowchart LR
 
 ## 第 3 章：自定义状态存储——不用 Materialized 默认仓库
 
-> 01 第 4 章用的是 `Materialized.as("product-total")`——这是 DSL 帮你建的**默认状态仓库**（内部是持久化 KeyValueStore）。但生产里经常要"自定义"：**想控制 store 的 Serde、想用 Transformer 手工维护状态、想换一种存储语义**。这一章讲自定义状态存储的两条路。
+> 前一篇第 4 章用的是 `Materialized.as("product-total")`——这是 DSL 帮你建的**默认状态仓库**（内部是持久化 KeyValueStore）。但生产里经常要"自定义"：**想控制 store 的 Serde、想用 Transformer 手工维护状态、想换一种存储语义**。这一章讲自定义状态存储的两条路。
 
 ### 3.1 为什么需要自定义
 
@@ -409,7 +409,7 @@ flowchart LR
 
 ### 3.3 验证：交互查询自定义 store
 
-自定义 store 一旦 `addStateStore` 注册，**同样可以被交互查询**（01 第 4 章那套查询方式直接复用）：
+自定义 store 一旦 `addStateStore` 注册，**同样可以被交互查询**（前一篇第 4 章那套查询方式直接复用）：
 
 ```java
 import org.apache.kafka.streams.state.QueryableStoreTypes;
@@ -430,7 +430,7 @@ public class CustomStoreController {
 
     @GetMapping("/summary/{productId}")
     public ProductSummary getSummary(@PathVariable String productId) {
-        // ▼ 和 01 第 4 章一模一样的查询方式，store 名换成自定义的
+        // ▼ 和 前一篇第 4 章一模一样的查询方式，store 名换成自定义的
         ReadOnlyKeyValueStore<String, ProductSummary> store = iqService.getQueryableStore(
                 "product-summary", QueryableStoreTypes.keyValueStore());
         return store.get(productId);
@@ -465,7 +465,7 @@ curl http://localhost:8080/summary/p001
 
 ## 第 4 章：聚合优化——从 count 到生产级聚合
 
-> 01 第 2/5 章用 `count()` 做聚合。生产里三个痛点：**要自定义聚合逻辑**（用 `aggregate`）、**中间结果刷屏**（用 `suppress`）、**吞吐与乱序**（调优参数 + emit 策略）。这一章逐个解决。
+> 前一篇第 2/5 章用 `count()` 做聚合。生产里三个痛点：**要自定义聚合逻辑**（用 `aggregate`）、**中间结果刷屏**（用 `suppress`）、**吞吐与乱序**（调优参数 + emit 策略）。这一章逐个解决。
 
 ### 4.1 用 aggregate 替代 count：自定义累加器
 
@@ -514,7 +514,7 @@ public class AggregateTopology {
 
 ### 4.2 suppress：别让中间结果刷屏
 
-窗口聚合默认**每来一条就输出一次**（01 第 5 章验证里看到 `p001 1`、`p001 2`）。吞吐高时输出 topic 会被刷爆。**`suppress`** 把中间结果攒起来，**只在窗口关闭时输出一条最终值**：
+窗口聚合默认**每来一条就输出一次**（前一篇第 5 章验证里看到 `p001 1`、`p001 2`）。吞吐高时输出 topic 会被刷爆。**`suppress`** 把中间结果攒起来，**只在窗口关闭时输出一条最终值**：
 
 ```java
 import org.apache.kafka.common.serialization.Serdes;
@@ -569,7 +569,7 @@ docker exec -it kafka kafka-console-producer --bootstrap-server localhost:9092 -
 > {"productId":"p001","userId":"u001","amount":50}
 > {"productId":"p001","userId":"u001","amount":25}
 
-# 不 suppress（01 第 5 章）：立刻看到 p001 1 / p001 2 / p001 3（3 条）
+# 不 suppress（前一篇第 5 章）：立刻看到 p001 1 / p001 2 / p001 3（3 条）
 # suppress 后：窗口关闭前什么都不输出，关闭瞬间只有 1 条 p001 3
 docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 \
   --topic orders-per-5min-final --from-beginning --property print.key=true
@@ -625,7 +625,7 @@ docker exec -it kafka kafka-topics --bootstrap-server localhost:9092 --list | gr
 
 ### 4.4 乱序与 emit 策略：别把结果输出错时间
 
-事件时间乱序（01 第 2.5 节 Grace 那套）。除了 grace，还能控制**窗口结果何时输出**：
+事件时间乱序（前一篇第 2.5 节 Grace 那套）。除了 grace，还能控制**窗口结果何时输出**：
 
 ```java
 import org.apache.kafka.streams.kstream.EmitStrategy;
@@ -661,7 +661,7 @@ docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 \
 
 ## 第 5 章：交互式查询 REST 化——分布式查询的正确姿势
 
-> 01 第 4/5 章教的交互查询是**单机版**：`iqService.getQueryableStore("product-total", ...)` 直接查。但它有个致命前提——**key 恰好落在本实例**。多实例部署时状态是分片的（01 第 4.3 节提了一句），这一章把它**做成真正的 REST 服务**：本机就查，异地就转发。
+> 前一篇第 4/5 章教的交互查询是**单机版**：`iqService.getQueryableStore("product-total", ...)` 直接查。但它有个致命前提——**key 恰好落在本实例**。多实例部署时状态是分片的（前一篇第 4.3 节提了一句），这一章把它**做成真正的 REST 服务**：本机就查，异地就转发。
 
 ### 5.1 先交代"状态分片"这个前提
 
@@ -778,7 +778,7 @@ sequenceDiagram
 
 ### 5.4 窗口聚合 store 的 REST 化（补全类型）
 
-聚合是窗口 store 时（01 第 5.3 节），同一套 REST 框架，查询类型换成 `windowStore()` + `fetch` 时间范围：
+聚合是窗口 store 时（前一篇第 5.3 节），同一套 REST 框架，查询类型换成 `windowStore()` + `fetch` 时间范围：
 
 ```java
 import org.apache.kafka.streams.state.QueryableStoreTypes;
@@ -854,29 +854,26 @@ curl "http://localhost:8080/window?productId=p001&from=2026-08-01T00:00:00Z&to=2
 
 ### 6.2 决策一句话
 
-> **Kafka 进 Kafka 出的轻量实时计算 → Kafka Streams（库，嵌 Spring Boot，01 是基础本篇是进阶）；想用 SQL 快速分析 → ksqlDB（同一引擎换个壳）；数据不只在 Kafka、要重 ETL/批流统一 → Flink。** 判断标志就一句：**"我愿不愿意为这个计算额外部署/维护一套东西？"** 不想 → Kafka Streams；只想写 SQL → ksqlDB；愿意养大数据平台 → Flink。
+> **Kafka 进 Kafka 出的轻量实时计算 → Kafka Streams（库，嵌 Spring Boot，前一篇是基础本篇是进阶）；想用 SQL 快速分析 → ksqlDB（同一引擎换个壳）；数据不只在 Kafka、要重 ETL/批流统一 → Flink。** 判断标志就一句：**"我愿不愿意为这个计算额外部署/维护一套东西？"** 不想 → Kafka Streams；只想写 SQL → ksqlDB；愿意养大数据平台 → Flink。
 
-### 6.3 本篇与 01 的分工
+### 6.3 本篇与前一篇的分工
 
 | 能力 | 在哪学 |
 |------|--------|
-| 窗口、JOIN、状态查询（入门~中级） | [01 Kafka Streams 流处理实战](./01-Kafka-Streams流处理实战.md) |
+| 窗口、JOIN、状态查询（入门~中级） | Kafka Streams 流处理实战篇 |
 | 三种方案选型 + ksqlDB SQL 实操 | 本篇第 1~2 章 |
 | 自定义状态存储、聚合优化、分布式交互查询 | 本篇第 3~5 章 |
-| Kafka Streams 词频入门（三步走） | [Kafka 进阶实战第 3 章](../Kafka消息队列实战专题/02-Kafka进阶实战.md) |
+| Kafka Streams 词频入门（三步走） | 进阶实战篇第 3 章 |
 
 ---
 
 ## 配套学习资料
 
-- [01 Kafka Streams 流处理实战](./01-Kafka-Streams流处理实战.md)（本篇的入门篇：窗口/JOIN/状态查询；本篇第 3~5 章是它的生产级补全）
-- [Kafka 进阶实战第 3 章](../Kafka消息队列实战专题/02-Kafka进阶实战.md)（Kafka Streams 词频三步走，同一套原生 `@EnableKafkaStreams` + `StreamsBuilder` 写法）
 - [Kafka 官方 Streams DSL 文档](https://kafka.apache.org/41/streams/developer-guide/dsl-api.html)（suppress / aggregate / emit 权威）
 - [Kafka 官方 Processor API 文档](https://kafka.apache.org/41/streams/developer-guide/processor-api.html)（自定义 store / Transformer）
 - [Kafka 交互式查询文档](https://kafka.apache.org/41/streams/developer-guide/interactive-queries.html)（分布式查询 / application.server）
 - [ksqlDB 官方文档](https://docs.ksqldb.io/)（SQL 语法 / STREAM / TABLE）
-- [Kafka 核心概念与 Spring Boot 实战](../Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md)（Kafka 地基：分区/消费组是选型的前提）
 
 ---
 
-> **写在最后**：01 教会你用 Kafka Streams 做实时计算，本篇把你从"会用一种方案"带到"**会选方案**"。三条路不是竞争关系——Kafka Streams 是库（嵌你的 Spring Boot）、ksqlDB 是同一引擎的 SQL 壳（快速分析）、Flink 是独立集群（重活累活）。真正的高手是**按场景换工具**：核心实时链路用 Kafka Streams（Java 可测可控、可 REST 化查询），临时分析丢给 ksqlDB 一条 SQL，量级和复杂度到了再上 Flink。掌握这个"选型 + 实操 + 高级编程"的完整拼图，你的实时计算能力就真正闭环了。
+> **写在最后**：前一篇教会你用 Kafka Streams 做实时计算，本篇把你从"会用一种方案"带到"**会选方案**"。三条路不是竞争关系——Kafka Streams 是库（嵌你的 Spring Boot）、ksqlDB 是同一引擎的 SQL 壳（快速分析）、Flink 是独立集群（重活累活）。真正的高手是**按场景换工具**：核心实时链路用 Kafka Streams（Java 可测可控、可 REST 化查询），临时分析丢给 ksqlDB 一条 SQL，量级和复杂度到了再上 Flink。掌握这个"选型 + 实操 + 高级编程"的完整拼图，你的实时计算能力就真正闭环了。

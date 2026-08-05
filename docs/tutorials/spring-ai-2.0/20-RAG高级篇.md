@@ -1,10 +1,10 @@
 # 19 RAG 高级篇
 
-> 本文是 [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) 的进阶深化。
+> 本文是 RAG 工程化实战（基础 6 模块）的进阶深化。
 >
-> 07 讲了 6 模块的基础版（Hybrid Search、Rerank、Query 改写都有，但停留在"会调"）。本文讲"调到极致"：融合算法（RRF / 加权）、Re-ranking 模型选型、HyDE / 子问题分解、Parent-Child chunk、自适应检索、Graph RAG、Agentic RAG。
+> RAG 基础篇讲了 6 模块的基础版（Hybrid Search、Rerank、Query 改写都有，但停留在"会调"）。本文讲"调到极致"：融合算法（RRF / 加权）、Re-ranking 模型选型、HyDE / 子问题分解、Parent-Child chunk、自适应检索、Graph RAG、Agentic RAG。
 >
-> 前置：[`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) + [`./03-Advisor链全解.md`](./03-Advisor链全解.md)
+> 前提：你已掌握 RAG 基础六模块（分块、embedding、混合检索、重排、拼接 prompt），并了解 Advisor 链的注入机制（横切关注点可按序插入）。
 > 预计：2 天
 
 ---
@@ -14,7 +14,7 @@
 ```mermaid
 mindmap
   root((RAG 进阶路径))
-    基础 RAG（07）
+    基础 RAG
       chunk + embed + 检索 + 拼接 prompt
     进阶 RAG（本文）
       召回融合：RRF / 加权 / cascaded
@@ -889,7 +889,7 @@ ChatClient agentClient = ChatClient.builder(model)
 - 用户接受 10s+ 延迟。
 - 单次问答成本可承受（> $0.05）。
 
-详见 [`./10-多Agent编排实战.md`](./10-多Agent编排实战.md) 和 [`./11-五大Workflow模式与代码评审助手.md`](./11-五大Workflow模式与代码评审助手.md) 的 Orchestrator-Workers 模式。
+Orchestrator-Workers 模式的做法是：一个调度 LLM 把用户任务拆成若干子任务，分发给多个 Worker Agent 并行执行，最后再由调度层汇总结果。
 
 ---
 
@@ -957,7 +957,7 @@ ChatClient agentClient = ChatClient.builder(model)
 - 在 ToolCallingAdvisor 加 `maxTurns=5` 硬限制。
 - system prompt 明确："最多调 3 次 search_kb，然后必须综合回答"。
 
-详见 [`./14-安全工程与红队.md`](./14-安全工程与红队.md) 的 Agent 防失控三重保护。
+Agent 防失控的三重保护是：限制最大循环轮数（maxTurns）、做预算控制（成本上限）、加死循环检测（识别重复的 tool 参数）。
 
 ### 11.7 "Graph RAG 索引成本爆炸"
 
@@ -998,14 +998,8 @@ ChatClient agentClient = ChatClient.builder(model)
 
 ---
 
-## 14. 相关文档
+## 14. 相关资源
 
-- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— RAG 基础 6 模块
-- [`./03-Advisor链全解.md`](./03-Advisor链全解.md) —— 自适应检索用 Advisor 实现
-- [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) —— Agentic RAG 的 Tool 基础
-- [`./10-多Agent编排实战.md`](./10-多Agent编排实战.md) —— Agentic RAG 的编排
-- [`./14-安全工程与红队.md`](./14-安全工程与红队.md) —— Agentic RAG 防失控
-- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— RAG 评估闭环
 - [RRF 论文](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)
 - [HyDE 论文](https://arxiv.org/abs/2212.10496)
 - [Microsoft GraphRAG](https://microsoft.github.io/graphrag/)
@@ -1013,4 +1007,4 @@ ChatClient agentClient = ChatClient.builder(model)
 
 ---
 
-回到 [`./00-目录索引.md`](./00-目录索引.md)。
+回到目录索引，继续下一个主题。

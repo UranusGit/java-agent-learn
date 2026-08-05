@@ -2,7 +2,7 @@
 
 > Spring AI 的 `MessageWindowChatMemory` 只是"会话窗口"，撑不起真正的 Agent 记忆。本文把人类记忆的五种类型映射到 AI 系统，给出工程化落地方案。
 >
-> 前置：[`./03-Advisor链全解.md`](./03-Advisor链全解.md) + [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md)
+> 前提：你了解 Advisor 链如何注入横切能力（记忆就是其中一种横切关注点），并已跑通基础 RAG（向量检索可作为语义记忆的存储底座）。
 > 预计：1.5 天
 
 ---
@@ -299,11 +299,11 @@ public ToolCallback synthesizeTool(String userIntent) {
 }
 ```
 
-⚠️ **生产慎用**：自动生成工具 = 把 prompt injection 风险面放大无数倍。必须配合 [`./14-安全工程与红队.md`](./14-安全工程与红队.md) 的红队测试。
+⚠️ **生产慎用**：自动生成工具 = 把 prompt injection 风险面放大无数倍。必须配套安全红队测试（用对抗性输入主动探测模型的注入漏洞）来兜底。
 
 ### 4.3 程序记忆的"工具市场"
 
-见 [`./05-MCP协议全解.md`](./05-MCP协议全解.md) 的 MCP Hub 设计。
+工具市场可以按 MCP Hub 的思路设计：由中心化注册表统一管理工具的发现、鉴权与调用，Agent 按需从 Hub 获取工具。
 
 ---
 
@@ -405,7 +405,7 @@ flowchart TD
 - **强一致**：用户主动操作（"删除我所有对话"）→ 必须跨三库事务。
 - **最终一致**：异步抽取 → 用 outbox + Kafka 解耦。
 
-详见 [`./17-AI原生系统设计.md`](./17-AI原生系统设计.md) Event Sourcing + CQRS。
+这对应 AI 原生系统设计里的 Event Sourcing + CQRS 模式：写侧把状态变更存成不可变事件流，读侧用独立的投影（如向量库 / 关系库）支撑查询。
 
 ---
 
@@ -458,17 +458,12 @@ flowchart TD
 
 ---
 
-## 12. 相关文档
+## 12. 相关资源
 
-- [`./03-Advisor链全解.md`](./03-Advisor链全解.md) —— Advisor 注入记忆的标准做法
-- [`./09-RAG工程化实战.md`](./09-RAG工程化实战.md) —— 语义记忆基础设施
-- [`./17-AI原生系统设计.md`](./17-AI原生系统设计.md) —— Event Sourcing 记忆
-- [`./18-大规模Agent平台与数据基础设施.md`](./18-大规模Agent平台与数据基础设施.md) —— 数据基础设施
-- [`./22-框架源码精读.md`](./22-框架源码精读.md) §5 —— ChatMemory 源码
 - [MemGPT Paper](https://arxiv.org/abs/2310.08560)
 - [Letta (MemGPT) GitHub](https://github.com/letta-ai/letta)
 - [Generative Agents (Park et al., 2023)](https://arxiv.org/abs/2304.03442) —— Memory stream 设计原型
 
 ---
 
-回到 [`./00-目录索引.md`](./00-目录索引.md)。
+回到目录索引，继续下一个主题。

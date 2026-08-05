@@ -1,12 +1,12 @@
 # Kafka Connect：把数据搬进/搬出 Kafka（数据管道专题）
 
-> **这份文档是什么**：[Kafka 消息队列实战专题](./README.md) 的第 07 篇，**数据集成管道（data pipeline）**。前面 01-06 教的都是**在应用进程里**发收消息（`KafkaTemplate` 发 / `@KafkaListener` 收，全用 `spring-boot-starter-kafka`）。本篇换一个视角：把**"把数据搬进/搬出 Kafka"**这件事，从你的业务进程里**抽出来**，交给一个**独立运行的数据集成框架**——Kafka Connect。
+> **这份文档是什么**：Kafka 消息队列实战专题 的第 07 篇，**数据集成管道（data pipeline）**。前面 01-06 教的都是**在应用进程里**发收消息（`KafkaTemplate` 发 / `@KafkaListener` 收，全用 `spring-boot-starter-kafka`）。本篇换一个视角：把**"把数据搬进/搬出 Kafka"**这件事，从你的业务进程里**抽出来**，交给一个**独立运行的数据集成框架**——Kafka Connect。
 >
-> **和 06 的关系**：[06 Kafka 可靠性专题](./06-Kafka可靠性专题.md) 讲的是**应用内**的消息可靠性（at-least-once 语义、消费端去重幂等、重试与 DLT 死信）。本篇的 Kafka Connect 是一条**批量的、独立进程的管道**，但可靠性问题**一模一样**：Source 重读会重复投递、Sink 重放会重复落库，你仍然要靠**幂等去重**兜底。所以 06 的"幂等表 / 去重键"思路，本篇第 6 章会在**管道语境**下再讲一遍——**先读 06 再读本篇，理解会顺很多**。
+> **和可靠性篇的关系**：可靠性篇讲的是**应用内**的消息可靠性（at-least-once 语义、消费端去重幂等、重试与 DLT 死信）。本篇的 Kafka Connect 是一条**批量的、独立进程的管道**，但可靠性问题**一模一样**：Source 重读会重复投递、Sink 重放会重复落库，你仍然要靠**幂等去重**兜底。所以"幂等表 / 去重键"思路，本篇第 6 章会在**管道语境**下再讲一遍——**先掌握应用内消息可靠性的概念（幂等/去重/死信），再读本篇，理解会顺很多**。
 >
-> **和 Debezium 的关系**：[Debezium-CDC 专题](../Debezium-CDC实战/README.md) 里的 Debezium 就是**跑在 Kafka Connect 里的一款 connector**——它把数据库 binlog/WAL 搬进 Kafka。本篇把 Kafka Connect 这个**框架**讲透，你会真正理解 Debezium 那篇里的 `connect` 容器、REST 注册、SMT 到底是什么。
+> **和 Debezium 的关系**：Debezium（把数据库 binlog/WAL 搬进 Kafka 的 CDC 工具）就是**跑在 Kafka Connect 里的一款 connector**。本篇把 Kafka Connect 这个**框架**讲透，你会真正理解 Debezium 里的 `connect` 容器、REST 注册、SMT 到底是什么。
 >
-> **写给谁**：读完 01-06、能熟练用 `KafkaTemplate`/`@KafkaListener` 的人。本篇**编程为主**：重点不是"怎么配现成的 connector"，而是**怎么写一个自定义 connector**（Source / Sink 各一个完整可跑的例子）。
+> **写给谁**：能熟练用 `KafkaTemplate`/`@KafkaListener` 收发消息的人。本篇**编程为主**：重点不是"怎么配现成的 connector"，而是**怎么写一个自定义 connector**（Source / Sink 各一个完整可跑的例子）。
 >
 > **版本前提（已校验）**：主项目用 **Spring Boot 4.1.0 + `spring-boot-starter-kafka`**（版本由 Boot BOM 托管，`kafka-clients` 为 4.0.x）。Kafka Connect 是**独立于 Spring 的框架**——用 **Apache Kafka 4.x 发行版自带的 `connect-standalone`/`connect-distributed`**，或 **Confluent 的 `confluentinc/cp-kafka-connect` 镜像**。写 connector 只需引入 `org.apache.kafka:connect-api`（示例用 `4.0.0`，与仓库的 kafka-clients 同版本线）。
 
@@ -36,14 +36,14 @@
 - 把日志文件、云存储（S3）、NoSQL 里的数据**持续**灌进 Kafka。
 - 反过来：把 Kafka 里的事件**落地**到 S3 / HDFS / Elasticsearch / 数据库 / 文件，供离线分析。
 
-和 01-06 的定位对比：
+和前面篇章的定位对比：
 
-| | 01-06 直接 Kafka | 本篇 Kafka Connect |
+| | 应用内直接 Kafka | 本篇 Kafka Connect |
 |---|---|---|
 | 形态 | 在**业务进程里**发/收消息 | **独立 worker 进程**里的管道 |
 | 场景 | 业务事件（订单、库存……） | 批量数据搬移 / 异构系统集成 |
 | 你写什么 | `KafkaTemplate` / `@KafkaListener` | **`SourceTask` / `SinkTask`**（本篇重点） |
-| 可靠性 | 06 讲的消费端幂等、DLT | 第 6 章：connector 的 offset 断点续传、死信、幂等 |
+| 可靠性 | 消费端幂等、DLT | 第 6 章：connector 的 offset 断点续传、死信、幂等 |
 
 ### 1.2 架构：六个角色一张图
 
@@ -76,7 +76,7 @@ flowchart TD
     Rest["REST API<br/>http://worker:8083<br/>注册/管理 connector"] -.->|"配置与状态"| Cluster
 ```
 
-另外还有个**隐藏角色 SMT**（Single Message Transform，单消息转换）：在 Source/Sink 的 task 和 converter 之间**改写每条消息**（比如 Debezium 那篇的 `ExtractNewRecordState` 把 `after` 字段抽出来）。它不是本篇重点，但你在配 Debezium connector 时见过它（[Debezium-CDC 专题](../Debezium-CDC实战/README.md) 第 4 章）。
+另外还有个**隐藏角色 SMT**（Single Message Transform，单消息转换）：在 Source/Sink 的 task 和 converter 之间**改写每条消息**（比如 Debezium 的 `ExtractNewRecordState` 把 `after` 字段抽出来）。它不是本篇重点，但你在配 Debezium connector 时会见到它。
 
 ### 1.3 Source vs Sink
 
@@ -94,12 +94,12 @@ flowchart LR
 |---|---|---|
 | 进程 | 业务进程内 | **独立 worker 进程**，业务挂了管道照跑 |
 | 触发 | 业务代码主动调 | **常驻任务**，按 `poll()` 自动拉取，天生"持续同步" |
-| 断点续传 | 自己管（06 的 offset 手动管理） | **框架管**：SourceTask 返回 `sourceOffset`，Connect 自动记到 offset topic，重启从断点续传 |
+| 断点续传 | 自己管（应用内手动管理 offset） | **框架管**：SourceTask 返回 `sourceOffset`，Connect 自动记到 offset topic，重启从断点续传 |
 | 并行扩展 | 自己起多线程/多实例 | **tasks.max + 多 worker**，框架自动 rebalance |
 | 适合 | 业务事件、请求驱动 | **批量数据搬移、异构源、无人值守的长管道** |
 | 学习成本 | 低（几行 API） | 高（Connector/Task/Converter/SMT 一套模型） |
 
-> **怎么选**：业务事件（订单创建了、库存扣了）→ 继续用 01-06 的 `KafkaTemplate`/`@KafkaListener`。**"把某系统的一堆数据持续搬进/搬出 Kafka"**（表同步、日志采集、落地数仓）→ Kafka Connect。两者不是竞争，**经常同台**：Connect 把数据搬进 Kafka，业务用 `@KafkaListener` 消费。
+> **怎么选**：业务事件（订单创建了、库存扣了）→ 继续用应用内编程的 `KafkaTemplate`/`@KafkaListener`。**"把某系统的一堆数据持续搬进/搬出 Kafka"**（表同步、日志采集、落地数仓）→ Kafka Connect。两者不是竞争，**经常同台**：Connect 把数据搬进 Kafka，业务用 `@KafkaListener` 消费。
 
 ### 1.5 两种运行模式
 
@@ -1001,14 +1001,14 @@ value.converter.schemas.enable=false
 
 | 模式 | 效果 | 适用 |
 |---|---|---|
-| `schemas.enable=false` | 裸 JSON：`{"id":1,"name":"alice"}` | 消费者是普通 JSON 反序列化（01-06 的 `JsonSerializer` 消费端可直接读），**最常用** |
+| `schemas.enable=false` | 裸 JSON：`{"id":1,"name":"alice"}` | 消费者是普通 JSON 反序列化（前面用过的 `JsonSerializer` 消费端可直接读），**最常用** |
 | `schemas.enable=true` | 信封 JSON：`{"schema":{...},"payload":{...}}` | 需要 schema 元数据自描述（但裸消费端会懵） |
 
 > **验证裸 JSON 模式**：第 2 章 JDBC source 用 `schemas.enable=false` 时，消费端看到的就是 `{"id":1,...}`；改成 `true` 会看到 `{"schema":{...,"type":"struct",...},"payload":{...}}`。**跨系统对接时先确认双方对 schema 信封的约定**。
 
-### 5.3 AvroConverter：配合 04 的 Schema Registry
+### 5.3 AvroConverter：配合 Schema Registry
 
-[04 生产级进阶的 Schema Registry](./04-生产级进阶-Outbox与Schema与分区调优.md) 讲的是**应用内**（`KafkaAvroSerializer`）用 Avro + Registry。Connect 里配 AvroConverter 是同一套思想，**由 worker 的 converter 完成序列化 + 自动注册 schema**：
+生产级进阶篇的 Schema Registry 讲的是**应用内**（`KafkaAvroSerializer`）用 Avro + Registry。Connect 里配 AvroConverter 是同一套思想，**由 worker 的 converter 完成序列化 + 自动注册 schema**：
 
 ```properties
 key.converter=io.confluent.connect.avro.AvroConverter
@@ -1017,10 +1017,10 @@ key.converter.schema.registry.url=http://localhost:8081
 value.converter.schema.registry.url=http://localhost:8081
 ```
 
-- **Source 端**：`poll()` 里构造 `SourceRecord` 时，如果 value 是 `Struct`（或 Avro 对象），AvroConverter 会把 schema 注册到 Registry、消息里只带 schema ID——和 04 的 `KafkaAvroSerializer` 完全同构。
+- **Source 端**：`poll()` 里构造 `SourceRecord` 时，如果 value 是 `Struct`（或 Avro 对象），AvroConverter 会把 schema 注册到 Registry、消息里只带 schema ID——和前面学过的 `KafkaAvroSerializer` 完全同构。
 - **Sink 端**：AvroConverter 凭消息里的 schema ID 去 Registry 取 schema 反序列化，`put()` 里拿到的是 Avro 对象。
 
-> **要点**：Avro 需要 `schema.registry.url`，所以用 Avro 前得先有 [Schema Registry 服务](04-生产级进阶-Outbox与Schema与分区调优.md)（04 方向 B 就是讲它）。**JSON 不需要任何额外服务**，所以小项目默认 JSON，规模到了再上 Avro（消息体积小、schema 强管理）。
+> **要点**：Avro 需要 `schema.registry.url`，所以用 Avro 前得先有 Schema Registry 服务（生产级进阶篇的方向 B 就是讲它）。**JSON 不需要任何额外服务**，所以小项目默认 JSON，规模到了再上 Avro（消息体积小、schema 强管理）。
 
 ### 5.4 自定义 converter：实现 `Converter` 接口
 
@@ -1094,11 +1094,11 @@ value.converter=com.example.connect.converter.UpperStringConverter
 
 ## 第 6 章：生产要点——幂等、死信、多 worker
 
-### 6.1 幂等与去重（呼应 06）
+### 6.1 幂等与去重（呼应可靠性篇）
 
-Connect 默认是 **at-least-once**：Source 断点没提交就崩溃 → 重启**重发**；Sink 落库成功后 offset 未提交就崩溃 → 重启**重放**。这和 [06 Kafka 可靠性专题](./06-Kafka可靠性专题.md) 讲的是同一个问题，只是发生在了"管道"里。
+Connect 默认是 **at-least-once**：Source 断点没提交就崩溃 → 重启**重发**；Sink 落库成功后 offset 未提交就崩溃 → 重启**重放**。这和可靠性篇讲的是同一个问题，只是发生在了"管道"里。
 
-**对策**（和 06 的消费端幂等一模一样，只是幂等键不同）：
+**对策**（和消费端幂等一模一样，只是幂等键不同）：
 
 1. **Source 端**：把 `sourceOffset` 设计精确（文件行号、自增 id、binlog 位点），让断点尽量"准"。**Source 重发无法完全避免**，但 offset 精确能把重复窗口压到最小。
 2. **Sink 端**：**用 `kafkaOffset`（或业务唯一键）做幂等键**——这是最有效的去重点，因为 `SinkRecord` 自带"这条消息在 Kafka 的唯一位置"。
@@ -1147,7 +1147,7 @@ errors.deadletterqueue.context.headers.enable=true     # 死信消息头带上�
 ```
 
 - `errors.tolerance=none`（默认）：一条坏消息就让 task 失败、重试，**管道停摆**。
-- `errors.tolerance=all`：跳过坏消息进 DLQ，管道**继续跑**。生产管道建议 `all` + DLQ，另起消费者处理 DLQ（呼应 06 的 DLT 死信思路）。
+- `errors.tolerance=all`：跳过坏消息进 DLQ，管道**继续跑**。生产管道建议 `all` + DLQ，另起消费者处理 DLQ（呼应 DLT 死信思路）。
 
 **编程方式投死信**（更精细）：Sink 里可以逐条决定"这条投死信，那条重试"：
 

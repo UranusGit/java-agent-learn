@@ -3,11 +3,11 @@
 > 本章目标：实现 Anthropic 官方文档描述的 Hooks 系统。
 > 完成后：租户管理员可配置 hook 接入审计 / 审批 / 通知等外部系统。
 >
-> **关联章节**：
-> - Hooks 的 defer 模式与 [20 章审批中心](./20-审批与审核流.md) §1.6 联动；
-> - Hook 触发也是事件，进 [17 章活动流](./17-全链路可观测前端.md)；
-> - Hook 调用失败的重试：[18 章](./18-错误恢复与重试.md)；
-> - AskUser 工具调用前的 PreToolUse hook：[19 章](./19-AskUser与澄清式交互.md) §12。
+> **本章范围**：
+> - Hooks 的 defer 模式与审批中心联动（defer 队列里的待审批项最终在审批 UI 处理）；
+> - Hook 触发也是事件，进活动流（渲染在时间线）；
+> - Hook 调用失败的重试（错误恢复主题）；
+> - AskUser 工具调用前的 PreToolUse hook（人工澄清交互主题）。
 
 ---
 
@@ -15,7 +15,7 @@
 
 | 步 | 节 | 你要带走什么 |
 |----|----|---------|
-| ① 痛点 | §1 | 05 章权限是硬编码——企业要按事件接入审计 / 通知 / 审批 |
+| ① 痛点 | §1 | 上一章权限是硬编码——企业要按事件接入审计 / 通知 / 审批 |
 | ② 最小实现 | §2–§7 | hooks 表 + 8 个事件 + HookExecutor + HookContext + Permission 接入 + Defer 模式 |
 | ③ 验证 | §8 | 配一个 PreToolUse hook，所有 Bash 调用先打 webhook |
 | ④ 对照 | §9 | 与"硬编码 PermissionMiddleware"的扩展性差异 |
@@ -23,9 +23,9 @@
 
 ---
 
-## 1. 痛点：05 章的 PermissionMiddleware 太"硬"
+## 1. 痛点：上一章的 PermissionMiddleware 太"硬"
 
-05 章的 PermissionMiddleware 是写死在 Java 代码里的——加一个"写 `.env` 时发钉钉通知"的规则要发版。这对企业场景不够用：
+上一章的 PermissionMiddleware 是写死在 Java 代码里的——加一个"写 `.env` 时发钉钉通知"的规则要发版。这对企业场景不够用：
 
 - 安全团队要所有 Bash 命令送 SIEM
 - 法务要所有 Write 到 `contracts/` 的操作审批
@@ -36,7 +36,7 @@
 >
 > 本章是 v1 简化版（command / http / prompt 三类 + 8 事件 + 同步路径 + defer）。完整 30 事件见 Anthropic 原文。
 
-## 2. 设计要点（来自调研笔记 §3.1）
+## 2. 设计要点
 
 - 5 种 hook 类型：command / http / mcp_tool / prompt / agent；
 - ~30 个事件；
@@ -438,7 +438,7 @@ POST `/api/hooks`：
 
 ## 11. 对照：与"硬编码 PermissionMiddleware"的扩展性差异
 
-| 维度 | 05 章硬编码 | 12 章 Hooks 系统 |
+| 维度 | 上一章硬编码 | 本章 Hooks 系统 |
 |------|------------|-----------------|
 | 加新规则 | 发版 | ✅ 数据库配置 |
 | 接入外部系统 | ❌ | ✅ http / command / mcp_tool |
@@ -488,4 +488,4 @@ POST `/api/hooks`：
 
 ## 15. 下一步
 
-进入 [99-附录-部署与排错](./99-附录-部署与排错.md)，把整套系统打包成 docker-compose 一键启动。
+进入下一节：**99-附录-部署与排错**——把整套系统打包成 docker-compose 一键启动。

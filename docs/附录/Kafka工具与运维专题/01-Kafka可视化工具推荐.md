@@ -4,7 +4,7 @@
 >
 > **适合谁**：刚开始接触 Kafka、想找一款图形界面工具来「看见」消息的新手。
 >
-> **前置知识**：建议先了解 Topic / 分区 / offset / 消费组 这几个基本概念（见 [Kafka 消息队列实战专题/01](../Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md) 的第 2 章），否则工具界面上的词会看不懂。本文只讲「选哪个工具、怎么跑起来」，不重复讲概念。
+> **前置知识**：建议先了解 Topic / 分区 / offset / 消费组 这几个基本概念，否则工具界面上的词会看不懂。本文只讲「选哪个工具、怎么跑起来」，不重复讲概念。
 
 ---
 
@@ -101,7 +101,7 @@ mindmap
 
 - **Redpanda Console**：一条命令起，界面漂亮，能直观看到 Topic / 分区 / 消费组，最不容易劝退。
 - **Kafka UI**：功能全，学完之后继续当日常工具用。
-- 学习时对照 [实战专题/01](../Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md) 里的概念看界面，事半功倍。
+- 学习时对照 Kafka 消息队列实战专题里的概念看界面，事半功倍。
 
 ### 场景四：桌面党 / 不习惯开浏览器
 
@@ -255,7 +255,7 @@ open http://localhost:8080
 
 > **一句话定位**：颜值和 Redpanda Console 同梯队，但多一个「原生桌面 App」的手感；既有桌面版也有 Web 版（Console），免费 Community 版对个人开发完全够用。
 >
-> **说明**：免费 Community 版限 **1 个用户**；无中文界面。**详细的独立容器部署 + 纳管 Kafka 教程见 [02-Conduktor 纳管 Kafka 部署手册](./02-Conduktor纳管Kafka部署手册.md)**，本文只讲「怎么把它跑起来」。
+> **说明**：免费 Community 版限 **1 个用户**；无中文界面。**本文只讲「怎么把它跑起来」**；更深入的双容器独立部署方式——Kafka 与 Conduktor 各用一份 compose、共享网络 `kafka-net`、用容器名 `kafka:29092` 纳管——是进阶内容，用到时再展开。
 
 ### 功能亮点
 
@@ -365,7 +365,7 @@ open http://localhost:8080
 2. 添加集群后，连接状态显示 **Connected / 绿色**。
 3. 能看到你 Kafka 里已有的 Topic 列表。
 
-> **连接 Docker 里的 Kafka 是最容易踩坑的地方**：Conduktor 也在容器里，它访问不到宿主机上的 `localhost:9092`，要用 `host.docker.internal:9092`（宿主机别名）；或者让两个容器同网络、用容器名 `kafka:29092` 连。详见 [常见坑：坑 2](#坑-2docker-容器里localhost-不是宿主机) 和 [02 手册](./02-Conduktor纳管Kafka部署手册.md)。
+> **连接 Docker 里的 Kafka 是最容易踩坑的地方**：Conduktor 也在容器里，它访问不到宿主机上的 `localhost:9092`，要用 `host.docker.internal:9092`（宿主机别名）；或者让两个容器同网络、用容器名 `kafka:29092` 连。详见 [常见坑：坑 2](#坑-2docker-容器里localhost-不是宿主机)。
 
 ---
 
@@ -686,7 +686,7 @@ docker network connect kafka-net conduktor
 # 工具里填：kafka:29092  （29092 是 Kafka 容器内部 PLAINTEXT 端口）
 ```
 
-> **注意**：填了 `host.docker.internal:9092` 第一次握手可能成功，但 Kafka 返回的 metadata 地址是 `localhost:9092`，工具再去连容器自己的 `localhost`，照样失败。最稳的是**方案 B（同网络 + 容器名）**。详细原理和步骤见 [02-Conduktor 纳管 Kafka 部署手册](./02-Conduktor纳管Kafka部署手册.md)。
+> **注意**：填了 `host.docker.internal:9092` 第一次握手可能成功，但 Kafka 返回的 metadata 地址是 `localhost:9092`，工具再去连容器自己的 `localhost`，照样失败。最稳的是**方案 B（同网络 + 容器名）**：两个容器挂同一网络，Kafka 配双 listener（宿主机走 `9092`、容器走 `29092`），工具里填 `kafka:29092`。
 
 ### 坑 3：消息显示乱码 / 全是二进制
 
@@ -718,7 +718,7 @@ docker logs kafka 2>&1 | tail -50
 | `AccessDeniedException` / `Permission denied` | 数据目录无权限 | `chmod -R 777 <数据目录>` |
 | `Address already in use`（9092） | 端口被占用 | `lsof -i :9092` 找到占用进程，杀掉或换端口 |
 
-> **提示**：Mac 上最常见的组合拳：删容器 → 清数据目录 → 授权 → 重新 `docker run`。详见原文档中的「清干净重来」命令（或参考 [02 手册](./02-Conduktor纳管Kafka部署手册.md) 的排查章节）。
+> **提示**：Mac 上最常见的组合拳：删容器 → 清数据目录 → 授权 → 重新 `docker run`。
 
 ### 坑 5：Kafka 没完全启动就点连接
 
@@ -791,8 +791,6 @@ flowchart TD
 
 ## 延伸阅读
 
-- **[02-Conduktor 纳管 Kafka 部署手册](./02-Conduktor纳管Kafka部署手册.md)**：Conduktor（双容器独立部署）从部署、纳管到监控、排查的完整手册，比本文的工具介绍更深。
-- **[Kafka 消息队列实战专题/01](../Kafka消息队列实战专题/01-Kafka消息队列从入门到架构师.md)**：Topic / 分区 / offset / 消费组等核心概念 + Spring Kafka 收发消息实战。
 - 官方在线 Demo（想先看界面再装）：
   - Kafka UI：`https://demo.kafka-ui.provectus.io/`
   - Redpanda Console 官网博客：`https://www.redpanda.com/blog/web-user-interface-tools-kafka`

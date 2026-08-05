@@ -2,7 +2,7 @@
 
 > Prompt 不是"写一段话"，而是**和模型协作的接口设计**。本文系统化拆解五类高阶 Prompt 模式，并给出在 Spring AI 2.0 里的可落地的代码模板。
 >
-> 前置：[`./01-2.0基础重塑.md`](./01-2.0基础重塑.md) + [`./03-Advisor链全解.md`](./03-Advisor链全解.md)
+> 前提：你会用 ChatClient 写基础 prompt，并了解 Advisor 链如何在请求前后注入 / 改写 prompt（横切关注点）。
 > 预计：1.5 天
 
 ---
@@ -365,7 +365,7 @@ Observation: ...
 Final Answer: ...
 ```
 
-> Spring AI 2.0 里你**不需要手写 ReAct 模板**——`ToolCallingAdvisor` 自动驱动这个循环（见 [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md)）。但理解 ReAct 有助于：
+> Spring AI 2.0 里你**不需要手写 ReAct 模板**——`ToolCallingAdvisor` 自动驱动"思考 → 调工具 → 看结果 → 再思考"的循环（这就是 Tool 与 Agent 循环那一讲的核心机制）。但理解 ReAct 有助于：
 > - 调试 Tool 不被调用时看模型 output 是不是没遵循格式
 > - 自己实现 ReAct 变体（如 Reason-then-Plan-then-Act）
 
@@ -389,7 +389,7 @@ sequenceDiagram
     R-->>E: 收尾 → 汇总最终答案
 ```
 
-详见 [`./10-多Agent编排实战.md`](./10-多Agent编排实战.md) 的 Planner-Executor 模式。
+Planner-Executor 模式的做法是：先让一个规划 LLM 生成完整计划，再逐条执行，必要时根据执行结果重新规划。
 
 ---
 
@@ -435,7 +435,7 @@ ChatClient client(ChatClient.Builder b) {
 
 ## 9. Prompt 模板化与版本化
 
-裸字符串写 prompt 是反模式（见 [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md)）。
+裸字符串写 prompt 是反模式——生产要求 prompt 模板化、版本化，并与评估闭环绑定，每次改动都关联一次 eval run 方便回归。
 
 ### 9.1 用 ST 模板
 
@@ -509,7 +509,7 @@ BaseAdvisor promptLogger() {
 
 ### 10.3 在 Langfuse / Phoenix 里看 Prompt 血缘
 
-详见 [`./15-可观测性与成本治理.md`](./15-可观测性与成本治理.md)。Prompt 每次改动都关联一次 eval run，方便回归。
+Langfuse / Phoenix 这类 LLM 可观测平台会记录每次请求的 prompt、响应与 token 用量，形成"血缘"。Prompt 每次改动都关联一次 eval run，方便回归。
 
 ---
 
@@ -566,13 +566,8 @@ flowchart TD
 
 ---
 
-## 15. 相关文档
+## 15. 相关资源
 
-- [`./01-2.0基础重塑.md`](./01-2.0基础重塑.md) —— ChatClient 基础
-- [`./02-Tool与AgentLoop.md`](./02-Tool与AgentLoop.md) —— ReAct 的 Spring AI 实现
-- [`./03-Advisor链全解.md`](./03-Advisor链全解.md) —— Advisor 注入 prompt 的标准做法
-- [`./10-多Agent编排实战.md`](./10-多Agent编排实战.md) —— Plan-and-Execute 模式
-- [`./12-评估闭环与Prompt版本管理.md`](./12-评估闭环与Prompt版本管理.md) —— Prompt 版本化与评估
 - [Anthropic: Prompt Engineering](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/overview)
 - [OpenAI: Prompt Engineering Guide](https://platform.openai.com/docs/guides/prompt-engineering)
 - [Tree of Thoughts Paper](https://arxiv.org/abs/2305.10601)
@@ -581,4 +576,4 @@ flowchart TD
 
 ---
 
-回到 [`./00-目录索引.md`](./00-目录索引.md)。
+回到目录索引，继续下一个主题。

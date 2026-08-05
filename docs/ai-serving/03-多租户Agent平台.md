@@ -2,7 +2,7 @@
 
 > 把"一个 Agent"做成"100 个租户共享的 Agent 平台"。
 >
-> 前置：[`./01-推理网关.md`](./01-推理网关.md) + [`./02-向量库选型与治理.md`](./02-向量库选型与治理.md) + [`../tutorials/spring-ai-2.0/18-大规模Agent平台与数据基础设施.md`](../tutorials/spring-ai-2.0/18-大规模Agent平台与数据基础设施.md)
+> 前置：你会搭推理网关（统一模型路由 + 容错），会用向量库做检索（多租户隔离的基础），并理解大规模 Agent 平台的分层设计。
 > 预计：3-4 周
 
 ---
@@ -26,13 +26,13 @@ flowchart TD
         ORC3["MCP Hub<br/>连接所有工具"]
     end
     subgraph Shared["共享层"]
-        SH1["推理网关（01 篇）"]
-        SH2["向量库（02 篇）"]
+        SH1["推理网关"]
+        SH2["向量库"]
         SH3["Tool 仓库"]
     end
     subgraph Gov["治理层"]
-        GOV1["配额与计费（04 篇）"]
-        GOV2["监控与告警（05 篇）"]
+        GOV1["配额与计费"]
+        GOV2["监控与告警"]
         GOV3["租户运营后台"]
     end
     Iso --> Orch
@@ -295,7 +295,7 @@ String conversationId = tenantId + "-" + userConversationId;
 chatMemory.add(conversationId, message);
 ```
 
-### 3.4 向量库隔离（详见 02 篇）
+### 3.4 向量库隔离
 
 ```java
 // 本代码仅作学习材料参考
@@ -530,7 +530,7 @@ public class AgentExecutor {
 
 ## 6. MCP Hub 真实实现
 
-> 详见 [`../tutorials/spring-ai-2.0/07-MCP-Server高阶与生态.md`](../tutorials/spring-ai-2.0/07-MCP-Server高阶与生态.md) §2 的设计层。本节聚焦落地。
+> 💡 设计层要点：MCP Server 通过统一协议暴露工具，平台侧按租户订阅过滤 + 配额 + 审计。本节聚焦多租户平台里的落地实现。
 
 ### 6.1 Hub 在多租户平台中的定位
 
@@ -827,7 +827,7 @@ flowchart TD
 
 ### 9.3 红队测试清单
 
-详见 [`../tutorials/spring-ai-2.0/14-安全工程与红队.md`](../tutorials/spring-ai-2.0/14-安全工程与红队.md)。多租户系统的红队特别关注：
+多租户系统的红队特别关注：
 
 1. **跨租户访问**（最重要的）
 2. **跨租户注入**（prompt 里藏跨租户指令）
@@ -849,7 +849,7 @@ flowchart TD
     GW --> AgentSvc["Agent Service"]
     GW --> WF["Workflow Engine"]
     GW --> Hub["MCP Hub"]
-    GW --> LLMGW["LLM Gateway（01 篇）"]
+    GW --> LLMGW["LLM Gateway"]
     GW --> Attach["Attachment Service"]
     AgentSvc --> PG["PostgreSQL + pgvector"]
     WF --> Temporal["Temporal"]
@@ -960,7 +960,7 @@ flowchart TD
 
 - 租户自建 MCP Server **默认只对自己租户可见**，不进入公共池
 - 想进公共池要走平台审核
-- 跨租户调用 Prompt Injection 防护（详见 [`../tutorials/spring-ai-2.0/07-MCP-Server高阶与生态.md`](../tutorials/spring-ai-2.0/07-MCP-Server高阶与生态.md) §6.1）
+- 跨租户调用 Prompt Injection 防护：MCP Hub 在转发前检测注入，工具返回结果前再按租户过滤
 
 ---
 
@@ -996,18 +996,4 @@ flowchart TD
 
 ---
 
-## 15. 相关文档
-
-- [`./01-推理网关.md`](./01-推理网关.md) —— 网关层
-- [`./02-向量库选型与治理.md`](./02-向量库选型与治理.md) —— 向量层
-- [`./04-成本治理.md`](./04-成本治理.md) —— 配额层
-- [`./05-高可用与可观测.md`](./05-高可用与可观测.md) —— 可观测层
-- [`../tutorials/spring-ai-2.0/14-安全工程与红队.md`](../tutorials/spring-ai-2.0/14-安全工程与红队.md) —— 红队
-- [`../tutorials/spring-ai-2.0/17-AI原生系统设计.md`](../tutorials/spring-ai-2.0/17-AI原生系统设计.md) —— 领域 Agent
-- [`../tutorials/spring-ai-2.0/18-大规模Agent平台与数据基础设施.md`](../tutorials/spring-ai-2.0/18-大规模Agent平台与数据基础设施.md) —— 平台设计层
-- [`../tutorials/spring-ai-2.0/07-MCP-Server高阶与生态.md`](../tutorials/spring-ai-2.0/07-MCP-Server高阶与生态.md) —— MCP Hub 设计层
-- [`../tutorials/spring-ai-2.0/32-多源检索Agent与MCP生态整合.md`](../tutorials/spring-ai-2.0/32-多源检索Agent与MCP生态整合.md) —— MCP Hub 实战
-
----
-
-回到 [`./00-目录索引.md`](./00-目录索引.md)。
+回到 00-目录索引。
