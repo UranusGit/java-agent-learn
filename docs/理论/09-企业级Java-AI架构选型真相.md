@@ -57,7 +57,7 @@ Red Hat（Quarkus 母公司）的 Quarkus LangChain4j 文档明确表态：
 
 > "Quarkus users should use **Quarkus LangChain4j**, not Spring AI. Spring AI is a great project, but it's for the Spring ecosystem."
 
-来源：[Quarkus AI Documentation](https://docs.quarkiverse.io/quarkus-langchain4j/dev/) （2025 Q4 版本）
+来源：[Quarkus AI Documentation](https://docs.quarkiverse.io/quarkus-入门-LangChain4j-dev/) （2025 Q4 版本）
 
 **翻译过来**：Red Hat 把 Spring AI 和 LangChain4j 看作**互斥选择**，不是互补。
 

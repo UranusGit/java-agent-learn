@@ -393,7 +393,7 @@ sequenceDiagram
 
 ### 6.1 检索器调优
 
-`EmbeddingStoreContentRetriever.Builder` 在 1.0.x 可用的方法（验证自 [源码](https://github.com/langchain4j/langchain4j/blob/main/langchain4j-core/src/main/java/dev/langchain4j/rag/content/retriever/EmbeddingStoreContentRetriever.java)）：
+`EmbeddingStoreContentRetriever.Builder` 在 1.0.x 可用的方法（验证自 [源码](https://github.com/入门-LangChain4j-入门-LangChain4j-blob/main/langchain4j-core/src/main/java/dev/入门-LangChain4j-rag/content/retriever/EmbeddingStoreContentRetriever.java)）：
 
 | 方法 | 说明 |
 |------|------|

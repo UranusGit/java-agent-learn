@@ -128,7 +128,7 @@ LangChain4j 把这些封装成 **统一的 Java API**，换模型只改一个 Bu
 A：DeepSeek 远端和 LM Studio 本地都走 OpenAI 兼容协议，`langchain4j-open-ai` 一个包提供 `OpenAiChatModel` + `OpenAiEmbeddingModel`，覆盖所有需求。不需要 `langchain4j-ollama`。
 
 **Q：版本号 `1.0.1` 哪里查？**
-A：Maven Central 搜 `langchain4j`，或访问 `github.com/langchain4j/langchain4j` 的 releases。**注意：1.0 之后 API 有过重构，老教程（0.x）的代码可能跑不通**。
+A：Maven Central 搜 `langchain4j`，或访问 `github.com/入门-LangChain4j-langchain4j` 的 releases。**注意：1.0 之后 API 有过重构，老教程（0.x）的代码可能跑不通**。
 
 **Q：日志怎么看？**
 A：LangChain4j 内部走 SLF4J，需要提供具体实现（logback / slf4j-simple）。本教程默认配合 Spring Boot starter（自带 logback）使用。没有实现时会报 `SLF4J: No SLF4J providers were found`，引入 `logback-classic`（Spring Boot 自带）或 `slf4j-simple` 即可，配置方法见本文档 7.5 节。
@@ -353,5 +353,5 @@ model 'qwen2.5-7b-instruct' not found
 ## 10. 参考资源
 
 - 官方文档：`docs.langchain4j.dev/getting-started`
-- GitHub：`github.com/langchain4j/langchain4j`
-- 示例代码：`github.com/langchain4j/langchain4j-examples`
+- GitHub：`github.com/入门-LangChain4j-langchain4j`
+- 示例代码：`github.com/入门-LangChain4j-langchain4j-examples`

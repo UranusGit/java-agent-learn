@@ -66,7 +66,7 @@ flowchart LR
 
 ## 阶段 1：LangChain4j 入门（Week 1）—【项目 P1】
 
-> 对照教程：`教程/langchain4j/`
+> 对照教程：`教程/入门-LangChain4j-`
 
 ### Day 1-2：第一次调用
 - [ ] 在 `pom.xml` 加 LangChain4j 依赖

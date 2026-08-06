@@ -174,7 +174,7 @@ String answer = agent.chat("张三工位在几楼？");
 ### LangChain4j
 - 官方文档 `docs.langchain4j.dev`（极其详细）
 - 创始人 Dmytro Liubarskyi 油管频道（英文）
-- GitHub 示例 `github.com/langchain4j/langchain4j-examples`
+- GitHub 示例 `github.com/入门-LangChain4j-langchain4j-examples`
 
 ### 中文社区
 - 阿里通义千问团队博客（PoffyZhang 等）有 Java AI 实战文章

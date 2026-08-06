@@ -503,7 +503,7 @@ mitmproxy --mode reverse:http://127.0.0.1:1234 -p 8080
 1. **先读完整错误信息**（包括 caused by）
 2. **定位错误类型**（连接？认证？模型？代码？）
 3. **查本手册**
-4. **搜索 GitHub issues**：`github.com/langchain4j/langchain4j/issues`
+4. **搜索 GitHub issues**：`github.com/入门-LangChain4j-入门-LangChain4j-issues`
 5. **构造最小复现**：删到不能再删
 
 ### 12.2 避坑纪律
