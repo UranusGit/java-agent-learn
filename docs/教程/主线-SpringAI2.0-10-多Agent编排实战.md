@@ -11,6 +11,10 @@
 
 ---
 
+
+> 📖 **Agent 编排路径 · 多 Agent 篇**：承接单 Agent 与 Workflow。
+> 前置 → `主线-SpringAI2.0-11-五大Workflow模式与代码评审助手.md`（Workflow 地基）；理论 → `../理论/03-Agent原理.md`。
+
 ## 0. 认知地图
 
 **认知地图（Mermaid 版）**：

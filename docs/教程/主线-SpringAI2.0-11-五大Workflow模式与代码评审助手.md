@@ -11,6 +11,10 @@
 
 ---
 
+
+> 📖 **Agent 编排路径 · Workflow 篇**：五大 Workflow 模式是 Agent 编排的地基。
+> 理论 → `../理论/03-Agent原理.md`；进阶 → `主线-SpringAI2.0-10-多Agent编排实战.md`（多 Agent）。
+
 ## 0. 五大模式总览
 
 | 模式 | 适用场景 | 复杂度 |

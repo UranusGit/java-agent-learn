@@ -17,6 +17,10 @@
 
 ---
 
+
+> 📖 **MCP 学习路径 · 第 2 级 Server 实战**：承接第 1 级协议入门。
+> 上一级 → `主线-SpringAI2.0-05-MCP协议全解.md`；下一级 → `主线-SpringAI2.0-07-MCP-Server高阶与生态.md`（第 3 级）；理论 → `../理论/14-MCP协议与生态.md`。
+
 ## 0. 这篇怎么读
 
 如果你完全没接触过 MCP，**先去当一次 Client 用户**——把现成 Server 接进 ChatClient、调用它的工具，再回来造 Server。否则你会不知道自己写的 Server 谁来用。

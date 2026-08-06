@@ -6,6 +6,10 @@
 
 ---
 
+
+> 📖 **MCP 理论篇**：配合 MCP 三部曲实践阅读。
+> 实践路径 → `../教程/主线-SpringAI2.0-05-MCP协议全解.md`（协议）→ `../教程/主线-SpringAI2.0-06-MCP-Server开发实战.md`（Server）→ `../教程/主线-SpringAI2.0-07-MCP-Server高阶与生态.md`（生态）。
+
 ## 1. MCP 是什么
 
 ### 1.1 一句话理解
