@@ -1,4 +1,7 @@
 # Reactor 响应式编程（学习顺序）
+> 📌 辅线定位：专为《教程/主线-SpringAI2.0-04 流式响应与Reactor深度》补充响应式编程背景
+
+
 
 本文件夹是 **Reactor（Project Reactor）响应式编程**系列，是理解整个仓库 WebFlux / 流式代码的地基。**按编号顺序读**。
 
