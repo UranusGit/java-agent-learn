@@ -35,7 +35,6 @@ docs/
 │   ├── 05-Java与AI融合架构.md
 │   ├── 06-模型服务部署.md
 │   ├── 07-模型微调.md
-│   ├── 08-SpringAI与LangChain4j分工模型.md
 │   ├── 09-企业级Java-AI架构选型真相.md       # ⚠️ 选型前必读
 │   ├── 10-SpringAI-vs-LangChain4j何时用何框架.md  # ⭐ 选型最终答案
 │   ├── 11-LLMOps.md

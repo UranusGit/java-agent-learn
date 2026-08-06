@@ -16,7 +16,6 @@
 | 05 | Java与AI融合架构 | Java 生态做 AI 的架构模式 | 全部 |
 | 06 | 模型服务部署 | 模型推理服务、部署形态 | 16 |
 | 07 | 模型微调 | 微调 vs RAG vs 长上下文 | 24 |
-| 08 | SpringAI与LangChain4j分工模型 | 双框架理论范式（部分过时） | 主线-SpringAI2.0 |
 | 09 | 企业级Java-AI架构选型真相 | ⚠️ 现实校正，选型前必读 | 主线-SpringAI2.0 |
 | 10 | SpringAI-vs-LangChain4j何时用何框架 | ⭐ 选型最终答案 | 主线-SpringAI2.0 |
 | 11 | LLMOps | 评估、观测、运维 | 12 / -13 |
