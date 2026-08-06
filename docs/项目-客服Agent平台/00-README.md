@@ -35,7 +35,7 @@
 | 防 Prompt 注入 / 防失控 | 安全与防失控 (Security & Anti-失控) | 教程/14、教程/11、教程/06-MCP-Server开发实战；理论/12 |
 | 全链路观测 | 可观测性 (Observability) | 教程/15、教程/13、教程/22；理论/11 |
 | 计费与 Token 优化 | 成本治理 (Cost Governance) | 教程/15、教程/16-多模型路由与国产化、教程/18-大规模Agent平台与数据基础设施；理论/15、理论/06 |
-| 简单问题走小模型 | 多模型路由 (Multi-Model Routing) | 教程/16、教程/15、教程/19-自研vs框架的边界；理论/06、理论/09、理论/10-SpringAI-vs-LangChain4j |
+| 简单问题走小模型 | 多模型路由 (Multi-Model Routing) | 教程/16、教程/15、教程/19-自研vs框架的边界；理论/06、理论/09、理论/10-SpringAI-vs-LangChain4j何时用何框架 |
 | 对接工单/CRM | MCP协议与服务 (MCP Protocol & Services) | 教程/05、教程/06、教程/07-MCP-Server高阶与生态、教程/32；理论/14 |
 | 多租户隔离与计费 | 多租户平台 (Multi-Tenant Platform) | 教程/18、教程/17、教程/05、教程/21；理论/09、理论/10、理论/05-Java与AI融合架构 |
 | 上线与运维 | 可靠性工程 (Reliability Engineering) | 教程/26-AI工程的SRE实践、教程/27-CICD-for-AI、教程/28-AI项目的Git工作流、教程/19、教程/13；理论/16-Agent可靠性工程Java视角、理论/11、理论/12 |
