@@ -7,7 +7,7 @@
 
 
 > 📖 **Tool 学习路径 · 第 4 级 多工具编排**：承接第 3 级设计原则。
-> 上一级 → `进阶-Agent-01-Tool设计原则.md`（第 3 级）→ `主线-SpringAI2.0-02-Tool与AgentLoop.md`（第 2 级）→ `入门-LangChain4j-03-Tool调用.md`（第 1 级）。
+> 上一级 → `进阶-Agent-01-Tool设计原则.md`（第 3 级）→ `02-Tool与AgentLoop.md`（第 2 级）→ `入门-LangChain4j-03-Tool调用.md`（第 1 级）。
 
 ## 1. 为什么需要编排
 

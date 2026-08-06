@@ -106,7 +106,7 @@ flowchart LR
    - Java 21 + Spring Boot 4 + Spring AI 2.0 基础；
    - React + TypeScript 基础；
    - Docker；
-   - 读完 Spring AI 2.0 系列（同仓 `docs/主线-SpringAI2.0-`）。
+   - 读完 Spring AI 2.0 系列（同仓 `docs/`）。
 
 ---
 
@@ -232,7 +232,7 @@ demo01/
 │   │   └── e2e/                  # 26 章 Playwright
 │   └── tests/                    # 26 章单元 + 组件测试
 ├── docs/
-│   ├── 主线-SpringAI2.0-            # 已有
+│   ├──             # 已有
 │   ├── 项目-AIServing/               # 已有
 │   └── 项目-WebClaude/               # 本系列
 ├── k8s/                          # 27 章 Helm chart

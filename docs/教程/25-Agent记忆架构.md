@@ -32,9 +32,138 @@ Spring AI 2.0 提供的：
 
 ---
 
-## 1. 短时记忆：会话窗口
+## 1. 入门铺垫：为什么多轮对话需要记忆
 
-### 1.1 MessageWindowChatMemory 的边界
+> 本小节吸收自 LangChain4j 入门教程 **02-ChatMemory（多轮对话）**，作为理解记忆体系的心智模型打底。
+> 核心一句话：**LLM 本身完全无状态，多轮对话的"记忆"全靠客户端把历史消息塞回请求**——两个框架的会话记忆都是同一个模型。
+
+### 1.1 一个让你困惑的现象
+
+先跑这段代码，第二个回答大概率会说"我不知道你的名字"：
+
+```java
+// 本代码仅作学习材料参考
+String r1 = model.chat("我叫张三");
+System.out.println(r1);
+String r2 = model.chat("我叫什么名字？");
+System.out.println(r2);
+```
+
+### 1.2 原因：LLM 是完全无状态的
+
+**LLM 本身完全没有状态**。每次 `chat()` 都是一个独立的 HTTP 请求，模型不记得上一次说了什么。
+这和 HTTP 无状态是一个道理——你需要 Cookie/Session 来"携带状态"。
+
+### 1.3 解决方案：每次请求把历史一起带上
+
+```java
+// 伪代码
+List<Message> history = ...;
+history.add(UserMessage("我叫张三"));
+history.add(AiMessage("好的，张三你好"));   // 第一次的回复
+history.add(UserMessage("我叫什么名字？"));  // 第二次的问题
+model.chat(history);  // 把全部历史一起发给模型
+```
+
+`ChatMemory` 就是帮你自动管理这个 `history` 列表的对象。
+
+**无记忆 vs 有记忆**：
+
+```mermaid
+flowchart TD
+    subgraph NO["无记忆（每次请求独立）"]
+        A1["第1次: 我叫张三"] --> M1["HTTP messages=[user:我叫张三]"]
+        A2["第2次: 我叫什么名字？"] --> M2["HTTP messages=[user:我叫什么名字？]"]
+        M1 --> R1["模型回复: 张三你好"]
+        M2 --> R2["模型回复: 我不知道<br/>（看不到第1次）"]
+    end
+    subgraph YES["有记忆（ChatMemory 携带历史）"]
+        B1["第1次: 我叫张三"] --> M3["messages=[user:我叫张三]"]
+        M3 --> R3["模型回复: 张三你好<br/>并追加进 memory"]
+        B2["第2次: 我叫什么名字？"] --> M4["messages=[user:我叫张三, ai:张三你好, user:我叫什么名字？]"]
+        M4 --> R4["模型回复: 你叫张三"]
+    end
+```
+
+### 1.4 ChatMemory 的本质：有界消息列表
+
+> `ChatMemory` 是一个**有界消息列表**，自动拼接在每次请求里发给 LLM。
+
+| AI 概念 | Java 类比 |
+|---------|----------|
+| `ChatMemory` | `Deque<Message>`（带容量上限的队列） |
+| `add(Message)` | 队列入队 |
+| `messages()` | 转成 List 发给 LLM |
+| `clear()` | 清空会话 |
+
+**为什么必须"有界"**：LLM 的输入 token 有上限（context window，通常 4K-32K token）。
+全部历史塞进去 → token 超限 → 报错。所以需要淘汰策略（窗口、摘要等）——这正是下一节"短时记忆"要展开的。
+
+### 1.5 LangChain4j 的两种窗口（对话记忆的基础实现，作对照）
+
+Spring AI 与 LangChain4j 的会话记忆是同一个模型。下面保留 LangChain4j 的两种窗口实现作为对照（LC4j 代码）：
+
+```java
+// ===== LangChain4j：按消息条数 =====
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+
+ChatMemory memory = MessageWindowChatMemory.builder()
+        .maxMessages(20)       // 保留最近 20 条消息
+        .id("user-001")        // 会话 ID（多用户隔离）
+        .build();
+
+// ===== LangChain4j：按 token 数 =====
+import dev.langchain4j.memory.chat.TokenWindowChatMemory;
+
+ChatMemory memory2 = TokenWindowChatMemory.builder()
+        .maxTokens(1000, tokenizer)   // 保留最近 1000 token
+        .id("user-001")
+        .build();
+```
+
+- `MessageWindowChatMemory`：按消息条数淘汰最早的消息，简单、最常用；坑是每条消息长度不均，20 条可能就超 token。
+- `TokenWindowChatMemory`：按 token 数精确裁剪，需传 `Tokenizer`（不同模型不同），**生产推荐**。
+- 这正是 Spring AI `MessageWindowChatMemory` 的同款概念，其边界与扩展见下一节。
+
+### 1.6 实际发出的请求：ChatMemory 的全部秘密
+
+打开 `logRequests(true)`，你会看到每次请求就是把历史拼进 `messages` 数组：
+
+```json
+{
+  "model": "deepseek-chat",
+  "messages": [
+    {"role": "user", "content": "我叫张三"},
+    {"role": "assistant", "content": "好的，张三你好"},
+    {"role": "user", "content": "我叫什么名字？"}
+  ]
+}
+```
+
+### 1.7 多用户必须隔离：ChatMemoryStore
+
+100 个用户同时聊时，每个 `ChatMemory` 只能存一个会话，重启还会丢。
+解法是 `ChatMemoryProvider + ChatMemoryStore`（生产用 Redis 持久化），按 `memoryId`（如用户 ID）取各自的 memory。
+**多用户隔离 + 持久化**正是第 3 节"情节记忆"的雏形。
+
+### 1.8 常见错误速览
+
+| 错误 | 症状 | 修复 |
+|------|------|------|
+| 无界历史 | 聊 20 轮后越来越慢 / 越来越贵 | 设 `maxMessages`(10-20) 或 `maxTokens`(2000-4000) |
+| 窗口太小 | 聊到一半"失忆" | 加大窗口；关键信息放 `SystemMessage`；或摘要式记忆 |
+| 全局共享 memory | A 用户的内容串到 B 用户 | 每请求按 `memoryId` 隔离 |
+
+### 1.9 SystemMessage：永远在第一位
+
+`SystemMessage` 用于定义角色 / 风格 / 约束，永远排在 messages 数组第一位，且**不会被窗口淘汰**（特殊保留）。
+这对应下一节 Spring AI `MessageWindowChatMemory`"永远保留 system message"的行为。
+
+---
+
+## 2. 短时记忆：会话窗口
+
+### 2.1 MessageWindowChatMemory 的边界
 
 ```java
 // 本代码仅作学习材料参考
@@ -47,7 +176,7 @@ MessageWindowChatMemory.builder()
 - 超出窗口的消息**直接丢弃**——不归档、不摘要
 - 2.0.0 新增 `sequence_id` 列，按 turn 边界裁剪
 
-### 1.2 短时记忆的两个扩展
+### 2.2 短时记忆的两个扩展
 
 #### A. 滚动摘要（rolling summary）
 
@@ -120,9 +249,9 @@ private List<Message> trimByTokens(List<Message> all, int maxTokens) {
 
 ---
 
-## 2. 情节记忆：跨会话历史
+## 3. 情节记忆：跨会话历史
 
-### 2.1 JDBC / Cassandra / Mongo 的局限
+### 3.1 JDBC / Cassandra / Mongo 的局限
 
 Spring AI 2.0 内置的 `ChatMemoryRepository` 实现（JDBC / Cassandra / Mongo）**会静默丢弃 ToolCall / ToolResponse 消息**——它们只持久化文本消息。
 
@@ -132,7 +261,7 @@ Spring AI 2.0 内置的 `ChatMemoryRepository` 实现（JDBC / Cassandra / Mongo
 - 可重放（replay from event log）
 - 完整保留 tool call 上下文
 
-### 2.2 情节记忆的检索：把会话历史当 RAG
+### 3.2 情节记忆的检索：把会话历史当 RAG
 
 把所有过往对话作为文档存进向量库，新 query 时检索最相关的 K 条历史：
 
@@ -187,7 +316,7 @@ public class EpisodicMemoryAdvisor implements BaseAdvisor {
 }
 ```
 
-### 2.3 隐私：情节记忆的合规边界
+### 3.3 隐私：情节记忆的合规边界
 
 - **PII 必须脱敏**后再入库（用户身份证号、电话）。
 - **TTL**：90 天默认，用户可主动删除（GDPR / 个人信息保护法）。
@@ -195,11 +324,11 @@ public class EpisodicMemoryAdvisor implements BaseAdvisor {
 
 ---
 
-## 3. 语义记忆：知识库
+## 4. 语义记忆：知识库
 
 `VectorStore` + RAG 已经是 07 篇的内容，这里只补三点关键：
 
-### 3.1 语义记忆 vs 情节记忆
+### 4.1 语义记忆 vs 情节记忆
 
 | 维度 | 语义 | 情节 |
 |------|------|------|
@@ -208,7 +337,7 @@ public class EpisodicMemoryAdvisor implements BaseAdvisor {
 | 时效 | 缓慢变化 | 快速变化 |
 | 共享 | 多用户共享 | 用户私有 |
 
-### 3.2 从对话里抽取语义记忆
+### 4.2 从对话里抽取语义记忆
 
 每次对话结束后，让 LLM 判断"这次对话产生了哪些可沉淀的事实"：
 
@@ -239,7 +368,7 @@ facts.filter(f -> f.confidence() > 0.7)
              .build())));
 ```
 
-### 3.3 语义冲突处理
+### 4.3 语义冲突处理
 
 新事实与旧事实冲突时（"以前政策是 7 天，现在 14 天"）：
 
@@ -262,14 +391,14 @@ flowchart TD
 
 ---
 
-## 4. 程序记忆：工具 / Skill
+## 5. 程序记忆：工具 / Skill
 
-### 4.1 静态 vs 动态
+### 5.1 静态 vs 动态
 
 - **静态程序记忆**：`@Tool` 注解，编译期固定。
 - **动态程序记忆**：ToolCallback 接口，运行时构造（见 02 篇 §6）。
 
-### 4.2 "Agent 学会新技能"
+### 5.2 "Agent 学会新技能"
 
 更激进的设想：Agent 在对话中发现"我需要某个工具"，自动生成 tool definition 并注册。
 
@@ -301,17 +430,17 @@ public ToolCallback synthesizeTool(String userIntent) {
 
 ⚠️ **生产慎用**：自动生成工具 = 把 prompt injection 风险面放大无数倍。必须配套安全红队测试（用对抗性输入主动探测模型的注入漏洞）来兜底。
 
-### 4.3 程序记忆的"工具市场"
+### 5.3 程序记忆的"工具市场"
 
 工具市场可以按 MCP Hub 的思路设计：由中心化注册表统一管理工具的发现、鉴权与调用，Agent 按需从 Hub 获取工具。
 
 ---
 
-## 5. 元记忆：人格 / 偏好
+## 6. 元记忆：人格 / 偏好
 
 模型默认人格是"通用助手"，但业务里往往需要"懂你的助手"。
 
-### 5.1 用户画像
+### 6.1 用户画像
 
 ```java
 // 本代码仅作学习材料参考
@@ -323,7 +452,7 @@ public record UserProfile(
 ) {}
 ```
 
-### 5.2 Profile Advisor：注入人格
+### 6.2 Profile Advisor：注入人格
 
 ```java
 // 本代码仅作学习材料参考
@@ -357,7 +486,7 @@ public class ProfileAdvisor implements BaseAdvisor {
 }
 ```
 
-### 5.3 不要让 LLM 自己"决定"人格
+### 6.3 不要让 LLM 自己"决定"人格
 
 反模式：
 
@@ -369,7 +498,7 @@ You are a helpful assistant. Adapt to the user.
 
 ---
 
-## 6. 五种记忆协同：完整架构
+## 7. 五种记忆协同：完整架构
 
 ```mermaid
 flowchart TD
@@ -390,9 +519,9 @@ flowchart TD
 
 ---
 
-## 7. 数据基础设施
+## 8. 数据基础设施
 
-### 7.1 三套存储
+### 8.1 三套存储
 
 | 存储 | 用途 | 技术 |
 |------|------|------|
@@ -400,7 +529,7 @@ flowchart TD
 | 时序 / Event Store | 情节记忆、会话日志 | Kafka + Postgres event table |
 | 向量库（pgvector / Milvus） | 语义记忆 + 情节向量索引 | pgvector / Milvus / Qdrant |
 
-### 7.2 一致性
+### 8.2 一致性
 
 - **强一致**：用户主动操作（"删除我所有对话"）→ 必须跨三库事务。
 - **最终一致**：异步抽取 → 用 outbox + Kafka 解耦。
@@ -409,7 +538,7 @@ flowchart TD
 
 ---
 
-## 8. 遗忘机制
+## 9. 遗忘机制
 
 人类有遗忘，AI 也需要——否则画像/情节会无意义膨胀。
 
@@ -422,7 +551,7 @@ flowchart TD
 
 ---
 
-## 9. 反模式速查
+## 10. 反模式速查
 
 | 反模式 | 后果 | 修复 |
 |--------|------|------|
@@ -436,7 +565,7 @@ flowchart TD
 
 ---
 
-## 10. 实战任务
+## 11. 实战任务
 
 1. 实现 `SummarizingMemory`（滚动摘要），对比与 `MessageWindowChatMemory` 在 50 轮对话下的效果。
 2. 实现 `EpisodicMemoryAdvisor`，在客服场景验证"用户上次问过 X" 能被准确召回。
@@ -447,7 +576,7 @@ flowchart TD
 
 ---
 
-## 11. 理解检查
+## 12. 理解检查
 
 1. 短 / 长 / 情节 / 语义 / 程序五种记忆的差异？分别对应 Spring AI 的什么设施？
 2. 为什么 JDBC ChatMemoryRepository 不能存 tool call？替代方案是？
@@ -458,7 +587,7 @@ flowchart TD
 
 ---
 
-## 12. 相关资源
+## 13. 相关资源
 
 - [MemGPT Paper](https://arxiv.org/abs/2310.08560)
 - [Letta (MemGPT) GitHub](https://github.com/letta-ai/letta)

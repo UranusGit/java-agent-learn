@@ -10,8 +10,8 @@
 ---
 
 
-> 📖 **评估学习路径 · 第 2 级 评估闭环**：承接第 1 级评估入门。
-> 上一级 → `进阶-Agent-06-评估与测试.md`；下一级 → `主线-SpringAI2.0-13-测试工程化.md`（第 3 级）；理论 → `../理论/11-LLMOps.md`。
+> 📖 **评估学习路径 · 第 2 级 评估闭环**：第 1 级评估入门方法论已并入本文 §1（原 `进阶-Agent-06-评估与测试` 已归档）。
+> 下一级 → `13-测试工程化.md`（第 3 级）；理论 → `../理论/11-LLMOps.md`。
 
 ## 0. 认知地图
 
@@ -44,9 +44,97 @@ mindmap
 
 ---
 
-## 1. 评估的三种模式
+## 1. 评估方法论入门：三件套与通过率
 
-### 1.1 离线评估（Offline Eval）
+> 本小节吸收自 `进阶-Agent-06-评估与测试`（原"评估学习路径"第 1 级，已归档到 `../archive/absorbed-内容融合/`）。先补方法论，再进入评估闭环的具体设计。
+
+### 1.1 为什么评估难：传统测试 vs Agent 测试
+
+Agent 测试不像传统单元测试——输入输出都是自然语言、行为路径多样、且 LLM 有概率性，同一条 case 跑两次可能结果不同。
+
+| 维度 | 传统测试 | Agent 测试 |
+|------|---------|-----------|
+| 输入 | 确定 | 自然语言（多变性） |
+| 输出 | 确定 | 自然语言（多义性） |
+| 行为 | 单一路径 | 多种合理路径 |
+| 可重复 | ✅ | ❌（LLM 有概率） |
+| 失败原因 | 代码 bug | prompt / Tool / 模型 / 参数 |
+
+Agent 评估分单元（单个 Tool）、集成（Tool + Service 协作）、端到端（用户问题 → Agent 回答）三类，本系列的阶段重点是 **端到端评估**。
+
+### 1.2 三件套：测试集构建 / LLM-as-Judge / 人工标注
+
+评估体系由三件套构成，各有分工：
+
+| 手段 | 做法 | 适用阶段 | 成本 |
+|------|------|---------|------|
+| **测试集构建** | 先有"标准答案"才有评估对象：每条 case 标注期望的 Tool 调用 / 参数 / 关键词 / 期望输出 | 起步必备 | 一次性人力 |
+| **人工标注** | 人肉看回答打标签；起步阶段人工抽检就够 | 小规模 / 抽检 | 人力成本高 |
+| **LLM-as-Judge** | 用更强的 LLM 当裁判，按 rubric 打分 | 规模化 / 自动化 | LLM 调用成本 |
+
+**路线**：先用"测试集 + 人工抽检"把闭环跑通 → 规模大了再上 LLM-as-Judge 自动化（§4）→ 成熟后接 RAGAS / Langfuse 现成框架（§13）。
+
+### 1.3 测试集怎么构建：评估集结构与难度分级
+
+RAG 场景的测试集用 YAML（`query` + `expected_answer` + `expected_docs`，见 §5.1）；Agent 场景更关注"工具调用对不对"，评估集结构如下：
+
+```json
+{
+  "id": "w1",
+  "input": "明天北京天气",
+  "expected_tools": ["getWeather"],
+  "expected_keywords": ["温度", "度", "晴雨雪"],
+  "expected_tool_calls": {
+    "getWeather": {"city": "北京", "date": "*"}
+  },
+  "category": "weather",
+  "difficulty": "easy"
+}
+```
+
+| 字段 | 作用 |
+|------|------|
+| `input` | 用户问题 |
+| `expected_tools` | 应该调用的 Tool 列表 |
+| `expected_keywords` | 回答中应该包含的关键词 |
+| `expected_tool_calls` | Tool 应该用什么参数（支持通配符） |
+| `category` | 分类（用于按类别统计） |
+| `difficulty` | easy / medium / hard / expert |
+
+**难度分级**（决定测试集覆盖了多难的能力）：
+
+| 难度 | 特征 | 示例 |
+|------|------|------|
+| easy | 单 Tool，参数明确 | "查北京天气" |
+| medium | 单 Tool，参数需推理 | "我明天出差去上海，要带伞吗" |
+| hard | 多 Tool 串联 | "查张三工位" |
+| expert | 多 Tool + 上下文 | "我和张三的待办合在一起" |
+
+### 1.4 通过率：第一个总指标
+
+在没上复杂指标前，**通过率（Pass Rate）**是最直观的总指标：
+
+```
+通过率 = 通过的 case 数 / 总 case 数 × 100%
+```
+
+- 单条 case"通过" = 工具调对（命中 `expected_tools`）**且** 回答命中至少一个 `expected_keywords`。
+- 建议分 `category` / `difficulty` 统计，别只看总数——"weather 95% 但 travel 60%"才是真问题。
+- 实践门槛：评估集 20~100 条，达标线约 80%+；低于 70% 先别谈优化，先修稳定问题。
+
+> 通过率是"粗筛"，看不到"回答够不够忠实 / 切题"这类质量问题——那部分由 §3 的评估指标和 §4 的 LLM-as-Judge 补上。
+
+### 1.5 起步建议
+
+1. 先建 20+ 条测试集（覆盖 easy~hard），人工抽检确认标注没标错。
+2. 实现最简单的通过率统计（关键词 + 工具名匹配），跑出第一个数字。
+3. 再上 LLM-as-Judge 细化质量指标（§4），最后才谈 Prompt 版本管理（§6）和 CI 门禁（`13-测试工程化.md`）。
+
+---
+
+## 2. 评估的三种模式
+
+### 2.1 离线评估（Offline Eval）
 
 **时机**：开发期、上线前、改动后回归。
 
@@ -62,7 +150,7 @@ flowchart LR
 **优点**：可重复、可对比、成本低。
 **缺点**：测试集是有限的，覆盖不了线上长尾。
 
-### 1.2 在线评估（Online Eval）
+### 2.2 在线评估（Online Eval）
 
 **时机**：上线后持续监控。
 
@@ -82,7 +170,7 @@ flowchart TD
     J --> A["告警 / 看板"]
 ```
 
-### 1.3 影子评估（Shadow Eval）
+### 2.3 影子评估（Shadow Eval）
 
 **时机**：发版前对比新旧版本。
 
@@ -118,9 +206,9 @@ flowchart TD
 
 ---
 
-## 2. 评估指标的三个维度
+## 3. 评估指标的三个维度
 
-### 2.1 检索质量（Retrieval Metrics）
+### 3.1 检索质量（Retrieval Metrics）
 
 适用：RAG 系统的"召回"阶段。
 
@@ -133,7 +221,7 @@ flowchart TD
 
 **前提**：测试集要有 ground truth —— 每条 query 标注哪些文档是相关的。
 
-### 2.2 生成质量（Generation Metrics）
+### 3.2 生成质量（Generation Metrics）
 
 适用：LLM 的回答质量。
 
@@ -145,7 +233,7 @@ flowchart TD
 | **Answer Correctness** | 与标准答案的语义相似度 | LLM-as-Judge 或 embedding 余弦 |
 | **BERTScore / ROUGE** | 与参考答案的字面/n-gram 重叠 | 算法 |
 
-### 2.3 系统指标（System Metrics）
+### 3.3 系统指标（System Metrics）
 
 适用：工程层。
 
@@ -158,11 +246,11 @@ flowchart TD
 
 ---
 
-## 3. LLM-as-Judge 的工程化
+## 4. LLM-as-Judge 的工程化
 
 LLM-as-Judge 是 2.0 时代最实用的评估方式 —— 不用人工标注，让一个强模型给被测模型的输出打分。
 
-### 3.1 三个关键设计
+### 4.1 三个关键设计
 
 **1. Judge 模型要比被测模型强**：用 GPT-4 / Claude Opus 评判 GPT-3.5 / DeepSeek，不能反过来。
 
@@ -170,7 +258,7 @@ LLM-as-Judge 是 2.0 时代最实用的评估方式 —— 不用人工标注，
 
 **3. 结构化输出**：让 Judge 返回 JSON，方便程序解析。
 
-### 3.2 Faithfulness 评估 Prompt（参考）
+### 4.2 Faithfulness 评估 Prompt（参考）
 
 ```text
 你是一个严格的评估员，判断【回答】是否完全基于【上下文】，不编造、不引入外部知识。
@@ -202,7 +290,7 @@ LLM-as-Judge 是 2.0 时代最实用的评估方式 —— 不用人工标注，
 }
 ```
 
-### 3.3 Judge 的常见偏差
+### 4.3 Judge 的常见偏差
 
 | 偏差 | 表现 | 缓解 |
 |------|------|------|
@@ -211,7 +299,7 @@ LLM-as-Judge 是 2.0 时代最实用的评估方式 —— 不用人工标注，
 | **自我偏好** | GPT-4 偏好 GPT 系列输出 | 用不同家族的模型交叉评估 |
 | **极端分偏差** | 全打 8 分或全打 2 分 | 用 pairwise comparison（A vs B 二选一）替代绝对打分 |
 
-### 3.4 Pairwise 比 Absolute 更稳
+### 4.4 Pairwise 比 Absolute 更稳
 
 绝对打分（"给这个回答打 0-10 分"）的 Judge 容易飘 —— 同一个回答今天打 7 分明天打 8 分。
 
@@ -239,11 +327,11 @@ LLM-as-Judge 是 2.0 时代最实用的评估方式 —— 不用人工标注，
 
 ---
 
-## 4. 离线评估管道（参考代码）
+## 5. 离线评估管道（参考代码）
 
 > 本代码仅作学习材料参考，需要你手动在 `org.demo02.eval.*` 下实现
 
-### 4.1 测试集格式（YAML）
+### 5.1 测试集格式（YAML）
 
 ```yaml
 # src/main/resources/eval/dataset-rag.yaml
@@ -269,7 +357,7 @@ LLM-as-Judge 是 2.0 时代最实用的评估方式 —— 不用人工标注，
   tags: ["advisor", "troubleshooting"]
 ```
 
-### 4.2 单条评估结果
+### 5.2 单条评估结果
 
 ```java
 // org.demo02.eval.SingleEvalResult
@@ -289,7 +377,7 @@ public record SingleEvalResult(
 ) {}
 ```
 
-### 4.3 评估器（核心）
+### 5.3 评估器（核心）
 
 ```java
 // org.demo02.eval.RagEvaluator
@@ -382,7 +470,7 @@ public class RagEvaluator {
 }
 ```
 
-### 4.4 批量跑 + 聚合
+### 5.4 批量跑 + 聚合
 
 ```java
 // org.demo02.eval.EvalRunner
@@ -442,7 +530,7 @@ public record EvalReport(
 }
 ```
 
-### 4.5 命令行触发评估
+### 5.5 命令行触发评估
 
 ```java
 // org.demo02.eval.EvalController
@@ -468,13 +556,136 @@ public class EvalController {
 curl -X POST "http://127.0.0.1:8080/demo02/eval/run?versionTag=v1.2.0"
 ```
 
+### 5.6 对照实现：Agent 场景评估器（吸收自 Agent 进阶 06）
+
+5.1~5.5 是 RAG 场景的评估管道；Agent 场景多一个维度——**要校验工具调用**。以下是来自 Agent 进阶评估与测试的对照实现（字段含义见 §1.3）。
+
+```java
+// Agent 场景：单条用例评估（简单实现）
+public class AgentEvaluator {
+
+    private final ChatClient client;
+    private final ToolCallRecorder recorder;
+
+    public EvalResult evaluate(TestCase testCase) {
+        recorder.start();
+        String response = client.prompt()
+                .user(testCase.input())
+                .call()
+                .content();
+        List<ToolCall> calls = recorder.stop();
+
+        return EvalResult.builder()
+                .caseId(testCase.id())
+                .input(testCase.input())
+                .response(response)
+                .toolCalls(calls)
+                .toolSelectionScore(scoreToolSelection(calls, testCase.expectedTools()))
+                .paramScore(scoreParams(calls, testCase.expectedToolCalls()))
+                .answerScore(scoreAnswer(response, testCase.expectedKeywords()))
+                .passed(isPassed(testCase, calls, response))
+                .build();
+    }
+
+    private boolean isPassed(TestCase tc, List<ToolCall> calls, String resp) {
+        // 至少调对了 Tool，且至少一个关键词命中
+        boolean toolOk = tc.expectedTools().stream()
+                .allMatch(t -> calls.stream().anyMatch(c -> c.name().equals(t)));
+        boolean kwOk = tc.expectedKeywords().stream()
+                .anyMatch(resp::contains);
+        return toolOk && kwOk;
+    }
+}
+```
+
+**ToolCallRecorder（关键工具）**：需要记录 Agent 调了哪些 Tool、参数是什么。Spring AI 里写一个 Advisor 拦截：
+
+```java
+public class ToolCallRecorderAdvisor implements CallAdvisor {
+    private final ThreadLocal<List<ToolCall>> recorder = new ThreadLocal<>();
+
+    @Override
+    public String getName() { return "ToolCallRecorderAdvisor"; }
+    @Override
+    public int getOrder() { return 50; }
+
+    @Override
+    public ChatClientResponse adviseCall(ChatClientRequest req, CallAdvisorChain chain) {
+        // 拦截 Tool 调用，记录到 ThreadLocal
+        // 1.0.0 入参是 ChatClientRequest，链推进用 chain.nextCall(req)
+    }
+}
+```
+
+**批量评估 + 通过率**：
+
+```java
+public EvaluationReport evaluateAll(Path jsonlFile) {
+    List<TestCase> cases = loadCases(jsonlFile);
+    List<EvalResult> results = cases.stream()
+            .map(this::evaluate)
+            .toList();
+
+    return EvaluationReport.builder()
+            .totalCases(results.size())
+            .passed((int) results.stream().filter(EvalResult::passed).count())
+            .passRate(results.stream().filter(EvalResult::passed).count()
+                    * 100.0 / results.size())
+            .byCategory(statsBy(results, EvalResult::category))
+            .byDifficulty(statsBy(results, EvalResult::difficulty))
+            .failedCases(results.stream()
+                    .filter(r -> !r.passed())
+                    .toList())
+            .build();
+}
+```
+
+**鲁棒性测试**：同一问题问 N 次看稳定率，或同义不同说法验证泛化：
+
+```java
+@Test
+void robustness_weatherQuery() {
+    int trials = 10, passed = 0;
+    for (int i = 0; i < trials; i++) {
+        String r = client.prompt().user("明天北京天气").call().content();
+        if (r.contains("温度") || r.contains("度")) passed++;
+    }
+    assertTrue(passed >= trials * 0.9);  // 至少 90% 通过
+}
+
+@ParameterizedTest
+@ValueSource(strings = {
+    "明天北京天气",
+    "明天北京天气怎么样",
+    "明天北京什么天气",
+    "明天去北京要穿什么",
+    "明天北京会下雨吗"
+})
+void weatherVariations(String q) {
+    String r = client.prompt().user(q).call().content();
+    assertNotNull(r);
+}
+```
+
+**Agent 失败用例分析**：评估不是跑完就结束，关键是分析失败。常见失败模式及解决方向：
+
+| 失败类型 | 表现 | 解决方向 |
+|---------|------|---------|
+| Tool 选错 | 该调 A 调了 B | 改 Tool 描述 |
+| 参数错 | city 填了"上海"（应为"北京"） | 改参数描述 |
+| 没调 Tool | LLM 直接编造 | 强化 system prompt |
+| 多调 Tool | 调了无关 Tool | 描述写"不适用场景" |
+| 回答不完整 | 缺关键词 | system prompt 要求"包含 X" |
+
+> 每改一处 prompt / Tool 描述就**跑评估集验证**——这是回归测试的雏形（完整 CI 门禁见 `13-测试工程化.md`）。
+
 ---
 
-## 5. Prompt 版本管理
+## 6. Prompt 版本管理
 
 Prompt 改一个字都可能让线上指标抖动。**Prompt 不是代码但比代码敏感**，必须有版本管理。
 
-### 5.1 反模式：Prompt 写在 Java 代码里
+### 6.1 反模式：Prompt 写在 Java 代码里
 
 ```java
 // ❌ 反模式
@@ -488,7 +699,7 @@ String prompt = "你是助手，回答用户问题：" + userInput;
 - 无法对比新旧 prompt 的效果
 - 无法回滚到旧版本
 
-### 5.2 正模式：Prompt 抽到资源文件
+### 6.2 正模式：Prompt 抽到资源文件
 
 ```
 src/main/resources/
@@ -502,7 +713,7 @@ src/main/resources/
     └── current -> v2   (软链或配置)
 ```
 
-### 5.3 Spring AI 的 StringTemplate 加载
+### 6.3 Spring AI 的 StringTemplate 加载
 
 Spring AI 提供 `org.springframework.ai.template.st.StTemplateRenderer`，可以加载 `.st` 文件并填充变量。
 
@@ -528,7 +739,7 @@ public class PromptLoader {
 }
 ```
 
-### 5.4 版本切换：配置驱动
+### 6.4 版本切换：配置驱动
 
 ```yaml
 # application.yaml
@@ -544,7 +755,7 @@ private String promptVersion;
 String systemPrompt = promptLoader.load(promptVersion, "rag-system");
 ```
 
-### 5.5 A/B 测试：运行时切换
+### 6.5 A/B 测试：运行时切换
 
 ```java
 // org.demo02.prompt.ABPromptRouter
@@ -587,7 +798,7 @@ flowchart TD
 
 ---
 
-## 6. 评估闭环的完整工作流
+## 7. 评估闭环的完整工作流
 
 ```mermaid
 flowchart TD
@@ -610,9 +821,9 @@ flowchart TD
 
 ---
 
-## 7. EvalReport 的对比与判定
+## 8. EvalReport 的对比与判定
 
-### 7.1 对比基线
+### 8.1 对比基线
 
 ```yaml
 # reports/baseline-v1.1.0.yml
@@ -638,7 +849,7 @@ totalInputTokens: 42000 # -3000
 totalOutputTokens: 19000
 ```
 
-### 7.2 自动判定脚本
+### 8.2 自动判定脚本
 
 ```java
 // org.demo02.eval.EvalComparator
@@ -687,9 +898,9 @@ public record EvalComparison(
 
 ---
 
-## 8. 在线评估与监控
+## 9. 在线评估与监控
 
-### 8.1 抽样打分
+### 9.1 抽样打分
 
 ```java
 // org.demo02.eval.OnlineEvalAdvisor
@@ -734,7 +945,7 @@ public class OnlineEvalAdvisor implements BaseAdvisor {
 }
 ```
 
-### 8.2 Grafana 看板的关键面板
+### 9.2 Grafana 看板的关键面板
 
 - **Faithfulness 时间序列**：按小时聚合的均值 + P5（最低 5%）。
 - **Faithfulness 分布直方图**：能看到长尾低分 case。
@@ -745,9 +956,9 @@ public class OnlineEvalAdvisor implements BaseAdvisor {
 
 ---
 
-## 9. A/B 测试的工程实现
+## 10. A/B 测试的工程实现
 
-### 9.1 流量分桶
+### 10.1 流量分桶
 
 ```java
 // org.demo02.eval.ABTestRouter
@@ -770,7 +981,7 @@ public class ABTestRouter {
 }
 ```
 
-### 9.2 记录对照数据
+### 10.2 记录对照数据
 
 ```java
 @GetMapping("/chat")
@@ -783,7 +994,7 @@ public String chat(@RequestParam String q, @RequestParam String sessionId) {
 }
 ```
 
-### 9.3 胜率分析
+### 10.3 胜率分析
 
 ```sql
 -- 用 LLM-as-Judge 对同一 query 的 A/B 两个答案 pairwise
@@ -801,9 +1012,9 @@ GROUP BY query;
 
 ---
 
-## 10. 实战避坑
+## 11. 实战避坑
 
-### 10.1 "测试集被过拟合"
+### 11.1 "测试集被过拟合"
 
 **症状**：评估集准确率 95%，上线后用户投诉 30%。
 
@@ -814,7 +1025,7 @@ GROUP BY query;
 - 测试集分 **dev set**（开发期看）和 **holdout set**（只在最终评估时看一次）。
 - 测试集要持续扩充 —— 线上用户实际问的问题是最宝贵的素材。
 
-### 10.2 "Judge 模型和被测模型相同"
+### 11.2 "Judge 模型和被测模型相同"
 
 **症状**：评估指标虚高，自己评自己全是 10 分。
 
@@ -822,7 +1033,7 @@ GROUP BY query;
 
 **解决**：用不同家族的强模型做 Judge（被测是 DeepSeek，Judge 用 Claude）。
 
-### 10.3 "EvalReport 指标都涨但用户体验下降"
+### 11.3 "EvalReport 指标都涨但用户体验下降"
 
 **症状**：faithfulness +0.05，但用户 👎 增加。
 
@@ -833,7 +1044,7 @@ GROUP BY query;
 - 评估维度要全面（至少 Faithfulness / Relevance / Conciseness）。
 - 在线用户反馈是最终裁判，离线指标是辅助。
 
-### 10.4 "Latency 延迟分桶选错"
+### 11.4 "Latency 延迟分桶选错"
 
 **症状**：P95 latency 显示 800ms，但用户反馈"很慢"。
 
@@ -841,7 +1052,7 @@ GROUP BY query;
 
 **解决**：分别监控 TTFT 和 total，TTFT > 1s 才是用户感知的"慢"。
 
-### 10.5 "A/B 测试样本量不够就下结论"
+### 11.5 "A/B 测试样本量不够就下结论"
 
 **症状**：B 版本第一天胜率 70%，全量后实际胜率 52%。
 
@@ -854,7 +1065,7 @@ GROUP BY query;
 
 ---
 
-## 11. 评估闭环的成熟度模型
+## 12. 评估闭环的成熟度模型
 
 | 级别 | 特征 | 阶段 |
 |------|------|------|
@@ -880,7 +1091,7 @@ flowchart LR
 
 ---
 
-## 12. 配套工具栈
+## 13. 配套工具栈
 
 | 用途 | 工具 | 备注 |
 |------|------|------|
@@ -889,13 +1100,15 @@ flowchart LR
 | 看板 | Grafana + Prometheus | 标准 Spring Boot Actuator 集成 |
 | 评估框架 | **Langfuse**（开源自托管） | Web UI + Python/Java SDK，专业做 LLM 评估 |
 | 评估框架 | **Phoenix**（Arize） | 类似 Langfuse，trace + eval 一体 |
+| 评估框架 | **RAGAS** | RAG 专用，LLM 当裁判打 Faithfulness / Relevance；起步可人工抽检 |
+| 评估框架 | **Promptfoo** | 开源 prompt 评估 CLI，YAML 定义规则 + LLM-as-Judge，CI 友好 |
 | A/B 平台 | GrowthBook / Unleash | 特性开关 + 实验平台 |
 
 **学习建议**：先用本文的方法自己实现一遍（理解原理），再在生产环境引入 Langfuse/Phoenix。
 
 ---
 
-## 13. 理解检查
+## 14. 理解检查
 
 1. 离线评估、在线评估、影子评估分别解决什么问题？
 2. LLM-as-Judge 的四个常见偏差是什么？怎么缓解？
@@ -903,10 +1116,11 @@ flowchart LR
 4. 测试集为什么要分 dev set 和 holdout set？
 5. Prompt 抽到资源文件相比写在 Java 代码里有什么好处？
 6. A/B 测试为什么至少要 200 条样本才能下结论？
+7. 评估方法论三件套（测试集 / LLM-as-Judge / 人工标注）分别负责什么？通过率能衡量什么、不能衡量什么？
 
 ---
 
-## 14. 练习任务
+## 15. 练习任务
 
 1. 为你在 RAG 工程化实战篇搭的 RAG 系统建一个 20 条 case 的 YAML 测试集。
 2. 实现一个 `RagEvaluator`，跑出 EvalReport，包含 faithfulness / relevance / docHitRate。
@@ -914,10 +1128,11 @@ flowchart LR
 4. 改 chunk size 从 500 → 800，跑离线评估，对比 baseline，写出哪些指标涨了哪些退步。
 5. （进阶）实现 `ABPromptRouter`，让 10% 流量走 v2 prompt，记录日志做胜率分析。
 6. （选做）集成 Langfuse，把 trace 和 eval 数据自动上报。
+7. （进阶）为你的 Agent 场景建一个 20 条含 `expected_tools` / `expected_keywords` 的评估集，用 §5.6 的对照实现跑出通过率。
 
 ---
 
-## 15. 进 L2 下一篇之前的能力确认
+## 16. 进 L2 下一篇之前的能力确认
 
 完成本篇你应该能：
 
@@ -927,13 +1142,16 @@ flowchart LR
 - [ ] 解释为什么 Prompt 要做版本管理
 - [ ] 实现 A/B 测试的流量分桶（hash-based）
 - [ ] 知道评估闭环成熟度模型的 5 个级别
+- [ ] 说清评估方法论三件套（测试集 / LLM-as-Judge / 人工标注）的分工
+- [ ] 能为 Agent 场景设计评估集（`expected_tools` / `expected_keywords` / 难度分级）
 
 ---
 
-## 16. 相关文档
+## 17. 相关文档
 
 - [Langfuse 文档](https://langfuse.com/docs) —— 开源 LLM 评估平台
 - [OpenAI Evals](https://github.com/openai/evals) —— OpenAI 官方评估框架（思路参考）
+- [Promptfoo](https://promptfoo.dev) —— 开源 prompt 评估 CLI，YAML 定义规则，CI 友好
 
 ---
 

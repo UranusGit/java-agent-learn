@@ -1,11 +1,203 @@
 # 04 流式响应与 Reactor 深度
 
-> 本文合并自原 11「复现手册-流式与工具调用」+ 原 26「流式 Reactor 深度」。
+> 本文合并自原 11「复现手册-流式与工具调用」+ 原 26「流式 Reactor 深度」，并在开头吸收「入门-LangChain4j-06-流式输出」作为入门铺垫（流式体验 / SSE 基础 / 回调式心智模型对照）。
 >
 > 一篇搞定：流式响应怎么用、流式 + 工具调用怎么打通、Reactor 在 LLM 场景的所有操作符。
 >
 > 前提：你已会用 `@Tool` 注册工具、理解 ToolCallingAdvisor 的 Agent Loop，并清楚 Advisor 的 order 与 BaseAdvisor/Call/Stream 选择（即 02、03 的能力）。
 > 预计：1.5 天
+
+---
+
+## 入门铺垫：流式体验、SSE 与两种心智模型
+
+> 本小节吸收自「入门-LangChain4j-06-流式输出」（原文已并入本文，文件归档于 `../archive/absorbed-内容融合/`）。在进入 Reactor 深度之前，先建立三个共识：**流式为什么必要、底层走什么协议、回调式 vs 响应式两种心智模型**。LangChain4j 的代码在下方保留为对照。
+
+### 铺垫 1：为什么必须流式（体验要点）
+
+**不流式的体验灾难**：用户看不到进度，以为卡死了。用户心理学：3 秒内没反应就会怀疑程序挂了。
+**流式后的体验**：用户感知"响应快"，且能边读边等。
+
+技术原理：LLM 生成文本是**逐 token 输出**的（一个 token 大约 0.5-4 个汉字）。
+
+- 不流式：等所有 token 生成完才返回完整字符串
+- 流式：每生成一个 token 就立刻推送给客户端
+
+**非流式 vs 流式**：
+
+```mermaid
+flowchart TD
+    subgraph NON["非流式"]
+        N1["用户点击发送"] --> N2["等 15 秒"] --> N3["屏幕突然弹出完整答案"]
+    end
+    subgraph STREAM["流式"]
+        S1["用户点击发送"] --> S2["0.5 秒后第一个字出现"] --> S3["逐字输出"] --> S4["15 秒读完"]
+    end
+```
+
+### 铺垫 2：底层协议 SSE（Server-Sent Events）
+
+> HTTP 长连接 + 服务器持续推送文本数据。客户端用 `EventSource` 接收。
+
+不是 WebSocket。SSE 是**单向（服务器 → 客户端）**，简单、稳定、自带断线重连。LLM 流式选 SSE 而不是 WebSocket，正因为我们只需要服务器 → 客户端这一条单向推送通道。
+
+**SSE 响应格式**：每条消息以 `data: ` 开头、以空行分隔，结束时发 `[DONE]`。
+
+```
+data: 第一个token
+
+data: 第二个
+
+data: [DONE]
+```
+
+**客户端接收**：
+
+```javascript
+const es = new EventSource('/chat?prompt=hello');
+es.onmessage = (e) => {
+    document.body.innerHTML += e.data;
+};
+```
+
+**SSE 单向推送时序**：
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器 EventSource
+    participant S as 服务器 SSE
+    B->>S: GET /chat?prompt=hello（HTTP 长连接）
+    loop 生成 token
+        S-->>B: "data: 第一个token"
+        S-->>B: "data: 第二个"
+    end
+    S-->>B: "data: [DONE]"
+    Note over B,S: 单向（服务器 → 客户端）<br/>自带断线重连
+```
+
+> 在 Spring AI 里用 `ServerSentEvent` 构造器生成这条 SSE 流，见本文 §A.2。
+
+### 铺垫 3：回调式心智模型 —— LangChain4j 怎么流式（对照）
+
+LangChain4j 的流式 API 是**回调式**的：流式模型的方法返回 `void`，通过回调接收数据。
+
+```java
+// 非流式（前面的入门代码用的）
+import dev.langchain4j.model.openai.OpenAiChatModel;
+// 流式
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+
+var model = OpenAiStreamingChatModel.builder()
+        .baseUrl("https://api.deepseek.com")
+        .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+        .modelName("deepseek-chat")
+        .temperature(0.7)
+        .build();
+
+model.chat("讲一个长一点的笑话", new StreamingResponseHandler<>() {
+    @Override
+    public void onPartialResponse(String partialResponse) {
+        System.out.print(partialResponse);   // 每个 token 回调一次
+    }
+    @Override
+    public void onCompleteResponse(String completeResponse) {
+        System.out.println("\n[完成]");
+    }
+    @Override
+    public void onError(Throwable error) {
+        error.printStackTrace();
+    }
+});
+// 流式是异步的，主线程要等一下
+Thread.sleep(30_000);
+```
+
+配合 AiServices 时用 `TokenStream` 接口，链式注册回调：
+
+```java
+public interface StreamingAssistant {
+    TokenStream chat(String userMessage);
+}
+
+TokenStream stream = agent.chat("讲个故事");
+stream.onPartialResponse(System.out::print)
+      .onCompleteResponse(r -> System.out.println("\n[done]"))
+      .onError(Throwable::printStackTrace)
+      .start();
+```
+
+**两种心智模型的对照**：
+
+| 框架 | 心智模型 | 你写的代码 |
+|------|---------|-----------|
+| LangChain4j | 回调式（`onPartialResponse` / `TokenStream`） | 注册回调 + 自己 `start()` |
+| Spring AI | 响应式（`Flux<String>`） | 拿到 Flux 后任意组合操作符（本文 Part D） |
+
+把"回调式 API 桥接进响应式 Flux"是唯一需要手工的适配（对照 Spring AI 的 `Flux` 原生支持，见 §A.1）：
+
+```java
+Flux.create(sink -> {
+    TokenStream stream = agent.chat(prompt);
+    stream.onPartialResponse(sink::next)
+          .onCompleteResponse(response -> sink.complete())
+          .onError(sink::error)
+          .start();
+});
+```
+
+### 铺垫 4：流式 + Tool：只有最终自然语言回答会流式（通用原则）
+
+LangChain4j 流式 + Tool 组合的结论是通用原则：**Tool 调用过程不会流式输出（LLM 在生成 tool_calls，不是文字），只有最终自然语言回答才流式**。
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant AS as StreamingAssistant
+    participant LLM as LLM
+    participant T as TimeTools
+    U->>AS: "agent.chat('现在几点？')"
+    AS->>LLM: 请求（含 tools）
+    Note over AS,LLM: 此阶段不流式（LLM 在生成 tool_calls）
+    LLM-->>AS: 决定调用 TimeTools
+    AS->>T: 执行工具
+    T-->>AS: 返回当前时间
+    AS->>LLM: 携带工具结果再次请求
+    Note over AS,LLM: 只有最终自然语言回答才流式
+    loop 流式输出
+        LLM-->>AS: onPartialResponse 逐字
+    end
+    AS-->>U: "逐字输出'现在是 X'"
+```
+
+> 在 Spring AI 里，LLM 的一次 tool call 在流式响应里会被切成很多 chunk，**单看一个 chunk 看不到完整 tool call**，需要先用 `ChatClientMessageAggregator` 聚合判断再触发工具（本文 §E，原理与这里的时序一致）。
+
+### 铺垫 5：LC4j 独有经验（对照自查）
+
+- **中文乱码**：SSE 默认按字节推，UTF-8 多字节汉字可能被切断成半个字。LangChain4j 内部按字符推已处理；自定义 SSE 实现要注意字符集编码。
+- **主线程结束太快**：流式是异步的，本地测试 main 跑完时异步任务还没执行，看不到输出 → `Thread.sleep` 或 `CountDownLatch` 等待。
+- **首字延迟 TTFT（Time To First Token）**：用户看到第一个字的时间。
+
+| 优化手段 | 效果 |
+|---------|------|
+| 用更快的小模型 | 显著 |
+| 简化 prompt | 显著 |
+| 启用 vLLM 服务端 KV Cache | 显著（生产） |
+| 减小 max_tokens | 无影响（与首字无关） |
+
+- **客户端节流**：减少 DOM 操作频率，每 50ms 刷新一次 UI（用 buffer 累积再渲染），提升流畅度。
+
+```javascript
+let buffer = '';
+let lastUpdate = 0;
+es.onmessage = (e) => {
+    buffer += e.data;
+    const now = Date.now();
+    if (now - lastUpdate > 50) {
+        output.textContent = buffer;
+        lastUpdate = now;
+    }
+};
+```
 
 ---
 
@@ -618,12 +810,16 @@ Spring AI 2.0.0 把 Advisor 拆成了两个接口：
 4. Spring AI 2.0 下如何关闭 ToolCallingAdvisor 的自动注册？为什么"自定义 `@Bean ChatClient` 短路自动注册"这个说法是错的？
 5. 流式下 conversationId NPE 的根因和修复？
 6. 为什么不能在 Flux 操作符内调阻塞 API？怎么解决？
+7. 回调式（LangChain4j `TokenStream`）和响应式（Spring AI `Flux`）两种心智模型各自怎么写？桥接时用哪个操作符？
+8. SSE 和 WebSocket 有什么区别？为什么 LLM 流式用 SSE 而不是 WebSocket？
+9. 流式 + Tool 时，哪些内容会流式、哪些不会？
 
 ---
 
 ## L. 相关文档
 
 - [Project Reactor Reference](https://projectreactor.io/docs/core/release/reference/)
+- 入门对照（已归档）：`../archive/absorbed-内容融合/入门-LangChain4j-06-流式输出（内容并入04-流式响应与Reactor深度）.md`
 
 ---
 

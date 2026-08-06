@@ -1,5 +1,5 @@
 # Agent 与提示词工程专题（学习顺序）
-> 📌 辅线定位：专为《教程/入门-LangChain4j-01 与 主线-SpringAI2.0》补充 Agent 与提示词工程背景
+> 📌 辅线定位：专为《教程/01-2.0基础重塑01 与 主线-SpringAI2.0》补充 Agent 与提示词工程背景
 
 
 
@@ -83,6 +83,6 @@ flowchart TD
 | Spring AI 2.0 的 Tool / AgentLoop、多 Agent、Workflow 模式 | Spring AI 2.0 的 Tool、多 Agent、Workflow 模式 |
 | RAG：让 Agent 查知识库（工程化落地） | RAG 工程化实战、RAG 高级篇 |
 | MCP：Agent 接外部工具生态（Client/Server/开发） | MCP 协议全解 |
-| 评估：怎么知道 Agent 好不好用 | 评估与测试、评估闭环与 Prompt 版本管理、测试工程化 |
+| 评估：怎么知道 Agent 好不好用 | 评估闭环与 Prompt 版本管理（含评估入门方法论）、测试工程化 |
 | 架构师进阶（生产化 / 平台化 / 路线） | 架构师进阶、AI 原生系统设计、Agent 可靠性工程 |
 | Anthropic 官方 "Building effective agents"（Workflow vs Agent 权威判据） | 官方文章本身即权威出处 |

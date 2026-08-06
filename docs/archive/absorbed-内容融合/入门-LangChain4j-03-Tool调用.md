@@ -7,7 +7,7 @@
 
 
 > 📖 **Tool 学习路径 · 第 1 级 工具调用基础**：本文件是 Tool 四步路径的起点。
-> 下一级 → `主线-SpringAI2.0-02-Tool与AgentLoop.md`（第 2 级 2.0 实现）→ `进阶-Agent-01-Tool设计原则.md`（第 3 级 设计）→ `进阶-Agent-03-多Tool编排.md`（第 4 级 多工具编排）。
+> 下一级 → `02-Tool与AgentLoop.md`（第 2 级 2.0 实现）→ `进阶-Agent-01-Tool设计原则.md`（第 3 级 设计）→ `进阶-Agent-03-多Tool编排.md`（第 4 级 多工具编排）。
 
 ## 1. 为什么需要 Tool
 

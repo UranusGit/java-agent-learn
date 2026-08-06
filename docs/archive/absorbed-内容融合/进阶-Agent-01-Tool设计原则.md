@@ -7,7 +7,7 @@
 
 
 > 📖 **Tool 学习路径 · 第 3 级 设计原则**：承接第 2 级 2.0 实现。
-> 上一级 → `主线-SpringAI2.0-02-Tool与AgentLoop.md`（第 2 级）→ `入门-LangChain4j-03-Tool调用.md`（第 1 级）；下一级 → `进阶-Agent-03-多Tool编排.md`（第 4 级）。
+> 上一级 → `02-Tool与AgentLoop.md`（第 2 级）→ `入门-LangChain4j-03-Tool调用.md`（第 1 级）；下一级 → `进阶-Agent-03-多Tool编排.md`（第 4 级）。
 
 ## 1. 为什么 Tool 设计是核心
 

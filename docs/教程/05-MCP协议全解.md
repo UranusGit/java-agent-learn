@@ -16,7 +16,7 @@
 
 
 > 📖 **MCP 学习路径 · 第 1 级 协议入门**：本文件是 MCP 三部曲起点。
-> 下一级 → `主线-SpringAI2.0-06-MCP-Server开发实战.md`（第 2 级 Server 实战）→ `主线-SpringAI2.0-07-MCP-Server高阶与生态.md`（第 3 级 高阶生态）；理论 → `../理论/14-MCP协议与生态.md`。
+> 下一级 → `06-MCP-Server开发实战.md`（第 2 级 Server 实战）→ `07-MCP-Server高阶与生态.md`（第 3 级 高阶生态）；理论 → `../理论/14-MCP协议与生态.md`。
 
 ## 0. 这篇怎么读
 

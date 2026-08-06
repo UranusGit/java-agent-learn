@@ -19,7 +19,7 @@
 
 
 > 📖 **RAG 学习路径 · 第 2 级 实战**（Spring AI 2.0）：承接第 1 级入门。
-> 上一级 → `入门-LangChain4j-05-RAG实战.md`；下一级 → `主线-SpringAI2.0-20-RAG高级篇.md`（第 3 级 高级）；理论 → `../理论/02-RAG深度优化.md`。
+> 上一级（第 1 级入门）内容已吸收进本文 **§0.1 入门铺垫**，原 `入门-LangChain4j-05-RAG实战` 已归档至 `../archive/absorbed-内容融合/`；下一级 → `20-RAG高级篇.md`（第 3 级 高级）；理论 → `../理论/02-RAG深度优化.md`。
 
 ## 0. 全文地图
 
@@ -64,6 +64,160 @@ flowchart LR
     end
     VS --> RT
 ```
+
+---
+
+### 0.1 入门铺垫：RAG 是什么 + 四步管道心智模型（LangChain4j 入门视角）
+
+> **本小节吸收自 `入门-LangChain4j-05-RAG实战`**（原 RAG 学习路径第 1 级入门，已归档至 `../archive/absorbed-内容融合/`）。
+> 先建立"RAG 是什么、全链路长什么样"的心智模型，再进第 1 章动手。LangChain4j 代码保留为**入门视角**，与 Spring AI 2.0 实现形成对照。
+
+#### 0.1.1 RAG 是什么 / 为什么需要它
+
+LLM 有两个根本限制，RAG 就是为它们而生的：
+
+| 限制 | 表现 | RAG 怎么解决 |
+|------|------|------------|
+| **知识截止** | 训练数据有截止日期，不知道最新信息 | 实时检索外部资料 |
+| **不知道私有知识** | 公司文档、产品手册、内部数据 LLM 都不知道 | 把私有数据检索出来塞进 prompt |
+
+> **一句话定义：RAG = 检索 + 生成**。先用用户问题去知识库检索相关片段，再把片段拼到 prompt 里让 LLM 基于它回答。
+
+**与微调怎么选**：
+
+| 维度 | RAG | 微调 |
+|------|-----|------|
+| 适合 | 事实性知识、动态更新 | 风格、格式、特定术语 |
+| 成本 | 低（无训练） | 高（GPU 训练） |
+| 更新 | 加新文档即可 | 重新训练 |
+| 准确率 | 取决于检索质量 | 取决于数据质量 |
+| 上手难度 | ⭐⭐ | ⭐⭐⭐⭐ |
+
+**优先用 RAG，微调是最后手段**。
+
+#### 0.1.2 四步管道心智模型（LangChain4j 视角）
+
+无论哪个框架，RAG 本质都是同一条管道。LangChain4j 把它拆成最直观的"离线索引 + 在线问答"两个阶段：
+
+```mermaid
+flowchart TD
+    subgraph OFF["离线索引阶段（一次性，文档更新时重做）"]
+        D1["原始文档（PDF/Markdown/HTML）"] --> D2["DocumentReader 解析"]
+        D2 --> D3["Document 统一中间格式"]
+        D3 --> D4["DocumentSplitter 分块"]
+        D4 --> D5["List of TextSegment 文本片段"]
+        D5 --> D6["EmbeddingModel 向量化"]
+        D6 --> D7["EmbeddingStore 入库"]
+    end
+    subgraph ON["在线问答阶段（每次用户提问）"]
+        Q1["用户问题"] --> Q2["EmbeddingModel 向量化"]
+        Q2 --> Q3["EmbeddingStore.search 相似度检索"]
+        Q3 --> Q4["最相关的 K 个片段"]
+        Q4 --> Q5["拼接进 prompt<br/>「根据以下上下文回答：<br/>context；问题：question」"]
+        Q5 --> Q6["LLM 生成答案"]
+    end
+    D7 -.->|"向量库跨阶段复用"| Q3
+```
+
+这个心智模型对应到 Spring AI 2.0，就是上文"6 个工程模块"的展开。LangChain4j 的五个核心组件 → Spring AI 2.0 的对应物：
+
+| LangChain4j 组件 | 作用 | Spring AI 2.0 对应 |
+|------|------|----------------|
+| `DocumentReader` | 解析 PDF/Word/HTML | `DocumentReader`（`PagePdfDocumentReader`，第 1 章） |
+| `DocumentSplitter` | 文档分块 | `DocumentTransformer`（`TokenTextSplitter`，第 1/3 章） |
+| `EmbeddingModel` | 文本转向量 | `EmbeddingModel`（第 1 章） |
+| `EmbeddingStore` | 向量存储与检索 | `VectorStore`（第 1 章 `SimpleVectorStore`，第 2 章 `PgVectorStore`） |
+| `ContentRetriever` | 把检索整合给 AiServices | `DocumentRetriever`（第 4 章 `VectorStoreDocumentRetriever` / `HybridDocumentRetriever`） |
+
+> **一句话对照**：LangChain4j 的 `AiServices + ContentRetriever` ≈ Spring AI 2.0 的 `ChatClient + QuestionAnswerAdvisor`（第 1 章）→ `RetrievalAugmentationAdvisor`（第 4 章起）。两者都是"检索 + 拼 prompt"的封装，只是 Spring AI 2.0 把整条链拆成了可插拔的 advisor 模块，方便逐模块替换（改写 / 检索 / 重排 / 引用）。
+
+#### 0.1.3 LangChain4j 最小实现（入门视角对照）
+
+下面的代码是原入门篇的"Hello World"，用 LangChain4j 把四步管道直接写出来。看懂它，再看本文第 1 章的 Spring AI 2.0 版，两个框架的差距就一目了然。
+
+**离线索引（分块 → 向量化 → 入库）——对照本文 1.2.4 / 3.5：**
+
+```java
+// LangChain4j 入门视角：离线索引
+Document doc = FileSystemDocumentLoader.loadDocument(
+        Path.of("docs/产品手册.txt"), new TextDocumentParser(Charset.defaultCharset()));
+
+// 分块：recursive(300, 30) = 每块目标 300 token、相邻块 overlap 30 token
+DocumentSplitter splitter = DocumentSplitters.recursive(300, 30);
+List<TextSegment> segments = splitter.split(doc);
+
+// 向量化（LM Studio 的 bge-large-zh-v1.5，走 OpenAI 兼容协议；强制 HTTP/1.1 防挂起）
+EmbeddingModel embedModel = OpenAiEmbeddingModel.builder()
+        .baseUrl("http://127.0.0.1:1234/v1").apiKey("lm-studio")
+        .modelName("text-embedding-bge-large-zh-v1.5")
+        .httpClientBuilder(new JdkHttpClientBuilder().httpClientBuilder(
+                HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)))
+        .build();
+List<Embedding> embeddings = embedModel.embedAll(segments).content();
+
+// 入库 + 序列化到 JSON 文件（跨 JVM 复用）
+InMemoryEmbeddingStore<TextSegment> store = new InMemoryEmbeddingStore<>();
+store.addAll(embeddings, segments);
+Files.writeString(Path.of("docs/embeddings.json"), store.serializeToJson());
+```
+
+**在线问答（检索 → 拼 prompt → 生成）——对照本文 1.2.5：**
+
+```java
+// LangChain4j 入门视角：在线问答
+OpenAiChatModel model = OpenAiChatModel.builder()
+        .baseUrl("https://api.deepseek.com").apiKey(System.getenv("DEEPSEEK_API_KEY"))
+        .modelName("deepseek-chat").temperature(0.7).build();
+EmbeddingStore<TextSegment> store = InMemoryEmbeddingStore.fromFile(Path.of("docs/embeddings.json"));
+EmbeddingStoreContentRetriever retriever = EmbeddingStoreContentRetriever.builder()
+        .embeddingStore(store).embeddingModel(embedModel)
+        .maxResults(5)   // 返回 top-5 片段
+        .minScore(0.5)   // 相似度阈值
+        .build();
+
+Assistant agent = AiServices.builder(Assistant.class)
+        .chatModel(model).contentRetriever(retriever)   // 关键：注入检索器
+        .chatMemory(MessageWindowChatMemory.withMaxMessages(20))
+        .build();
+System.out.println(agent.chat("你们的退货政策是什么"));
+```
+
+**这版代码与 Spring AI 2.0 的对照**：
+
+| 维度 | LangChain4j（入门视角） | Spring AI 2.0（本文） |
+|------|------------------------|----------------------|
+| 内存向量库 | `InMemoryEmbeddingStore` | `SimpleVectorStore`（第 1 章） |
+| 一步封装 | `AiServices + ContentRetriever` | `ChatClient + QuestionAnswerAdvisor`（第 1 章） |
+| 分块 | `DocumentSplitters.recursive(300, 30)` | `TokenTextSplitter` / 自写递归切分（第 3 章） |
+| 检索调优 | `maxResults / minScore / filter / dynamicMaxResults` | `topK / filterExpression`（第 5/9 章） |
+| 检索内部流程 | 手动：query 向量化 → `store.search` | 封装进 advisor，`RetrievalAugmentationAdvisor` 可插拔（第 4 章） |
+
+> 入门篇踩过的三个小坑，在本文同样成立：
+> 1. **中文内容别用英文 embedding 模型**（如 `nomic-embed-text`），召回会很差——换中文友好模型（`bge-large-zh` / `bge-m3`）。本文用 OpenAI `text-embedding-3-small`，对中文尚可；自建服务时记住这条。
+> 2. **JDK 21 的 HttpClient 默认走 HTTP/2**，连本地 OpenAI 兼容服务（LM Studio）长响应会偶发挂起——自建服务时强制 HTTP/1.1 + 设读超时（上面代码已体现）。
+> 3. **别用未修复的 beta 扩展当生产库**：`langchain4j-chroma:1.0.1-beta6` 与 Chroma 0.5.x 服务端不兼容。选型看下面的对照。
+
+#### 0.1.4 向量库选型（入门视角 + 本文路径对照）
+
+原入门篇的选型决策，套到本文就是第 1 → 2 章换库的动机：
+
+| 方案 | 适合 | 本文对应章节 |
+|------|------|------------|
+| InMemoryEmbeddingStore / `SimpleVectorStore` | 学习/原型，零依赖 | 第 1 章 |
+| Qdrant | 生产单机/小集群 | （换库思路同第 2 章，都是换 `VectorStore` 实现） |
+| pgvector | 已有 Postgres | **第 2 章（本文主线）** |
+| Milvus | 大规模生产 | 第 9 章进阶 |
+| Chroma | 单机原型 | ⚠️ LangChain4j 有兼容性 bug，避坑 |
+
+> **核心洞察：向量库是插件不是业务**——LangChain4j 里它们都实现 `EmbeddingStore` 接口、本文里都是 `VectorStore` 抽象，换库不改业务代码（第 2 章会演示这一点）。
+
+#### 0.1.5 入门自测（带着问题读本文）
+
+1. RAG 比微调有哪些优势？什么时候用哪个？
+2. 分块时为什么要 `overlap`？（第 3 章 + 第 8 章会量化验证）
+3. `ContentRetriever` 和 `EmbeddingStore` 是什么关系？（对照 §0.1.2 组件表）
+4. 答案有幻觉该怎么排查？（第 7 章拒答 + 第 8 章 Faithfulness 评估）
+5. 如何评估 RAG 系统的好坏？（第 8 章 LLM-as-Judge 管道）
 
 ---
 
@@ -143,6 +297,8 @@ public class RagConfig {
     }
 }
 ```
+
+> **入门视角（LangChain4j）**：这对应原入门篇的 `InMemoryEmbeddingStore`（§0.1.3）——都是内存起步、零依赖、重启丢数据。选型决策见 §0.1.4：学习用内存库，生产换 pgvector / Qdrant / Milvus，且**业务代码一行不改**（第 2 章演示）。
 
 #### 1.2.4 摄入 PDF（最朴素的版本）
 
@@ -650,6 +806,8 @@ docker exec -it postgres psql -U rag -d rag \
 
 **实战建议**：默认用递归字符切分 + overlap；特殊文档（PDF 论文、Markdown）用结构切分。
 
+> **入门视角（LangChain4j）**：LangChain4j 用 `DocumentSplitters.recursive(300, 30)` 一行完成递归分块——`300` 是每块目标 token、`30` 是相邻块 overlap。对应本文 `splitter.split(pages, 800, 150)`（800 字符 / 150 字符 overlap）。两条经验共通：**overlap 必须要有**（避免在边界处割裂语义）；**chunk size 靠评估定、不靠拍脑袋**——第 8 章的对照实验（§8.7）就是干这个的。
+
 ### 3.3 最小实现：自写递归字符切分器
 
 Spring AI 自带的 `TokenTextSplitter` 只支持固定 token 切分，本章我们自写一个递归版本。
@@ -798,6 +956,8 @@ public class MetadataEnricher {
 }
 ```
 
+> **入门视角（LangChain4j）**：原入门篇的做法是入库前对每个片段 `segment.metadata().put("department", "运营")`，效果与这里的 `MetadataEnricher` 相同——都是"入库前给片段挂上可过滤的键值对"。LangChain4j 的过滤写法是 `filter(metadataKey("department").isEqualTo("运营"))`，对应 Spring AI 的 `filterExpression("department == '运营'")`（第 9 章多租户）。
+
 ### 3.5 ETL 入口（替换第 1 章的 SimpleIngestionService）
 
 ```java
@@ -926,6 +1086,8 @@ public RewriteQueryTransformer rewriteQueryTransformer(ChatClient.Builder builde
 ```
 
 但 `QuestionAnswerAdvisor` **不支持插 query transformer**——它是个简化封装。从这一章开始，我们换用更强大的 `RetrievalAugmentationAdvisor`。
+
+> **入门视角（LangChain4j）**：LangChain4j 的诊断手册把 Query Rewriting 列为"检索不准时的第 4 步解法"。注意一个版本坑：**LangChain4j 1.0 已移除 0.x 的 `queryTransformer(...)` / `contentFilter(...)` 两个 API**（retriever builder 上），看到老教程用这两个方法就是过时的。而 Spring AI 2.0 把查询改写做成了 advisor 链上的独立模块（`RewriteQueryTransformer`），这正是两个框架在设计取向上的差异。
 
 ### 4.3 最小实现：换用 RetrievalAugmentationAdvisor
 
@@ -1325,6 +1487,8 @@ flowchart TD
     B --> C["最终给 LLM 的 5 个 doc 都是高相关"]
 ```
 
+> **入门视角（LangChain4j）**：LangChain4j 的官方诊断手册把 rerank 列为"**提升检索质量最有效的一步**"，推荐用专门的跨编码器重排模型（如 `bge-reranker-v2-m3`）对 Top-K 片段再排一次序。本文用 LLM 打分做演示（§6.2），生产可换成本地 cross-encoder（如 bge-reranker）——更便宜更快，且与框架无关。
+
 ### 6.2 最小实现：Rerank PostProcessor
 
 ```java
@@ -1584,6 +1748,8 @@ public class CitationQueryAugmenter implements QueryAugmenter {
 }
 ```
 
+> **入门视角（LangChain4j）**：更朴素的做法是直接在接口上加 `@SystemMessage("严格根据以下上下文回答。如果上下文中没有相关信息，回答'根据现有资料无法回答'。不要编造。")`——一句话实现"防幻觉 + 拒答"。本文的 `CitationQueryAugmenter` 更进一步：不光拒答，还要**指出依据 [DocN]**。两者可叠加：system prompt 定基调，augmenter 注入文档级约束。
+
 ### 7.3 装配到 RagConfig
 
 ```java
@@ -1722,6 +1888,8 @@ curl -X POST 'http://localhost:8080/rag/ask?q=明天天气怎么样'
 | **Faithfulness（忠实度）** | LLM 回答是否**只**基于检索的 context | 把 answer 拆 claims，每个 claim 是否被 context 支持 |
 | **Answer Relevancy** | 回答是否切题 | 用 LLM 反推"这个回答可能对应什么问题"，再和原 query 算相似度 |
 | **Citation Accuracy** | 引用是否准确（本文特有） | 引用的 [DocN] 是否真的支持那句话 |
+
+> **入门视角（LangChain4j）**：入门篇把 RAG 评估分成三级递进——**人工抽检 20 条**（起步必做）→ **Recall@K**（评估检索环节，如"前 5 个片段里包含正确答案的比例"，对应上表的 Context Recall）→ **RAGAS**（业界标准自动化框架：用另一个 LLM 当裁判打分，核心就是 Faithfulness + Relevance 两个指标）。本文的 LLM-as-Judge 管道就是 RAGAS 思路的自研实现——等你的项目做大了，也可以直接接入现成的 RAGAS 框架。
 
 ### 8.3 最小实现：用 LLM-as-Judge 实现 Faithfulness
 
@@ -2030,6 +2198,8 @@ public void upsert(Document doc) {
 }
 ```
 
+> **入门视角（LangChain4j）**：入门篇同样踩过"索引后内容变化但搜不到"的坑——原因是**向量库里还是旧数据**，解决方法是"重新跑索引，且用增量 update 而非全量 rebuild"（按 metadata 中的 doc_id 增量更新），和这里的 upsert 思路一致。
+
 更完整的：监听文档源（如 Confluence webhook / OSS 事件），变更时自动重新摄入。
 
 ### 9.3 多租户隔离
@@ -2171,6 +2341,25 @@ curl -X POST 'http://localhost:8080/rag/ask?q=退款政策' -w '\n%{time_total}s
 | 用同一个模型当裁判和生成器 | 裁判偏袒、指标虚高 | 裁判用更强或不同模型 | 第 8 章 |
 | 多租户用 SQL 字符串拼接 | 注入风险 | filterExpression + metadata 过滤 | 第 9 章 |
 | 改了 embedding 模型没删表 | 维度不匹配写入失败 | 删表重建，对齐 dimensions | 第 2 章 |
+| 中文内容用英文 embedding 模型 | 中文召回差 | 换中文友好模型（bge-large-zh / bge-m3） | 第 2 章 |
+| 索引内容变了不重跑索引 | 搜不到新内容 | 增量 update（按 doc_id），不 rebuild | 第 9 章 |
+
+---
+
+> **入门视角（LangChain4j）· 检索不准诊断决策树**：原入门篇把"用户问 A、检索到 B"的排查路径画成一张图，与本文各章避坑表互补。按图自上而下排查，每一步都对应本文某章：
+
+```mermaid
+flowchart TD
+    S["症状: 用户问 A，检索到的片段讲 B"] --> L["开检索日志<br/>LangChain4j: logRequests(true)<br/>Spring AI: 看 advisor 上下文/检索 SQL"]
+    L --> V["看实际拼进 prompt 的片段"]
+    V --> R{"片段与问题相关?"}
+    R -->|"不相关 → 检索环节问题"| F1["检查 embedding 是否适配中文<br/>中文必须用中文友好模型<br/>（§0.1）"]
+    F1 --> F2["调整 topK / 相似度阈值<br/>（LangChain4j: maxResults/minScore）"]
+    F2 --> F3["优化分块策略<br/>chunk size、overlap（第 3 章）"]
+    F3 --> F4["引入 Query Rewriting（第 4 章）"]
+    F4 --> F5["引入 rerank 重排序（第 6 章）"]
+    R -->|"相关但答案错 → 幻觉"| OTHER["见第 7 章<br/>加强拒答 + [DocN] 引用 + Faithfulness 评估"]
+```
 
 ---
 

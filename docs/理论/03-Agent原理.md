@@ -7,7 +7,7 @@
 
 
 > 📖 **Agent 理论篇**：配合 Agent 编排实践阅读。
-> 实践路径 → `../教程/主线-SpringAI2.0-11-五大Workflow模式与代码评审助手.md`（Workflow）→ `../教程/主线-SpringAI2.0-10-多Agent编排实战.md`（多 Agent）。
+> 实践路径 → `../教程/11-五大Workflow模式与代码评审助手.md`（Workflow）→ `../教程/10-多Agent编排实战.md`（多 Agent）。
 
 ## 1. 核心心智模型
 
