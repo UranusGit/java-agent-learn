@@ -233,8 +233,8 @@ demo01/
 │   └── tests/                    # 26 章单元 + 组件测试
 ├── docs/
 │   ├── spring-ai-2.0/            # 已有
-│   ├── ai-serving/               # 已有
-│   └── web-claude/               # 本系列
+│   ├── 项目-AIServing/               # 已有
+│   └── 项目-WebClaude/               # 本系列
 ├── k8s/                          # 27 章 Helm chart
 │   ├── charts/webclaude/
 │   └── values-prod.yaml

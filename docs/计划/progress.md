@@ -49,7 +49,7 @@ flowchart LR
 
 ## 阶段 0.5：LLM 基础速通（Day 1-3）
 
-- [ ] 读 `reference/心智模型与决策树/01-心智模型与决策树` 的"心智模型"部分
+- [ ] 读 `理论/01-心智模型与决策树` 的"心智模型"部分
 - [ ] 手动测 temperature=0 vs 1 的输出差异
 - [ ] 观察一次 LLM 输出的 function call JSON
 - [ ] 理解"上下文窗口" vs "输出窗口"
@@ -66,7 +66,7 @@ flowchart LR
 
 ## 阶段 1：LangChain4j 入门（Week 1）—【项目 P1】
 
-> 对照教程：`tutorials/langchain4j/`
+> 对照教程：`教程/langchain4j/`
 
 ### Day 1-2：第一次调用
 - [ ] 在 `pom.xml` 加 LangChain4j 依赖
@@ -114,7 +114,7 @@ flowchart LR
 - [ ] 加数据库 Tool（JdbcTemplate）
 
 ### Day 7：双框架对比
-- [ ] 写一篇对比文档（`plan/notes/` 下）至少回答：
+- [ ] 写一篇对比文档（`计划/notes/` 下）至少回答：
   - [ ] 同样是 ChatMemory，两框架实现差异？
   - [ ] 同样是 Tool，描述机制差异？
   - [ ] 生产场景你会选哪个？为什么？
@@ -157,7 +157,7 @@ flowchart LR
 ### 项目 P2 验收
 - [ ] 至少 30 条测试集 + 3 个量化指标（Recall@5 / faithfulness / 人工评分）
 - [ ] 能上传 PDF → 自动回答
-- [ ] 测试报告：`plan/notes/RAG评测报告.md`（含 LC4j vs Spring AI 指标对比）
+- [ ] 测试报告：`计划/notes/RAG评测报告.md`（含 LC4j vs Spring AI 指标对比）
 
 **完成日期**：______
 
@@ -227,7 +227,7 @@ flowchart LR
 ### Week 6 Day 6-7：工具箱 + 评估 + 文档
 - [ ] 所有 Advisor/Tool 收拢到 `org.demo01.toolkit` 包
 - [ ] **用阶段 3 评估集测 P3**（指标基线）
-- [ ] `plan/notes/toolkit-README.md`
+- [ ] `计划/notes/toolkit-README.md`
 - [ ] 笔记：Workflow vs Agent 何时用哪个
 - [ ] 笔记：生产环境如何防 Agent 失控
 
@@ -380,7 +380,7 @@ flowchart LR
 
 ## 学习笔记索引
 
-> 每周写一篇，存到 `plan/notes/`。
+> 每周写一篇，存到 `计划/notes/`。
 
 | 周次 | 主题 | 文件 |
 |------|------|------|
@@ -396,7 +396,7 @@ flowchart LR
 
 ## 踩坑记录
 
-> 遇到坑就记下来，存到 `plan/pitfalls.md`，避免重蹈覆辙。
+> 遇到坑就记下来，存到 `计划/pitfalls.md`，避免重蹈覆辙。
 
 | 日期 | 问题描述 | 解决方案 |
 |------|---------|---------|
