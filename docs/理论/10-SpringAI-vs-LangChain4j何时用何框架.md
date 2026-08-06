@@ -464,3 +464,7 @@ flowchart TD
 6. **LangGraph4j GitHub** —— 状态机多 Agent 编排
 7. **Anthropic《Building Effective Agents》**（2024-12-19）—— Workflow > Agent 金科玉律
 8. **Quarkus LangChain4j Documentation** —— Red Hat 官方立场
+
+---
+
+> 💡 **卡壳了？** 底层背景（响应式 / Redis / Kafka / SSE / 事务）去 `../附录/` 对应专题补基础；回到 `../教程/` 继续主线。

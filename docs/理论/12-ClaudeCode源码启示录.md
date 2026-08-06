@@ -391,3 +391,7 @@ Spring Boot 的自动配置能帮你快速起步，但**生产环境 AI 应用�
 - 原始扫描：`/Volumes/data/远端代码仓/VibeCoding/agent-docs/claudecode源码分析/` （45 章，约 80 万字符）
 - Anthropic《Building Effective Agents》(2024-12-19) —— Workflow 模式金科玉律
 - Spring AI 1.0 Reference Documentation —— Java 侧 API 对照
+
+---
+
+> 💡 **卡壳了？** 底层背景（响应式 / Redis / Kafka / SSE / 事务）去 `../附录/` 对应专题补基础；回到 `../教程/` 继续主线。

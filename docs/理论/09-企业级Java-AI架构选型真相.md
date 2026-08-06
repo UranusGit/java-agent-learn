@@ -395,3 +395,7 @@ flowchart LR
 4. **MCP Java SDK** — 协议层标准
 5. **Spring AI Alibaba Graph 1.0** — 国内主流编排引擎
 6. **Embabel / Koog / Google ADK** — 探索性方向，跟进不押注
+
+---
+
+> 💡 **卡壳了？** 底层背景（响应式 / Redis / Kafka / SSE / 事务）去 `../附录/` 对应专题补基础；回到 `../教程/` 继续主线。

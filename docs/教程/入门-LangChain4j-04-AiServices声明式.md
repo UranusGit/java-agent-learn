@@ -424,3 +424,7 @@ class CommentService {
 - [ ] 在生产场景，你会怎么把 AiServices 和 Spring Boot 结合？
 
 写一篇 300-500 字的学习笔记存到 `docs/notes/W1-LangChain4j基础.md`。
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

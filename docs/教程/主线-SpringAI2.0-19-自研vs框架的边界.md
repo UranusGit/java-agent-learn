@@ -536,3 +536,7 @@ Star 多 ≠ 生产可用。要看 issues 的回复速度、breaking change 频�
 - [ADR GitHub Organization](https://adr.github.io/) —— ADR 模板与示例
 
 恭喜你完成整个 Spring AI 2.0 学习系列！
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

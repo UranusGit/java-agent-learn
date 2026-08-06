@@ -934,3 +934,7 @@ flowchart LR
 
 - [Langfuse 文档](https://langfuse.com/docs) —— 开源 LLM 评估平台
 - [OpenAI Evals](https://github.com/openai/evals) —— OpenAI 官方评估框架（思路参考）
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

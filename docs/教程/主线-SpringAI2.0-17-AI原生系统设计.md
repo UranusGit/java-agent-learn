@@ -691,3 +691,7 @@ MCP Server 按领域拆分，独立扩缩。
 ## 13. 相关文档
 
 - [Eric Evans, Domain-Driven Design](https://www.amazon.com/Domain-Driven-Design-Tackling-Complexity-Software/dp/0321125215) —— DDD 经典
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

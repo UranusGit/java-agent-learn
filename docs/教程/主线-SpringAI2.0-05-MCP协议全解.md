@@ -659,3 +659,7 @@ Client 端还可在 Bean 方法上加这些注解订阅 Server 推送的事件�
 
 - [MCP 协议规范](https://modelcontextprotocol.io/)
 - [Spring AI MCP Client Reference](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-client-boot.html)
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

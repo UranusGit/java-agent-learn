@@ -962,3 +962,7 @@ Collection<StateSnapshot> history = compiled.getStateHistory(rc);
 - **Maven Central**：[spring-ai-alibaba-graph-core](https://repo.maven.apache.org/maven2/com/alibaba/cloud/ai/spring-ai-alibaba-graph-core/)
 
 > **注意**：原官方文档站 `java2ai.com/docs/dev/graph/overview/` 已经返回 404（站点 OSS bucket 改了配置），所以本节不引用该链接。最新文档请直接看 GitHub 仓库 README 和 example 代码。
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

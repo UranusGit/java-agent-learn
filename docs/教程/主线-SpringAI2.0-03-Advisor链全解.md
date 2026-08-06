@@ -507,3 +507,7 @@ Spring AI 在 `BaseAdvisorChain` 内部对同 order 的 advisor 用注册顺序�
 ## 11. 相关文档
 
 - [Spring AI Advisors Reference](https://docs.spring.io/spring-ai/reference/api/advisors.html)
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

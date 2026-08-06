@@ -233,3 +233,7 @@ flowchart LR
     GW --> AG["Java Agent<br/>（Spring AI / LangChain4j）"]
     AG -->|"SSE 流式响应"| U
 ```
+
+---
+
+> 💡 **卡壳了？** 底层背景（响应式 / Redis / Kafka / SSE / 事务）去 `../附录/` 对应专题补基础；回到 `../教程/` 继续主线。

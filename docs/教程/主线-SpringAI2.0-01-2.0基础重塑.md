@@ -414,3 +414,7 @@ public Jackson2ObjectMapperBuilderCustomizer customizer() {
 - [ ] 把 1.0 的自研 Advisor Loop 全部删掉
 
 完成后进入下一节：**02-Tool 与 Agent Loop**——用 2.0 原生 Agent Loop 替换自研 while 循环，深入 Tool 体系。
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

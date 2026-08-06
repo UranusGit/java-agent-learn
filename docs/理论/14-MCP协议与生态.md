@@ -321,3 +321,7 @@ MCP 已被 Anthropic/OpenAI/Google 三家认可，Spring AI/LangChain 都已支�
 3. **Spring AI MCP Documentation** —— docs.spring.io/spring-ai/reference/api/mcp/mcp-overview.html
 4. **Anthropic MCP Launch Blog**（2024-11-25）
 5. **MCP Servers 仓库** —— github.com/modelcontextprotocol/servers
+
+---
+
+> 💡 **卡壳了？** 底层背景（响应式 / Redis / Kafka / SSE / 事务）去 `../附录/` 对应专题补基础；回到 `../教程/` 继续主线。

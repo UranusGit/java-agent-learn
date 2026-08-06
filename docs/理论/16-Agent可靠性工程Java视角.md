@@ -432,3 +432,7 @@ flowchart TD
 4. **Resilience4j Documentation** —— 三层错误 + 熔断 + 重试
 5. **Temporal Java SDK** —— 长时工作流编排
 6. **Spring AI 2.0 spring-ai-session** —— event-sourced 会话
+
+---
+
+> 💡 **卡壳了？** 底层背景（响应式 / Redis / Kafka / SSE / 事务）去 `../附录/` 对应专题补基础；回到 `../教程/` 继续主线。

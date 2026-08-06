@@ -705,3 +705,7 @@ public class ContentSafetyAdvisor implements BaseAdvisor {
 - [DeepSeek API](https://platform.deepseek.com/api-docs)
 - [通义 DashScope](https://help.aliyun.com/zh/dashscope/)
 - [vLLM 文档](https://docs.vllm.ai/)
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

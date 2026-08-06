@@ -624,3 +624,7 @@ Spring AI 2.0.0 把 Advisor 拆成了两个接口：
 ## L. 相关文档
 
 - [Project Reactor Reference](https://projectreactor.io/docs/core/release/reference/)
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

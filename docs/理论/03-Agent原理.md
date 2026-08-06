@@ -207,3 +207,7 @@ flowchart TD
 > - Function Calling 的底层机制（模型如何被训练输出 JSON）
 > - 为什么 ReAct 时代过去了
 > - Agent 死循环如何检测和中断
+
+---
+
+> 💡 **卡壳了？** 底层背景（响应式 / Redis / Kafka / SSE / 事务）去 `../附录/` 对应专题补基础；回到 `../教程/` 继续主线。

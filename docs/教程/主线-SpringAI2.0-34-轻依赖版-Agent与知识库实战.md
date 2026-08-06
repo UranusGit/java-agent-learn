@@ -7062,3 +7062,7 @@ research-platform/
 - **Mock 线程不响应取消**：`charByChar` 用裸 Thread，第 9 章 cancel 不会停它——附录加固点里改成响应 `Disposable`。
 - **响应式 + 阻塞库混用**：JDBC/JPA 是阻塞的，直接在响应式链里调会阻塞 Netty 事件循环——必须 `Mono.fromCallable(...).subscribeOn(boundedElastic())` 丢到弹性线程池（第 10.5 章起所有 Repository 调用都这么做）。
 - **ThreadLocal 在 WebFlux 会丢**：认证态、MDC（traceId）等请求上下文，必须用 Reactor Context 透传，不能用 ThreadLocal（第 18/20 章强调）。
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

@@ -1068,3 +1068,7 @@ assertThat(answer.length()).isBetween(10, 100);
 
 - [Testcontainers for Java](https://java.testcontainers.org/)
 - [WireMock](https://wiremock.org/docs/)
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

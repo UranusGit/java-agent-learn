@@ -590,3 +590,7 @@ chatClient.prompt()
 > 如果你想显式控制工具循环（比如自定义观测、打断），可以手动构造 `ToolCallingAdvisor.builder().toolCallingManager(...).advisorOrder(...).build()` 并设置 order，再把该 Advisor 挂到 ChatClient 的 advisors 上。
 
 完成后进入下一节：**03-Advisor 链全解**——理解 BaseAdvisor vs Call/Stream、order 设计，把记忆、日志、校验等横切关注点织进调用链。
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

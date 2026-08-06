@@ -1030,3 +1030,7 @@ public class UserDataDeletionService {
 - [pgvector 文档](https://github.com/pgvector/pgvector)
 - [Milvus 文档](https://milvus.io/docs)
 - [Building LLM Apps for Production](https://www.oreilly.com/library/view/building-llm-apps/)
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

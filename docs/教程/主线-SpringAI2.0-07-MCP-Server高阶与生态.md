@@ -1804,3 +1804,7 @@ class OrderTools {                          // 给 Agent / LLM
 - [MCP 协议规范](https://modelcontextprotocol.io/)
 - [MCP Java SDK](https://github.com/modelcontextprotocol/java-sdk)
 - [Spring AI MCP Reference](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot.html)
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

@@ -1298,3 +1298,7 @@ geo-mcp-server/
 - [Spring AI MCP Server Reference](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-server-boot.html)
 - [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 - [OTel GenAI Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

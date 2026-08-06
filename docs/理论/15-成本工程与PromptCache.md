@@ -328,3 +328,7 @@ Stripe 2025 公开数据：用 vLLM 自部署 Llama 3.1 替代 GPT-4o，**省 73
 3. **Stripe 2025 Cost Saving Case** —— vLLM 自部署省 73%
 4. **GPTCache** —— github.com/zilliztech/GPTCache
 5. **Langfuse Cache** —— langfuse.com/docs/sessions-cache
+
+---
+
+> 💡 **卡壳了？** 底层背景（响应式 / Redis / Kafka / SSE / 事务）去 `../附录/` 对应专题补基础；回到 `../教程/` 继续主线。

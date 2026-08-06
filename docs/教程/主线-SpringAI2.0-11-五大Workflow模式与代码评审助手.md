@@ -1462,3 +1462,7 @@ LLM 评估器永远说"不合格"。设 maxIterations=3 强制退出。
 
 - [Anthropic Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents)
 - [Spring AI Reference — Prompt Engineering Patterns](https://docs.spring.io/spring-ai/reference/api/chat/prompt-engineering-patterns.html)
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。

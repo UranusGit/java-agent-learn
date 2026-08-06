@@ -397,3 +397,7 @@ Assistant agent = AiServices.builder(Assistant.class)
 5. 故意写一个描述模糊的 Tool，观察 LLM 是否会误调用
 
 完成后进入下一节：**04-AiServices 声明式**——用"声明接口"的方式把记忆、工具、系统提示全自动装配起来。
+
+---
+
+> 💡 **卡壳了？** 概念不懂查 `../理论/` 字典（01-16）；响应式 / Redis / Kafka / SSE / 事务等底层背景去 `../附录/` 对应专题补基础。
