@@ -1,21 +1,14 @@
 # 第三阶段 - Agent（智能体）
 
 > 目标：让大模型从"只会说话的鹦鹉"变成"能动手的智能枢纽"。
-> Agent = LLM + 推理循环 + Tools + Memory
+> **Agent = LLM + 推理循环（ReAct/Plan-Execute）+ Tools + Memory**
+
+> 📖 **Agent 理论篇**：本文是"概念字典"，只讲概念；代码与实操一律指向 `../教程/`。
+> 实践路径 → `../教程/02-Tool与AgentLoop.md`（Tool）→ `../教程/11-五大Workflow模式与代码评审助手.md`（Workflow）→ `../教程/10-多Agent编排实战.md`（多 Agent）。
 
 ---
 
-
-> 📖 **Agent 理论篇**：配合 Agent 编排实践阅读。
-> 实践路径 → `../教程/11-五大Workflow模式与代码评审助手.md`（Workflow）→ `../教程/10-多Agent编排实战.md`（多 Agent）。
-
 ## 1. 核心心智模型
-
-### 1.1 一句话理解
-
-> **Agent = LLM + 推理循环（ReAct/Plan-Execute）+ Tools + Memory**
-
-### 1.2 类比 Java
 
 | AI 概念 | Java 类比 |
 |---------|----------|
@@ -39,34 +32,12 @@ Action: query_workstation
 ...
 ```
 
-**ReAct 推理循环**：
-
-```mermaid
-flowchart TD
-    START(["用户问题"]) --> TH1["Thought：我需要先查张三的工号"]
-    TH1 --> AC1["Action：query_employee_id"]
-    AC1 --> AI1["Action Input：name=张三"]
-    AI1 --> OB1["Observation：工号是 10086"]
-    OB1 --> TH2["Thought：现在查工位"]
-    TH2 --> AC2["Action：query_workstation"]
-    AC2 --> CHK{"任务未完成？"}
-    CHK -->|"是，继续推理循环"| TH1
-    CHK -->|"否，得到答案"| DONE(("最终回复"))
-```
-
 **演进**：现代主流模型（GPT-4 / Claude / Qwen）已通过 **Function Calling / Tool Use API** 把这种文字格式收敛进 JSON，可靠性大幅提升。**ReAct 思想仍在用，只是不再走文本解析**。
 
-### 2.2 Plan-and-Execute
+### 2.2 Plan-and-Execute / Reflexion / Self-Critique
 
-- 先让 LLM 出一个完整 plan，再逐步执行
-- 适合长任务，但容错差（第一步错全盘错）
-- 代表：**BabyAGI / Plan-and-Solve**
-
-### 2.3 Reflexion / Self-Critique
-
-- 执行后让 LLM 反思、纠错
-- 代价：token 翻倍
-- 适用：高可靠性场景
+- **Plan-and-Execute**：先出完整 plan 再逐步执行。适合长任务，但容错差（第一步错全盘错）。代表：BabyAGI / Plan-and-Solve。
+- **Reflexion / Self-Critique**：执行后让 LLM 反思、纠错。代价：token 翻倍；适用：高可靠性场景。
 
 ---
 
@@ -86,109 +57,44 @@ flowchart TD
 
 ---
 
-## 4. LangChain4j / Spring AI 关键能力对照
+## 5. 自定义 Tool
 
-| 能力 | LangChain4j | Spring AI |
-|------|-------------|-----------|
-| Chat Model 抽象 | `ChatLanguageModel` | `ChatClient` |
-| Function Calling | `@Tool` 注解 + 反射 | `@Tool` 注解 + 反射 |
-| RAG | `EmbeddingStoreContentRetriever` | `VectorStore` 抽象 |
-| Memory | `ChatMemory` (token/message window) | `ChatMemory` / `ChatClient` Advisors |
-| AI Services（声明式接口） | `AiServices.builder()` | `@SystemMessage` + Advisors |
-| 流式 | 支持 | 支持 |
-| 多模型供应商 | 30+ | 20+ |
+**Tool 实现细节（`@Tool` 注解体系 / 描述打磨 / 多 Tool 编排 / LC4j 入门对照 / 防失控）已融合进教程主线**：
 
----
+> 去 `../教程/02-Tool与AgentLoop.md` —— Tool 设计与多 Tool 编排的完整章节。
 
-## 5. 自定义 Tool 的"工程师级"实践
+概念上只需记住（生产级要点）：
+- **Tool 描述写不好 = Agent 不会调**。描述要包含**何时该用**和**输入语义**。
+- 入参/出参 DTO 必须可序列化，字段名语义清晰；加**超时 + 重试 + 幂等**（Agent 可能循环调用同一工具）。
+- 内部异常要被框架转成 "Observation" 喂回 LLM，让它自己决策下一步。
 
-### 5.1 LangChain4j 示例
+最短示例（完整实现见教程）：
 
 ```java
-@Component
-public class EmployeeTools {
-
-    @Tool("根据员工姓名查询工号和基本信息")
-    public EmployeeInfo queryEmployee(@P("员工姓名") String name) {
-        return employeeService.findByName(name);
-    }
+@Tool("根据员工姓名查询工号和基本信息")
+public EmployeeInfo queryEmployee(@P("员工姓名") String name) {
+    return employeeService.findByName(name);
 }
-
-// Agent 注入工具
-Assistant agent = AiServices.builder(Assistant.class)
-    .chatLanguageModel(model)
-    .tools(employeeTools)
-    .chatMemory(MessageWindowChatMemory.withMaxMessages(20))
-    .build();
 ```
-
-### 5.2 生产级要点
-
-- **Tool 描述写不好 = Agent 不会调**。描述要包含**何时该用**和**输入语义**。
-- Tool 的**入参/出参 DTO 必须可序列化**，字段名要语义清晰。
-- 加**超时 + 重试 + 幂等**（Agent 可能循环调用同一工具）。
-- Tool 内部抛异常要被框架转成"Observation"喂回 LLM，让它自己决策下一步。
 
 ---
 
 ## 6. 推荐资料
 
-### 官方文档（精读）
-- LangChain4j：`docs.langchain4j.dev` —— **有完整的 Java 示例**，从零起步首选
-- Spring AI：`docs.spring.io/spring-ai/reference/` —— 与 Spring 生态融合最好
-- LangGraph 文档：`langchain-ai.github.io/langgraph/` —— 看"为什么要状态机"
-
-### 论文（可选，理解原理）
-- ReAct: Synergizing Reasoning and Acting in Language Models (Yao et al., 2022)
-- Toolformer (Schick et al., 2023)
-- Reflexion (Shinn et al., 2023)
-
-### 视频
-- DeepLearning.AI *"Functions, Tools and Agents with LangChain"*
-- LangChain 官方油管 *"LangGraph: Multi-Agent Workflow"*
+- LangChain4j 官方文档（`docs.langchain4j.dev`）—— 有完整的 Java 示例，从零起步首选
+- Spring AI 文档（`docs.spring.io/spring-ai/reference/`）—— 与 Spring 生态融合最好
+- LangGraph 文档（`langchain-ai.github.io/langgraph/`）—— 看"为什么要状态机"
+- 论文：ReAct (Yao et al., 2022) / Toolformer (Schick et al., 2023) / Reflexion (Shinn et al., 2023)
 
 ---
 
 ## 7. 实操项目：智能运维助手
 
-### 需求示例
-> 用户：帮我查下用户服务有几个副本，CPU 高不高？
-> Agent：① 调 `k8s_get_deploy` → 拿到 replicas=3 ② 调 `prom_query` → CPU 65%
+运维类 Agent 属于"实操"而非"理论"，完整项目方案不在本字典展开，实战去：
+- `../教程/21-端到端案例.md` —— 智能客服 Agent 全栈实战（Router + Order + RAG + Chat）
+- `../教程/36-研究Agent与知识库实战.md` —— 研究 Agent 与知识库实战（含工具编排与防失控）
 
-**调用时序**：
-
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant A as Agent（Java 侧）
-    participant K as K8sClientTool
-    participant P as PromClientTool
-
-    U->>A: 帮我查下用户服务有几个副本，CPU 高不高？
-    A->>K: 调 k8s_get_deploy
-    K-->>A: replicas = 3
-    A->>P: 调 prom_query
-    P-->>A: CPU 65%
-    A-->>U: 汇总回答
-```
-
-### 架构（强烈建议 Java 侧实现）
-
-**运维助手架构**：
-
-```mermaid
-flowchart TD
-    SB["Spring Boot（LangChain4j）"]
-    SB --> K8["Tool: K8sClientTool<br/>fabric8 io.fabric8:kubernetes-client"]
-    SB --> PT["Tool: PromClientTool<br/>WebClient 调 Prometheus HTTP API"]
-    SB --> LT["Tool: LogClientTool<br/>调 Loki API"]
-    SB --> MEM["ChatMemory：Redis-backed"]
-```
-
-### 关键收获
-- 体验"工具描述 → 模型自动选择 → 参数抽取"全流程
-- 解决**幻觉工具调用**：模型编造不存在的工具 / 错误参数 → 加 schema 校验 + 兜底
-- 解决**死循环**：限制 `max_iterations` + Tool 内置"已查询过"短路
+核心收获：体验"工具描述 → 模型自动选择 → 参数抽取"全流程，并解决**幻觉工具调用**（schema 校验 + 兜底）与**死循环**（限制迭代 + 短路）。
 
 ---
 
