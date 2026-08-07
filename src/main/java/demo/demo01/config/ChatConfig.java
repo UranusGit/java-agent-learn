@@ -1,5 +1,6 @@
 package demo.demo01.config;
 
+import demo.demo01.tools.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -8,6 +9,8 @@ import org.springframework.context.annotation.Configuration;
 public class ChatConfig {
     @Bean
     public ChatClient chatClient(ChatClient.Builder builder) {
-        return builder.build();
+        return builder
+                .defaultTools(new TimeTool())
+                .build();
     }
 }
