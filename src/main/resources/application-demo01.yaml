@@ -1,10 +1,10 @@
+server:
+  port: 8081
 spring:
   ai:
     openai:
-      api-key: sk-ccde7d540ae74f54a1f28c7d46ab8d02
       base-url: https://api.deepseek.com
+      api-key: ${DEEPSEEK_API_KEY}
       chat:
-        api-key: sk-ccde7d540ae74f54a1f28c7d46ab8d02
-        base-url: https://api.deepseek.com
         model: deepseek-v4-flash
-        temperature: 0.7
+        timeout: 600s
