@@ -1,3 +1,5 @@
 spring:
+  config:
+    import: optional:file:.env[.properties]   # [.properties] 强制按 properties 解析无扩展名的 .env
   profiles:
     active: demo01
