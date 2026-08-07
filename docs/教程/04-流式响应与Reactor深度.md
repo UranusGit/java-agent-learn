@@ -819,7 +819,7 @@ Spring AI 2.0.0 把 Advisor 拆成了两个接口：
 ## L. 相关文档
 
 - [Project Reactor Reference](https://projectreactor.io/docs/core/release/reference/)
-- 入门对照（已归档）：`../archive/absorbed-内容融合/入门-LangChain4j-06-流式输出（内容并入04-流式响应与Reactor深度）.md`
+- 入门对照（已归档）：`../archive/absorbed-内容融合/入门-LangChain4j-06-流式输出（内容并入主线-SpringAI2.0-04-流式响应与Reactor深度）.md`
 
 ---
 

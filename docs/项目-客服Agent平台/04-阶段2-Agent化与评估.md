@@ -386,12 +386,15 @@ public class EvaluatorOptimizerService {
 
 ```java
 // GuardAdvisor 的请求拦截（伪码，完整实现见 教程/14 §8.3）
-public class GuardAdvisor implements RequestResponseAdvisor {
-    public void before(...) {
-        GuardState g = ctx;                          // 从请求上下文取计数器
+// 2.0 接口：implements BaseAdvisor，方法签名 before(ChatClientRequest, AdvisorChain)
+// （不是 1.0 的 RequestResponseAdvisor / void before）
+public class GuardAdvisor implements BaseAdvisor {
+    public ChatClientRequest before(ChatClientRequest req, AdvisorChain chain) {
+        GuardState g = (GuardState) req.context().get("guard");   // 从请求上下文取计数器
         if (g.turns() > MAX_TURNS)  throw new GuardViolation("超轮数");
         if (g.budget().spent() > BUDGET) throw new GuardViolation("超预算");
         if (g.loopDetector().isLoop()) throw new GuardViolation("疑似死循环");
+        return req;   // 放行必须原样返回 req，否则链断了
     }
 }
 ```
@@ -423,13 +426,13 @@ public class GuardAdvisor implements RequestResponseAdvisor {
 ```yaml
 # .github/workflows/ci.yml（片段）
 jobs:
-  unit:      { runs-on: ubuntu-latest, steps: [... mvn test -Dgroups="!eval" ...] }
+  unit:      { runs-on: ubuntu-latest, steps: [... mvn test ...] }   # 评估已通过 pom 的 <excludedGroups>eval</excludedGroups> 默认排除（教程/13 §6.1）
   eval:
     needs: unit
     runs-on: ubuntu-latest
     steps:
-      - run: mvn verify -Dgroups=eval          # 评估测试（真 LLM）
-      - run: ./scripts/check-eval-report.sh    # 通过率 >= 0.8 ? 绿 : 红（教程/12 §8.2）
+      - run: RUN_EVAL=true mvn test -Dgroups=eval   # 评估测试（真 LLM；RUN_EVAL 是教程/13 §6.1 的环境开关）
+      - run: ./scripts/check-eval-report.sh         # 通过率 >= 0.8 ? 绿 : 红（教程/12 §8.2）
 ```
 
 5. 对照"阶段 1 基线 → 本阶段新分"，在报告里写清**提升来自哪一步**（路由分类更准？回炉重生成？prompt 版本？）——这是评估驱动最有说服力的产出。
