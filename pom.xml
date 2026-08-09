@@ -32,6 +32,7 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+
     <profiles>
         <profile>
             <id>demo</id>
@@ -69,27 +70,6 @@
                 <dependency>
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
-                </dependency>
-            </dependencies>
-        </profile>
-
-        <profile>
-            <id>postgres</id>
-            <activation>
-                <property>
-                    <name>demo.active</name>
-                    <value>redis</value>
-                </property>
-            </activation>
-            <dependencies>
-                <dependency>
-                    <groupId>com.mybatis-flex</groupId>
-                    <artifactId>mybatis-flex-spring-boot4-starter</artifactId>
-                    <version>1.11.8</version>
-                </dependency>
-                <dependency>
-                    <groupId>org.postgresql</groupId>
-                    <artifactId>postgresql</artifactId>
                 </dependency>
             </dependencies>
         </profile>
