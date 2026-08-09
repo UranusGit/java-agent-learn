@@ -40,3 +40,4 @@ build/
 .env
 /.idea/
 /.mvn/
+/.playwright-mcp/
