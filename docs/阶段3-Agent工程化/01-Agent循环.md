@@ -104,12 +104,17 @@ String reply = chatClient.prompt()
 
 **决策树**：
 
-```
-你的任务流程是否固定且可枚举？
-├── 是 → 用 Workflow（阶段 3 第 2 篇讲五大模式）
-└── 否 → 流程是否高度不确定，需要 LLM 动态规划？
-    ├── 是 → 用 Agent
-    └── 否 → 先尝试 Workflow，不行再升级 Agent
+```mermaid
+flowchart TD
+    Q1{"任务流程是否固定<br/>且可枚举？"}
+    Q1 -->|"是"| WF["用 Workflow<br/>（五大模式）"]
+    Q1 -->|"否"| Q2{"流程是否高度不确定<br/>需要 LLM 动态规划？"}
+    Q2 -->|"是"| Agent["用 Agent"]
+    Q2 -->|"否"| Hybrid["先尝试 Workflow<br/>不行再升级 Agent"]
+
+    style WF fill:#4caf50,color:#fff
+    style Agent fill:#ff9800,color:#fff
+    style Hybrid fill:#2196f3,color:#fff
 ```
 
 ---

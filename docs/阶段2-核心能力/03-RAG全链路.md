@@ -343,22 +343,25 @@ vectorStore.similaritySearch(
 
 当 RAG 回答不好时，按这个顺序排查：
 
-```
-1. 检索质量（Recall@K 低？）
-   ├── 分块太大/太小 → 调 chunkSize
-   ├── 没有重叠 → 加 overlap
-   ├── 查询词和文档用词不一致 → 加 Query Rewrite（阶段 6 讲）
-   └── 相似度阈值太高 → 降低 threshold
+```mermaid
+flowchart TD
+    Bad["RAG 回答不好"] --> Step1{"1. 检索质量<br/>Recall@K 低？"}
+    Step1 -->|"分块问题"| C1["调 chunkSize"]
+    Step1 -->|"没有重叠"| C2["加 overlap"]
+    Step1 -->|"用词不一致"| C3["加 Query Rewrite"]
+    Step1 -->|"阈值太高"| C4["降低 threshold"]
 
-2. 生成质量（Faithfulness 低？）
-   ├── prompt 没有限制 → 加"基于文档回答，没有就说不知道"
-   ├── temperature 太高 → 降到 0.1-0.3
-   └── 检索到噪声 → 加相似度阈值
+    Step1 -->|"检索OK"| Step2{"2. 生成质量<br/>Faithfulness 低？"}
+    Step2 -->|"prompt 问题"| G1["加'基于文档回答'"]
+    Step2 -->|"temperature 高"| G2["降到 0.1-0.3"]
+    Step2 -->|"检索噪声"| G3["加相似度阈值"]
 
-3. 系统（慢/贵？）
-   ├── topK 太大 → 减到 3-5
-   ├── 文档没有去重 → 入库前去重
-   └── 没有缓存 → 加语义缓存（阶段 4 讲）
+    Step2 -->|"生成OK"| Step3{"3. 系统<br/>慢/贵？"}
+    Step3 -->|"topK 太大"| S1["减到 3-5"]
+    Step3 -->|"文档未去重"| S2["入库前去重"]
+    Step3 -->|"无缓存"| S3["加语义缓存"]
+
+    style Bad fill:#f44336,color:#fff
 ```
 
 ---
