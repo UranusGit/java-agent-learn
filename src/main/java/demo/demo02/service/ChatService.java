@@ -5,7 +5,6 @@ import demo.demo02.event.EventBus;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -17,9 +16,6 @@ import java.util.UUID;
 public class ChatService {
     @Autowired
     private ChatClient client;
-
-    @Autowired
-    private ReactiveRedisTemplate<String, String> redisTemplate;
 
     @Autowired
     private EventBus bus;

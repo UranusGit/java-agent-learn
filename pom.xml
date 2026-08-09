@@ -38,7 +38,7 @@
             <id>demo</id>
             <activation>
                 <property>
-                    <name>demo.active</name>
+                    <name>demo.demo</name>
                     <value>demo</value>
                 </property>
             </activation>
@@ -62,7 +62,7 @@
             <id>redis</id>
             <activation>
                 <property>
-                    <name>demo.active</name>
+                    <name>demo.redis</name>
                     <value>redis</value>
                 </property>
             </activation>
