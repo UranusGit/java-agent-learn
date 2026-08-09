@@ -157,6 +157,47 @@ public String transfer(String from, String to, BigDecimal amount) {
 
 ---
 
+## 可靠性设计检查清单（上线前必过）
+
+```
+幂等性
+□ 所有写操作工具有 idempotencyKey（发邮件/写库/调外部API）
+□ 幂等记录有 TTL（过期清理，一般 7 天）
+□ 幂等检查和执行是原子操作（用 Redis SETNX 或数据库唯一约束）
+
+重试与超时
+□ 所有外部调用有超时设置（不无限等待）
+□ 重试有指数退避（不是固定间隔）
+□ 重试有最大次数（一般 3 次）
+□ 非幂等操作不自动重试（需人工介入或幂等化后再重试）
+
+熔断
+□ LLM 调用有熔断器（错误率超阈值时快速失败）
+□ 外部 API 有熔断器
+□ 熔断后有 fallback（不是直接报错）
+□ 熔断恢复有半开探测（不是立即全量恢复）
+
+持久化
+□ 关键 Agent 任务用 Temporal 或类似框架持久化
+□ Agent 状态可恢复（崩溃后不丢失进度）
+□ 补偿事务覆盖所有有副作用的步骤
+□ 有死信队列（彻底失败的任务不丢）
+```
+
+---
+
+## 常见可靠性故障模式
+
+| 故障 | 症状 | 根因 | 解决 |
+|------|------|------|------|
+| 重复发邮件 | 用户收到多封相同邮件 | Agent 重试时没有幂等保护 | 加 idempotencyKey |
+| Agent 挂死 | 请求永远不返回 | LLM 超时但没设 timeout | 加 TimeLimiter |
+| 雪崩 | 大量请求堆积导致服务不可用 | 没有熔断器，故障传播 | 加 CircuitBreaker |
+| 崩溃丢进度 | 重启后 Agent 从头开始 | 无状态执行，没有 checkpoint | 用 Temporal 持久化 |
+| 部分失败 | 扣了钱但没到账 | 多步骤事务无补偿 | 加 Saga 补偿 |
+
+---
+
 ## 验收检查
 
 - [ ] 所有有副作用的工具有幂等设计
@@ -170,3 +211,24 @@ public String transfer(String from, String to, BigDecimal amount) {
 ## 下一步
 
 → 下一篇：[03 可观测性建设](03-可观测性建设.md)
+
+---
+
+## 随堂练习：幂等邮件工具（45 分钟）
+
+给"发邮件"工具加幂等保护：相同参数的重复调用只发一次。
+
+**提示**：
+```java
+@Tool(description = "发送邮件。幂等：相同收件人+主题不重复发送")
+public String sendEmail(String to, String subject, String body) {
+    String key = UUID.nameUUIDFromBytes((to + "|" + subject).getBytes()).toString();
+    if (store.containsKey(key)) return "⏭️ 已发送过（幂等跳过）";
+    // 发送...
+    store.put(key, "sent");
+    return "✅ 已发送";
+}
+```
+
+**测试**：连续调 3 次（前 2 次参数相同，第 3 次不同），验证只发 2 封。
+**扩展**：改用 Redis `SETNX` 实现原子幂等；加 TTL 过期。

@@ -242,12 +242,47 @@ public class HelloController {
 
 ---
 
+## Spring 核心注解速查表
+
+| 注解 | 放在哪 | 作用 |
+|------|--------|------|
+| `@SpringBootApplication` | 启动类 | 自动配置 + 组件扫描 |
+| `@RestController` | Controller 类 | 声明 REST 接口（= `@Controller` + `@ResponseBody`） |
+| `@RequestMapping("/x")` | Controller 类/方法 | URL 路径前缀 |
+| `@GetMapping("/y")` | 方法 | 处理 GET 请求 |
+| `@PostMapping("/y")` | 方法 | 处理 POST 请求 |
+| `@RequestParam` | 方法参数 | 从 URL query string 取值 |
+| `@RequestBody` | 方法参数 | 从请求 body 取 JSON → 对象 |
+| `@PathVariable` | 方法参数 | 从 URL 路径取值（`/user/{id}` → `id`） |
+| `@Service` | Service 类 | 声明为 Spring Bean |
+| `@Configuration` | 配置类 | 声明配置类 |
+| `@Bean` | 配置类中的方法 | 手动创建 Bean（当第三方类不能加 `@Service` 时用） |
+| `@Value("${key}")` | 字段 | 从 yml 注入配置值 |
+| `@Autowired` | 字段/构造器 | 自动注入（构造器注入时可省略） |
+
+> **构造器注入 vs `@Autowired` 字段注入**：推荐用构造器注入（字段加 `final`），因为不可变、可测试、Spring 官方推荐。
+
+---
+
 ## 常见坑
 
 - ❌ **忘记 `@Service` / `@RestController` 注解** → Spring 不知道这个类的存在，注入失败
 - ❌ **端口被占用** → `application.yml` 改 `server.port`
 - ❌ **包名不对** → Spring 默认只扫描启动类所在包及子包，Controller/Service 必须在启动类同包或子包下
 - ❌ **循环依赖** → A 依赖 B，B 依赖 A。用 `@Lazy` 或重构解决
+- ❌ **`@Bean` vs `@Service` 搞混** → `@Service` 用在你自己的类上；`@Bean` 用在 `@Configuration` 类的方法里，用来创建你无法修改源码的第三方类（如 `ChatClient`）
+- ❌ **返回值不是 JSON** → `@RestController` 自动把返回值序列化为 JSON。返回 String 就是纯文本，返回 record/Map/对象就是 JSON
+
+---
+
+## Spring Boot 启动报错排查表
+
+| 报错 | 原因 | 解决 |
+|------|------|------|
+| `Port 8080 was already in use` | 端口被占 | 换端口 `server.port: 8081`，或杀进程 |
+| `NoSuchBeanDefinitionException` | Bean 没找到 | 检查类是否有 `@Service`/`@Component`，包名是否在扫描范围内 |
+| `UnsatisfiedDependencyException` | 依赖注入失败 | 检查构造器参数是否都是 Spring 管理的 Bean |
+| `Cannot resolve configuration property` | yml 配置项不对 | 检查拼写、缩进（yml 对缩进敏感） |
 
 ---
 
@@ -266,3 +301,30 @@ public class HelloController {
 
 → 下一篇：[03 LLM 基础认知](03-LLM基础认知.md) —— 理解大语言模型是什么，用 curl 第一次调通 LLM
 → 概念卡壳？查 `理论字典/LLM基础.md`
+
+---
+
+## 随堂练习：简易 REST 计算器（45 分钟）
+
+用 Spring Boot 搭一个 REST 计算器，练习 Controller + record + 依赖注入。
+
+**接口设计**：
+```
+GET  /calc/add?a=1&b=2    → {"operation":"add","result":3}
+GET  /calc/div?a=10&b=0   → {"error":"除数不能为零"}
+```
+
+**提示**：
+```java
+public record CalcResult(String operation, double result) {}
+public record ErrorResponse(String error) {}
+
+@GetMapping("/div")
+public Object div(@RequestParam double a, @RequestParam double b) {
+    if (b == 0) return new ErrorResponse("除数不能为零");
+    return new CalcResult("div", a / b);
+}
+// 自己实现 add, sub, mul
+```
+
+**扩展**：加 `/calc/history` 返回历史记录；把计算逻辑抽到 `CalculatorService`（练习依赖注入）。

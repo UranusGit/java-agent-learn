@@ -228,6 +228,24 @@ public String workflowTask(@RequestParam String userName) {
 - ❌ **没有终止保护** → Agent 可能无限循环。下一篇讲防失控
 - ❌ **Agent 执行有副作用的操作** → 发邮件/删数据这类操作一定要有确认机制。阶段 4 讲可靠性
 - ❌ **所有任务都用 Agent** → 黄金法则：能用 Workflow 的不用 Agent
+- ❌ **工具粒度太粗** → "管理用户"这种工具让 LLM 不知道怎么传参，拆成 getUser/createUser/updateUser
+- ❌ **工具之间有依赖但没告诉 LLM** → 如果 getOrders 需要 userId，在 searchUser 的返回值里带出 userId，让 LLM 自然衔接
+
+---
+
+## Agent vs Workflow 选型决策表
+
+| 你的任务特征 | 推荐方案 | 示例 |
+|-------------|---------|------|
+| 步骤固定，顺序明确 | **Workflow: Chaining** | 翻译→审校→格式化 |
+| 步骤固定，可并行 | **Workflow: Parallelization** | 多维度同时评审 |
+| 分类后走不同分支 | **Workflow: Routing** | 按语言路由评审 |
+| 分支数量不确定 | **Workflow: Orchestrator** | 动态分配评审员 |
+| 需要质量控制循环 | **Workflow: Evaluator-Optimizer** | 生成→评估→改进 |
+| 步骤完全不确定 | **Agent** | 开放式研究任务 |
+| 步骤部分确定 | **Workflow 为主 + Agent 补充** | 编排框架 + 少量 Agent 节点 |
+
+> 经验法则：**先尝试 Workflow，当某个节点确实需要自主决策时再局部升级为 Agent。** 不要一步到位用 Agent。
 
 ---
 
@@ -245,3 +263,13 @@ public String workflowTask(@RequestParam String userName) {
 
 → 下一篇：[02 五大 Workflow 模式](02-五大Workflow模式.md) —— Anthropic 的企业级 Workflow 设计模式
 → 概念卡壳？查 `理论字典/Agent范式.md`
+
+---
+
+## 随堂练习：多步骤日程管理 Agent（60 分钟）
+
+让 Agent 自主完成多步骤任务：查团队成员 → 逐个发通知 → 创建日历事件 → 汇总。
+
+**提示**：实现 `getTeamMembers()`、`sendNotification(name, msg)`、`createCalendarEvent(title, time)` 三个工具，注册到 ChatClient，用自然语言指令驱动 Agent。
+
+**验收**：Agent 自动先查列表、再逐个通知、最后创建事件。用 DEBUG 日志观察完整执行链。

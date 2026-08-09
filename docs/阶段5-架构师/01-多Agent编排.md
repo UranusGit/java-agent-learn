@@ -110,3 +110,19 @@ public class SharedContext {
 ## 下一步
 
 → 下一篇：[02 多租户与权限](02-多租户与权限.md)
+
+---
+
+## 随堂练习：写作+审校双 Agent 协作（90 分钟）
+
+实现 Writer Agent 写文章 → Reviewer Agent 审校 → Writer 修改 → 直到通过。
+
+**提示**：
+```java
+// Writer: write(topic) → 初稿, revise(draft, feedback) → 改稿
+// Reviewer: review(draft) → ReviewResult(approved, feedback)
+// Orchestrator: write → review → 不通过则 revise → review → 循环（max 3 轮）
+```
+
+**验收**：Writer 能写、Reviewer 能审、修改后质量提升、有 maxRevisions 保护。
+**扩展**：加第三个 Editor Agent 润色；加质量评分（1-5 分）。

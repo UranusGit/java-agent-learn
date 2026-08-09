@@ -277,3 +277,19 @@ curl http://localhost:8080/api/billing
 
 → 下一篇：[07 项目 P2 知识库问答](07-项目P2-知识库问答.md) —— 把 RAG + 评估 + 流式 + Advisor 整合成完整项目
 → 概念卡壳？查 `理论字典/LLM基础.md`
+
+---
+
+## 随堂练习：Token 计费面板（45 分钟）
+
+用 Advisor 拦截所有 LLM 调用，统计 token 消耗和费用。
+
+**需求**：
+```
+GET /api/chat?q=你好       （正常聊天，同时被统计）
+GET /api/billing            → 实时费用报告
+```
+
+**提示**：参考本篇的 `TokenBillingAdvisor`，加一个 `/api/billing` 接口返回 `Map.of("totalTokens", ..., "estimatedCost", ...)`。
+
+**扩展**：按接口路径分别统计；接入 Micrometer 推送 Prometheus。

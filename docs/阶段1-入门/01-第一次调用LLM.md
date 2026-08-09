@@ -167,7 +167,50 @@ curl "http://localhost:8080/api/ask?q=什么是RAG"
 # 输出：RAG 是先从知识库检索相关文档，再让大模型基于检索内容生成回答的技术。
 ```
 
-### Step 6：获取完整的响应（含 token 用量）
+### Step 6：加上错误处理（生产级代码）
+
+上面的接口没有错误处理——如果 LLM 超时、网络断了、API Key 错了，用户会看到 500 错误。生产代码必须处理这些：
+
+```java
+@GetMapping("/ask")
+public ResponseEntity<String> askSafe(@RequestParam String q) {
+    // 1. 输入校验
+    if (q == null || q.isBlank()) {
+        return ResponseEntity.badRequest().body("问题不能为空");
+    }
+    if (q.length() > 2000) {
+        return ResponseEntity.badRequest().body("问题太长，请限制在 2000 字以内");
+    }
+
+    try {
+        // 2. 调用 LLM
+        String reply = chatClient.prompt()
+                .system("你是一个简洁的技术助手")
+                .user(q)
+                .call()
+                .content();
+        return ResponseEntity.ok(reply);
+
+    } catch (Exception e) {
+        // 3. 不要把原始异常暴露给用户（安全风险）
+        log.error("LLM 调用失败", e);
+        return ResponseEntity.status(503)
+                .body("AI 服务暂时不可用，请稍后重试");
+    }
+}
+```
+
+**常见报错排查**：
+
+| 报错 | 原因 | 解决 |
+|------|------|------|
+| `401 Unauthorized` | API Key 错了或过期 | 检查 `.env` 中的 `DEEPSEEK_API_KEY` |
+| `Connection refused` | 本地模型没启动 | 启动 LM Studio Local Server |
+| `404 Not Found` | base-url 写错 | DeepSeek 是 `https://api.deepseek.com`（不带 `/v1`） |
+| `Read timeout` | 模型响应太慢 | 在 yml 里配 `spring.ai.openai.chat.timeout: 60s` |
+| `400 model not found` | 模型名写错 | DeepSeek 是 `deepseek-chat`，不是 `gpt-4` |
+
+### Step 7：获取完整的响应（含 token 用量）
 
 ```java
 @GetMapping("/ask-detail")
@@ -219,3 +262,29 @@ curl "http://localhost:8080/api/ask-detail?q=你好" | jq .
 
 → 下一篇：[02 多轮对话与记忆](02-多轮对话与记忆.md) —— 让 AI 记住你说过的话
 → 概念卡壳？查 `理论字典/LLM基础.md`
+
+---
+
+## 随堂练习：AI 翻译机器人（30 分钟）
+
+用刚学的 ChatClient + System Prompt 做一个多语言翻译接口。
+
+```
+GET /api/translate?text=你好&target=en
+→ {"original":"你好","translated":"Hello","target":"en"}
+```
+
+**提示**：
+```java
+@GetMapping("/translate")
+public Map<String, String> translate(@RequestParam String text,
+        @RequestParam(defaultValue = "en") String target) {
+    String reply = chatClient.prompt()
+            .system("你是一个翻译。将输入翻译成 " + target + " 语言，只输出结果。")
+            .user(text)
+            .call().content();
+    return Map.of("original", text, "translated", reply, "target", target);
+}
+```
+
+**扩展**：加 POST `/translate/batch` 批量翻译；加 `target=ja/ko` 支持多语言。

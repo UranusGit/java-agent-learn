@@ -289,6 +289,52 @@ public class Practice {
 - ❌ **忘记类型声明** → `String name = "hello"` 不能写成 `name = "hello"`（var 除外）
 - ❌ **混淆 `==` 和 `.equals()`** → 字符串比较用 `.equals()`，不用 `==`
 - ❌ **数组 vs List** → `String[]` 是数组（定长），`List<String>` 是列表（可变长）
+- ❌ **忘记 `import`** → 用了某个类但没有 import，编译报错。IDE 会提示自动导入
+- ❌ **`null` 检查** → Java 引用类型默认是 `null`，不检查就调用方法会 `NullPointerException`
+
+---
+
+## Java 语法速查表（写代码时翻这个）
+
+```java
+// 变量
+String s = "hello";          // 字符串
+int i = 42;                   // 整数
+double d = 3.14;              // 小数
+boolean b = true;             // 布尔
+var x = "自动推断类型";         // var 让编译器推断
+
+// 集合
+List<String> list = new ArrayList<>();         // 可变列表
+List<String> immutable = List.of("a", "b");    // 不可变列表
+Map<String, Integer> map = new HashMap<>();     // 键值对
+Set<String> set = new HashSet<>();              // 去重集合
+
+// 条件
+if (x.equals("hello")) { ... }
+switch (s) {
+    case "a" -> System.out.println("A");
+    case "b" -> System.out.println("B");
+    default -> System.out.println("其他");
+}
+
+// 循环
+for (String item : list) { System.out.println(item); }
+list.forEach(System.out::println);
+list.stream().filter(s -> s.length() > 3).toList();
+
+// 字符串
+String result = "a" + "b";                    // 拼接
+String formatted = "%s 有 %d 个".formatted("小明", 3);  // 格式化
+boolean contains = "hello".contains("ell");   // 包含
+String[] parts = "a,b,c".split(",");          // 分割
+
+// 空安全
+String maybeNull = getName();
+if (maybeNull != null && maybeNull.length() > 0) { ... }
+// 或用 Optional（更安全）
+Optional.ofNullable(maybeNull).filter(s -> !s.isEmpty()).orElse("默认值");
+```
 
 ---
 
@@ -299,6 +345,44 @@ public class Practice {
 - [ ] 能定义一个函数式接口并用 Lambda 实现
 - [ ] 能用 try-catch 处理异常
 - [ ] 能编译运行一个 `.java` 文件
+
+---
+
+## 随堂练习：消息格式化器（30 分钟）
+
+用刚学的 record + Stream 写一个 CLI 程序：输入一组聊天消息，格式化输出并统计。
+
+**目标输出**：
+```
+👤 用户：你好
+🤖 助手：你好！有什么可以帮你的？
+👤 用户：今天天气怎么样
+
+--- 统计 ---
+总消息数：3
+用户消息：2 条
+助手手消息：1 条
+总字符数：22
+```
+
+**提示**：
+```java
+record ChatMessage(String role, String content) {}
+
+List<ChatMessage> messages = List.of(
+    new ChatMessage("user", "你好"),
+    new ChatMessage("assistant", "你好！有什么可以帮你的？"),
+    new ChatMessage("user", "今天天气怎么样")
+);
+
+// 用 stream().map() 格式化输出，根据 role 选 emoji
+// 用 Collectors.groupingBy(ChatMessage::role, Collectors.counting()) 统计
+// 用 mapToInt(m -> m.content().length()).sum() 统计字符数
+```
+
+**验收**：输出格式正确、统计数据正确、没有硬编码（全用 Stream 算）。
+
+**扩展**：加 `filter` 只显示 user 消息；加 `sorted` 按长度排序。
 
 ---
 

@@ -283,6 +283,48 @@ curl "http://localhost:8080/api/rag/ask?q=公司的报销流程是什么"
 # 用 chunkSize=1000 重试，观察检索质量变化
 ```
 
+### Step 6：相似度阈值过滤（进阶）
+
+默认检索返回 Top-K，但有些结果其实不相关。加一个相似度阈值，过滤掉太远的：
+
+```java
+public List<Document> search(String query, int topK, double threshold) {
+    return vectorStore.similaritySearch(
+        SearchRequest.builder()
+            .query(query)
+            .topK(topK)
+            .similarityThreshold(threshold)  // 只返回相似度 > threshold 的
+            .build()
+    );
+}
+// 调用：search("报销流程", 5, 0.7)
+// 相似度 < 0.7 的结果会被过滤掉——避免 LLM 被无关文档误导
+```
+
+### Step 7：带元数据的检索（多租户/分类）
+
+给每个文档打上元数据标签，检索时可以过滤：
+
+```java
+// 入库时打标签
+Document doc = new Document(text);
+doc.getMetadata().put("source", "报销制度.pdf");
+doc.getMetadata().put("category", "财务");
+doc.getMetadata().put("tenant_id", "company-A");
+vectorStore.add(List.of(doc));
+
+// 检索时过滤（只搜财务类文档）
+vectorStore.similaritySearch(
+    SearchRequest.builder()
+        .query("报销流程")
+        .topK(3)
+        .filterExpression("category == '财务' && tenant_id == 'company-A'")
+        .build()
+);
+```
+
+> 这就是阶段 5 多租户的基础——每个租户的文档隔离。
+
 ---
 
 ## 常见坑
@@ -292,6 +334,32 @@ curl "http://localhost:8080/api/rag/ask?q=公司的报销流程是什么"
 - ❌ **没有重叠** → 在分块边界处截断语义，导致检索遗漏
 - ❌ **prompt 没有限制** → LLM 可能不用文档内容，编造答案。加"如果文档中没有相关信息，说不知道"
 - ❌ **topK 太大** → 塞太多文档浪费 token，且引入噪声。一般 3-5 即可
+- ❌ **没有相似度阈值** → 检索返回完全不相关的文档，LLM 被误导
+- ❌ **PDF 是扫描件（图片）** → `PagePdfDocumentReader` 只能读文本 PDF。扫描件需要 OCR
+
+---
+
+## RAG 质量排查清单
+
+当 RAG 回答不好时，按这个顺序排查：
+
+```
+1. 检索质量（Recall@K 低？）
+   ├── 分块太大/太小 → 调 chunkSize
+   ├── 没有重叠 → 加 overlap
+   ├── 查询词和文档用词不一致 → 加 Query Rewrite（阶段 6 讲）
+   └── 相似度阈值太高 → 降低 threshold
+
+2. 生成质量（Faithfulness 低？）
+   ├── prompt 没有限制 → 加"基于文档回答，没有就说不知道"
+   ├── temperature 太高 → 降到 0.1-0.3
+   └── 检索到噪声 → 加相似度阈值
+
+3. 系统（慢/贵？）
+   ├── topK 太大 → 减到 3-5
+   ├── 文档没有去重 → 入库前去重
+   └── 没有缓存 → 加语义缓存（阶段 4 讲）
+```
 
 ---
 
@@ -301,7 +369,9 @@ curl "http://localhost:8080/api/rag/ask?q=公司的报销流程是什么"
 - [ ] 能基于文档内容回答问题
 - [ ] 文档中没有的信息，LLM 会说"不知道"（而不是编造）
 - [ ] 能调整分块参数并观察检索质量变化
+- [ ] 能用相似度阈值过滤不相关结果
 - [ ] 理解 RAG 的五步链路（加载→分块→向量化→入库→检索生成）
+- [ ] 能用元数据过滤检索结果
 
 ---
 
@@ -309,3 +379,21 @@ curl "http://localhost:8080/api/rag/ask?q=公司的报销流程是什么"
 
 → 下一篇：[04 评估方法论](04-评估方法论.md) —— 给你的 RAG 建测试集，量化质量
 → 概念卡壳？查 `理论字典/RAG原理.md`
+
+---
+
+## 随堂练习：个人笔记问答（60 分钟）
+
+把你的 Markdown 笔记入库，做一个小型 RAG 问答系统。
+
+**需求**：
+```
+POST /api/notes/import  body: "# Spring AI\nChatClient 是核心..."
+→ {"chunks":3}
+GET  /api/notes/ask?q=ChatClient是什么
+→ {"answer":"...","sources":["Spring AI"]}
+```
+
+**提示**：按空行分块（`content.split("\n\n+")`），每块打上 metadata，入库后用相似度检索 + ChatClient 生成回答。
+
+**验收**：笔记中有的能回答；笔记中没有的会说"不知道"。**扩展**：加相似度阈值过滤。
