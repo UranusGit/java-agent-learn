@@ -24,46 +24,24 @@ public class ChatService {
     @Autowired
     private EventBus bus;
 
-
-    private static final String SESSION_EKY = "session:%s";
-    private static final String SESSION_TO_RUN_EKY = "session-to-run:%s";
-
-    public Flux<String> sessions() {
-        return redisTemplate.keys("session:*")
-                .flatMap(key -> redisTemplate.opsForValue().get(key))
-                .flatMap(value -> Flux.just(value + "\n"));
-    }
-
-    public Mono<String> session() {
-        String sessionId = createRunId();
-        return redisTemplate.opsForValue()
-                .set(SESSION_EKY.formatted(sessionId), sessionId)
-                .thenReturn(sessionId);
-    }
-
-    public Mono<Void> chat(String sessionId, String prompt) {
+    public Mono<String> chat(String prompt) {
         String runId = createRunId();
-        return redisTemplate.opsForValue()
-                .set(SESSION_TO_RUN_EKY.formatted(sessionId), runId)
-                .then(client.prompt()
-                        .user(prompt)
-                        .stream()
-                        .content()
-                        .doOnNext(chunk -> bus.write(runId, chunk))
-                        .doOnComplete(() -> {
-                            log.info("生成完成：{}", runId);
-                            bus.writeEnd(runId);
-                        })
-                        .doOnError(error -> {
-                            log.error("{} 执行报错：{}", runId, error.getMessage());
-                            bus.writeEnd(runId);
-                        })
-                        .then());
-    }
 
+        client.prompt()
+                .user(prompt)
+                .stream()
+                .content()
+                .doOnNext(chunk -> bus.write(runId, chunk))
+                .doOnComplete(() -> {
+                    log.info("生成完成：{}", runId);
+                    bus.writeEnd(runId);
+                })
+                .doOnError(error -> {
+                    log.error("{} 执行报错：{}", runId, error.getMessage());
+                    bus.writeEnd(runId);
+                }).subscribe();
 
-    public Mono<String> getRunId(String sessionId) {
-        return redisTemplate.opsForValue().get(SESSION_TO_RUN_EKY.formatted(sessionId));
+        return Mono.just(runId);
     }
 
     public Flux<ChunkEntity> stream(String runId, long lastSeq) {

@@ -3,7 +3,6 @@ package demo.demo02.event;
 import demo.demo02.entity.ChunkEntity;
 import demo.demo02.utils.JsonUtil;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.ReactiveSubscription;
@@ -32,6 +31,7 @@ public class EventBus {
     private static final String TOPIC_KEY = "topic:%s";
 
     public void write(String runId, String chunk) {
+        log.info("{} 开始写入：{}", runId, chunk);
         redisTemplate.opsForValue()
                 .increment(SEQ_KEY.formatted(runId))
                 .doOnNext(seq -> {
