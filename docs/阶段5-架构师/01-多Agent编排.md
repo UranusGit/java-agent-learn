@@ -113,6 +113,24 @@ public class SharedContext {
 
 ---
 
+## 延伸阅读：多 Agent 编排深化路线图
+
+本篇是多 Agent 编排入门。以下文档从不同维度深化编排能力：
+
+| 方向 | 文档 | 深化内容 |
+|------|------|---------|
+| 编排引擎选型 | [05-编排引擎选型](05-编排引擎选型.md) | DAG vs 状态机 vs 自主的 ADR |
+| 速率限制 | [09-Agent速率限制与背压设计](09-Agent速率限制与背压设计.md) | 多Agent间的限流与背压 |
+| 事件驱动 | [13-EventDrivenAgent架构](13-EventDrivenAgent架构.md) | Event Sourcing + CQRS |
+| 生命周期 | [07-Agent生命周期管理](07-Agent生命周期管理.md) | Agent 创建→终止全生命周期 |
+| 平台化 | [08-Agent平台化设计](08-Agent平台化设计.md) | 统一管理多Agent的平台 |
+| 自我反思 | [阶段4-41-Agent自我反思与元认知](../阶段4-生产化/41-Agent自我反思与元认知.md) | Agent 从执行到反思 |
+| 编排理论 | [理论字典-Agent编排](../理论字典/Agent编排.md) | 五大模式决策树 |
+| 编排实战 | [项目15-NexusOrchestra](../项目实践/15-企业项目-Agent智能编排平台/00-总览.md) | 上百Agent的智能编排平台 |
+| 工作流实战 | [项目07-FlowEngine](../项目实践/07-企业项目-工作流引擎/00-总览.md) | DAG编排+审批+集成 |
+
+---
+
 ## 随堂练习：写作+审校双 Agent 协作（90 分钟）
 
 实现 Writer Agent 写文章 → Reviewer Agent 审校 → Writer 修改 → 直到通过。

@@ -293,3 +293,15 @@ GET /api/billing            → 实时费用报告
 **提示**：参考本篇的 `TokenBillingAdvisor`，加一个 `/api/billing` 接口返回 `Map.of("totalTokens", ..., "estimatedCost", ...)`。
 
 **扩展**：按接口路径分别统计；接入 Micrometer 推送 Prometheus。
+
+---
+
+## 延伸阅读：Advisor 链深化路线
+
+| 方向 | 文档 | 内容 |
+|------|------|------|
+| 安全 Advisor | [阶段4-27-安全防护深入](../阶段4-生产化/27-Agent安全防护深入.md) | 安全 Advisor 实战 |
+| 语义防火墙 | [项目11-SentinelGuard Sprint1](../项目实践/11-企业项目-AI安全防御平台/Sprint1-语义防火墙.md) | SemanticFirewallAdvisor |
+| 可观测性 | [阶段4-16-Agent可观测性MELT](../阶段4-生产化/16-Agent可观测性MELT.md) | Trace Advisor |
+| 管控分离 | [阶段4-08-管控分离架构](../阶段4-生产化/08-管控分离架构.md) | 控制面 Advisor |
+| 多租户 | [阶段4-18-多租户数据隔离](../阶段4-生产化/18-多租户数据隔离.md) | 租户隔离 Advisor |

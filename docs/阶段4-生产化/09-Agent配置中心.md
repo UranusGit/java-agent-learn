@@ -341,3 +341,16 @@ public class AgentVersionManager {
 ## 下一步
 
 → 下一篇：[10 Agent 生命周期管理](../阶段5-架构师/07-Agent生命周期管理.md)
+
+---
+
+## 延伸阅读：配置管理深化路线
+
+| 方向 | 文档 | 内容 |
+|------|------|------|
+| 管控分离 | [08-管控分离架构](08-管控分离架构.md) | 控制面与数据面分离 |
+| Prompt 管理 | [14-Prompt工程化管理](14-Prompt工程化管理.md) | Prompt as Code |
+| 版本兼容 | [23-Agent版本兼容性管理](23-Agent版本兼容性管理.md) | 平滑升级 |
+| 灰度实战 | [项目03-AgentOps Sprint3](../项目实践/03-企业项目-Agent控制中心/Sprint3-配置灰度.md) | 配置灰度完整实战 |
+| DevOps | [项目13-AgentForgeOps Sprint3](../项目实践/13-企业项目-AgentDevOps平台/Sprint3-AgentCI-CD管线.md) | CI/CD 管线集成 |
+| GitOps | [附录-GitOps与ArgoCD速成](../附录/GitOps与ArgoCD速成.md) | Argo CD 配置同步 |

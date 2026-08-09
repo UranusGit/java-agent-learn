@@ -303,3 +303,15 @@ public String createUser(String name, String email) {
 ## 下一步
 
 → 进入 [阶段 5 架构师](../阶段5-架构师/01-多Agent编排.md)
+
+---
+
+## 延伸阅读：Saga 事务深化路线
+
+| 方向 | 文档 | 内容 |
+|------|------|------|
+| 可靠性工程 | [02-Agent可靠性工程](02-Agent可靠性工程.md) | 幂等/重试/持久化执行 |
+| 事件驱动 | [阶段5-13-EventDrivenAgent架构](../阶段5-架构师/13-EventDrivenAgent架构.md) | 事件驱动的 Saga |
+| 工作流引擎 | [项目07-FlowEngine Sprint4](../项目实践/07-企业项目-工作流引擎/Sprint4-集成监控.md) | Saga 在工作流中的应用 |
+| Durable Exec | [阶段6-01-DurableAgentExecution](../阶段6-前沿/01-DurableAgentExecution.md) | Temporal 持久化执行 |
+| 工具错误处理 | [阶段3-07-工具错误处理规范](../阶段3-Agent工程化/07-工具错误处理规范.md) | 补偿的前置基础 |

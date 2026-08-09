@@ -344,3 +344,15 @@ public class ObservabilityAdvisor implements CallAdvisor {
 | 服务级 | 会话级 + 租户级 |
 
 → 返回 [阶段4 目录](../00-README.md)
+
+---
+
+## 延伸阅读：可观测性深化路线
+
+| 方向 | 文档 | 内容 |
+|------|------|------|
+| SLO 管理 | [36-Agent SLO管理](36-AgentSLO管理.md) | MELT 指标驱动 SLO |
+| 调试方法论 | [阶段5-11-Agent调试与根因分析](../阶段5-架构师/11-Agent调试与根因分析.md) | Trace 回放调试 |
+| 事故响应 | [38-Agent事故响应与变更管理](38-Agent事故响应与变更管理.md) | 告警→响应→复盘 |
+| 可观测性速成 | [附录-可观测性速成](../附录/可观测性速成.md) | OTel/Prometheus/Grafana |
+| 可观测实战 | [项目04-ReliabilityOps Sprint4](../项目实践/04-企业项目-Agent可靠性工程/Sprint4-看板与部署.md) | 监控看板实战 |

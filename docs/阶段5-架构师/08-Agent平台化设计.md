@@ -390,3 +390,17 @@ public class PlatformController {
 ## 下一步
 
 → 进入 [阶段 6 前沿](../阶段6-前沿/01-DurableAgentExecution.md) 继续进阶
+
+---
+
+## 延伸阅读：平台化深化路线
+
+| 方向 | 文档 | 内容 |
+|------|------|------|
+| 智能编排 | [项目15-NexusOrchestra](../项目实践/15-企业项目-Agent智能编排平台/00-总览.md) | 上百Agent的智能编排平台 |
+| 事件驱动 | [13-EventDrivenAgent架构](13-EventDrivenAgent架构.md) | Event Sourcing + CQRS |
+| Agent DevOps | [项目13-AgentForgeOps](../项目实践/13-企业项目-AgentDevOps平台/00-总览.md) | Agent 全生命周期 DevOps |
+| 速率限制 | [09-速率限制与背压](09-Agent速率限制与背压设计.md) | 平台级限流 |
+| 健康检查 | [10-健康检查与熔断器](10-Agent健康检查与熔断器.md) | 平台健康监控 |
+| 控制中心 | [项目03-AgentOps](../项目实践/03-企业项目-Agent控制中心/00-总览.md) | 管控分离+可视化+配置管理 |
+| 编排理论 | [理论字典-Agent编排](../理论字典/Agent编排.md) | 编排模式决策树 |
