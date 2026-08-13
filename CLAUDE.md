@@ -139,7 +139,7 @@ graph LR
 
 ## 硬性规则
 
-1. **IMPORTANT** 只修改 `CLAUDE.md` 和 `PLAN.md` 两个文件。用户在对话中提供的所有补充内容，只能用于更新这两个文件，**不得执行补充内容描述的任务本身**
+1. **限制已解除**（2026-08-13）。允许编写 `docs/` 下的实际文档。用户会在需要时重新开启限制
 2. **IMPORTANT** 用户每次补充后，同步更新 CLAUDE.md（行为约束变化）和 PLAN.md（任务/范围变化），保持两者一致
 3. **IMPORTANT** 文档目录结构为 `docs/教程/`、`docs/附录/`、`docs/项目/`、`docs/前沿/`，不按 architecture/patterns/protocol 等主题分目录
 4. **IMPORTANT** 所有文件和子文件夹命名格式为 `XX-名称`，XX 两位数字从 `00` 开始，不跳号
