@@ -1,6 +1,10 @@
 # ADR 架构决策记录：让每一个技术选择都有据可查
 
+「本文是对 [教程 14-管控分离 §5] 的辅助方法论」
+
 > 本文贯穿全部教程，是架构师的核心软技能。无论你用哪个框架、哪种模型、什么云平台，最终支撑团队协作的不是代码本身，而是"为什么这么选"的决策记录。ADR（Architecture Decision Record）就是承载这些记录的标准工具。
+
+> 技术栈：Spring Boot 4.1 + Spring AI 2.0.0 + WebFlux + Java 21
 
 ---
 
@@ -342,6 +346,66 @@ flowchart LR
 - 哪些"已接受"的 ADR 的约束条件是否已经变化？
 - 哪些"提议"状态的 ADR 长期未推进（可能已经不需要了）？
 - 是否有重复或矛盾的 ADR 需要整合？
+
+### 7.4 CI 自动校验 ADR（Java 实现）
+
+以下 Java 代码演示如何在 CI 中自动校验 PR 是否关联了 ADR，防止"绕过决策记录直接改架构"。
+
+```java
+/**
+ * CI 门禁：检查架构相关的 PR 是否附带 ADR 编号。
+ * 触发条件：修改了 pom.xml 的关键依赖、或 architecture/ 目录。
+ */
+@Component
+public class AdrGate {
+
+    private static final Set<String> KEY_DEPS = Set.of(
+        "spring-ai", "spring-boot", "langchain4j",
+        "pgvector", "milvus-sdk", "redisson"
+    );
+
+    public GateResult check(PullRequest pr) {
+        boolean touchesArch = pr.changedFiles().stream().anyMatch(f ->
+            f.startsWith("architecture/") || f.equals("pom.xml"));
+
+        if (!touchesArch) {
+            return GateResult.pass("非架构变更，跳过 ADR 检查");
+        }
+
+        // 检查 pom.xml 变更是否涉及关键依赖
+        if (pr.changedFiles().contains("pom.xml")) {
+            Set<String> touchedDeps = extractChangedDeps(pr.getDiff("pom.xml"));
+            Set<String> critical = new HashSet<>(touchedDeps);
+            critical.retainAll(KEY_DEPS);
+            if (!critical.isEmpty()) {
+                // 关键依赖变更 → 必须关联 ADR
+                if (!pr.body().matches("(?i).*ADR[-\\s]?(\\d{4}).*")) {
+                    return GateResult.fail(
+                        "关键依赖变更(" + critical + ")必须关联 ADR 编号，"
+                        + "请在 PR 描述中添加 'ADR-NNNN'。");
+                }
+            }
+        }
+        return GateResult.pass("ADR 检查通过");
+    }
+
+    private Set<String> extractChangedDeps(String diff) {
+        // 解析 pom.xml diff，提取新增/修改的 artifactId
+        Set<String> deps = new HashSet<>();
+        Pattern p = Pattern.compile("<artifactId>([^<]+)</artifactId>");
+        Matcher m = p.matcher(diff);
+        while (m.find()) deps.add(m.group(1));
+        return deps;
+    }
+
+    public record GateResult(boolean passed, String message) {
+        static GateResult pass(String msg)  { return new GateResult(true, msg); }
+        static GateResult fail(String msg)  { return new GateResult(false, msg); }
+    }
+}
+```
+
+这个门禁的价值在于：**把"ADR 评审"从口头约定变成 CI 强制**。没有它，团队成员很容易在赶进度时跳过决策记录。
 
 ---
 

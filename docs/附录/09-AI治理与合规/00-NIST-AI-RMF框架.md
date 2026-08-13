@@ -1,6 +1,10 @@
 # NIST AI RMF 框架企业落地指南
 
+「本文是对 [教程 38-治理合规 §1-§4] 的深入展开」
+
 > [教程 38-治理合规] 本文是治理合规系列的开篇，系统讲解美国国家标准与技术研究院（NIST）发布的 AI 风险管理框架（AI Risk Management Framework，AI RMF 1.0）如何在企业 Java Agent 项目中落地。
+
+> 技术栈：Spring Boot 4.1 + Spring AI 2.0.0 + WebFlux + Java 21
 
 ---
 
@@ -244,6 +248,93 @@ flowchart TB
 ```
 
 实务建议：**以 AI RMF 为内部操作骨架，以 ISO 42001 为管理体系认证，以 GDPR/EU AI Act 为合规底线**。这样既能对外证明合规，又能在内部形成可操作的工作流。
+
+---
+
+## 六（补充）、在 Spring AI 中落地 AI RMF 检查点
+
+以下 Java 代码展示如何把 AI RMF 的 MAP / MEASURE / MANAGE 三步嵌入 Spring AI 的 Advisor 链，实现"上线前评估 + 运行时监控 + 风险响应"的自动化骨架。
+
+```java
+/**
+ * MEASURE 阶段：运行时持续度量 Agent 的风险指标。
+ * 把这些指标接入 Prometheus + Grafana 即可形成 AI RMF 的可观测面板。
+ */
+@Component
+@Order(200)
+public class AIRmfMeasureAdvisor implements BaseAdvisor {
+
+    private final MeterRegistry meters;
+    private final RiskRegisterClient register;   // 对接风险登记册
+
+    @Override
+    public AdvisedResponse aroundCall(AdvisedRequest req, CallAroundAdvisorChain chain) {
+        String tenantId = req.context().get("tenantId");
+        String useCaseId = req.context().get("useCaseId");   // AI RMF 上下文表 ID
+
+        AdvisedResponse resp;
+        try {
+            resp = chain.nextAroundCall(req);
+        } catch (Exception e) {
+            // MANAGE：记录安全/可靠性事件
+            register.logEvent(RiskEvent.builder()
+                .useCaseId(useCaseId)
+                .tenantId(tenantId)
+                .category(RiskCategory.RELIABILITY)
+                .severity(Severity.HIGH)
+                .description("Agent 调用失败: " + e.getMessage())
+                .build());
+            meters.counter("agent.risk.event",
+                "useCase", useCaseId,
+                "category", "reliability").increment();
+            throw e;
+        }
+
+        // MEASURE：采集偏差与性能指标
+        Usage usage = resp.response().metadata().usage();
+        meters.counter("agent.rmf.tokens",
+                "useCase", useCaseId,
+                "type", "prompt")
+              .increment(usage.getPromptTokens());
+
+        return resp;
+    }
+}
+
+/**
+ * MANAGE 阶段：对高风险用例强制走人工审批（HITL）。
+ */
+@Component
+@Order(300)
+public class AIRmfManageAdvisor implements BaseAdvisor {
+
+    private final AIRiskPolicyStore policies;
+
+    @Override
+    public AdvisedResponse aroundTool(AdvisedRequest req, ToolAroundAdvisorChain chain) {
+        String useCaseId = req.context().get("useCaseId");
+        AIRmfContext ctx = policies.getContext(useCaseId);
+
+        // 高风险用例 + 敏感工具 → 强制审批
+        if (ctx.riskLevel() == RiskLevel.HIGH
+                && ctx.sensitiveTools().contains(req.toolName())) {
+            return hitlApprovalService.request(req.toolName(), req.toolArguments())
+                .flatMap(approved -> approved
+                    ? Mono.just(chain.nextAroundTool(req))
+                    : Mono.just(rejected(req)))
+                .block();
+        }
+        return chain.nextAroundTool(req);
+    }
+}
+```
+
+**落地要点**：
+
+1. **`AIRmfContext`（上下文表）** 是 AI RMF MAP 阶段的产物，每个 AI 用例对应一条记录，存入数据库或配置中心。
+2. **`RiskRegisterClient`** 对接风险登记册（可以是 Jira / 自研系统），所有 MEASURE/MANAGE 事件自动入册，形成审计链。
+3. **`AIRmfManageAdvisor` 按 `riskLevel` 分级处理**：低风险自动放行、中风险限流、高风险人工确认。这与 [06-企业级架构模式/00-ControlPlane设计模式] 的管控分离模式一致。
+4. **指标接入可观测**：把 `agent.risk.event`、`agent.rmf.tokens` 等指标接入 Grafana，形成 AI RMF 治理面板，供合规审计时直接呈现。
 
 ---
 

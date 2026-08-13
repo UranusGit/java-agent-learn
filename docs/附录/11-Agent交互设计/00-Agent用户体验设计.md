@@ -1,6 +1,10 @@
 # Agent 用户体验设计：让 AI 的每一步都被看见、被理解、被信任
 
+「本文是对 [教程 09-SSE §1-§3] 的深入展开」
+
 > [教程 09-SSE] [教程 18-多页面流式] [教程 22-HITL] 本文系统讲解 AI Agent 面向用户端的交互设计原则与模式，涵盖流式打字效果、中间状态展示、工具执行透明化、错误交互四个核心主题。技术实现细节可回查对应教程章节。
+
+> 技术栈：Spring Boot 4.1 + Spring AI 2.0.0 + WebFlux + Java 21
 
 ---
 
@@ -414,6 +418,102 @@ sequenceDiagram
 | 结果完成 | 复制/再试按钮 | 来源引用、相关推荐 |
 | 出错 | 错误说明 | 恢复选项 |
 | 高风险操作 | 确认弹窗 | 可修改方案 |
+
+### 7.3 流式 SSE 的 Java 实现（Spring AI + WebFlux）
+
+以下代码展示如何用 Spring AI 2.0 的 `stream()` + WebFlux 构建一个带"工具调用透明化"的 SSE 端点，把 Agent 的每一步都实时推送给前端。
+
+```java
+@RestController
+@RequestMapping("/api/agent")
+public class AgentStreamController {
+
+    private final ChatClient agentClient;
+    private final SseEventBuilder sseBuilder;
+
+    @GetMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> chat(@RequestParam String q) {
+        // 1. 先推送"思考中"状态
+        Flux<ServerSentEvent<String>> thinking = Flux.just(
+            ServerSentEvent.<String>builder()
+                .event("status")
+                .data("{\"phase\":\"thinking\"}")
+                .build());
+
+        // 2. 启动流式推理，每个 chunk 作为 "token" 事件推送
+        Flux<ServerSentEvent<String>> tokens = agentClient.prompt()
+            .user(q)
+            .stream()
+            .content()
+            .map(chunk -> ServerSentEvent.<String>builder()
+                .event("token")
+                .data(chunk)
+                .build());
+
+        // 3. 工具调用事件：通过 Advisor 在工具触发时推送
+        Flux<ServerSentEvent<String>> toolEvents = ToolEventBus.events()
+            .map(evt -> ServerSentEvent.<String>builder()
+                .event("tool")
+                .data("{\"tool\":\"" + evt.name() + "\",\"status\":\"" + evt.status() + "\"}")
+                .build());
+
+        // 4. 合并流，完成时推送 "done" 事件
+        Flux<ServerSentEvent<String>> done = Flux.just(
+            ServerSentEvent.<String>builder()
+                .event("done")
+                .data("{}")
+                .build());
+
+        return Flux.merge(thinking, Flux.merge(tokens, toolEvents)).concatWith(done);
+    }
+}
+
+/**
+ * 工具调用事件总线：在 ToolGuardAdvisor 中发布事件，
+ * 让前端实时看到"Agent 正在调用 readFile 工具"。
+ */
+@Component
+public class ToolEventBus {
+    private static final Sinks.Many<ToolEvent> sink =
+        Sinks.many().multicast().onBackpressureBuffer();
+
+    public static Flux<ToolEvent> events() { return sink.asFlux(); }
+
+    public static void publish(ToolEvent evt) {
+        sink.tryEmitNext(evt);
+    }
+
+    public record ToolEvent(String name, String status, Map<String,Object> args) {}
+}
+```
+
+前端收到的事件流示例：
+
+```
+event: status
+data: {"phase":"thinking"}
+
+event: tool
+data: {"tool":"readFile","status":"started"}
+
+event: token
+data: 根据
+
+event: token
+data: 文件内容
+
+event: tool
+data: {"tool":"readFile","status":"completed"}
+
+event: done
+data: {}
+```
+
+**设计要点**：
+
+- **`event` 字段区分事件类型**：`status`（阶段切换）、`token`（文本流）、`tool`（工具调用）、`done`（完成）。前端按事件类型渲染不同 UI 组件。
+- **工具事件通过 `ToolEventBus` 解耦**：Advisor 不直接操作 SSE 流，而是发布事件，由控制器层订阅并转发。
+- **`onBackpressureBuffer`**：WebFlux 背压处理，避免慢客户端导致内存溢出。
 
 ---
 
