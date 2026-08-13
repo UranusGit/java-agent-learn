@@ -280,6 +280,71 @@ flowchart LR
 - **为什么相同模型不同版本行为差异大**：SFT/RLHF 数据变化导致对齐方向改变。
 - **为什么开源模型工具调用能力弱**：很多开源模型 SFT 数据里没有 function calling 格式，需要自己微调或用强约束 prompt。
 
+## 11（补充）、解码参数在 Spring AI 中的落地
+
+理解了 §9 的解码策略后，下面看它如何映射到 Spring AI 2.0 的 `ChatOptions`。不同任务场景应使用不同的参数 profile，而不是每次手填。
+
+```java
+/**
+ * 按场景预设解码参数 profile。
+ * 把这些 profile 做成 Bean，业务代码注入即可，避免散落的硬编码。
+ */
+public class DecodeProfiles {
+
+    /** 代码生成 / 工具调用：求稳定，低温度 */
+    public static ChatOptions codeGeneration() {
+        return OpenAiChatOptions.builder()
+            .withTemperature(0.2)
+            .withTopP(0.9)
+            .withMaxTokens(4096)
+            .withFrequencyPenalty(0.0)
+            .build();
+    }
+
+    /** 创意写作：求多样，高温度 */
+    public static ChatOptions creativeWriting() {
+        return OpenAiChatOptions.builder()
+            .withTemperature(0.9)
+            .withTopP(0.95)
+            .withFrequencyPenalty(0.5)   // 抑制重复用词
+            .withPresencePenalty(0.3)    // 鼓励主题发散
+            .build();
+    }
+
+    /** Eval 评估：贪心，可复现 */
+    public static ChatOptions eval() {
+        return OpenAiChatOptions.builder()
+            .withTemperature(0.0)        // 贪心解码
+            .withTopP(1.0)
+            .withSeed(42L)               // 固定随机种子
+            .build();
+    }
+}
+
+// 使用示例
+@Service
+public class CodeAgentService {
+    private final ChatClient client;
+
+    public String generateCode(String spec) {
+        return client.prompt()
+            .user(spec)
+            .options(DecodeProfiles.codeGeneration())
+            .call()
+            .content();
+    }
+}
+```
+
+| Profile | temperature | top_p | 适用 |
+|---------|-------------|-------|------|
+| codeGeneration | 0.2 | 0.9 | 代码、工具调用、SQL |
+| creativeWriting | 0.9 | 0.95 | 文案、头脑风暴 |
+| eval | 0.0 | 1.0 | 评估测试、CI 回归 |
+| 客服对话 | 0.5 | 0.9 | 日常对话 |
+
+**生产环境禁忌**：`temperature > 1.5`（乱码）、`top_p < 0.1`（死循环）、`max_tokens` 不设上限（成本失控）。
+
 ## 12. 总结
 
 Transformer 的核心是**多头自注意力**，它让序列中每个位置都能"看见"其他位置并加权融合信息。围绕这个核心，工程师必须建立以下心智模型：
