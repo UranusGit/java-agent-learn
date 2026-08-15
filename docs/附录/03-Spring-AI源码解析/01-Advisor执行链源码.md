@@ -78,7 +78,7 @@ classDiagram
 
 ### 2.2 关键接口定义
 
-> **声明**：本文中的接口与源码为**简化示意模型**，用于讲解执行链机制；真实签名以 [附录 12-SpringAI2-API基准] 与引入版本文档为准。
+> **声明**：本文中的接口与源码为**简化示意模型**，用于讲解执行链机制；真实签名以 [附录 05-SpringAI2-API基准] 与引入版本文档为准。
 
 ```java
 // 顶层标记接口
@@ -626,7 +626,7 @@ Advisor 是 Spring AI 最强大的扩展机制，掌握它等于掌握了 Agent 
 2. **Order 决定顺序**——安全 > 缓存 > 路由 > 增强 > 日志。
 3. **context Map 是通信管道**——Advisor 间通过 `context` 传递数据。
 4. **同步与流式需要分别实现**——`adviseCall` 和 `adviseStream` 逻辑不同。
-5. 本文的 `BaseAdvisor` 是讲解用的简化示意模型——2.0 真实接口是直接实现 `CallAdvisor`/`StreamAdvisor` 并通过 `chain.nextCall()`/`nextStream()` 传递控制（权威口径见 [附录 12-SpringAI2-API基准/00]）。
+5. 本文的 `BaseAdvisor` 是讲解用的简化示意模型——2.0 真实接口是直接实现 `CallAdvisor`/`StreamAdvisor` 并通过 `chain.nextCall()`/`nextStream()` 传递控制（权威口径见 [附录 05-SpringAI2-API基准/00]）。
 6. **生产级 Advisor 必须考虑**——短路、错误处理、流式聚合、上下文清理。
 
 下一篇我们转向测试策略——如何在不需要真实 LLM 的情况下测试 Agent。

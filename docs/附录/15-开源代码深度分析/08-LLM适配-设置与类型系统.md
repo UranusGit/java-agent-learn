@@ -287,12 +287,12 @@ Typert 是本框架的「跨进程类型系统」——把 TS 源码分析成编
 
 | DeepSeek Harness | Spring AI 对应物 | 启示 |
 |---|---|---|
-| `LlmAdapter.stream()` + `llm/stream` waterfall | `ChatModel.stream()` | 适配器只负责「产出良构 chunk」，折叠由共享 `BlockAssembler` 做——单一实现防各适配器各自为政（对应 [教程 39-多模型协作与供应策略]） |
-| 凭据每请求解析 + 轮换即生效 | `@Value` 静态配置 | 「配置存引用、provider 持值、每操作解析」让轮换零重启（对应 [附录 12-SpringAI2-API基准]） |
-| `llm-retry` 持久化重试（基于日志计数） | `RetryTemplate` | 重试边界落盘，恢复后语义一致——比内存计数可靠（对应 [教程 24-容错与弹性设计]） |
-| `token-meter` 启发式计量 | Micrometer token 计量 | 无 provider usage 时的回退定价 + surface 压力判定（对应 [教程 21-成本治理与Token计量]） |
+| `LlmAdapter.stream()` + `llm/stream` waterfall | `ChatModel.stream()` | 适配器只负责「产出良构 chunk」，折叠由共享 `BlockAssembler` 做——单一实现防各适配器各自为政（对应 [教程 44-多模型协作与供应策略]） |
+| 凭据每请求解析 + 轮换即生效 | `@Value` 静态配置 | 「配置存引用、provider 持值、每操作解析」让轮换零重启（对应 [附录 05-SpringAI2-API基准]） |
+| `llm-retry` 持久化重试（基于日志计数） | `RetryTemplate` | 重试边界落盘，恢复后语义一致——比内存计数可靠（对应 [教程 30-容错与弹性设计]） |
+| `token-meter` 启发式计量 | Micrometer token 计量 | 无 provider usage 时的回退定价 + surface 压力判定（对应 [教程 27-成本治理与Token计量]） |
 | settings 三层解析 + path-op 脱敏写 | `@ConfigurationProperties` | 脱敏调用者用路径级写入避免静默删 secret——安全设计值得借鉴 |
-| typert 四件套 | Java 侧 JVM 反射/代码生成 | 「源码分析→编译无关模型→跨进程 RPC」是强类型 RPC 的正解（对应 [附录 10-架构决策方法论]） |
+| typert 四件套 | Java 侧 JVM 反射/代码生成 | 「源码分析→编译无关模型→跨进程 RPC」是强类型 RPC 的正解（对应 [附录 08-架构决策方法论]） |
 
 > **适用场景**：要接入新模型提供者；要设计配置热更新与凭证管理；要理解跨进程强类型 RPC。
 > **不适用场景**：只用单一固定模型、不关心多 Provider 编排的场景。

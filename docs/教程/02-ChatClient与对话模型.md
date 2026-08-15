@@ -303,7 +303,7 @@ sequenceDiagram
     S-->>B: [连接关闭]
 ```
 
-> **遇到阻塞？→ [教程 09-SSE流式通信]**：WebFlux SSE 完整实现、断线重连、前端 EventSource 对接。
+> **遇到阻塞？→ [教程 10-SSE流式通信]**：WebFlux SSE 完整实现、断线重连、前端 EventSource 对接。
 
 ---
 
@@ -351,11 +351,11 @@ Filmography result = chatClient.prompt()
         .entity(Filmography.class);
 
 // 注意：本体系基准中明确——entity(Class, spec -> ...) 的 spec-lambda
-// 自动验证/重试形态为虚构 API，不真实存在（见附录 12-SpringAI2-API基准/02 §2）
+// 自动验证/重试形态为虚构 API，不真实存在（见附录 05-SpringAI2-API基准/02 §2）
 // 需要 Schema 验证与重试 → 业务层自实现（参考教程 12 §5.3 的 retry 封装）
 ```
 
-> **遇到阻塞？→ [教程 12-结构化输出]**：JSON Schema、BeanOutputConverter、Provider Native Structured Output。
+> **遇到阻塞？→ [教程 13-结构化输出]**：JSON Schema、BeanOutputConverter、Provider Native Structured Output。
 
 ---
 

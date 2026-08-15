@@ -178,7 +178,7 @@ graph TB
     style V3 fill:#ffcdd2
 ```
 
-> **想深入？→ [附录 05-LLM基础理论/01-Embedding原理.md]**：向量表示的数学原理、余弦相似度、语义空间的直觉理解。
+> **想深入？→ [附录 01-LLM基础理论/01-Embedding原理.md]**：向量表示的数学原理、余弦相似度、语义空间的直觉理解。
 
 ### 3.4 存入向量数据库
 
@@ -205,7 +205,7 @@ Spring AI 2.0 支持的向量数据库（部分）：
 | **Pinecone** | 云托管 | 不想运维、按量付费 |
 | **MongoDB Atlas** | 云托管 | 已有 MongoDB |
 
-> **遇到阻塞？→ [教程 26-向量数据库选型]**：4+ 向量库的详细对比和选型决策。
+> **遇到阻塞？→ [教程 06-向量数据库选型]**：4+ 向量库的详细对比和选型决策。
 
 ### PgVector 示例
 
@@ -403,7 +403,7 @@ List<Document> results = vectorStore.similaritySearch(
 
 这在多租户、多产品线场景中非常重要——不同用户只检索自己有权限的文档。
 
-> **遇到阻塞？→ [教程 20-多租户隔离与资源治理]**：多租户 RAG 的数据隔离与权限控制。
+> **遇到阻塞？→ [教程 26-多租户隔离与资源治理]**：多租户 RAG 的数据隔离与权限控制。
 
 ---
 
@@ -425,8 +425,8 @@ List<Document> results = vectorStore.similaritySearch(
 - 用摘要代替原文（先让 LLM 摘要每条，再拼接）
 - 分级检索（先检索标题/摘要，再检索完整内容）
 
-> **遇到阻塞？→ [教程 29-上下文工程]**：Token 预算分配、上下文压缩。
-> **遇到阻塞？→ [教程 30-高级RAG与AgenticRAG]**：GraphRAG、多跳推理、自适应检索。
+> **遇到阻塞？→ [教程 34-上下文工程]**：Token 预算分配、上下文压缩。
+> **遇到阻塞？→ [教程 35-高级RAG与AgenticRAG]**：GraphRAG、多跳推理、自适应检索。
 
 ### 8.3 幻觉问题
 
@@ -468,9 +468,9 @@ LLM 可能无视检索到的上下文，自己编造答案。缓解策略：
 | **topK + similarityThreshold** | 控制检索结果数量和质量的核心参数 |
 | **元数据过滤** | 按类别/权限/租户过滤检索范围 |
 
-**下一篇**：[06-ReAct 推理模式](06-ReAct推理模式.md) — Thought-Action-Observation 循环，Agent 的核心推理引擎。
+**下一篇**：[06-ReAct 推理模式](07-ReAct推理模式.md) — Thought-Action-Observation 循环，Agent 的核心推理引擎。
 
 ---
 
-> **想深入？→ [教程 30-高级RAG与AgenticRAG]**：GraphRAG 多跳推理、Agentic RAG 自主决策检索。
-> **想深入？→ [附录 05-LLM基础理论/01-Embedding原理.md]**：Embedding 的数学原理和语义直觉。
+> **想深入？→ [教程 35-高级RAG与AgenticRAG]**：GraphRAG 多跳推理、Agentic RAG 自主决策检索。
+> **想深入？→ [附录 01-LLM基础理论/01-Embedding原理.md]**：Embedding 的数学原理和语义直觉。

@@ -3,7 +3,7 @@
 > **定位**：为客服 Agent 接入向量数据库（PGVector），实现基于产品手册的智能问答。涵盖文档 ETL 流水线、Embedding 向量化、PGVector 配置、`QuestionAnswerAdvisor` 集成。读完这篇，客服 Agent 能回答任意产品文档问题。本文给出**完整可手写代码**。
 > **读者画像**：已完成工具集成，需要让 Agent 具备「阅读长文档」能力。
 > **前置阅读**：[02-迭代一-工具集成]。
-> **关联教程**：[教程 05-RAG 检索增强生成]、[教程 26-向量数据库选型]、[教程 30-高级 RAG]；API 真实性以 [附录 12] 为准。
+> **关联教程**：[教程 05-RAG 检索增强生成]、[教程 06-向量数据库选型]、[教程 30-高级 RAG]；API 真实性以 [附录 12] 为准。
 
 ---
 
@@ -69,7 +69,7 @@ public class VectorStoreConfig {
 }
 ```
 
-> ⚠️ `PgVectorStore.builder()` 的精确配置项（index-type/dimensions 等）以你引入的 Spring AI 2.0 版本为准（[教程 26-向量数据库选型] 与 [附录 12]）。语义不变：`VectorStore` 是检索抽象。
+> ⚠️ `PgVectorStore.builder()` 的精确配置项（index-type/dimensions 等）以你引入的 Spring AI 2.0 版本为准（[教程 06-向量数据库选型] 与 [附录 12]）。语义不变：`VectorStore` 是检索抽象。
 
 ### 2.4 `KnowledgeBaseLoader.java`（ETL：读文档 → 切分 → 向量化 → 存库）
 

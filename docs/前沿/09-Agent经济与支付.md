@@ -1,6 +1,6 @@
 # 前沿 09：Agent 经济与支付（x402 / ANP / Agent 间结算）
 
-> **定位**：Agent 的"钱包"——当 Agent 开始代表主体进行交易（购买服务/支付 API 调用/互相结算），支付协议与 Agent 身份/互操作协议构成 Agent 经济的基础设施。本文调研 x402 支付协议、ANP（Agent Network Protocol）与 Agent 间交易架构。前置阅读：[前沿 00-A2A协议]、[教程 25-安全与权限控制]。
+> **定位**：Agent 的"钱包"——当 Agent 开始代表主体进行交易（购买服务/支付 API 调用/互相结算），支付协议与 Agent 身份/互操作协议构成 Agent 经济的基础设施。本文调研 x402 支付协议、ANP（Agent Network Protocol）与 Agent 间交易架构。前置阅读：[前沿 00-A2A协议]、[教程 31-安全与权限控制]。
 
 ---
 

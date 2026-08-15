@@ -2,7 +2,7 @@
 
 > **定位**：把处置动作建模为工具，按"可逆性×爆炸半径"分级——低风险自动执行、中风险 HITL 审批、高风险升级。HITL 落点在 ToolCallingManager 装饰器（非 Advisor）。教程 22 的完整落地。本文代码为**完整可手写**（含全部 import、无省略），审批守卫模式与 [项目 13-事件溯源Agent运行时平台/05-迭代四-安全审批与凭证] 同构。
 >
-> 「遇到阻塞？→ [教程 22-Human-in-the-Loop与审批流 全篇]、[教程 24-容错与弹性设计 §熔断]、[附录 12-SpringAI2-API基准/02 §ToolCallingManager]」
+> 「遇到阻塞？→ [教程 28-Human-in-the-Loop与审批流 全篇]、[教程 30-容错与弹性设计 §熔断]、[附录 05-SpringAI2-API基准/02 §ToolCallingManager]」
 
 ---
 

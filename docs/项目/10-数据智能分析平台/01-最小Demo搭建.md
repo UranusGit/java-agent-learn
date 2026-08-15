@@ -2,7 +2,7 @@
 
 > **定位**：把"自然语言→SQL→结果"跑通的最小内核——单库（PostgreSQL 只读副本）、基础 Text2SQL、结果展示。本篇刻意不做护栏/语义层/权限（那是 v2 起的演进），先让"查数链路"立住。本文给出**完整可手写代码**（一行不省略）。
 >
-> 「遇到阻塞？→ [教程 12-结构化输出 §entity]、[教程 02-ChatClient与对话模型]；API 真实性以 [附录 12-SpringAI2-API基准] 为准」
+> 「遇到阻塞？→ [教程 13-结构化输出 §entity]、[教程 02-ChatClient与对话模型]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
 
 ---
 
@@ -241,7 +241,7 @@ public class TextToSqlService {
 }
 ```
 
-「遇到阻塞？→ [教程 12-结构化输出 §entity()]——注意用 `entity(GeneratedSql.class)`，不用任何 spec-lambda（虚构 API）」
+「遇到阻塞？→ [教程 13-结构化输出 §entity()]——注意用 `entity(GeneratedSql.class)`，不用任何 spec-lambda（虚构 API）」
 
 ### 3.9 `QueryController.java`（响应式入口）
 

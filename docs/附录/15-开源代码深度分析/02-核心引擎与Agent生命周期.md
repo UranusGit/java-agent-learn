@@ -356,7 +356,7 @@ stateDiagram-v2
 **D4. 双轨事件：durable vs live**
 - **Why**：持久事实走 `session/event`（可重放），实时控制走 `agent/*`（携带活 Agent）。SDK 重放读前者、实时协调用后者，互不污染。
 - **代价**：两个事件域，初学者容易选错域。
-- **选择依据**：区分「事实」与「信号」是生产级事件设计的底线（[教程 45-流式工具调用与事件协议]）。
+- **选择依据**：区分「事实」与「信号」是生产级事件设计的底线（[教程 19-流式工具调用与事件协议]）。
 
 **D5. 工具策略三段分离 + 单调守卫**
 - **Why**：pre/guards/execute/post 分成独立扩展点，且 `ToolGuard` **无 allow 结果**——deny 不可被后续 listener 翻回 allow，保证策略的最强否决权不被绕过。
@@ -383,8 +383,8 @@ stateDiagram-v2
 | DeepSeek Harness | Spring AI 对应物 | 启示 |
 |---|---|---|
 | `SessionEvent` 追加日志 + `deriveMessages()` | `ChatMemory`（内存态） | 把「可重放」做成不变式：Java 侧可引入事件溯源式会话存储（对应 [教程 19-历史记录持久化]） |
-| `tools/pre-execute/execute/post-execute` 三 waterfall | `ToolCallback` + Advisor 链 | 工具执行的三阶段分离比单层 `before/after` 更清晰（对应 [教程 13-Advisor链与拦截器] [教程 17-工具执行可观测]） |
-| `agent/*` 实时事件 vs `session/event` 持久事实 | 观察者模式 | 「实时协调」与「持久事实」双轨是生产级事件设计（对应 [教程 45-流式工具调用与事件协议]） |
+| `tools/pre-execute/execute/post-execute` 三 waterfall | `ToolCallback` + Advisor 链 | 工具执行的三阶段分离比单层 `before/after` 更清晰（对应 [教程 14-Advisor链与拦截器] [教程 17-工具执行可观测]） |
+| `agent/*` 实时事件 vs `session/event` 持久事实 | 观察者模式 | 「实时协调」与「持久事实」双轨是生产级事件设计（对应 [教程 19-流式工具调用与事件协议]） |
 | `turn/step/round` 三层循环 | `ChatClient` 单次调用 | 显式区分「一次请求 / 一轮迭代 / 外层策略轮次」能让编排更可控（对应 [教程 06-ReAct] [教程 07-Plan-and-Execute]） |
 | `scope` per-agent 注册 + shadowing | `@Scope` / ThreadLocal | per-agent 的工具/提示隔离是「会话级能力集」的基础（对应 [教程 20-多租户隔离]） |
 | `invariants` 运行时不变式 | 断言/契约测试 | 把「会话日志可重建」这类铁律做进运行时，是防御式工程质量（对应 [附录 04-测试策略]） |

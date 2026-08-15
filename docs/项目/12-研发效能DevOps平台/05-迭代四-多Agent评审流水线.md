@@ -4,7 +4,7 @@
 >
 > **读者画像**：已完成 [04-迭代三-CICD诊断Agent](04-迭代三-CICD诊断Agent.md)。
 >
-> 「遇到阻塞？→ [教程 08-多Agent协作]、[教程 31-Agent工作流编排]、[教程 13-Advisor链与拦截器 §顺序]；API 真实性以 [附录 12-SpringAI2-API基准] 为准」
+> 「遇到阻塞？→ [教程 09-多Agent协作]、[教程 36-Agent工作流编排]、[教程 14-Advisor链与拦截器 §顺序]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
 
 ---
 

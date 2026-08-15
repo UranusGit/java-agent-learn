@@ -75,7 +75,7 @@ graph TB
 | **适应性** | 遇到未预见情况就报错 | 遇到新情况可以调整策略 |
 | **不确定性** | 确定——同样输入永远同样输出 | 不确定——同样输入可能不同输出 |
 
-> **想深入？→ [附录 05-LLM基础理论/00-Transformer架构]**：理解 Transformer 架构和注意力机制，搞清楚 LLM 为什么能"理解"语言。
+> **想深入？→ [附录 01-LLM基础理论/00-Transformer架构]**：理解 Transformer 架构和注意力机制，搞清楚 LLM 为什么能"理解"语言。
 
 ---
 
@@ -221,7 +221,7 @@ Memory 不只是"存聊天记录"这么简单。一个成熟的 Agent 系统有�
 | **外部记忆**（RAG 检索） | 从知识库中按需检索 | 人去查资料 |
 
 > **遇到阻塞？→ [教程 04-记忆与会话管理]**：深入 ChatMemory API、短期 vs 长期记忆、会话隔离。
-> **想深入？→ [教程 34-高级记忆架构]**：三层记忆架构、语义记忆 vs 情景记忆、记忆演化与衰减。
+> **想深入？→ [教程 39-高级记忆架构]**：三层记忆架构、语义记忆 vs 情景记忆、记忆演化与衰减。
 
 ### 2.4 Planner（规划器）——Agent 的大脑皮层
 
@@ -255,8 +255,8 @@ graph TB
 
 Spring AI 2.0 中，规划能力通过 **Advisor 链 + 工具调用循环**实现——ChatClient 会自动在 Advisor 链中循环，直到 LLM 认为任务完成。
 
-> **遇到阻塞？→ [教程 06-ReAct推理模式]**：深入 Thought-Action-Observation 循环。
-> **遇到阻塞？→ [教程 07-Plan-and-Execute模式]**：深入规划-执行分离架构。
+> **遇到阻塞？→ [教程 07-ReAct推理模式]**：深入 Thought-Action-Observation 循环。
+> **遇到阻塞？→ [教程 08-Plan-and-Execute模式]**：深入规划-执行分离架构。
 
 ---
 
@@ -362,7 +362,7 @@ ChatClient client = ChatClient.builder(chatModel)
 每个能力（记忆、RAG、日志、工具）都是一个 Advisor，通过链式组装。增删能力只需增删一行 Advisor 配置。
 
 > **遇到阻塞？→ [教程 01-Spring-AI框架入门]**：从零搭建第一个 Spring AI 项目。
-> **遇到阻塞？→ [教程 13-Advisor链与拦截器]**：深入 Advisor API 和中间件模式。
+> **遇到阻塞？→ [教程 14-Advisor链与拦截器]**：深入 Advisor API 和中间件模式。
 
 ---
 
@@ -402,8 +402,8 @@ graph LR
 - **错误处理变了**：LLM 可能返回错误的信息（幻觉），需要兜底策略
 - **监控指标变了**：除了延迟和吞吐，还要监控 Token 消耗、工具调用成功率、回答准确率
 
-> **遇到阻塞？→ [教程 24-容错与弹性设计]**：重试、降级、熔断、超时策略。
-> **遇到阻塞？→ [教程 32-自我反思与Agent评估]**：如何量化评估 Agent 效果。
+> **遇到阻塞？→ [教程 30-容错与弹性设计]**：重试、降级、熔断、超时策略。
+> **遇到阻塞？→ [教程 37-自我反思与Agent评估]**：如何量化评估 Agent 效果。
 
 ### 4.2 同步阻塞 vs 流式响应
 
@@ -446,7 +446,7 @@ Flux<String> stream(@RequestParam String question) {
 }
 ```
 
-> **遇到阻塞？→ [教程 09-SSE流式通信]**：WebFlux SSE 流式响应、前端对接。
+> **遇到阻塞？→ [教程 10-SSE流式通信]**：WebFlux SSE 流式响应、前端对接。
 
 ### 4.3 成本模型变了
 
@@ -462,7 +462,7 @@ Flux<String> stream(@RequestParam String question) {
 
 架构师必须从一开始就考虑成本治理——Token 预算、模型路由（简单任务用小模型）、语义缓存（避免重复调用）。
 
-> **遇到阻塞？→ [教程 21-成本治理与Token计量]**：Token 计量、预算控制、成本归因。
+> **遇到阻塞？→ [教程 27-成本治理与Token计量]**：Token 计量、预算控制、成本归因。
 
 ---
 
@@ -489,7 +489,7 @@ graph LR
 | L2 | 能执行操作 | @Tool + ToolCallingAdvisor | [教程 03-工具调用](03-工具调用.md) |
 | L3 | 有私有知识 | VectorStore + QuestionAnswerAdvisor | [教程 05-RAG](05-RAG检索增强生成.md) |
 | L4 | 完整 Agent | 全部组件组合 | 项目实战 |
-| L5 | 多 Agent 协作 | 多 ChatClient 编排 | [教程 08-多Agent协作](08-多Agent协作.md) |
+| L5 | 多 Agent 协作 | 多 ChatClient 编排 | [教程 09-多Agent协作](09-多Agent协作.md) |
 
 **你的成长路径就是沿着这条线走**——每一篇教程都在把你的 Agent 推向下一个 Level。
 
@@ -532,5 +532,5 @@ graph LR
 
 ---
 
-> **想深入？→ [附录 05-LLM基础理论/00-Transformer架构]**：理解 Transformer 和注意力机制，搞清楚 LLM 为什么能"理解"语言。
-> **想深入？→ [附录 05-LLM基础理论/02-上下文窗口与Token]**：理解 Token 和上下文窗口的限制，这决定了 Agent 每次能"看到"多少信息。
+> **想深入？→ [附录 01-LLM基础理论/00-Transformer架构]**：理解 Transformer 和注意力机制，搞清楚 LLM 为什么能"理解"语言。
+> **想深入？→ [附录 01-LLM基础理论/02-上下文窗口与Token]**：理解 Token 和上下文窗口的限制，这决定了 Agent 每次能"看到"多少信息。

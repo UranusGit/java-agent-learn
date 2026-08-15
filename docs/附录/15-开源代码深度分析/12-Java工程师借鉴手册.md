@@ -153,7 +153,7 @@
 | K7 | **env scrub** | 子进程环境剥 `KEY/PASSWORD/SECRET/TOKEN/DSH_*` | `ProcessBuilder` 默认 scrubbed，凭据显式 merge |
 | K8 | **kill 升级阶梯** | `SIGTERM → graceMs → SIGKILL` 树级，重探存活防 pid 复用 | 终止流程分级 + 重探进程树 |
 | K9 | **技能目录分层合并** | 全局 + scope 层链式合并，最近层遮蔽远层，层内 rank 裁决 | 多级技能目录（项目/用户/打包）按优先级合并 |
-| K10 | **MCP 工具命名约定** | `mcp__<server>__<tool>` 桥进工具注册表 | 与 Spring AI MCP 工具前缀约定同构（[教程 10-MCP协议]） |
+| K10 | **MCP 工具命名约定** | `mcp__<server>__<tool>` 桥进工具注册表 | 与 Spring AI MCP 工具前缀约定同构（[教程 11-MCP协议]） |
 | K11 | **LSP 无逃生舱闭合联合** | 语义导航只暴露四种操作，无 JSON-RPC 逃生舱 | 缝合口用闭合接口，防 provider 泄漏协议细节 |
 
 ---

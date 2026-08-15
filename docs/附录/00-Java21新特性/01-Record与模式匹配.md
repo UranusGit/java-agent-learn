@@ -1,6 +1,6 @@
 # Record、Pattern Matching 与 Switch 表达式在 Agent 领域模型中的应用
 
-> 「本文是对 [教程 12-结构化输出 §2-§4] 的深入展开」
+> 「本文是对 [教程 13-结构化输出 §2-§4] 的深入展开」
 
 > **定位**：系统讲解 Java 21 的 Record、Pattern Matching（模式匹配）、Switch 表达式三大特性，以及它们在 Agent 领域模型设计、结构化输出映射、消息类型建模中的实际应用。
 >

@@ -2,7 +2,7 @@
 
 > **定位**：把"简报的根因候选"变成"可实证的根因链"——trace_id 贯穿多数据源，多 Agent（Triage→Planner→并行 Worker→Supervisor）编排拉取 Trace/日志/指标，确定性计算先行、LLM 只读结论。教程 16 全链路可观测的运维侧落地。本文代码为**完整可手写**（含全部 import、无省略）。
 >
-> 「遇到阻塞？→ [教程 16-全链路可观测性 全篇]、[教程 08-多Agent协作]、[教程 30-高级RAG与AgenticRAG §Agentic 检索]」
+> 「遇到阻塞？→ [教程 22-全链路可观测性 全篇]、[教程 09-多Agent协作]、[教程 35-高级RAG与AgenticRAG §Agentic 检索]」
 
 ---
 
