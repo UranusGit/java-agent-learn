@@ -20,7 +20,7 @@ graph TB
         U1["用户：帮我查一下 ORD-001"] --> A1["Agent：查询中..."]
         A1 --> R1["Agent：订单已发货"]
         U2["用户：那帮我退款"] --> A2["Agent：请问哪个订单？"]
-        Note1["Agent 不知道"退款"<br/>指的是 ORD-001"]
+        Note1["Agent 不知道「退款」<br/>指的是 ORD-001"]
     end
 
     subgraph 有状态Agent["✅ 有状态 Agent"]
@@ -29,7 +29,7 @@ graph TB
         A3 --> S2["状态：已知订单 ORD-001<br/>上下文：已发货"]
         U4["用户：那帮我退款"] --> S2
         S2 --> A4["Agent：为 ORD-001 发起退款流程"]
-        Note2["Agent 知道"退款"<br/>指的是 ORD-001"]
+        Note2["Agent 知道「退款」<br/>指的是 ORD-001"]
     end
 
     style 无状态Agent fill:#ffcdd2
@@ -273,7 +273,7 @@ public void expireIdleSessions() {
     
     for (String conversationId : expiredSessions) {
         // 1. 将关键信息提取到长期记忆
-        List<Message> history = chatMemory.get(conversationId);
+        List<Message> history = chatMemory.get(conversationId, 30);   // lastN 必带
         memoryExtractionService.extractAndStore(conversationId, history);
         
         // 2. 归档完整对话历史
@@ -321,9 +321,8 @@ graph TB
 模型的上下文窗口是有限的（DeepSeek 通常 64K-128K Token）。必须合理分配 Token 预算：
 
 ```java
-import org.springframework.ai.chat.client.advisor.TokenBudgetAdvisor;
-
-// Spring AI 2.0.0 — Token 预算分配
+// ⚠ 修正: TokenBudgetAdvisor 不是 Spring AI 内置组件（附录 12 基准 §1.4）——
+// 上下文预算需自研实现 CallAdvisor/StreamAdvisor（在 adviseCall 里按 Token 预算压缩 messages）
 @Bean
 ChatClient chatClient(ChatClient.Builder builder, ChatMemory chatMemory) {
     return builder
@@ -331,12 +330,22 @@ ChatClient chatClient(ChatClient.Builder builder, ChatMemory chatMemory) {
                     // 记忆 Advisor：管理历史消息
                     MessageChatMemoryAdvisor.builder(chatMemory)
                             .build(),
-                    // Token 预算 Advisor：自动控制上下文长度
-                    TokenBudgetAdvisor.builder()
-                            .tokenBudget(4096)  // 限制历史消息最多 4096 Token
-                            .build()
+                    // 自研 Token 预算 Advisor（示意，见下）
+                    new TokenBudgetAdvisor(4096)   // 限制历史消息最多 4096 Token
             )
             .build();
+}
+
+// 自研 Token 预算 Advisor（真实实现要点: 在 adviseCall 中调用 chain 前，
+// 按 tokenBudget 裁剪/压缩 request.messages()，见附录 12 基准）
+class TokenBudgetAdvisor implements CallAdvisor {
+    private final int tokenBudget;
+    TokenBudgetAdvisor(int budget) { this.tokenBudget = budget; }
+    @Override
+    public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
+        // trimMessagesToBudget(request, tokenBudget);   // 实现见教程 29 §上下文压缩
+        return chain.nextCall(request);
+    }
 }
 ```
 
@@ -366,12 +375,12 @@ graph LR
 ```java
 // Spring AI 2.0.0 — 上下文压缩 Advisor
 @Component
-public class ContextCompressionAdvisor implements BaseAdvisor {
+public class ContextCompressionAdvisor implements CallAdvisor {
 
     private static final int COMPRESS_THRESHOLD = 15;
 
-    @Override
-    public AdvisedRequest before(AdvisedRequest request) {
+        @Override
+    public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
         List<Message> messages = request.messages();
         
         if (messages.size() > COMPRESS_THRESHOLD) {
@@ -386,12 +395,13 @@ public class ContextCompressionAdvisor implements BaseAdvisor {
             List<Message> compressed = new ArrayList<>();
             compressed.add(new SystemMessage("之前的对话摘要：" + summary));
             compressed.addAll(toKeep);
-            
-            return request.mutate().messages(compressed).build();
+        ChatClientRequest effective = request.mutate().messages(compressed).build();
         }
         
         return request;
+        return chain.nextCall(effective);
     }
+
 
     private String summarizeMessages(List<Message> messages) {
         // 调用 LLM 对历史消息进行摘要
@@ -541,37 +551,34 @@ graph TB
 Agent 在执行过程中可能需要在 Advisor 之间传递中间状态。Spring AI 使用 `Advisor` 的上下文 Map 来实现：
 
 ```java
-import org.springframework.ai.chat.client.advisor.api.AdvisedRequest;
-import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
+import org.springframework.ai.chat.client.advisor.api.ChatClientRequest;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 
 // Spring AI 2.0.0 — 自定义 Advisor 用于状态传递
 @Component
-public class TaskStateAdvisor implements BaseAdvisor {
+public class TaskStateAdvisor implements CallAdvisor {
 
     public static final String CURRENT_TASK = "currentTask";
     public static final String TASK_STEP = "taskStep";
     public static final String TOOL_RESULTS = "toolResults";
 
     @Override
-    public AdvisedRequest before(AdvisedRequest request) {
+    public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
         // 前置处理：从上下文中读取任务状态
         String task = request.context().get(CURRENT_TASK);
         Integer step = request.context().get(TASK_STEP);
 
         // 将任务状态注入 Prompt
         if (task != null) {
-            return request.mutate()
+        ChatClientRequest effective = request.mutate()
                     .system("当前任务：" + task + "，执行步骤：" + (step != null ? step : 0))
                     .build();
         }
 
         return request;
-    }
-
-    @Override
-    public AdvisedResponse after(AdvisedResponse response) {
+        ChatClientResponse response = chain.nextCall(effective);
         // 后置处理：更新任务状态
-        AdvisedResponse.AdvisedResponseBuilder builder = response.mutate();
+        ChatClientResponse.ChatClientResponseBuilder builder = response.mutate();
 
         // 记录工具调用结果到上下文
         if (response.response().hasToolCalls()) {
@@ -579,7 +586,9 @@ public class TaskStateAdvisor implements BaseAdvisor {
         }
 
         return builder.build();
+    
     }
+
 }
 ```
 

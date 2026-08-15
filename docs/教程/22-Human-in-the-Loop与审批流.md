@@ -346,10 +346,10 @@ public class HumanInTheLoopAdvisor implements CallAdvisor {
     }
 
     @Override
-    public AdvisedResponse adviseCall(AdvisedRequest request,
+    public ChatClientResponse adviseCall(ChatClientRequest request,
                                        CallAdvisorChain chain) {
         // 先让 LLM 生成响应（包含可能的工具调用意图）
-        AdvisedResponse response = chain.nextAroundCall(request);
+        ChatClientResponse response = chain.nextCall(request);
 
         // 检查响应中是否包含工具调用
         var toolCalls = extractToolCalls(response);
@@ -373,12 +373,12 @@ public class HumanInTheLoopAdvisor implements CallAdvisor {
     /**
      * 挂起工具执行，创建审批请求。
      */
-    private AdvisedResponse suspendForApproval(AdvisedRequest request,
-                                                AdvisedResponse originalResponse,
+    private ChatClientResponse suspendForApproval(ChatClientRequest request,
+                                                ChatClientResponse originalResponse,
                                                 ApprovalRequest approval,
                                                 ToolCallContext toolCall) {
         // 1. 填充审批请求上下文
-        var ctx = request.adviseContext();
+        var ctx = request.context();
         approval.setConversationId(ctx.get(ChatMemory.CONVERSATION_ID, String.class));
         approval.setTenantId(ctx.get("tenantId", String.class));
         approval.setUserId(ctx.get("userId", String.class));
@@ -393,7 +393,7 @@ public class HumanInTheLoopAdvisor implements CallAdvisor {
                 approval.getId(),
                 toolCall.toolName(),
                 toolCall.arguments(),
-                request.adviseContext(),
+                request.context(),
                 originalResponse
         );
         pendingStore.save(pending);
@@ -424,17 +424,17 @@ public class HumanInTheLoopAdvisor implements CallAdvisor {
                 .withGenerations(List.of(new Generation(new AssistantMessage(userNotice))))
                 .build();
 
-        return new AdvisedResponse(modifiedResponse, request.adviseContext());
+        return new ChatClientResponse(modifiedResponse, request.context());
     }
 
-    private List<ToolCallContext> extractToolCalls(AdvisedResponse response) {
+    private List<ToolCallContext> extractToolCalls(ChatClientResponse response) {
         return response.response().getResults().stream()
                 .flatMap(g -> g.getOutput().getToolCalls().stream())
                 .map(tc -> new ToolCallContext(tc.name(), tc.arguments()))
                 .toList();
     }
 
-    private String extractReasoning(AdvisedResponse response) {
+    private String extractReasoning(ChatClientResponse response) {
         return response.response().getResult().getOutput().getText();
     }
 

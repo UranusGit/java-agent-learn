@@ -703,7 +703,7 @@ graph TB
 ```java
 // MCP 工具调用审计 Advisor（概念模型）
 @Component
-public class McpAuditAdvisor implements BaseAdvisor {
+public class McpAuditAdvisor implements CallAdvisor {  // 形态以附录 12 基准为准
 
     private final AuditLogService auditLog;
     private final CostTrackingService costTracker;

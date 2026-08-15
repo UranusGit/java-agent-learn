@@ -262,19 +262,19 @@ flowchart TB
  */
 @Component
 @Order(200)
-public class AIRmfMeasureAdvisor implements BaseAdvisor {
+public class AIRmfMeasureAdvisor implements CallAdvisor {
 
     private final MeterRegistry meters;
     private final RiskRegisterClient register;   // 对接风险登记册
 
     @Override
-    public AdvisedResponse aroundCall(AdvisedRequest req, CallAroundAdvisorChain chain) {
+    public ChatClientResponse adviseCall(ChatClientRequest req, CallAdvisorChain chain) {
         String tenantId = req.context().get("tenantId");
         String useCaseId = req.context().get("useCaseId");   // AI RMF 上下文表 ID
 
-        AdvisedResponse resp;
+        ChatClientResponse resp;
         try {
-            resp = chain.nextAroundCall(req);
+            resp = chain.nextCall(req);
         } catch (Exception e) {
             // MANAGE：记录安全/可靠性事件
             register.logEvent(RiskEvent.builder()
@@ -306,12 +306,12 @@ public class AIRmfMeasureAdvisor implements BaseAdvisor {
  */
 @Component
 @Order(300)
-public class AIRmfManageAdvisor implements BaseAdvisor {
+public class AIRmfManageAdvisor implements CallAdvisor {
 
     private final AIRiskPolicyStore policies;
 
     @Override
-    public AdvisedResponse aroundTool(AdvisedRequest req, ToolAroundAdvisorChain chain) {
+    public ChatClientResponse aroundTool(ChatClientRequest req, ToolAroundAdvisorChain chain) {
         String useCaseId = req.context().get("useCaseId");
         AIRmfContext ctx = policies.getContext(useCaseId);
 

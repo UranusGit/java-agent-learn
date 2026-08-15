@@ -495,13 +495,13 @@ public class DataSanitizer {
 
 ```java
 @Component
-public class PrivacyProtectionAdvisor implements BaseAdvisor {
+public class PrivacyProtectionAdvisor implements CallAdvisor {
 
     private final DataSanitizer sanitizer;
 
     @Override
-    public Mono<ChatClientRequest> adviseRequest(ChatClientRequest request,
-                                                   RequestAdvisorChain chain) {
+    public Mono<ChatClientRequest> adviseCall(ChatClientRequest request,
+                                                   CallAdvisorChain chain) {
         // 发给 LLM 前——脱敏用户输入
         DataSanitizer.SanitizationResult result =
             sanitizer.sanitize(request.prompt().getContents());

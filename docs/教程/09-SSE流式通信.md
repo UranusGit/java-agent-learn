@@ -388,7 +388,7 @@ public Flux<String> streamWithMemory(
 ) {
     return chatClient.prompt()
             .user(message)
-            .advisors(spec -> spec.param("chat_memory_conversation_id", sessionId))
+            .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
             .stream()
             .content()
             // 流式模式下，记忆 Advisor 会在流完成后自动存储完整回复
@@ -507,7 +507,7 @@ Spring 端对应 POST 端点：
 public Flux<String> streamPost(@RequestBody ChatRequest request) {
     return chatClient.prompt()
             .user(request.message())
-            .advisors(spec -> spec.param("chat_memory_conversation_id", request.sessionId()))
+            .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, request.sessionId()))
             .stream()
             .content();
 }
@@ -695,7 +695,9 @@ graph TB
 ```java
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.memory.InMemoryChatMemory;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.memory.MessageWindowChatMemory;
+import org.springframework.ai.chat.memory.repository.InMemoryChatMemoryRepository;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
@@ -713,7 +715,14 @@ public class StreamChatController {
         this.chatClient = builder
                 .defaultSystem("你是一个智能助手，用中文回答用户问题。")
                 .defaultAdvisors(
-                        MessageChatMemoryAdvisor.builder(new InMemoryChatMemory()).build()
+                        // 真实组合: MessageWindowChatMemory(窗口策略) + InMemoryChatMemoryRepository(存储)
+                        // 参考 [附录 12-SpringAI2-API基准/00-Advisor与ChatMemory]
+                        MessageChatMemoryAdvisor.builder(
+                                MessageWindowChatMemory.builder()
+                                        .chatMemoryRepository(new InMemoryChatMemoryRepository())
+                                        .maxMessages(20)
+                                        .build())
+                                .build()
                 )
                 .build();
     }
@@ -738,7 +747,7 @@ public class StreamChatController {
     private Flux<ServerSentEvent<String>> buildStream(String message, String sessionId) {
         return chatClient.prompt()
                 .user(message)
-                .advisors(spec -> spec.param("chat_memory_conversation_id", sessionId))
+                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
                 .stream()
                 .content()
                 .filter(chunk -> chunk != null && !chunk.isEmpty())
@@ -893,11 +902,11 @@ return chatClient.prompt()
 | **proxy_buffering off** | Nginx 必须关闭缓冲才能正常流式传输 |
 | **vs WebSocket** | SSE 适合单向推送（LLM 输出），WebSocket 适合双向频繁通信 |
 
-**下一篇**：[10-结构化输出与JSON](10-结构化输出与JSON.md) — 让 Agent 输出可靠的 JSON、Entity 映射、输出校验。
+**下一篇**：[12-结构化输出](12-结构化输出.md) — 让 Agent 输出可靠的 JSON、Entity 映射、输出校验。
 
 ---
 
 > → [教程 02-ChatClient 与对话模型]：ChatClient 的完整 API、同步/流式调用的基础。
 > → [教程 18-多页面流式响应与会话管理]：多标签页 SSE 连接管理、会话隔离。
-> 想深入？→ [附录 06-Web工程/01-SSE协议规范.md]：SSE 协议的完整规范和浏览器兼容性。
-> 遇到阻塞？→ [教程 19-流式响应的性能与调优]：Flux 背压、连接池、超时配置。
+> 想深入？→ [教程 09-SSE流式通信（协议细节）与 [附录 11-Agent交互设计/00-Agent用户体验设计]（交互层）]：SSE 协议的完整规范和浏览器兼容性。
+> 遇到阻塞？→ [教程 37-响应式错误处理]（背压与流中断）与 [教程 33-Agent性能优化]（连接池与超时）。

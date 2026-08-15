@@ -151,16 +151,13 @@ stateDiagram-v2
 
 ### 3.2 链式决策示例
 
-```mermaid
-flowchart LR
-    ADR001[ADR-001<br/>使用 Spring Boot 3.x] --> ADR005[ADR-005<br/>使用 Spring AI 集成 LLM]
-    ADR005 --> ADR012[ADR-012<br/>使用 SSE 流式输出]
-    ADR012 --> ADR020[ADR-020<br/>SSE 增加断线重连]
-    ADR020 --> ADR035[ADR-035<br/>迁移到 Reactor 响应式流]
-
-    style ADR001 fill:#e8f0fe
-    style ADR035 fill:#e6f4ea
-```
+| 决策 | 内容 |
+|------|------|
+| ADR-001 | 使用 Spring Boot 3.x |
+| ADR-005 | 使用 Spring AI 集成 LLM |
+| ADR-012 | 使用 SSE 流式输出 |
+| ADR-020 | SSE 增加断线重连 |
+| ADR-035 | 迁移到 Reactor 响应式流 |
 
 这条链展示了一个典型的演化路径：从框架选择 → AI 集成 → 流式输出 → 可靠性增强 → 响应式重构。每一步都有据可查，新成员读一遍 ADR 链就能理解架构的演化逻辑。
 
@@ -204,19 +201,12 @@ ADR 是记录决策的格式，但决策本身需要一套方法论。以下是�
 
 ### 5.1 六步法
 
-```mermaid
-flowchart LR
-    S1[1.明确问题] --> S2[2.列举约束]
-    S3[3.收集候选]
-    S4[4.加权评分]
-    S5[5.POC 验证]
-    S6[6.记录决策]
-
-    S2 --> S3
-    S3 --> S4
-    S4 --> S5
-    S5 --> S6
-```
+1. 明确问题
+2. 列举约束
+3. 收集候选
+4. 加权评分
+5. POC 验证
+6. 记录决策
 
 #### Step 1: 明确问题
 

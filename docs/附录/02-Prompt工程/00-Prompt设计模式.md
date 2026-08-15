@@ -479,7 +479,7 @@ graph TB
     PRINCIPLES --> P3["3. 明确约束<br/>长度限制、禁止事项"]
     PRINCIPLES --> P4["4. 给出示例<br/>Few-shot 比纯描述更有效"]
     PRINCIPLES --> P5["5. 分步推理<br/>复杂任务用 CoT"]
-    PRINCIPLES --> P6["6. 负面示例<br/>"不要这样做"的例子"]
+    PRINCIPLES --> P6["6. 负面示例<br/>「不要这样做」的例子"]
 
     style PRINCIPLES fill:#e1bee7
 ```

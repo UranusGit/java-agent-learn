@@ -50,7 +50,7 @@ ReAct 由 Yao et al. 在 2022 年提出（论文："ReAct: Synergizing Reasoning
 
 这三步构成一个**闭环**，不断循环直到任务完成。
 
-> **想深入？→ [附录 03-Agent设计模式/01-ReAct论文精读.md]**：ReAct 原论文的完整解读和实验数据。
+> **想深入？→ [附录 05-LLM基础理论（ReAct 原论文: arxiv.org/abs/2210.03629）]**：ReAct 原论文的完整解读和实验数据。
 
 ---
 
@@ -283,38 +283,39 @@ import org.springframework.ai.chat.model.ChatResponse;
 import reactor.core.publisher.Flux;
 
 // Spring AI 2.0.0 — 自定义 ReAct 控制 Advisor
-public class ReActControlAdvisor implements BaseAdvisor {
+// ⚠ 修正: 步数计数用 Reactor Context 而非 ThreadLocal——
+// WebFlux 下同一线程复用多请求、一次请求跨线程切换，ThreadLocal 语义全错（见教程 37 §Context 传递）
+public class ReActControlAdvisor implements CallAdvisor {
 
     private final int maxSteps;
-    private final ThreadLocal<Integer> stepCounter = ThreadLocal.withInitial(() -> 0);
 
     public ReActControlAdvisor(int maxSteps) {
         this.maxSteps = maxSteps;
     }
 
     @Override
-    public AdvisedRequest before(AdvisedRequest request) {
-        int current = stepCounter.get();
+    public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
+        // 从 Reactor Context 读当前步数（请求级，非线程级）
+        int current = request.context().getOrDefault("react.step", 0);
         if (current >= maxSteps) {
             // 超过最大步数，在消息中注入"请立即给出最终答案"指令
-            request = AdvisedRequest.from(request)
-                    .withSystemText(request.systemText() +
+            request = ChatClientRequest.builder()
+                    .from(request)
+                    .systemText(request.systemText() +
                             "\n\n【系统警告】已达到最大推理步数(" + maxSteps +
                             ")，请立即基于已有信息给出最终答案。")
                     .build();
         }
-        stepCounter.set(current + 1);
+        // 步数 +1 写回上下文（随请求链传递，不跨线程污染）
+        request = ChatClientRequest.builder()
+                .from(request)
+                .contextEntry("react.step", current + 1)
+                .build();
 
         // 记录每一步的推理日志
         System.out.println("[ReAct] Step " + (current + 1) +
                 " | User: " + request.userText());
-        return request;
-    }
-
-    @Override
-    public ChatResponse after(ChatResponse response, AdvisedRequest request) {
-        stepCounter.remove(); // 清理 ThreadLocal
-        return response;
+        return chain.nextCall(request);
     }
 
     @Override
@@ -675,5 +676,5 @@ public class CustomerServiceController {
 
 > → [教程 03-工具调用]：@Tool 注解、工具注册、ToolCallingAdvisor 的完整机制。
 > → [教程 13-Advisor 链与拦截器]：Advisor 链的 order 机制、自定义 Advisor 的详细实现。
-> 想深入？→ [附录 03-Agent 设计模式/01-ReAct 论文精读.md]：ReAct 原论文的完整解读。
+> 想深入？→ [附录 05-LLM基础理论（ReAct 原论文: arxiv.org/abs/2210.03629）]：ReAct 原论文的完整解读。
 > 遇到阻塞？→ [教程 29-上下文工程]：Token 预算管理，控制 ReAct 循环的上下文增长。

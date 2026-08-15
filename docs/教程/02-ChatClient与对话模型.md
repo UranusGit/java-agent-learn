@@ -344,19 +344,15 @@ List<Filmography> result = chatClient.prompt()
 ### 6.3 Schema 验证 + 自动重试（Spring AI 2.0 新特性）
 
 ```java
-// 如果 LLM 返回的 JSON 不符合 Schema，自动重试最多 3 次
+// 真实重载：entity(Class) —— 框架保证 JSON→对象映射；语义验证由业务层自实现
 Filmography result = chatClient.prompt()
         .user("生成一个演员的电影作品列表")
         .call()
-        .entity(Filmography.class, spec -> spec.validateSchema());
+        .entity(Filmography.class);
 
-// 使用提供商原生结构化输出（而非文本追加 Schema）
-Filmography result = chatClient.prompt()
-        .user("生成一个演员的电影作品列表")
-        .call()
-        .entity(Filmography.class, spec -> spec
-                .useProviderStructuredOutput()
-                .validateSchema());
+// 注意：本体系基准中明确——entity(Class, spec -> ...) 的 spec-lambda
+// 自动验证/重试形态为虚构 API，不真实存在（见附录 12-SpringAI2-API基准/02 §2）
+// 需要 Schema 验证与重试 → 业务层自实现（参考教程 12 §5.3 的 retry 封装）
 ```
 
 > **遇到阻塞？→ [教程 12-结构化输出]**：JSON Schema、BeanOutputConverter、Provider Native Structured Output。

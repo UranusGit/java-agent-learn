@@ -16,7 +16,7 @@
 graph TB
     DILEMMA["Agent 质量困境"]
     DILEMMA --> D1["非确定性<br/>同一输入不同输出"]
-    DILEMMA --> D2["难以定义"正确"<br/>开放式任务无标准答案"]
+    DILEMMA --> D2["难以定义「正确」<br/>开放式任务无标准答案"]
     DILEMMA --> D3["持续漂移<br/>模型更新/Prompt 修改<br/>质量可能下降"]
 
     D1 --> NEED1["需要统计评估<br/>而非单次判断"]

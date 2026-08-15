@@ -12,6 +12,8 @@
 
 ### 1.1 从一行代码说起
 
+> **声明**：本文中的接口与源码为**简化示意模型**，用于讲解执行链机制；真实签名以 [附录 12-SpringAI2-API基准] 与引入版本文档为准。
+
 ```java
 String answer = chatClient.prompt()
     .system("你是助手")
@@ -70,7 +72,7 @@ classDiagram
 
     class Advisor {
         <<interface>>
-        +adviseRequest(ChatClientRequest) ChatClientRequest
+        +adviseCall(ChatClientRequest) ChatClientRequest
         +adviseResponse(ChatClientResponse) ChatClientResponse
     }
 
@@ -158,7 +160,7 @@ sequenceDiagram
     participant A3 as Advisor 3（日志）
     participant M as ChatModel
 
-    C->>A1: adviseRequest(request)
+    C->>A1: adviseCall(request, chain)   // 2.0 责任链语义
     A1->>A2: 转发（添加安全上下文）
     A2->>A3: 转发（添加检索结果）
     A3->>M: call(prompt)
@@ -171,7 +173,7 @@ sequenceDiagram
 ### 3.2 Advisor 接口
 
 ```java
-public interface BaseAdvisor extends CallAdvisor, StreamAdvisor {
+public interface BaseAdvisor extends CallAdvisor, StreamAdvisor {   // 简化示意模型——2.0 中直接实现 CallAdvisor/StreamAdvisor（见附录 12 基准）
 
     default String getName() {
         return this.getClass().getSimpleName();
@@ -489,7 +491,7 @@ public class MyCustomChatModel implements ChatModel {
 
 ```java
 @Component
-public class CachingAdvisor implements BaseAdvisor {
+public class CachingAdvisor implements CallAdvisor {
 
     @Override
     public int getOrder() {
@@ -535,7 +537,7 @@ logging:
 
 ```java
 @Component
-public class ChatModelLoggingAdvisor implements BaseAdvisor {
+public class ChatModelLoggingAdvisor implements CallAdvisor {
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request,

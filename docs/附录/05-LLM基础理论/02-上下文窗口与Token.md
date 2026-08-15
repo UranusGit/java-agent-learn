@@ -136,7 +136,7 @@ graph LR
         subgraph 代价["大窗口的代价"]
             C1["成本更高<br/>（Token 计费）"]
             C2["延迟更高<br/>（处理更多 Token）"]
-            C3[""Lost in the Middle"问题<br/>中间内容容易被忽略"]
+            C3["「Lost in the Middle」问题<br/>中间内容容易被忽略"]
             C4["精度可能下降<br/>（超长上下文中注意力分散）"]
         end
     end
@@ -328,7 +328,7 @@ public class SummarizingMemoryManager {
     private static final int SUMMARIZE_THRESHOLD = 4000;  // 超过 4000 Token 触发摘要
 
     public void manageContext(String conversationId) {
-        List<Message> messages = chatMemory.get(conversationId);
+        List<Message> messages = chatMemory.get(conversationId, 20);   // lastN 必带
 
         int totalTokens = messages.stream()
             .mapToInt(m -> tokenCounter.count(m.getText()))
@@ -575,14 +575,14 @@ public class CostAwareRouter {
 
 ```java
 // 自定义 Token 计数 Advisor
-public class TokenCountingAdvisor implements BaseAdvisor {
+public class TokenCountingAdvisor implements CallAdvisor {
 
     private final MeterRegistry meters;
     private final AtomicInteger totalInputTokens = new AtomicInteger(0);
     private final AtomicInteger totalOutputTokens = new AtomicInteger(0);
 
     @Override
-    public AdvisedResponse after(AdvisedResponse advisedResponse) {
+    public ChatClientResponse after(ChatClientResponse advisedResponse) {
         Usage usage = advisedResponse.response().getMetadata().getUsage();
 
         int input = usage.getPromptTokens();

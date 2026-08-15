@@ -200,10 +200,10 @@ public class TokenMeteringAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     @Override
-    public AdvisedResponse adviseCall(AdvisedRequest request,
+    public ChatClientResponse adviseCall(ChatClientRequest request,
                                        CallAdvisorChain chain) {
         long startTime = System.nanoTime();
-        AdvisedResponse response = chain.nextAroundCall(request);
+        ChatClientResponse response = chain.nextCall(request);
         long duration = System.nanoTime() - startTime;
 
         Usage usage = response.response().getMetadata().getUsage();
@@ -214,12 +214,12 @@ public class TokenMeteringAdvisor implements CallAdvisor, StreamAdvisor {
     }
 
     @Override
-    public Flux<AdvisedResponse> adviseStream(AdvisedRequest request,
+    public Flux<ChatClientResponse> adviseStream(ChatClientRequest request,
                                                StreamAdvisorChain chain) {
         long startTime = System.nanoTime();
         var usageAccumulator = new UsageAccumulator();
 
-        return chain.nextAroundStream(request)
+        return chain.nextStream(request)
                 .doOnNext(response -> {
                     var usage = response.response().getMetadata().getUsage();
                     if (usage != null && usage.getTotalTokens() > 0) {
@@ -234,9 +234,9 @@ public class TokenMeteringAdvisor implements CallAdvisor, StreamAdvisor {
                 });
     }
 
-    private TokenUsageRecord buildRecord(AdvisedRequest request, Usage usage,
+    private TokenUsageRecord buildRecord(ChatClientRequest request, Usage usage,
                                           long durationNanos) {
-        var ctx = request.adviseContext();
+        var ctx = request.context();
         return new TokenUsageRecord(
                 ctx.get("tenantId", String.class),
                 ctx.get("userId", String.class),
@@ -266,6 +266,8 @@ public class CostCalculator {
      * 模型价格表（每百万 Token 美元）
      */
     private static final Map<String, ModelPricing> PRICING = Map.of(
+        // 价格表为示例对比数据——本体系主线是 DeepSeek（见 pom/教程01）
+        // GPT/Claude 仅作成本对比参照，生产价格以供应商实时报价为准
         "gpt-4o", new ModelPricing(2.50, 10.00),
         "gpt-4o-mini", new ModelPricing(0.15, 0.60),
         "deepseek-chat", new ModelPricing(0.14, 0.28),
@@ -357,31 +359,32 @@ public class BudgetGuardAdvisor implements CallAdvisor {
     private final ModelDowngradeService downgradeService;
 
     @Override
-    public AdvisedResponse adviseCall(AdvisedRequest request,
+    public ChatClientResponse adviseCall(ChatClientRequest request,
                                        CallAdvisorChain chain) {
-        String tenantId = request.adviseContext().get("tenantId", String.class);
+        String tenantId = request.context().get("tenantId", String.class);
         int estimatedTokens = estimateTokens(request);
 
         if (!quotaService.canConsume(tenantId, estimatedTokens)) {
             // 预算不足——降级到更便宜的模型
-            AdvisedRequest downgraded = downgradeModel(request);
-            return chain.nextAroundCall(downgraded);
+            ChatClientRequest downgraded = downgradeModel(request);
+            return chain.nextCall(downgraded);
         }
 
-        return chain.nextAroundCall(request);
+        return chain.nextCall(request);
     }
 
-    private AdvisedRequest downgradeModel(AdvisedRequest original) {
+    private ChatClientRequest downgradeModel(ChatClientRequest original) {
         // 从 gpt-4o 降级到 gpt-4o-mini
         var downgradedOptions = OpenAiChatOptions.builder()
                 .model("gpt-4o-mini")
                 .build();
-        return AdvisedRequest.from(original)
-                .withChatOptions(downgradedOptions)
+        return ChatClientRequest.builder()
+                .from(original)
+                .chatOptions(downgradedOptions)
                 .build();
     }
 
-    private int estimateTokens(AdvisedRequest request) {
+    private int estimateTokens(ChatClientRequest request) {
         // 粗略估算：每个英文单词约 1.3 个 Token，中文约 1-2 个 Token
         int messageTokens = request.messages().stream()
                 .mapToInt(m -> (int) (m.getText().length() * 0.5))
@@ -541,12 +544,14 @@ graph TB
 ```java
 import org.springframework.ai.anthropic.AnthropicChatOptions;
 
-// 对于支持 Prompt Caching 的模型，标记稳定的 System Message 为可缓存
+// ⚠ 修正: systemSpec.cacheLevel("aggressive") 是虚构 API——Prompt Caching
+// 不在 SystemSpec 上配置，而是按供应商在消息级设置（Anthropic 的 cache_control
+// 需要构造 Message 时声明，见附录 07-语义缓存与性能/01-Prompt缓存与KVCache §供应商差异）
+// 正确姿势（示意）: 在 ChatModelRequest 构造时按供应商配置缓存断点，
+// 或直接依赖供应商默认缓存策略；业务侧控制的是 System Prompt 前缀稳定性
 ChatClient client = ChatClient.builder(claudeModel)
-        .defaultSystem(systemSpec -> systemSpec
-                .text("你是企业级客服助手。以下是企业知识库：\n"
+        .defaultSystem("你是企业级客服助手。以下是企业知识库：\n"
                       + knowledgeBaseService.getFullKnowledgeBase())
-                .cacheLevel("aggressive"))  // 标记为激进缓存
         .build();
 
 // 后续调用中，System Message + 知识库（可能上万 Token）

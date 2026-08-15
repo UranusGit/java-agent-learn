@@ -59,7 +59,7 @@ graph LR
 
 **关键优势**：计划一旦生成，执行阶段是确定性的。你可以精确控制成本、进度和并发度。
 
-> **想深入？→ [附录 03-Agent 设计模式/02-Plan-and-Execute 论文精读.md]**：Plan-and-Solve 论文的完整解读。
+> **想深入？→ [附录 05-LLM基础理论（Plan-and-Solve 论文: arxiv.org/abs/2305.04091）]**：Plan-and-Solve 论文的完整解读。
 
 ---
 
@@ -767,5 +767,5 @@ public class ReportAgentConfig {
 
 > → [教程 06-ReAct 推理模式]：Thought-Action-Observation 循环，ReAct 的完整实现。
 > → [教程 08-多 Agent 协作]：树形分解配合多 Agent 的分层委派架构。
-> 想深入？→ [附录 03-Agent 设计模式/02-Plan-and-Execute 论文精读.md]：Plan-and-Solve 论文解读。
+> 想深入？→ [附录 05-LLM基础理论（Plan-and-Solve 论文: arxiv.org/abs/2305.04091）]：Plan-and-Solve 论文解读。
 > 遇到阻塞？→ [教程 13-Advisor 链与拦截器]：Advisor 的完整生命周期和自定义实现。

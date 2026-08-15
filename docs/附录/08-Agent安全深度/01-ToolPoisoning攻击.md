@@ -228,12 +228,12 @@ private boolean isAllowedDomain(String email) {
 
 ```java
 @Component
-public class ToolAuditAdvisor implements BaseAdvisor {
+public class ToolAuditAdvisor implements CallAdvisor {
     private final MeterRegistry meters;
     private final AuditLogger logger;
 
     @Override
-    public AdvisedResponse aroundTool(AdvisedRequest req, ToolAroundAdvisorChain chain) {
+    public ChatClientResponse aroundTool(ChatClientRequest req, ToolAroundAdvisorChain chain) {
         String tool = req.toolName();
         String tenantId = req.context().get("tenantId");
 
@@ -298,17 +298,13 @@ flowchart TB
 
 MCP（Model Context Protocol）的开放性放大了工具投毒风险，必须采取额外措施：
 
-```mermaid
-flowchart LR
-    S1[只安装可信来源的 MCP Server] --> S2[审查所有工具描述]
-    S2 --> S3[工具白名单注册]
-    S3 --> S4[参数严格校验]
-    S4 --> S5[工具执行审计日志]
-    S5 --> S6[定期审查工具行为]
-    S6 --> S7[签名校验 防篡改]
-    style S1 fill:#c8e6c9
-    style S7 fill:#c8e6c9
-```
+1. 只安装可信来源的 MCP Server
+2. 审查所有工具描述
+3. 工具白名单注册
+4. 参数严格校验
+5. 工具执行审计日志
+6. 定期审查工具行为
+7. 签名校验防篡改
 
 具体清单：
 
@@ -387,4 +383,4 @@ Tool Poisoning 是 Agent 安全体系中**最易被忽视、却最致命**的攻
 
 > 来源参考：[企业级 Agent 落地，绕不开的 4 个工程问题](https://www.infoq.cn/article/qKW5Yu1ORiqMmX6mlLJ6) — 报告指出 94% 的 Agent 平台可被工具投毒攻击。这个数字本身就是对"工具安全必须作为头等大事"的最强警告。
 
-把上述防御策略落地到 Spring AI 2.0 的 `ToolRegistry` + `BaseAdvisor` + `ToolCallback` 抽象上，工具投毒的风险就能被压缩到可接受的范围。但记住——安全永远是过程而非终点，新的攻击手法会持续出现，红队用例库必须随之更新。
+把上述防御策略落地到 Spring AI 2.0 的 `ToolRegistry` + Advisor 链（CallAdvisor）+ `ToolCallback` 抽象上，工具投毒的风险就能被压缩到可接受的范围。但记住——安全永远是过程而非终点，新的攻击手法会持续出现，红队用例库必须随之更新。

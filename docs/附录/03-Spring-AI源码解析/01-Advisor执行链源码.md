@@ -66,17 +66,19 @@ classDiagram
         +adviseStream(ChatClientRequest, StreamAdvisorChain) Flux~ChatClientResponse~
     }
 
-    class BaseAdvisor {
+    class BaseAdvisor {  %% 简化示意模型
         <<abstract>>
     }
 
     Advisor <|-- CallAdvisor
     Advisor <|-- StreamAdvisor
-    BaseAdvisor --|> CallAdvisor
-    BaseAdvisor --|> StreamAdvisor
+    StreamAdvisor <|-- CallAdvisor   %% 简化示意: 真实 2.0 中两者均直接 extends Advisor
+    %% 注意: 2.0 没有 BaseAdvisor 基类（1.x 的 before/after 形态已废弃，见附录 12 基准）
 ```
 
 ### 2.2 关键接口定义
+
+> **声明**：本文中的接口与源码为**简化示意模型**，用于讲解执行链机制；真实签名以 [附录 12-SpringAI2-API基准] 与引入版本文档为准。
 
 ```java
 // 顶层标记接口
@@ -102,7 +104,7 @@ public interface StreamAdvisor extends Advisor {
 }
 
 // 双模式基类（推荐继承）
-public abstract class BaseAdvisor implements CallAdvisor, StreamAdvisor {
+public abstract class BaseAdvisor implements CallAdvisor, StreamAdvisor {  // 简化示意模型（讲解用，2.0 真实形态见附录 12 基准）
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request,
@@ -262,7 +264,7 @@ sequenceDiagram
 
 ```java
 // Advisor 1: 注入上下文
-public class RAGAdvisor extends BaseAdvisor {
+public class RAGAdvisor implements CallAdvisor {
     @Override
     protected ChatClientRequest before(ChatClientRequest request) {
         List<Document> docs = vectorStore.search(request.prompt());
@@ -276,7 +278,7 @@ public class RAGAdvisor extends BaseAdvisor {
 }
 
 // Advisor 2: 读取上下文
-public class LoggingAdvisor extends BaseAdvisor {
+public class LoggingAdvisor implements CallAdvisor {
     @Override
     protected ChatClientResponse after(ChatClientResponse response) {
         List<Document> docs = (List<Document>) response.context().get("retrieved_docs");
@@ -295,7 +297,7 @@ public class LoggingAdvisor extends BaseAdvisor {
 ```java
 @Component
 @Order(50)  // 最先执行，缓存命中时短路
-public class SemanticCacheAdvisor extends BaseAdvisor {
+public class SemanticCacheAdvisor implements CallAdvisor {
 
     private final VectorStore vectorStore;
     private final ChatModel embeddingModel;
@@ -308,8 +310,8 @@ public class SemanticCacheAdvisor extends BaseAdvisor {
         // 2. 在缓存中搜索相似查询
         List<CacheEntry> similar = vectorStore.similaritySearch(
             SearchRequest.query(queryEmbedding)
-                .withTopK(1)
-                .withSimilarityThreshold(0.95)
+                .topK(1)
+                .similarityThreshold(0.95)
         );
 
         if (!similar.isEmpty()) {
@@ -339,8 +341,9 @@ public class SemanticCacheAdvisor extends BaseAdvisor {
 
         // 缓存新结果
         vectorStore.add(List.of(
-            new Document(request.prompt().getContents(),
-                Map.of("answer", response.chatResponse().getResult().getOutput().getText()))
+            Document.builder().text(request.prompt().getContents())
+                .metadata(Map.of("answer", response.chatResponse().getResult().getOutput().getText()))
+                .build()
         ));
 
         return response;
@@ -363,7 +366,7 @@ public class SemanticCacheAdvisor extends BaseAdvisor {
 ```java
 @Component
 @Order(10)  // 安全检查最先执行
-public class RateLimitAdvisor extends BaseAdvisor {
+public class RateLimitAdvisor implements CallAdvisor {
 
     private final RateLimiter rateLimiter;  // Redis + 令牌桶
 
@@ -523,7 +526,7 @@ public Flux<ChatClientResponse> adviseStream(ChatClientRequest request,
 
 ```java
 @Component
-public class StreamingContentFilter extends BaseAdvisor {
+public class StreamingContentFilter implements CallAdvisor {
 
     @Override
     public Flux<ChatClientResponse> adviseStream(ChatClientRequest request,
@@ -576,9 +579,9 @@ protected ChatClientRequest before(ChatClientRequest request) {
 ```java
 // 两个 Advisor 都用默认 Order
 @Component
-public class AdvisorA extends BaseAdvisor {} // order = LOWEST_PRECEDENCE
+public class AdvisorA implements CallAdvisor {} // order = LOWEST_PRECEDENCE
 @Component
-public class AdvisorB extends BaseAdvisor {} // order = LOWEST_PRECEDENCE
+public class AdvisorB implements CallAdvisor {} // order = LOWEST_PRECEDENCE
 // 执行顺序不确定！
 ```
 
@@ -623,7 +626,7 @@ Advisor 是 Spring AI 最强大的扩展机制，掌握它等于掌握了 Agent 
 2. **Order 决定顺序**——安全 > 缓存 > 路由 > 增强 > 日志。
 3. **context Map 是通信管道**——Advisor 间通过 `context` 传递数据。
 4. **同步与流式需要分别实现**——`adviseCall` 和 `adviseStream` 逻辑不同。
-5. **BaseAdvisor 是推荐基类**——覆盖 `before`/`after` 即可，不需要处理链逻辑。
+5. 本文的 `BaseAdvisor` 是讲解用的简化示意模型——2.0 真实接口是直接实现 `CallAdvisor`/`StreamAdvisor` 并通过 `chain.nextCall()`/`nextStream()` 传递控制（权威口径见 [附录 12-SpringAI2-API基准/00]）。
 6. **生产级 Advisor 必须考虑**——短路、错误处理、流式聚合、上下文清理。
 
 下一篇我们转向测试策略——如何在不需要真实 LLM 的情况下测试 Agent。

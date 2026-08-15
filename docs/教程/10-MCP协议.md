@@ -168,7 +168,7 @@ Spring AI 2.0 提供了完整的 MCP 客户端实现，可以将外部 MCP Serve
 <!-- Spring AI 2.0.0 MCP 客户端 -->
 <dependency>
     <groupId>org.springframework.ai</groupId>
-    <artifactId>spring-ai-mcp-client-spring-boot-starter</artifactId>
+    <artifactId>spring-ai-starter-mcp-client</artifactId>
 </dependency>
 ```
 
@@ -295,7 +295,7 @@ Spring AI 2.0 不仅支持 MCP 客户端（消费工具），还支持 MCP 服�
 <!-- Spring AI 2.0.0 MCP 服务端 -->
 <dependency>
     <groupId>org.springframework.ai</groupId>
-    <artifactId>spring-ai-mcp-server-spring-boot-starter</artifactId>
+    <artifactId>spring-ai-starter-mcp-server</artifactId>
 </dependency>
 ```
 

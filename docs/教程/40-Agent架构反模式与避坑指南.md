@@ -548,7 +548,7 @@ Agent 调用的工具有副作用（写数据库、发邮件、转账、删文�
 @Component
 public class TransferMoneyTool {
 
-    @ToolMethod(description = "转账")
+    @Tool(description = "转账")
     public String transfer(
             @ToolParam("from") String from,
             @ToolParam("to") String to,
@@ -586,7 +586,7 @@ public class IdempotentTransferTool {
 
     private final IdempotencyRecordRepository idempotencyRepo;
 
-    @ToolMethod(description = "转账（幂等）")
+    @Tool(description = "转账（幂等）")
     public String transfer(
             @ToolParam("from") String from,
             @ToolParam("to") String to,
@@ -636,7 +636,7 @@ sequenceDiagram
     Tool-->>Agent: "转账已完成（幂等跳过）"
 ```
 
-> **对应教程**：[03-工具调用](03-工具调用.md) — 工具定义、参数设计、`@ToolMethod` 注解的完整用法。
+> **对应教程**：[03-工具调用](03-工具调用.md) — 工具定义、参数设计、`@Tool` 注解的完整用法。
 > **补充参考**：[35-长任务持久化与中断恢复](35-长任务持久化与中断恢复.md) — 幂等重试在崩溃恢复中的应用。
 
 ---
@@ -1099,14 +1099,14 @@ Agent 对所有操作都有完全自主权，包括高危操作（删除文件�
 @Component
 public class DangerousAgent {
 
-    @ToolMethod(description = "删除文件")
+    @Tool(description = "删除文件")
     public String deleteFile(@ToolParam("path") String path) {
         // Agent 可以直接删除文件——没有任何人工审批
         fileService.delete(path);
         return "文件已删除：" + path;
     }
 
-    @ToolMethod(description = "转账")
+    @Tool(description = "转账")
     public String transfer(
             @ToolParam("to") String to,
             @ToolParam("amount") double amount) {
@@ -1149,7 +1149,7 @@ public class HITLAgent {
         CRITICAL    // 不可逆操作——需要双人审批
     }
 
-    @ToolMethod(description = "删除文件（需要审批）")
+    @Tool(description = "删除文件（需要审批）")
     public Mono<String> deleteFile(@ToolParam("path") String path) {
         // CRITICAL 操作——必须人工审批
         return requestApproval(

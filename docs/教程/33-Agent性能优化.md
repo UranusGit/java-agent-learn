@@ -249,9 +249,11 @@ public class ParallelToolExecutor {
 ```java
 public TravelInfo gatherAllWithTimeout(String city, String date) {
     try {
-        CompletableFuture.allOf(
-            weatherFuture, flightFuture, hotelFuture
-        ).get(3, TimeUnit.SECONDS).join();  // 3 秒超时
+        // ⚠ 修正: CompletableFuture.get(...) 返回 Void，链式 .join() 会 NPE
+        // 且 get() 超时会抛异常——部分结果的正确姿势是用 completeOnTimeout:
+        CompletableFuture.allOf(weatherFuture, flightFuture, hotelFuture)
+                .completeOnTimeout(null, 3, TimeUnit.SECONDS)  // 3 秒超时兜底
+                .join();
     } catch (TimeoutException e) {
         // 部分结果 + 降级处理
         return TravelInfo.partial(

@@ -704,7 +704,7 @@ timeline
     2024 Q3 : Spring AI 1.0<br/>GA 发布
     2025 Q1 : Spring AI Alibaba 发布<br/>首批扩展框架出现
     2025 Q2 : Koog / JManus 发布<br/>生态多元化
-    2025 Q4 : Spring AI 2.0<br/>MCP 原生支持 + Agent API
+    2025 Q4 : Spring AI 2.0 里程碑预览（MCP 支持）<br/>2026-06 : 2.0.0 GA（与教程 01 口径一致）
     2026 预期 : 标准化 Agent 抽象<br/>跨框架互操作
 ```
 

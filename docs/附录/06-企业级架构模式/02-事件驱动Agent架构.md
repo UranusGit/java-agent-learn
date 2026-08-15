@@ -580,15 +580,15 @@ public class TaskRecoveryService {
 ```mermaid
 graph TB
     subgraph WRITE["写模型（Command）"]
-        CMD["用户命令"] -> HANDLER["Command Handler"]
-        HANDLER -> ES["Event Store<br/>（追加写入）"]
-        ES -> PUBLISH["发布事件"]
+        CMD["用户命令"] --> HANDLER["Command Handler"]
+        HANDLER --> ES["Event Store<br/>（追加写入）"]
+        ES --> PUBLISH["发布事件"]
     end
 
     subgraph READ["读模型（Query）"]
-        SUBSCRIBE["订阅事件"] -> PROJ["投影到读模型"]
-        PROJ -> DB["查询数据库<br/>（优化查询的结构）"]
-        DB -> QUERY["用户查询"]
+        SUBSCRIBE["订阅事件"] --> PROJ["投影到读模型"]
+        PROJ --> DB["查询数据库<br/>（优化查询的结构）"]
+        DB --> QUERY["用户查询"]
     end
 
     WRITE -.->|"事件"| READ

@@ -750,13 +750,13 @@ public class MultiAgentMemory {
         return switch (department) {
             case "SALES" -> salesAgent.prompt()
                     .user(userMessage)
-                    .advisors(spec -> spec.param("chat_memory_conversation_id",
+                    .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID,
                             "sales-" + sessionId))  // 独立记忆空间
                     .call()
                     .content();
             case "ORDER" -> orderAgent.prompt()
                     .user(userMessage)
-                    .advisors(spec -> spec.param("chat_memory_conversation_id",
+                    .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID,
                             "order-" + sessionId))  // 独立记忆空间
                     .call()
                     .content();
@@ -829,25 +829,20 @@ public String handleWithTimeout(String userMessage) {
 
 ```java
 // Spring AI 2.0.0 — 协作深度限制
+// ⚠ 修正: 转交计数用请求上下文传递（Reactor Context 思想），而非 ThreadLocal——
+// 多 Agent 协作常跨线程/跨服务，ThreadLocal 无法传递（见教程 37 §Context 传递）
 public class CollaborationGuard {
 
     private static final int MAX_HANDOFF = 5;
-    private final ThreadLocal<Integer> handoffCount = ThreadLocal.withInitial(() -> 0);
 
-    public String delegate(String task, ChatClient targetAgent) {
-        int count = handoffCount.get();
+    public String delegate(String task, ChatClient targetAgent, Map<String, Object> context) {
+        int count = (Integer) context.getOrDefault("handoffCount", 0);
         if (count >= MAX_HANDOFF) {
-            handoffCount.remove();
             return "检测到过多转交，已达到最大协作深度。直接回复：" +
                     targetAgent.prompt().user(task).call().content();
         }
-
-        handoffCount.set(count + 1);
-        try {
-            return targetAgent.prompt().user(task).call().content();
-        } finally {
-            handoffCount.remove();
-        }
+        context.put("handoffCount", count + 1);   // 随调用链传递
+        return targetAgent.prompt().user(task).call().content();
     }
 }
 ```
@@ -1057,5 +1052,5 @@ public class TravelOrchestrator {
 > → [教程 06-ReAct 推理模式]：ReAct 循环是单 Agent 内部的推理-执行-观察机制。
 > → [教程 07-Plan-and-Execute 模式]：Plan-and-Execute 是分层委派的简化版（Planner=Manager, Executor=Worker）。
 > → [教程 14-管控分离架构]：管理面/数据面的完整设计、服务发现、策略下发。
-> 想深入？→ [附录 03-Agent 设计模式/03-多Agent协作拓扑.md]：更多协作拓扑变体和学术论文索引。
-> 遇到阻塞？→ [教程 16-多Agent可观测与调用链追踪]：分布式 Trace、Agent 协作可视化。
+> 想深入？→ [附录 06-企业级架构模式/02-事件驱动Agent架构（协作拓扑的运行时形态）]：更多协作拓扑变体和学术论文索引。
+> 遇到阻塞？→ [教程 16-全链路可观测性]：分布式 Trace、Agent 协作可视化。

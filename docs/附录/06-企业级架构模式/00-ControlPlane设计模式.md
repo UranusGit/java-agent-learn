@@ -228,8 +228,8 @@ public class ControlPlaneInterceptor implements Advisor {
     private final CircuitBreaker circuitBreaker;
 
     @Override
-    public AdvisedResponse adviseRequest(AdvisedRequest request,
-                                          RequestAdvisorChain chain) {
+    public ChatClientResponse adviseCall(ChatClientRequest request,
+                                          CallAdvisorChain chain) {
         // 1. 向 Control Plane 请求策略评估
         PolicyDecision decision = cpClient.evaluate(
             request.agentId(), request.action(), request.tenantId());
@@ -377,20 +377,20 @@ public class QuotaEnforcementAdvisor implements Advisor {
     private final QuotaService quotaService;
 
     @Override
-    public AdvisedResponse adviseRequest(AdvisedRequest request,
-                                          RequestAdvisorChain chain) {
+    public ChatClientResponse adviseCall(ChatClientRequest request,
+                                          CallAdvisorChain chain) {
         String tenantId = request.context().get("tenantId");
         int estimatedTokens = request.estimatedTokens();
 
         // 1. 检查配额
         if (!quotaService.tryConsume(tenantId, estimatedTokens)) {
-            return AdvisedResponse.builder()
+            return ChatClientResponse.builder()
                 .response("配额不足，请升级套餐或等待配额刷新")
                 .build();
         }
 
         // 2. 执行请求
-        AdvisedResponse response = chain.nextAround(request);
+        ChatClientResponse response = chain.nextAround(request);
 
         // 3. 回补实际消耗（估算 vs 实际）
         int actualTokens = response.metadata().usage().totalTokens();

@@ -48,7 +48,7 @@ flowchart LR
     TK --> T2["[11]    ,"]
     TK --> T3["[8886]  世"]
     TK --> T4["[1023]  界"]
-    TK --> T5("[0]      !"]
+    TK --> T5["[0]      !"]
     T1 & T2 & T3 & T4 & T5 --> E[Embedding Layer]
 ```
 
@@ -86,7 +86,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph 当前token 计算"它"的输出
+    subgraph token["当前token 计算'它'的输出"]
         Q1[Query: '它'要找指代对象] --> S1
         K2[Key: '猫'是名词/主语] --> S1
         K3[Key: '鱼'是名词/宾语] --> S1
@@ -182,7 +182,7 @@ flowchart TB
     IN --> ADD1
     ADD1 --> N2[Layer Norm 2]
     N2 --> FFN[Feed-Forward Network<br/>两层 MLP 中间扩展 4x]
-    FFN --> ADD2["+ 残差]
+    FFN --> ADD2["+ 残差"]
     ADD1 --> ADD2
     ADD2 --> OUT[输出: d维向量 → 下一层]
     style ATT fill:#e1f5ff
@@ -259,14 +259,12 @@ KV cache 是 LLM 推理的核心优化，但也带来两个工程问题：
 
 ## 11. 训练阶段：预训练 → SFT → RLHF/DPO
 
-```mermaid
-flowchart LR
-    A[预训练<br/>万亿 token 自回归] --> B[SFT 监督微调<br/>指令-回答对]
-    B --> C[RLHF / DPO<br/>人类偏好对齐]
-    C --> D[Chat 模型上线]
-    style A fill:#e1f5ff
-    style C fill:#ffe1f5
-```
+| 阶段 | 关键点 |
+|------|--------|
+| 预训练 | 万亿 token 自回归 |
+| SFT 监督微调 | 指令-回答对 |
+| RLHF / DPO | 人类偏好对齐 |
+| Chat 模型上线 | — |
 
 | 阶段 | 数据 | 目标 | 产出 |
 |------|------|------|------|

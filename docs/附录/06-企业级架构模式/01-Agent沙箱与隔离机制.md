@@ -414,7 +414,7 @@ graph TB
     CALL["工具调用请求"] --> CHECK{"权限检查"}
     CHECK -->|"文件操作"| FS_CHECK{"路径在白名单？"}
     CHECK -->|"网络请求"| NET_CHECK{"域名在白名单？"}
-    CHECK →|"代码执行"| EXEC_CHECK{"需要沙箱？"}
+    CHECK -->|"代码执行"| EXEC_CHECK{"需要沙箱？"}
 
     FS_CHECK -->|"是"| ALLOW["允许"]
     FS_CHECK -->|"否"| DENY["拒绝 + 告警"]

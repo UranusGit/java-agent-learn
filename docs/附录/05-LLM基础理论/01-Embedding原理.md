@@ -70,7 +70,7 @@ graph TB
     end
 
     subgraph 局限["Word2Vec 的局限"]
-        L1["一词一义：bank 只有一个向量<br/>但 bank 可以是"银行"或"河岸""]
+        L1["一词一义：bank 只有一个向量<br/>但 bank 可以是「银行」或「河岸」"]
         L2["没有上下文：无法区分多义词"]
         L3["词级别，不是句子级别"]
     end
@@ -563,7 +563,7 @@ float[] en = embeddingModel.embed("artificial intelligence");
 
 // 方法1：平均池化（简单但不精确）
 float[] embedLongDocument(String longText) {
-    List<Document> chunks = splitter.split(new Document(longText));
+    List<Document> chunks = splitter.split(Document.builder().text(longText).build());
     List<float[]> embeddings = chunks.stream()
         .map(doc -> embeddingModel.embed(doc.getText()))
         .toList();
