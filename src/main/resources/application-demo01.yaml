@@ -1,0 +1,28 @@
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+        timeout: 600s
+      embedding:
+        base-url: http://127.0.0.1:1234/v1
+        api-key: sk-1234
+        model: text-embedding-bge-large-zh-v1.5
+    vectorstore:
+      pgvector:
+        index-type: hnsw
+        distance-type: cosine_distance
+        dimensions: 1536
+        schema-name: demo02
+        table-name: test01
+        initialize-schema: true
+        id-type: uuid
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/demo?currentSchema=demo01
+    username: postgres
+    password: ${POSTGRES_PASSWORD}
