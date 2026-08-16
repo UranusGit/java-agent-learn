@@ -49,7 +49,7 @@
 </dependency>
 ```
 
-> 版本说明：`spring-ai-starter-mcp-server-webflux` 是附录 12-01 §1 列的 WebFlux 服务端变体（本项目 WebFlux 栈，不用 Servlet 版的 `spring-ai-starter-mcp-server`）。
+> 版本说明：`spring-ai-starter-mcp-server-webflux` 是附录 05-01 §1 列的 WebFlux 服务端变体（本项目 WebFlux 栈，不用 Servlet 版的 `spring-ai-starter-mcp-server`）。
 
 ### 3.2 `application.yml` 新增 MCP Server 配置
 
@@ -66,7 +66,7 @@ spring:
 ```
 
 > **MCP 服务端详解** → [教程 10-MCP 协议](../../教程/11-MCP协议.md) 第 4 节讲解了 `spring-ai-starter-mcp-server` 的配置方式，以及外部 MCP 客户端如何连接和发现工具。
-> ⚠ 修正（审计 2026-08-14）: `@Tool` **不会**自动注册为 MCP 工具——必须显式声明 `ToolCallbackProvider` Bean（`MethodToolCallbackProvider.builder().toolObjects(...)`），见 §3.5（附录 12-01 §3）。
+> ⚠ 修正（审计 2026-08-14）: `@Tool` **不会**自动注册为 MCP 工具——必须显式声明 `ToolCallbackProvider` Bean（`MethodToolCallbackProvider.builder().toolObjects(...)`），见 §3.5（附录 05-01 §3）。
 
 ### 3.3 业务服务与领域模型
 
@@ -349,7 +349,7 @@ public class ApprovalTools {
 
 ### 3.5 MCP Server 暴露配置 `McpServerConfig.java`（关键步骤，缺它不生效）
 
-> ⚠ **审计教训**：`@Component + @Tool` **不会**自动注册到内建 MCP Server——必须显式声明 `ToolCallbackProvider` Bean（附录 12-01 §3）。`spring-ai-starter-mcp-server-webflux` 启动时扫描所有 `ToolCallbackProvider` Bean，把其中的工具暴露为 MCP 工具。
+> ⚠ **审计教训**：`@Component + @Tool` **不会**自动注册到内建 MCP Server——必须显式声明 `ToolCallbackProvider` Bean（附录 05-01 §3）。`spring-ai-starter-mcp-server-webflux` 启动时扫描所有 `ToolCallbackProvider` Bean，把其中的工具暴露为 MCP 工具。
 
 ```java
 package com.example.mcp.gateway.config;
@@ -357,8 +357,8 @@ package com.example.mcp.gateway.config;
 import com.example.mcp.gateway.tools.ApprovalTools;
 import com.example.mcp.gateway.tools.OrderTools;
 import com.example.mcp.gateway.tools.TicketTools;
-import org.springframework.ai.model.tool.MethodToolCallbackProvider;
-import org.springframework.ai.model.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;   // Spring AI 2.0.0 真实包
+import org.springframework.ai.tool.ToolCallbackProvider;   // Spring AI 2.0.0 真实包
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -366,7 +366,7 @@ import org.springframework.context.annotation.Configuration;
  * MCP Server 工具暴露配置。
  *
  * ⚠ 修正（审计 2026-08-14）: @Tool 不会自动注册到内建 MCP Server——
- * 必须显式声明 ToolCallbackProvider Bean（附录 12-01 §3）。缺 Provider 不生效。
+ * 必须显式声明 ToolCallbackProvider Bean（附录 05-01 §3）。缺 Provider 不生效。
  */
 @Configuration
 public class McpServerConfig {
@@ -499,7 +499,7 @@ import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.decorators.Decorators;
 import io.github.resilience4j.retry.Retry;
 import io.github.resilience4j.retry.RetryConfig;
-import io.modelcontextprotocol.sdk.mcp.spec.McpSchema.CallToolRequest;
+import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -1261,19 +1261,19 @@ curl http://localhost:8080/actuator/health | jq '.components.mcpPool.details'
 ### ADR 03-05：`@Tool` 暴露为 MCP 工具必须显式 `ToolCallbackProvider` Bean
 
 - **决策**：`McpServerConfig` 为每组工具显式声明 `MethodToolCallbackProvider.builder().toolObjects(...)` Bean
-- **备选方案**：A. 只写 `@Component + @Tool` 期待自动注册（**不生效**——附录 12-01 §3 审计教训）；B. 手写 `ToolCallback` 逐个注册（繁琐且易漏）
+- **备选方案**：A. 只写 `@Component + @Tool` 期待自动注册（**不生效**——附录 05-01 §3 审计教训）；B. 手写 `ToolCallback` 逐个注册（繁琐且易漏）
 - **取舍理由**：`MethodToolCallbackProvider` 是 Spring AI 2.0 官方装配路径；`spring-ai-starter-mcp-server-webflux` 启动时扫描所有 `ToolCallbackProvider` Bean 自动暴露
 
 ### ADR 03-06：容错落在 `ResilientToolRouter`（数据面热路径），熔断按 Server 隔离
 
 - **决策**：熔断/重试/降级在路由引擎内用 Resilience4j `Decorators` 链式组合；每个 Server 独立熔断器
-- **备选方案**：A. 全局单一熔断器（一个 Server 故障拖垮全部工具）；B. 用 Spring AOP 拦 `@Tool`（附录 12-02 §1.3：框架反射调用绕过代理，收不到）
+- **备选方案**：A. 全局单一熔断器（一个 Server 故障拖垮全部工具）；B. 用 Spring AOP 拦 `@Tool`（附录 05-02 §1.3：框架反射调用绕过代理，收不到）
 - **取舍理由**：按 Server 隔离保证"单 Server 故障不影响其他 Server"（验收 #5）；热路径内联装饰避免引入 AOP 不可控性
 
 ### ADR 03-07：认证白名单 + 注入检测在 Controller 层，HITL 留给 `ToolCallingManager`
 
 - **决策**：API Key 认证 + 白名单 + 注入检测放在 `SecureToolGatewayController` 调用前；HITL 人工审批**不在本迭代实现**
-- **备选方案**：A. 把审批放 Advisor（错误落点——[附录 12-00 §1] 明确 Advisor 管 Prompt 上下文）；B. 用 AOP 拦工具（附录 12-02 §1.3 不可行）
+- **备选方案**：A. 把审批放 Advisor（错误落点——[附录 05-00 §1] 明确 Advisor 管 Prompt 上下文）；B. 用 AOP 拦工具（附录 05-02 §1.3 不可行）
 - **取舍理由**：工具意图已定、执行未发生时的拦截点是 `ToolCallingManager` 装饰器（[教程 22] 正确落点），迭代三或项目 06 落地；本迭代先做调用前校验
 
 ---

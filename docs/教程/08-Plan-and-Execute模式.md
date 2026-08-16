@@ -1,10 +1,10 @@
-# 07-Plan-and-Execute 模式
+# 08-Plan-and-Execute 模式
 
 > **定位**：讲透 Plan-and-Execute 模式——先全局规划再逐步执行的完整机制、任务分解策略、与 ReAct 的对比选型、Spring AI 2.0 中的实现思路。读完这篇，你能让 Agent 面对复杂任务时"先出计划再干活"，实现可追踪、可预算的 Agent 工作流。
 >
 > **读者画像**：已经掌握 ReAct 推理模式和工具调用，需要面对步骤明确的多步任务，要求可追踪、可预算的开发者。
 >
-> **前置阅读**：[06-ReAct 推理模式](07-ReAct推理模式.md)、[03-工具调用](03-工具调用.md)。
+> **前置阅读**：[07-ReAct 推理模式](07-ReAct推理模式.md)、[03-工具调用](03-工具调用.md)。
 
 ---
 
@@ -201,7 +201,7 @@ graph TB
 
 适用场景：任务复杂度高，需要分层分解。常用于多 Agent 协作场景。
 
-> → [教程 08-多 Agent 协作]：树形分解配合多 Agent 的分层委派架构。
+> → [教程 09-多 Agent 协作]：树形分解配合多 Agent 的分层委派架构。
 
 ### 3.4 分解策略选择
 
@@ -329,7 +329,8 @@ public class PlanGenerator {
 
 ```java
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.stereotype.Component;
+import java.util.*;
 import java.util.concurrent.*;
 
 // Spring AI 2.0.0 — Executor：按计划执行步骤
@@ -408,6 +409,9 @@ public class PlanExecutor {
 
 ```java
 // Spring AI 2.0.0 — 编排器：入口 Controller
+import org.springframework.web.bind.annotation.*;
+import java.util.Map;
+
 @RestController
 public class PlanExecuteController {
 
@@ -445,6 +449,11 @@ public class PlanExecuteController {
 
 ```java
 // Spring AI 2.0.0 — Replan 检查器
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.stereotype.Component;
+import java.util.List;
+import java.util.Map;
+
 @Component
 public class ReplanChecker {
 
@@ -630,6 +639,10 @@ public class PlanTracker {
 
 ```java
 // Spring AI 2.0.0 — 报表生成工具
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.stereotype.Component;
+
 @Component
 public class ReportTools {
 
@@ -674,6 +687,10 @@ public class ReportTools {
 
 ```java
 // Spring AI 2.0.0 — 完整编排
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
 @Configuration
 public class ReportAgentConfig {
 
@@ -761,11 +778,11 @@ public class ReportAgentConfig {
 | **vs ReAct** | P&E 适合可预知任务（可追踪/可并行/可预算），ReAct 适合探索性任务 |
 | **可观测性** | 结构化计划可以直接渲染为进度条、甘特图 |
 
-**下一篇**：[08-多 Agent 协作](09-多Agent协作.md) — 多个 Agent 如何协作完成复杂任务。
+**下一篇**：[09-多 Agent 协作](09-多Agent协作.md) — 多个 Agent 如何协作完成复杂任务。
 
 ---
 
-> → [教程 06-ReAct 推理模式]：Thought-Action-Observation 循环，ReAct 的完整实现。
-> → [教程 08-多 Agent 协作]：树形分解配合多 Agent 的分层委派架构。
+> → [教程 07-ReAct 推理模式]：Thought-Action-Observation 循环，ReAct 的完整实现。
+> → [教程 09-多 Agent 协作]：树形分解配合多 Agent 的分层委派架构。
 > 想深入？→ [附录 01-LLM基础理论（Plan-and-Solve 论文: arxiv.org/abs/2305.04091）]：Plan-and-Solve 论文解读。
 > 遇到阻塞？→ [教程 13-Advisor 链与拦截器]：Advisor 的完整生命周期和自定义实现。

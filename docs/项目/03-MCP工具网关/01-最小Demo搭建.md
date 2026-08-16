@@ -77,7 +77,7 @@
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
 
-        <!-- Spring AI MCP 客户端：连接下游 MCP Server（真实坐标，附录 12-01 §1） -->
+        <!-- Spring AI MCP 客户端：连接下游 MCP Server（真实坐标，附录 05-01 §1） -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-mcp-client</artifactId>
@@ -302,7 +302,7 @@ public record ToolCallResult(
 package com.example.mcp.gateway.registry;
 
 import com.example.mcp.gateway.model.ToolInfo;
-import io.modelcontextprotocol.sdk.mcp.McpSyncClient;   // ⚠ MCP SDK 类型（附录 12-01）
+import io.modelcontextprotocol.client.McpSyncClient;   // ⚠ MCP SDK 类型（附录 05-01）
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -335,9 +335,9 @@ public class ToolRegistry {
      * 从 MCP Server 拉取工具列表并缓存。
      * 由 GatewayInitializer 在应用就绪后触发。
      *
-     * ⚠ 真实客户端是 MCP SDK 的 McpSyncClient（io.modelcontextprotocol.sdk.mcp），
+     * ⚠ 真实客户端是 MCP SDK 的 McpSyncClient（io.modelcontextprotocol.client），
      * listTools() 返回 ListToolsResult（嵌套在 McpSchema），需 .tools() 解包
-     * （附录 12-01 §2.2 基准）。原虚构 org.springframework.ai.mcp.McpClient.listTools()
+     * （附录 05-01 §2.2 基准）。原虚构 org.springframework.ai.mcp.McpClient.listTools()
      * 直返 List<Tool> 的签名不存在。
      */
     public void refresh() {
@@ -393,8 +393,8 @@ import com.example.mcp.gateway.model.ToolCallRequest;
 import com.example.mcp.gateway.model.ToolCallResult;
 import com.example.mcp.gateway.model.ToolInfo;
 import com.example.mcp.gateway.registry.ToolRegistry;
-import io.modelcontextprotocol.sdk.mcp.McpSyncClient;
-import io.modelcontextprotocol.sdk.mcp.spec.McpSchema.CallToolRequest;   // ⚠ MCP SDK 嵌套类型
+import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;   // ⚠ MCP SDK 嵌套类型
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
@@ -403,9 +403,9 @@ import java.util.Map;
  * 工具路由引擎——解析工具名 → 查找元数据 → 调用 MCP Client → 返回结果。
  *
  * 最小 Demo 版：只有一个 MCP Client，路由逻辑简单。
- * ⚠ 包路径 io.modelcontextprotocol.sdk.mcp.spec 以附录 12-01 的 SDK 根包为准；
+ * ⚠ 包路径 io.modelcontextprotocol.client.spec 以附录 05-01 的 SDK 根包为准；
  *   若你引入的 MCP SDK 版本将其移到 io.modelcontextprotocol.spec，
- *   只需调整 CallToolRequest 的 import（附录 12-01 §7 "存疑写法"）。
+ *   只需调整 CallToolRequest 的 import（附录 05-01 §7 "存疑写法"）。
  */
 @Component
 public class ToolRouter {
@@ -737,6 +737,6 @@ sequenceDiagram
 
 4. **验证闭环**：通过 `GET /tools` 验证工具发现，通过 `POST /tools/call` 验证工具调用，端到端延迟约 42ms，证明 MCP stdio 方案在本地场景完全可行。
 
-5. **API 真实性**：所有代码按 [附录 12-01 MCP真实API与坐标](../../附录/05-SpringAI2-API基准/01-MCP真实API与坐标.md) 基准书写——客户端类型是 MCP SDK 的 `McpSyncClient`，调用签名是 `callTool(new CallToolRequest(name, args))`、`listTools()` 返回 `ListToolsResult` 解包，无虚构的 `org.springframework.ai.mcp.McpClient`。
+5. **API 真实性**：所有代码按 [附录 05-01 MCP真实API与坐标](../../附录/05-SpringAI2-API基准/01-MCP真实API与坐标.md) 基准书写——客户端类型是 MCP SDK 的 `McpSyncClient`，调用签名是 `callTool(new CallToolRequest(name, args))`、`listTools()` 返回 `ListToolsResult` 解包，无虚构的 `org.springframework.ai.mcp.McpClient`。
 
 当前版本的局限很明显：只支持单个 MCP Server、没有权限控制、没有审计日志、没有容错机制。下一篇 [02-迭代一-MCP 客户端集成](02-迭代一-MCP客户端集成.md) 将引入多 Server 管理、MCP Client 连接池、全链路可观测性和审计日志，把网关推向生产可用。

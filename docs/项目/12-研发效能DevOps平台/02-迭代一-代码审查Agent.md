@@ -1,6 +1,6 @@
 # 项目 12：研发效能 DevOps 平台 — 02-迭代一：代码审查 Agent
 
-> **定位**：把 PR 审查从"人肉 + 漏检"升级为"静态层硬门禁 + LLM 语义层"的两级流水线——确定性检查先行，LLM 只做语义审查并输出 hunk 级"建议"（误报率 < 5%）。教程 25 §SAST + 教程 32 §误报的落地。本文给出**完整可手写代码**（一行不省略，含全部 import）。
+> **定位**：把 PR 审查从"人肉 + 漏检"升级为"静态层硬门禁 + LLM 语义层"的两级流水线——确定性检查先行，LLM 只做语义审查并输出 hunk 级"建议"（误报率 < 5%）。教程 31 §SAST + 教程 37 §误报的落地。本文给出**完整可手写代码**（一行不省略，含全部 import）。
 >
 > **读者画像**：已完成 [01-最小Demo搭建](01-最小Demo搭建.md) 的代码索引。
 >
@@ -327,7 +327,7 @@ public class ReviewAgent {
         this.fpLibrary = fpLibrary;
     }
 
-    /** L2 语义审查：输出 hunk 级评论 JSON 数组（泛型容器用 ParameterizedTypeReference，[附录 12-02 §2]）。 */
+    /** L2 语义审查：输出 hunk 级评论 JSON 数组（泛型容器用 ParameterizedTypeReference，[附录 05-02 §2]）。 */
     public Mono<List<ReviewComment>> semanticReview(PrContext ctx) {
         return Mono.fromCallable(() -> chatClient.prompt()
                 .system(systemPrompt())

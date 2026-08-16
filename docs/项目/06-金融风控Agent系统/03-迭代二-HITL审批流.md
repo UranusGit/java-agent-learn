@@ -41,7 +41,7 @@ flowchart TB
     style ADV fill:#ffebee
 ```
 
-**Advisor 层拦不到"工具意图返回后、工具执行前"**——它环绕的是整个 ChatClient 调用，工具执行发生在 ChatModel 内部的循环里。早期方案试图在 Advisor 里检查 toolCalls 并挂起，机制上不成立（[教程 22 §正确落点] 的结论，本迭代是该结论的完整落地）。
+**Advisor 层拦不到"工具意图返回后、工具执行前"**——它环绕的是整个 ChatClient 调用，工具执行发生在 ChatModel 内部的循环里。早期方案试图在 Advisor 里检查 toolCalls 并挂起，机制上不成立（[教程 28 §4.1] 的结论，本迭代是该结论的完整落地）。
 
 **真实接口（2.0.0 反编译核对）**：`ToolCallingManager` 在 `org.springframework.ai.model.tool` 包，只有两个抽象方法——`resolveToolDefinitions(ToolCallingChatOptions)` 与 `executeToolCalls(Prompt, ChatResponse)`。**注意：`executeToolCalls` 的第二个参数是 `ChatResponse` 而非工具清单**——工具调用意图要从 `ChatResponse.getResults()` 的 `Generation` 里取（`generation.getOutput().getToolCalls()`）。
 
@@ -58,7 +58,7 @@ stateDiagram-v2
     EXPIRED --> [*]
 ```
 
-**超时升级**（[教程 22 §超时升级]）：PENDING 超 24h → 升级通知审批主管；超 72h → EXPIRED，流程退回信贷员重新发起（不自动通过、不自动拒绝——**挂起默认失败安全**）。
+**超时升级**（[教程 28 §6 超时升级机制]）：PENDING 超 24h → 升级通知审批主管；超 72h → EXPIRED，流程退回信贷员重新发起（不自动通过、不自动拒绝——**挂起默认失败安全**）。
 
 ## 4. 完整代码（照抄即可）
 
@@ -647,7 +647,7 @@ public class HumanApprovalConfig {
         return new HumanApprovalToolManager(delegate, approvalService, objectMapper);
     }
 
-    /** @Tool 注解暴露为工具需显式 ToolCallbackProvider Bean（[附录 12-02 §ToolCallbackProvider]）。 */
+    /** @Tool 注解暴露为工具需显式 ToolCallbackProvider Bean（[附录 05-SpringAI2-API基准/02-Tool与Observation真实API §1]）。 */
     @Bean
     public MethodToolCallbackProvider finalDecisionToolProvider(FinalDecisionTools tools) {
         return MethodToolCallbackProvider.builder().toolObjects(tools).build();

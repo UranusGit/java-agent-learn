@@ -1,6 +1,6 @@
 # 04-MCP 生态全景：工具市场的兴起与治理
 
-> **定位**：本文调研 MCP（Model Context Protocol）生态的演进全景——从 MCP Server 注册中心到服务发现，从企业工具市场到治理框架。MCP 在 [教程 10-MCP 协议](../教程/11-MCP协议.md) 中已有基础讲解，本文聚焦生态层面：MCP 如何从"协议"演化为"生态"，以及这个生态对 Java/Spring AI Agent 架构的影响。
+> **定位**：本文调研 MCP（Model Context Protocol）生态的演进全景——从 MCP Server 注册中心到服务发现，从企业工具市场到治理框架。MCP 在 [教程 11-MCP 协议](../教程/11-MCP协议.md) 中已有基础讲解，本文聚焦生态层面：MCP 如何从"协议"演化为"生态"，以及这个生态对 Java/Spring AI Agent 架构的影响。
 >
 > **性质声明**：本文为调研性质，MCP 生态处于快速扩张期，具体注册中心和工具市场信息更新频繁。
 
@@ -10,7 +10,7 @@
 
 ### 1.1 MCP 协议回顾
 
-[教程 10-MCP 协议](../教程/11-MCP协议.md) 中我们介绍了 MCP 的核心技术细节——它标准化了 AI Agent 与外部工具/数据源的连接方式。这里做一个简要回顾：
+[教程 11-MCP 协议](../教程/11-MCP协议.md) 中我们介绍了 MCP 的核心技术细节——它标准化了 AI Agent 与外部工具/数据源的连接方式。这里做一个简要回顾：
 
 ```mermaid
 graph LR
@@ -403,6 +403,9 @@ public class McpClientPool {
     }
 
     private McpClient createClient(McpServerInfo server) {
+        // ⚠ 概念模型：McpClient.builder() 是示意写法，非真实 API。
+        // MCP SDK 2.0.0 真实工厂是 McpClient.sync(McpClientTransport) / McpClient.async(transport)
+        //（javap 实证 io.modelcontextprotocol.client.McpClient；本段为池化逻辑示意，未列真实 SDK 构造细节）
         return McpClient.builder()
             .serverUrl(server.url())
             .transport(server.transport())
@@ -694,16 +697,16 @@ graph TB
 | **准入审查** | 所有 MCP Server 需通过安全扫描 | [教程 31-安全与权限控制](../教程/31-安全与权限控制.md) |
 | **权限最小化** | 每个 Server 只授予最小必要权限 | [教程 31-安全与权限控制](../教程/31-安全与权限控制.md) |
 | **调用审计** | 所有工具调用记录审计日志 | [教程 23-工具执行可观测与审计](../教程/23-工具执行可观测与审计.md) |
-| **成本归因** | Token 和调用费用精确归属 | [教程 21-成本治理与 Token 计量](../教程/27-成本治理与Token计量.md) |
+| **成本归因** | Token 和调用费用精确归属 | [教程 27-成本治理与 Token 计量](../教程/27-成本治理与Token计量.md) |
 | **熔断降级** | 工具不可用时自动降级 | [教程 30-容错与弹性设计](../教程/30-容错与弹性设计.md) |
-| **合规审查** | 满足行业合规要求 | [教程 38-Agent 治理与合规框架](../教程/43-Agent治理与合规框架.md) |
+| **合规审查** | 满足行业合规要求 | [教程 43-Agent 治理与合规框架](../教程/43-Agent治理与合规框架.md) |
 
 ### 7.3 概念代码：MCP 调用审计
 
 ```java
 // MCP 工具调用审计 Advisor（概念模型）
 @Component
-public class McpAuditAdvisor implements CallAdvisor {  // 形态以附录 12 基准为准
+public class McpAuditAdvisor implements CallAdvisor {  // 形态以附录 05 基准为准
 
     private final AuditLogService auditLog;
     private final CostTrackingService costTracker;

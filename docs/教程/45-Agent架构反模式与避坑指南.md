@@ -1,4 +1,4 @@
-# 40-Agent 架构反模式与避坑指南
+# 45-Agent 架构反模式与避坑指南
 
 > **定位**：这是整个教程体系的收官篇。站在前面 39 篇教程的肩膀上，系统汇总 Agent 开发中的十二大核心反模式——每个反模式都有症状、根因、后果、正确做法，并标注对应教程的交叉引用。读完这篇，你将拥有一份完整的"避坑检查清单"，在架构设计阶段就能规避大部分生产事故。反模式不是失败者的标签，而是前人踩过的坑凝练成的路标——**知道哪里有坑，比知道哪里有好风景更重要**。
 
@@ -48,17 +48,17 @@ mindmap
 | 类别 | 反模式 | 核心危害 | 严重程度 | 对应教程 |
 |------|--------|---------|---------|---------|
 | **架构设计** | God Agent | 不可维护、不可测试 | 高 | [09-多Agent协作](09-多Agent协作.md) |
-| **架构设计** | 单模型无降级 | 单点故障 | 极高 | [39-多模型协作](44-多模型协作与供应策略.md) |
+| **架构设计** | 单模型无降级 | 单点故障 | 极高 | [44-多模型协作](44-多模型协作与供应策略.md) |
 | **代码质量** | 硬编码 Prompt | 不可维护、不可迭代 | 中 | [02-ChatClient](02-ChatClient与对话模型.md) |
 | **代码质量** | 工具无幂等 | 数据错误、重复执行 | 极高 | [03-工具调用](03-工具调用.md) |
-| **运行安全** | 无超时无预算 | 成本爆炸、死循环 | 极高 | [35-长任务持久化](40-长任务持久化与中断恢复.md) |
-| **运行安全** | 安全裸奔 | 数据泄露、恶意操作 | 极高 | [25-安全权限](31-安全与权限控制.md) |
+| **运行安全** | 无超时无预算 | 成本爆炸、死循环 | 极高 | [40-长任务持久化](40-长任务持久化与中断恢复.md) |
+| **运行安全** | 安全裸奔 | 数据泄露、恶意操作 | 极高 | [31-安全权限](31-安全与权限控制.md) |
 | **数据管理** | 上下文溢出 | 性能下降、Token 浪费 | 高 | [34-上下文工程](34-上下文工程.md) |
-| **数据管理** | 无持久化 | 用户体验差、数据丢失 | 高 | [19-历史持久化](25-历史记录持久化与合规.md) |
-| **运营治理** | 无评估闭环 | 盲目迭代、无法验证 | 高 | [32-自我反思与评估](37-自我反思与Agent评估.md) |
-| **运营治理** | 无 HITL | 危险操作不可逆 | 极高 | [22-HITL](28-Human-in-the-Loop与审批流.md) |
-| **平台保障** | 无可观测 | 黑盒运行、无法排障 | 高 | [16-全链路可观测](22-全链路可观测性.md) |
-| **平台保障** | 忽略成本 | 账单失控、毛利被侵蚀 | 高 | [21-成本治理](27-成本治理与Token计量.md) |
+| **数据管理** | 无持久化 | 用户体验差、数据丢失 | 高 | [25-历史持久化](25-历史记录持久化与合规.md) |
+| **运营治理** | 无评估闭环 | 盲目迭代、无法验证 | 高 | [37-自我反思与Agent评估](37-自我反思与Agent评估.md) |
+| **运营治理** | 无 HITL | 危险操作不可逆 | 极高 | [28-HITL](28-Human-in-the-Loop与审批流.md) |
+| **平台保障** | 无可观测 | 黑盒运行、无法排障 | 高 | [22-全链路可观测](22-全链路可观测性.md) |
+| **平台保障** | 忽略成本 | 账单失控、毛利被侵蚀 | 高 | [27-成本治理](27-成本治理与Token计量.md) |
 
 ---
 
@@ -246,22 +246,26 @@ Prompt 是 Agent 系统中**变更频率最高**的部分——比业务代码�
 // ---
 
 // 2. Java 代码中引用模板
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.Resource;
+
 @Service
 public class PromptManagedService {
 
-    // Spring AI 原生支持外部 Prompt 模板
-    @org.springframework.ai.chat.prompt.PromptTemplate
-    private org.springframework.core.io.Resource customerServicePrompt;
+    // Spring 资源注入：外部化 Prompt 模板文件
+    @Value("classpath:prompts/customer-service.st")
+    private Resource customerServicePrompt;
 
-    // 或使用自定义 Prompt 仓库
+    // 或使用自定义 Prompt 仓库（版本化）
     private final PromptRepository promptRepository;
 
     public String answer(String question) {
-        // 从仓库加载最新版本的 Prompt
+        // 从仓库加载最新版本的 Prompt（getContents() 取文本内容）
         Prompt prompt = promptRepository.getLatest("customer-service");
 
         return chatClient.prompt()
-            .system(prompt.content())
+            .system(prompt.getContents())
             .user(question)
             .call()
             .content();
@@ -550,9 +554,9 @@ public class TransferMoneyTool {
 
     @Tool(description = "转账")
     public String transfer(
-            @ToolParam("from") String from,
-            @ToolParam("to") String to,
-            @ToolParam("amount") double amount) {
+            @ToolParam(description = "付款账户") String from,
+            @ToolParam(description = "收款账户") String to,
+            @ToolParam(description = "转账金额") double amount) {
 
         // 没有幂等键——崩溃恢复后重复执行会转两次账！
         bankService.transfer(from, to, amount);
@@ -588,10 +592,10 @@ public class IdempotentTransferTool {
 
     @Tool(description = "转账（幂等）")
     public String transfer(
-            @ToolParam("from") String from,
-            @ToolParam("to") String to,
-            @ToolParam("amount") double amount,
-            @ToolParam("idempotencyKey") String idempotencyKey) {
+            @ToolParam(description = "付款账户") String from,
+            @ToolParam(description = "收款账户") String to,
+            @ToolParam(description = "转账金额") double amount,
+            @ToolParam(description = "幂等键，同一键重复执行只生效一次") String idempotencyKey) {
 
         // 幂等检查——如果这个 Key 已执行过，直接返回之前的结果
         Optional<IdempotencyRecord> existing =
@@ -933,11 +937,11 @@ public class SecuredAgent {
             5. 如果用户请求不安全的内容，拒绝并引导到正确渠道
             """;
 
-        return chatClient.prompt()
-            .system(securedSystemPrompt)
-            .user(userInput)
-            .call()
-            .content()
+        return Mono.just(chatClient.prompt()
+                .system(securedSystemPrompt)
+                .user(userInput)
+                .call()
+                .content())
             .map(response -> {
                 // 第三道防线：输出过滤——拦截有害内容
                 return outputFilter.filter(response);
@@ -1083,7 +1087,7 @@ graph TB
     style L3 fill:#e3f2fd
 ```
 
-> **对应教程**：[19-历史持久化与合规](25-历史记录持久化与合规.md) — 会话持久化方案、合规留存、数据脱敏。
+> **对应教程**：[25-历史记录持久化与合规](25-历史记录持久化与合规.md) — 会话持久化方案、合规留存、数据脱敏。
 > **补充参考**：[40-长任务持久化与中断恢复](40-长任务持久化与中断恢复.md) — 检查点机制与崩溃恢复。
 
 ---
@@ -1100,7 +1104,7 @@ Agent 对所有操作都有完全自主权，包括高危操作（删除文件�
 public class DangerousAgent {
 
     @Tool(description = "删除文件")
-    public String deleteFile(@ToolParam("path") String path) {
+    public String deleteFile(@ToolParam(description = "文件路径") String path) {
         // Agent 可以直接删除文件——没有任何人工审批
         fileService.delete(path);
         return "文件已删除：" + path;
@@ -1108,8 +1112,8 @@ public class DangerousAgent {
 
     @Tool(description = "转账")
     public String transfer(
-            @ToolParam("to") String to,
-            @ToolParam("amount") double amount) {
+            @ToolParam(description = "收款账户") String to,
+            @ToolParam(description = "转账金额") double amount) {
         // Agent 可以直接转账——没有金额限制和审批
         bankService.transfer(to, amount);
         return "转账成功：" + amount;
@@ -1136,6 +1140,9 @@ HITL 的本质是在**风险与效率之间找平衡**——低风险操作全�
 
 ```java
 // ✅ 正确做法：按操作风险分级，高危操作需要人工确认
+// ⚠️ 概念代码：`@Tool` 方法需返回同步结果（返回 Mono 不符合工具协议）；
+// 生产 HITL 的工程落点是 ToolCallingManager 装饰器或 ToolCallback 包装层（见 [教程 28]），
+// 此处展示的是工具方法内的审批流状态机示意。
 @Service
 public class HITLAgent {
 
@@ -1150,20 +1157,19 @@ public class HITLAgent {
     }
 
     @Tool(description = "删除文件（需要审批）")
-    public Mono<String> deleteFile(@ToolParam("path") String path) {
-        // CRITICAL 操作——必须人工审批
-        return requestApproval(
+    public String deleteFile(@ToolParam(description = "文件路径") String path) {
+        // CRITICAL 操作——必须人工审批（工具执行线程同步等待，超时默认拒绝）
+        boolean approved = requestApproval(
             "DELETE_FILE",
             Map.of("path", path, "action", "删除文件"),
             RiskLevel.CRITICAL
-        ).flatMap(approved -> {
-            if (approved) {
-                fileService.delete(path);
-                return Mono.just("文件已删除（经人工审批）：" + path);
-            } else {
-                return Mono.just("删除操作已被拒绝");
-            }
-        });
+        ).blockOptional(Duration.ofMinutes(5)).orElse(false);
+
+        if (approved) {
+            fileService.delete(path);
+            return "文件已删除（经人工审批）：" + path;
+        }
+        return "删除操作已被拒绝";
     }
 
     private Mono<Boolean> requestApproval(
@@ -1263,7 +1269,7 @@ public class ObservableAgent {
 
     public Mono<String> execute(String goal, String sessionId) {
         return Observation.createNotStarted("agent.execute", observationRegistry)
-            .observationConvention(AgentObservationConvention.of(sessionId))
+            .observationConvention(AgentObservationConvention.of(sessionId)) // 自研 Convention（示意）
             .observe(() -> doExecute(goal, sessionId));
     }
 
@@ -1273,11 +1279,12 @@ public class ObservableAgent {
         // - 工具调用次数、工具调用结果
         // 完整的 Trace 链路通过 OpenTelemetry 导出到 Jaeger/Tempo
 
-        return chatClient.prompt()
-            .user(goal)
-            .advisors(advisor -> advisor.param("sessionId", sessionId))
-            .call()
-            .content()
+        return Mono.fromCallable(() ->
+                chatClient.prompt()
+                    .user(goal)
+                    .advisors(advisor -> advisor.param("sessionId", sessionId))
+                    .call()
+                    .content())
             .doOnNext(result -> {
                 // 自定义业务 Metrics
                 meterRegistry.counter("agent.task.completed",
@@ -1628,16 +1635,16 @@ public class ArchitectureHealthChecker {
 |---|--------|--------|---------|---------|
 | 1 | **God Agent** | 一个 Agent 干所有事，不可维护 | 领域分工 + Router 路由 | [09-多Agent协作](09-多Agent协作.md) |
 | 2 | **硬编码 Prompt** | Prompt 散落在代码中 | 外部化 + 版本管理 | [02-ChatClient](02-ChatClient与对话模型.md) |
-| 3 | **无超时无预算** | Agent 死循环无限烧钱 | 轮次 + Token + 时间三层限制 | [35-长任务持久化](40-长任务持久化与中断恢复.md) |
-| 4 | **单模型无降级** | 模型挂了全站挂 | 多供应商冗余 + 自动降级 | [39-多模型协作](44-多模型协作与供应策略.md) |
+| 3 | **无超时无预算** | Agent 死循环无限烧钱 | 轮次 + Token + 时间三层限制 | [40-长任务持久化](40-长任务持久化与中断恢复.md) |
+| 4 | **单模型无降级** | 模型挂了全站挂 | 多供应商冗余 + 自动降级 | [44-多模型协作](44-多模型协作与供应策略.md) |
 | 5 | **工具无幂等** | 重复执行导致数据错误 | 幂等键 + 服务端去重 | [03-工具调用](03-工具调用.md) |
 | 6 | **上下文溢出** | 历史消息无限增长 | 窗口管理 + 摘要压缩 | [34-上下文工程](34-上下文工程.md) |
-| 7 | **无评估闭环** | 改了不知道好坏 | 评估集 + 回归测试 | [32-自我反思与评估](37-自我反思与Agent评估.md) |
-| 8 | **安全裸奔** | 无注入防护、无审计 | 三道防线 + 审计日志 | [25-安全权限](31-安全与权限控制.md) |
-| 9 | **无持久化** | 重启丢失所有会话 | 外部化存储 + 检查点 | [19-历史持久化](25-历史记录持久化与合规.md) |
-| 10 | **无 HITL** | 危险操作无审批 | 风险分级 + 人工审批 | [22-HITL](28-Human-in-the-Loop与审批流.md) |
-| 11 | **无可观测** | 黑盒运行、无法排障 | Micrometer + OTel + Grafana | [16-全链路可观测](22-全链路可观测性.md) |
-| 12 | **忽略成本** | 不追踪 Token 消耗 | 成本归因 + 预算控制 | [21-成本治理](27-成本治理与Token计量.md) |
+| 7 | **无评估闭环** | 改了不知道好坏 | 评估集 + 回归测试 | [37-自我反思与Agent评估](37-自我反思与Agent评估.md) |
+| 8 | **安全裸奔** | 无注入防护、无审计 | 三道防线 + 审计日志 | [31-安全权限](31-安全与权限控制.md) |
+| 9 | **无持久化** | 重启丢失所有会话 | 外部化存储 + 检查点 | [25-历史持久化](25-历史记录持久化与合规.md) |
+| 10 | **无 HITL** | 危险操作无审批 | 风险分级 + 人工审批 | [28-HITL](28-Human-in-the-Loop与审批流.md) |
+| 11 | **无可观测** | 黑盒运行、无法排障 | Micrometer + OTel + Grafana | [22-全链路可观测](22-全链路可观测性.md) |
+| 12 | **忽略成本** | 不追踪 Token 消耗 | 成本归因 + 预算控制 | [27-成本治理](27-成本治理与Token计量.md) |
 
 ---
 
@@ -1693,11 +1700,11 @@ graph LR
 **核心理念回顾**：
 
 1. **Agent = LLM + 工具 + 记忆 + 规划**——这是出发点（[00-Agent核心概念](00-Agent核心概念.md)）。
-2. **可靠性**是生产环境的底线——检查点、幂等、预算控制缺一不可（[35-长任务持久化](40-长任务持久化与中断恢复.md)）。
-3. **安全性**是不能妥协的红线——注入防护、数据脱敏、审计日志（[25-安全权限](31-安全与权限控制.md)）。
-4. **可观测性**是运维的基础——Micrometer + OTel 全链路追踪（[16-全链路可观测](22-全链路可观测性.md)）。
-5. **成本控制**是商业可持续的保障——Token 计量 + 预算 + 模型路由（[21-成本治理](27-成本治理与Token计量.md)）。
-6. **持续改进**是长期竞争力——数据飞轮、评估闭环、灰度发布（[36-数据飞轮](41-数据飞轮与持续改进.md)）。
+2. **可靠性**是生产环境的底线——检查点、幂等、预算控制缺一不可（[40-长任务持久化](40-长任务持久化与中断恢复.md)）。
+3. **安全性**是不能妥协的红线——注入防护、数据脱敏、审计日志（[31-安全权限](31-安全与权限控制.md)）。
+4. **可观测性**是运维的基础——Micrometer + OTel 全链路追踪（[22-全链路可观测](22-全链路可观测性.md)）。
+5. **成本控制**是商业可持续的保障——Token 计量 + 预算 + 模型路由（[27-成本治理](27-成本治理与Token计量.md)）。
+6. **持续改进**是长期竞争力——数据飞轮、评估闭环、灰度发布（[41-数据飞轮](41-数据飞轮与持续改进.md)）。
 7. **避免反模式**比追求最佳实践更重要——一个反模式可以摧毁整个系统。
 
 希望这个教程体系能帮助你构建出**可靠、安全、高效、可进化**的企业级 Agent 系统。

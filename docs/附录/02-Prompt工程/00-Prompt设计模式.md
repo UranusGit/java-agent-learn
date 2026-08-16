@@ -291,21 +291,19 @@ Spring AI 2.0 的 `ChatClient` + Tool Calling 天然支持 ReAct 模式：
 ```java
 @Bean
 public ToolCallback weatherTool(WeatherService service) {
-    return ToolCallback.builder()
-        .toolDefinition(ToolDefinition.builder()
-            .name("getWeather")
-            .description("查询指定城市的当前天气")
-            .inputSchema("""
-                {
-                  "type": "object",
-                  "properties": {
-                    "city": {"type": "string", "description": "城市名"}
-                  },
-                  "required": ["city"]
-                }
-                """)
-            .build())
-        .toolMethod((args) -> service.getWeather(args.get("city").toString()))
+    // 真实 API（javap 实证）：ToolCallback 是接口、无 builder()；函数式构建走 FunctionToolCallback.builder(name, fn)
+    return FunctionToolCallback.builder("getWeather",
+            (Map<String, Object> args) -> service.getWeather(args.get("city").toString()))
+        .description("查询指定城市的当前天气")
+        .inputSchema("""
+            {
+              "type": "object",
+              "properties": {
+                "city": {"type": "string", "description": "城市名"}
+              },
+              "required": ["city"]
+            }
+            """)
         .build();
 }
 

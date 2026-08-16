@@ -1,6 +1,6 @@
 # PLAN.md — Java Agent 架构师文档执行轨道
 
-> **最后更新**：2026-08-14
+> **最后更新**：2026-08-16
 > **当前状态**：Phase 1-14 已产出 102 篇文档；2026-08-14 全量审计完成（结论见 Phase 15）。进入进阶阶段：**优先级顺序 = ① React 教程+实践项目（用户前置学习）→ ② 大型企业级项目 E-H（微服务拆分/管控分离落地）→ ③ 全体系进阶清洗（API 真实性/WebFlux 一致性/覆盖缺口）**
 > **Mermaid 质量门禁**：2026-08-14 起，禁止光杆子 flowchart（纯先后顺序/版本路线一律 timeline/表格/列表）；子图标题用方括号。批量生成后必须跑 `scripts/check-mermaid-audit.py` 自检，0 发现才交付（规则见 CLAUDE.md 硬性规则 13 与质量标准）
 
@@ -594,6 +594,8 @@ docs/
 | 18.4 | 死链与残留清理 | README + 教程 06/07/08/09/34 | README 更新附录 07/08/11 状态与总数；死链修复；"本系列到此完成"删除 | ⏳ |
 | 18.5 | WebFlux 一致性清洗 | 教程 06/08/15/18/24/25/27 | ThreadLocal→Reactor Context、阻塞→Reactive/subscribeOn(boundedElastic) | ⏳ |
 | 18.6 | 术语与口径统一 | 全体系 | 会话 ID 常量、VectorStore 命名、DeepSeek 主线模型栈、GA 时间、观察配置键名 | ⏳ |
+| 18.7 | Reader/Splitter 虚构 API 修复 | 教程 05 + 项目 00/01 + 附录 01/05 | javap 实证本地 2.0.0 jar；MarkdownDocumentReader 虚构 API（无参构造 / read(Resource) 带参调用）+ TokenTextSplitter 弃用构造器 全量修复（2026-08-16 完成） | ✅ 完成 |
+| 18.8 | Upgrade Notes 全量对照审计（backlog，待规划） | 全体系 | Spring AI 2.0.0 官方 Upgrade Notes 全量对照审计待规划：模块改名（vector-store-advisor 等）、ChatMemory 强制 conversationId / PromptChatMemoryAdvisor 移除、配置属性 .options 扁平化、ChatClient options 传 builder、默认 temperature 移除、tools(Consumer) 移除等 | ⏳ 待规划 |
 
 ---
 
@@ -935,7 +937,90 @@ graph TB
 
 ### 后续待补清单（下次会话可继续）
 
-- 教程 48-多模态Agent开发（为前沿02补教程锚点，落入阶段9）
-- 教程 49-Agent经济与支付集成（为前沿09补锚点）
-- 附录 17-Agent沙箱与执行环境对比（Docker/Firecracker/gVisor，下钻教程25与附录06）
-- 前沿 10-边缘Agent与端云协同（呼应 Ollama/vLLM 混合编排，教程39）
+- （2026-08-16 第二批已清空原清单：教程 48-多模态、49-支付、附录 19-沙箱、前沿 10-边缘Agent 均已完成）
+- 教程修复+深化串行批次收尾（R2-R7：15-19、20、24-27、31-33、35/37/38、40-42、44-47 及各批补漏核查）
+
+---
+
+## 2026-08-16 任务批次（第二批）：进阶补充全量执行 + 教程修复深化
+
+> 背景：用户指令"全部都要做"——覆盖 ①Observation 进阶 ②评估生态扩篇 ③GraphRAG 联动 ④AIInfra 扩篇 ⑤源码解析扩篇 ⑥PLAN backlog 四件 ⑦教程 48 篇修复+深化（第三波次清洗主体）。
+
+| # | 任务 | 说明 | 状态 |
+|---|------|------|------|
+| K7 | 附录 18-Observation 扩 2 篇 | 06-指标治理与Exemplars（MeterFilter/SLO桶/Exemplars 指标跳Trace）、07-日志支柱与Collector（traceId进日志/Loki/OTel Collector 尾采样）——关闭教程 22 审计的 Logs 支柱与尾采样缺口 | ✅ 完成 |
+| K8 | 附录 12-评估生态扩 3 篇 | 01-LLM-as-Judge工程化（偏差/校准kappa/双序多采样）、02-评估数据集管理与版本化（金标/三切分/污染防护）、03-在线实验与AB统计（样本量/显著性/护栏） | ✅ 完成 |
+| K9 | 附录 11/16/03 各扩 1 篇 | 01-GraphRAG工程化落地（本体/消歧/局部-全局/增量更新）、02-vLLM调优与GPU容量规划（QPS→卡数公式）、02-流式执行链源码解析（StreamAdvisor 两栖/流内工具聚合） | ✅ 完成 |
+| K10 | PLAN backlog 四件 | 教程 48-多模态Agent开发、49-Agent经济与支付集成、附录 19-Agent沙箱与执行环境、前沿 10-边缘Agent与端云协同 | ✅ 完成 |
+| K11 | README/PLAN 同步 | 257 篇（教程 50+附录 76+项目 120+前沿 11）；阶段 9 路线挂接 47-49/附录 19 | ✅ 完成 |
+| K12 | 教程全量修复+深化（48 篇） | 十批并行代理执行（编号残留/API 铁律漏网/WebFlux 违例/编译残骸修复 + Top10 深化）；部分批次被 API 速率限制打断，改串行批次 R1-R7 续做并补漏核查 | 🔄 进行中 |
+
+### 执行注意（教训记录）
+
+- 并行代理 ≤2 个（10 个并行触发账户级 429 限流）；修复类代理**禁止派生子代理**（子代理环境可能无文件工具，会产生"等待原文粘贴"的僵死会话）
+- 修复前先 git status 盘点：被打断的代理往往已完成部分文件（首批已完成 20 篇 +2209 行）
+- 教程 43 已由子代理完成并自检（禁词 0 命中/Mermaid 本地校验通过/6365 字）
+
+---
+
+## 2026-08-16 任务批次：附录 17-Kafka 新增 + 教程全量深化审计
+
+> 背景：用户指令 ① 分析教程全部 48 篇的深化空间（六代理并行深度评审）② 附录新增 Kafka 完整学习文档。
+
+| # | 任务 | 说明 | 状态 |
+|---|------|------|------|
+| K1 | 新增附录 17-Kafka（10 篇，127KB） | 00 全景/01 生产者/02 消费者/03 语义事务/04 存储复制/05 调优容量/06 Streams/07 Connect生态/08 运维安全/09 Spring落地与Agent蓝图；每篇含定位块/适用与不适用/≥2 Mermaid/教程项目锚点/外部来源；与附录 07-02 事件驱动、项目 13 事件溯源互链 | ✅ 完成 |
+| K2 | README/PLAN 同步 | 文档规模 229→239、附录 00-17、学习路线阶段5/8 挂接 17-Kafka、待补清单沙箱改 18 | ✅ 完成 |
+| K3 | 修复附录 07-02 陈旧锚点 | 「教程 15-微服务」→「教程 21-微服务拆分与Agent部署」（重排残留死链） | ✅ 完成 |
+| K4 | 教程 48 篇深化审计 | 六批次全量评审结论（下表），为第三波次「进阶清洗」提供执行清单 | ✅ 审计完成 |
+| K5 | 新增附录 18-Observation（6 篇） | 00-全景/01-核心API/02-SpringBoot集成/03-自定义扩展/04-链路传播/05-SpringAI实战；作为教程 22/23 的机制层下钻，遵循附录 05-02 API 基准（@Observed 仅 name/contextualName、Tracer.currentSpan() 取 traceId、@Observed 不适用于响应式方法等）；与附录 17-Kafka/09 事件管道互链 | ✅ 完成 |
+| K6 | README/PLAN 同步（Observation） | 文档规模 239→245、附录 00-18、学习路线阶段 5 挂接 18-Observation；待补清单沙箱 18→19 | ✅ 完成 |
+
+### 教程深化审计结论（2026-08-16，六代理全量评审）
+
+**总体**：结构完整性（定位块/适用与不适用/≥2 图）普遍达标；三大系统性问题——
+
+1. **P0 硬伤（必须先修）**
+   - **编号残留**（2026-08-15 重排后遗症）：07/08/09/12/14/15 的 H1 比文件名小 1；16/17 的 H1 是旧编号 42/43；33/35/36/37/38 的 H1 是 28/30/31/32/33；43 的 H1 是 38；45 是 40；47 缺编号；05/06「下一篇」错链；09/19/20/22/46 交叉引用大面积旧编号错靶
+   - **API 铁律漏网**：教程 31 `SecurityAdvisor` 编译不过 + `after()` 虚构签名；教程 43 双 `adviseCall` 重载 + `chain.nextRequest()`；教程 34 `SemanticCacheAdvisor` 虚构 before/after；教程 11 残留 `McpClient`；教程 03/07 疑似虚构配置键 `spring.ai.tool-calling.*`
+   - **WebFlux 铁律违例**：教程 30 三处 fromCallable 无 subscribeOn；教程 21 BlockingStub + 阻塞 RedisTemplate；教程 22/23/31 MDC/SecurityContextHolder 取上下文；教程 24 runAsync 占用 commonPool；教程 28 HITL 落点用 Advisor（铁律指明 ToolCallingManager/ToolCallback）
+   - **编译不过的"半改残骸"**：教程 12 §4.3/§5.4、教程 14 §5 四个示例、教程 38 §3.4/§4.3、教程 42 §5.2/§4.2、教程 44 record 语义错
+2. **字数系统性不达标**（剔除代码后）：批次 A（01-05 全部 1/3~1/2 目标，02 最薄）；批次 D（24-31 八篇全部低于 3000，28 垫底）；46/47 偏薄；其余批次压线
+3. **深度缺口（深化方向）**：普遍"happy path + 表格点名"，缺边界情况/失效模式/工程化落地；40-45、20-23 大面积零 [附录] 交叉引用（教程→附录双层引导断裂）；外部论文/法规引用缺来源链接（规则 14）
+
+**深化优先级 Top10（按杠杆排序）**：02-ChatClient（全体系API主入口+最薄）→ 14-Advisor（代码全坏+StreamAdvisor 零示例）→ 28-HITL（落点违反铁律，需重构）→ 31-安全（编译不过+防御边界不诚实）→ 19-流式工具调用（字数+图不达标，前后端枢纽）→ 34-上下文工程（五层模型缺工具结果层+Prompt Cache 空心）→ 05/06-RAG与向量库（示例反模式+embedding 拆分配置缺失）→ 26-多租户（Reactor Context 与 Advisor 桥接断裂）→ 11-MCP（缺 Streamable HTTP/OAuth 2.1 时效内容）→ 46-Agentic 架构（零实物选型篇）
+
+
+---
+
+## 2026-08-16 任务批次（第三批）：docs 全量 API 本地源码实证校验（258 篇）
+
+> 背景：用户实操 docs 代码时发现大量函数失效/用不了，明确要求「结合本地源码校验所有 docs 文档并修改，一个函数和类都不准放过，时间不重要质量最重要」。本批次以本地 Maven 仓库 `/Volumes/data/software/maven/repository/org/springframework/ai/<artifact>/2.0.0/` 的 jar 用 `javap` 逐类实证为唯一 ground truth，全量修复。
+
+| # | 任务 | 说明 | 状态 |
+|---|------|------|------|
+| V1 | API 基线提取 | `scripts/api-baseline-spring-ai-2.0.0.md`（javap 实证全量类签名 + 迁移坑清单） | ✅ 完成 |
+| V2 | 教程 00-49 全量校验修复 | 50 篇全部 javap 实证修复（H1 编号/虚构 API/WebFlux 违例/编译残骸/配置键），含二次自查 | ✅ 完成 |
+| V3 | 附录 05-API基准 + 03-源码解析 | 6 篇基准文档逐条 javap 核实（BaseAdvisor 真实存在、entity spec 真实、ChatMemory.get 单参等） | ✅ 完成 |
+| V4 | 项目 00-13 全量校验修复 | 120 篇（MCP SDK 包名/工具 API/Observation 计时/HITL 落点/record 访问器/交叉引用） | ✅ 完成 |
+| V5 | 其余附录 00-19 + 前沿 00-10 | 87 篇（含 Observation 附录 ToolObservationContext→ToolCallingObservationContext 系统性修正） | ✅ 完成 |
+| V6 | 终验 | Mermaid 校验脚本（`scripts/check-mermaid-audit.py`，0 发现）；教程引用旧编号修复 19 处；附录 12→05 歧义修复 27 处；禁词扫描确认无实际虚构 API 残留 | ✅ 完成 |
+
+### 关键实证结论（本批次核心交付，纠正此前体系认知）
+
+1. **`BaseAdvisor.before(ChatClientRequest, AdvisorChain)/after(ChatClientResponse, AdvisorChain)` 在 2.0.0 真实存在**——CLAUDE.md 旧铁律「禁止 BaseAdvisor.before/after」过严，全体系已按双参真实签名修正
+2. **`entity(Class, Consumer<EntityParamSpec>)` + `useProviderStructuredOutput()/validateSchema()` 真实存在**——此前审计误判为虚构，已纠正
+3. **MCP SDK 2.0.0 包名**：客户端 `io.modelcontextprotocol.client.McpSyncClient`（无 `sdk.mcp` 包）；工厂 `McpClient.sync(McpClientTransport)`；`McpSchema` 在 `io.modelcontextprotocol.spec`（嵌套类型）
+4. **`ChatMemory.get(String)` 单参**；本地无 `JdbcChatMemoryRepository`/`RedisChatMemoryRepository`（持久化需自研 implements ChatMemoryRepository）
+5. **配置键实证**：`spring.ai.chat.observations.log-prompt|log-completion|include-error-logging`、`spring.ai.tools.observations.include-content`、`spring.ai.mcp.client.streamable-http.connections.<name>.url`；无 `spring.ai.tool-calling.*`、无 `spring-ai-starter-mcp-client-webflux`
+6. **`ToolCallingObservationContext`**（非 `ToolObservationContext`）；`Observation.Context` 无 `getDuration()/getTraceId()`——时长用 `ctx.put/get(Object)` 计时
+7. **`ToolCallback` 是接口无 builder()**（用 `FunctionToolCallback.builder(name,fn)`/`MethodToolCallback.builder()`）；`SearchRequest.builder()`；`TokenTextSplitter.builder()`（spring-ai-commons）
+8. 教程/附录交叉引用旧编号（2026-08-15 重排漏网）批量修复；Mermaid 图 `["...]"]` 标签含方括号提前闭合问题修复
+
+### 可复用方法学（下次会话恢复）
+
+- **铁律 0（2026-08-16 用户追加，CLAUDE.md「API 真实性铁律」总纲）**：文档中所有 SDK 元素（类/方法/构造器/字段/参数/注解/枚举/配置键/依赖坐标）必须先用本地 jar `javap` 反编译实证、签名核对一致才允许写入；未实证禁止写入，只能标「概念代码」或「需引入依赖后实证」。实证来源 = `/Volumes/data/software/maven/repository/org/springframework/ai/<artifact>/2.0.0/`
+- 断点续传：`scripts/docs-verify-checkpoint.md`（258 篇 ✅/🔄/⏳ 逐文件状态）
+- API ground truth：`scripts/api-baseline-spring-ai-2.0.0.md`（已实证结论的沉淀处，新增实证须回写）
+- Mermaid 校验：`python3 scripts/check-mermaid-audit.py`
+- 代理纪律：general-purpose（带全套文件工具）；并发 ≤10 防 429；禁派生子代理；修复后二次 javap 自查

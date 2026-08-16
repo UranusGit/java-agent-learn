@@ -246,7 +246,7 @@ flowchart LR
 | Python SDK 子进程 + stdio JSON-RPC | Java 侧内嵌 `ChatClient` | 「独立进程 + 协议」适合隔离运行、跨语言驱动的管控分离形态；内嵌适合低延迟紧耦合 |
 | `session/event` + `session.status` 流式订阅 | WebFlux SSE + `ChatClient.stream()` | 把「运行区间」定义为「inbox 收据 → idle」能避开异步竞态——对应 [教程 42-响应式错误处理] |
 | Landlock allow-list 沙箱 | Java 侧 JVM SecurityManager（已弃用）/ seccomp/容器 | allow-list 比 deny-list 更安全；「未授予即拒绝」是沙箱黄金法则 |
-| `--patch` overlay 热拼能力 | Spring Boot `additional-spring-configuration-metadata` / Profile | 声明式 overlay 不改核心配置即可启用能力——对应 [教程 23-灰度发布] |
+| `--patch` overlay 热拼能力 | Spring Boot `additional-spring-configuration-metadata` / Profile | 声明式 overlay 不改核心配置即可启用能力——对应 [教程 29-灰度发布与版本管理] |
 
 > **适用场景**：需要从 Python/外部进程驱动 Agent 引擎；需要理解 Linux 内核级沙箱；需要给 Agent 组合「骨架 + 叶子」的工程范式。
 > **不适用场景**：纯 Java 单进程内嵌 Agent 的场景（应直接使用 Spring AI）；不关心跨语言协议的设计。

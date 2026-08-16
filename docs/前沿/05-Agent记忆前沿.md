@@ -523,8 +523,13 @@ public class EvolvingChatMemory implements ChatMemory {
         }
     }
 
+    // javap 实证：ChatMemory.get(String) 单参（无 lastN）；窗口大小由实现内部决定
     @Override
-    public List<Message> get(String conversationId, int lastN) {
+    public List<Message> get(String conversationId) {
+        return getRecent(conversationId, 20);
+    }
+
+    private List<Message> getRecent(String conversationId, int lastN) {
         // 1. 检索候选记忆（活跃 + 压缩）
         var candidates = Flux.merge(
             activeStore.search(conversationId, lastN * 2),
@@ -605,7 +610,7 @@ public class EvolvingChatMemory implements ChatMemory {
 
 ### 6.1 多 Agent 共享记忆
 
-在 [教程 08-多 Agent 协作](../教程/09-多Agent协作.md) 中讨论的多 Agent 场景下，Agent 之间可以共享记忆，形成集体智能：
+在 [教程 09-多 Agent 协作](../教程/09-多Agent协作.md) 中讨论的多 Agent 场景下，Agent 之间可以共享记忆，形成集体智能：
 
 ```mermaid
 graph TB
@@ -731,7 +736,7 @@ graph TB
             C1["ChatMemory<br/>会话级记忆"]
             C2["MessageWindowChatMemory<br/>滑动窗口"]
             C3["VectorStore<br/>向量存储记忆"]
-            C4["JdbcChatMemoryRepository<br/>持久化存储"]
+            C4["ChatMemoryRepository<br/>接口（持久化需自研实现）"]
         end
 
         subgraph 可构建["可基于现有能力构建"]

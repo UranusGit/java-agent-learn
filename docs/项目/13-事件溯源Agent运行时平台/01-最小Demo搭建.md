@@ -96,8 +96,7 @@ spring:
       base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
       api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
       chat:
-        options:
-          model: deepseek-chat
+        model: deepseek-chat          # Spring AI 2.0.0：无 options 中缀，参数直挂
 server:
   port: 8080
 ```
@@ -129,7 +128,7 @@ import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
-import org.springframework.ai.model.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.ToolCallbackProvider;   // Spring AI 2.0.0 真实包
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -150,8 +149,8 @@ public class AgentConfig {
                                  ToolCallbackProvider toolCallbackProvider) {
         return builder
                 .defaultSystem("你是订单助手，只能回答订单相关问题。")
-                .defaultAdvisors(new MessageChatMemoryAdvisor(memory))
-                .defaultTools(toolCallbackProvider)
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(memory).build())   // Spring AI 2.0.0：无 public 构造器
+                .defaultToolCallbacks(toolCallbackProvider)   // ToolCallbackProvider 走 defaultToolCallbacks（javap 实证 Builder 方法）
                 .build();
     }
 }
@@ -219,6 +218,7 @@ public class OrderRepository {
 package com.group.agent.web;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
@@ -254,7 +254,7 @@ public class ChatController {
 }
 ```
 
-> ⚠️ 上面 `ChatController` 里用到了 `ChatMemory.CONVERSATION_ID`，需要在类顶部补 import：`import org.springframework.ai.chat.memory.ChatMemory;`（代码与上文 `AgentConfig` 同包名不同，按你的包结构调整 import）。
+> ⚠️ `ChatMemory.CONVERSATION_ID` 由 `import org.springframework.ai.chat.memory.ChatMemory;` 提供（已并入上文 import；若你的包结构拆分文件，按需保留该 import）。
 
 ### 3.7 运行
 

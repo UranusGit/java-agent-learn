@@ -14,7 +14,7 @@
 2. 单体内的边界重构成本是一次包结构调整；微服务间的边界重构成本是数据迁移+双写+回滚预案
 3. 模块化单体的"依赖规则"就是未来微服务的"调用契约"——投资不浪费
 
-> 拆分时机的判断信号（何时必须拆）见 [教程 15 §拆分时机]，本项目的实际触发点在迭代二之前揭晓。
+> 拆分时机的判断信号（何时必须拆）见 [教程 21-微服务拆分与Agent部署 §8.1 拆还是不拆？]，本项目的实际触发点在迭代二之前揭晓。
 
 ## 2. 模块化单体设计
 
@@ -162,8 +162,7 @@ spring:
       base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
       api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
       chat:
-        options:
-          model: deepseek-chat
+        model: deepseek-chat          # Spring AI 2.0.0：无 options 中缀，参数直挂
 server:
   port: 8080
 ```
@@ -303,7 +302,8 @@ public class ChatMemorySessionMemory implements SessionMemory {
 
     @Override
     public List<Message> get(String businessLine, String sessionId, int lastN) {
-        return chatMemory.get(conversationId(businessLine, sessionId), lastN);
+        // ChatMemory.get(String) 单参（2.0 无 lastN 重载）；窗口裁剪由 MessageWindowChatMemory.maxMessages 完成
+        return chatMemory.get(conversationId(businessLine, sessionId));
     }
 
     @Override
@@ -398,7 +398,7 @@ public class PlatformConfig {
 
     @Bean
     public ChatMemory chatMemory() {
-        // 官方仅 InMemory / Jdbc 两类仓库（附录 12-00 §2.2）；v1 用内存
+        // 官方仅 InMemory / Jdbc 两类仓库（[附录 05-00 §2.2]）；v1 用内存
         return MessageWindowChatMemory.builder()
                 .chatMemoryRepository(new InMemoryChatMemoryRepository())
                 .maxMessages(20)
@@ -417,8 +417,8 @@ import com.acme.agent.business.da.internal.DataAnalyticsTools;
 import com.acme.agent.platform.tool.api.ToolRegistry;
 import com.acme.agent.platform.tool.internal.DefaultToolRegistry;
 
-import org.springframework.ai.model.tool.MethodToolCallbackProvider;
-import org.springframework.ai.model.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;   // Spring AI 2.0.0 真实包
+import org.springframework.ai.tool.ToolCallbackProvider;   // Spring AI 2.0.0 真实包
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

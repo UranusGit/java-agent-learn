@@ -408,31 +408,29 @@ public class ToolSecurityConfig {
 
     @Bean
     public ToolCallback safeFileReadTool() {
-        return ToolCallback.builder()
-            .toolDefinition(ToolDefinition.builder()
-                .name("readFile")
-                .description("读取指定路径的文件")
-                .inputSchema("""
-                    {"type":"object","properties":{
-                      "path":{"type":"string"}
-                    },"required":["path"]}
-                    """)
-                .build())
-            .toolMethod(args -> {
-                String path = args.get("path").toString();
+        // 真实 API（javap 实证）：ToolCallback 是接口、无 builder()；函数式构建走 FunctionToolCallback.builder(name, fn)
+        return FunctionToolCallback.builder("readFile",
+                (Map<String, Object> args) -> {
+                    String path = args.get("path").toString();
 
-                // 白名单目录
-                if (!path.startsWith("/data/public/")) {
-                    throw new SecurityException("无权访问路径：" + path);
-                }
+                    // 白名单目录
+                    if (!path.startsWith("/data/public/")) {
+                        throw new SecurityException("无权访问路径：" + path);
+                    }
 
-                // 敏感文件拒绝
-                if (path.contains("password") || path.contains(".env")) {
-                    throw new SecurityException("拒绝访问敏感文件");
-                }
+                    // 敏感文件拒绝
+                    if (path.contains("password") || path.contains(".env")) {
+                        throw new SecurityException("拒绝访问敏感文件");
+                    }
 
-                return Files.readString(Path.of(path));
-            })
+                    return Files.readString(Path.of(path));
+                })
+            .description("读取指定路径的文件")
+            .inputSchema("""
+                {"type":"object","properties":{
+                  "path":{"type":"string"}
+                },"required":["path"]}
+                """)
             .build();
     }
 }

@@ -234,7 +234,7 @@ graph LR
     style AgentGraph fill:#c8e6c9
 ```
 
-这种 Graph 编排模式与我们 [教程 31-Agent 工作流编排](../教程/36-Agent工作流编排.md) 中讨论的编排需求高度对应，但提供了框架级的抽象。它填补了 Spring AI 在多 Agent 协作方面的空白，类似于 LangGraph 在 Python 生态的角色。
+这种 Graph 编排模式与我们 [教程 36-Agent 工作流编排](../教程/36-Agent工作流编排.md) 中讨论的编排需求高度对应，但提供了框架级的抽象。它填补了 Spring AI 在多 Agent 协作方面的空白，类似于 LangGraph 在 Python 生态的角色。
 
 ### 3.4 适用场景
 

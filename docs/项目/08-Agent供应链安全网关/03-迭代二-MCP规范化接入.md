@@ -2,7 +2,7 @@
 
 > **定位**：统一接入协议——网关全面升级到 MCP Streamable HTTP + OAuth 2.1 授权体系，堵住协议层的收口裂缝，同时引入 MCP 规范的 Sampling/Elicitation 安全管控。**完整可手写代码**：MCP 客户端连接管理（`McpSyncClient`）、网关代理工具（`implements ToolCallback`）、按 Agent 动态目录、OAuth 2.1 资源服务器、`application.yml`。
 >
-> 「遇到阻塞？→ [教程 11-MCP协议 §Streamable HTTP 与 OAuth]、[附录 12-01-MCP真实API与坐标]、[前沿 04-MCP生态全景]」
+> 「遇到阻塞？→ [教程 11-MCP协议 §Streamable HTTP 与 OAuth]、[附录 05-01-MCP真实API与坐标]、[前沿 04-MCP生态全景]」
 
 ---
 
@@ -54,13 +54,14 @@ spring:
   ai:
     mcp:
       client:
-        streamable-http-connections:        # 现行传输（附录 12-01 §4）
-          saas-weather:
-            url: https://tools.internal/weather/mcp
-          internal-fs:
-            url: https://tools.internal/filesystem/mcp
-          sandbox-community:
-            url: https://sandbox.internal/community/websearch/mcp
+        streamable-http:                    # javap 实证：前缀 spring.ai.mcp.client.streamable-http，下挂 connections 映射（附录 05-01 §4）
+          connections:
+            saas-weather:
+              url: https://tools.internal/weather/mcp
+            internal-fs:
+              url: https://tools.internal/filesystem/mcp
+            sandbox-community:
+              url: https://sandbox.internal/community/websearch/mcp
       server:
         name: tool-sec-gateway
         version: 1.0.0
@@ -73,16 +74,16 @@ spring:
           issuer-uri: ${GATEWAY_ISSUER_URI:https://id.internal}
 ```
 
-> **MCP Client Starter 的真实注入形态**（附录 12-01 §2.3）：每个 `streamable-http-connections` 下的 Server 自动创建一个 MCP SDK 的 `McpSyncClient` Bean。用 `List<McpSyncClient>` 注入即可拿到全部。
+> **MCP Client Starter 的真实注入形态**（附录 05-01 §2.3）：`spring.ai.mcp.client.streamable-http.connections` 下每个 Server 自动创建一个 MCP SDK 的 `McpSyncClient` Bean。用 `List<McpSyncClient>` 注入即可拿到全部。
 
 ### 3.2 `mcp/McpClientConnections.java`（对外连接层，真实 `McpSyncClient`）
 
 ```java
 package com.group.secgw.mcp;
 
-import io.modelcontextprotocol.sdk.mcp.CallToolRequest;
-import io.modelcontextprotocol.sdk.mcp.CallToolResult;
-import io.modelcontextprotocol.sdk.mcp.McpSyncClient;
+import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
+import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
+import io.modelcontextprotocol.client.McpSyncClient;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -91,7 +92,7 @@ import java.util.Map;
 /**
  * 对外 MCP 连接层（v3）。
  * 每个登记工具对应一个 MCP Server（serverName），网关用 MCP SDK 的真实调用形态
- * callTool(new CallToolRequest(name, args)) 转发（附录 12-01 §2.2）。
+ * callTool(new CallToolRequest(name, args)) 转发（附录 05-01 §2.2）。
  */
 @Component
 public class McpClientConnections {
@@ -133,7 +134,7 @@ package com.group.secgw.mcp;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.group.secgw.admission.ToolRegistration;
 import com.group.secgw.security.AgentPrincipal;
-import org.springframework.ai.model.tool.ToolDefinition;
+import org.springframework.ai.tool.definition.ToolDefinition;   // Spring AI 2.0.0 真实包
 import org.springframework.ai.tool.ToolCallback;
 
 import java.util.Map;
@@ -173,7 +174,7 @@ public class GatewayProxyTool implements ToolCallback {
         Map<String, Object> args = parseArgs(toolInput);
         // 安全管线在 toolsFor 外层执行（v4 行为分析 / v5 注入检测 / v6 策略），
         // 此处是工具执行面——转发到真实 MCP Server（网关身份调用，不透传 Agent 凭证）。
-        io.modelcontextprotocol.sdk.mcp.CallToolResult result =
+        io.modelcontextprotocol.spec.McpSchema.CallToolResult result =
                 connections.call(serverName, registration.toolId(), args);
         return result.content().toString();
     }
@@ -256,7 +257,7 @@ public class AgentScopedToolProvider {
 ```java
 package com.group.secgw.mcp;
 
-import org.springframework.ai.tool.MethodToolCallbackProvider;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;   // Spring AI 2.0.0 真实包
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -267,7 +268,7 @@ public class GatewayMcpServerConfig {
 
     /**
      * 网关暴露给业务 Agent 的工具回调。
-     * ⚠ 真实 API 要点（附录 12-01 §3）：@Tool 暴露为 MCP 工具必须显式声明 ToolCallbackProvider Bean，
+     * ⚠ 真实 API 要点（附录 05-01 §3）：@Tool 暴露为 MCP 工具必须显式声明 ToolCallbackProvider Bean，
      * 不存在"自动注册"。
      * ⚠ 每 Agent 动态目录的接入点说明：把 AgentScopedToolProvider 按当前 Agent 产出的
      * GatewayProxyTool 数组交给 MCP Server 的 tools/list。真实 Starter 下该 Hook 在
@@ -302,12 +303,12 @@ package com.group.secgw.security;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.security.config.Customizer;
-import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
-import org.springframework.security.config.web.server.ServerHttpSecurity;
-import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
-import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
-import org.springframework.security.web.server.SecurityWebFilterChain;
+import org.springframework.security.config.Customizer;   // ⚠ 需引入依赖 org.springframework.boot:spring-boot-starter-security（本地未下载，未 javap 实证）
+import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;   // ⚠ 需引入依赖 spring-boot-starter-security（本地未下载，未 javap 实证）
+import org.springframework.security.config.web.server.ServerHttpSecurity;   // ⚠ 需引入依赖 spring-boot-starter-security（本地未下载，未 javap 实证）
+import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;   // ⚠ 需引入依赖 spring-boot-starter-oauth2-resource-server（本地未下载，未 javap 实证）
+import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;   // ⚠ 需引入依赖 spring-boot-starter-oauth2-resource-server（本地未下载，未 javap 实证）
+import org.springframework.security.web.server.SecurityWebFilterChain;   // ⚠ 需引入依赖 spring-boot-starter-security（本地未下载，未 javap 实证）
 
 /**
  * OAuth 2.1 资源服务器（v3）：校验 Agent 的 access_token + scope 最小化。

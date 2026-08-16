@@ -257,22 +257,34 @@ graph TB
 public class SlidingWindowMemory implements ChatMemory {
 
     private final int maxMessages;
+    private final Map<String, List<Message>> store = new ConcurrentHashMap<>();  // 示意存储
 
     public SlidingWindowMemory(int maxMessages) {
         this.maxMessages = maxMessages;
     }
 
+    // ChatMemory 真实签名（javap 实证）：add(String,List<Message>) 抽象、add(String,Message) 默认、get(String) 单参、clear(String)
     @Override
-    public void add(String conversationId, Message message) {
-        List<Message> messages = get(conversationId);
-        messages.add(message);
+    public void add(String conversationId, List<Message> messages) {
+        List<Message> all = new ArrayList<>(get(conversationId));
+        all.addAll(messages);
 
         // 只保留最近 N 条消息
-        while (messages.size() > maxMessages) {
-            messages.remove(0);  // 移除最旧的消息
+        while (all.size() > maxMessages) {
+            all.remove(0);  // 移除最旧的消息
         }
 
-        save(conversationId, messages);
+        store.put(conversationId, all);
+    }
+
+    @Override
+    public List<Message> get(String conversationId) {
+        return new ArrayList<>(store.getOrDefault(conversationId, List.of()));
+    }
+
+    @Override
+    public void clear(String conversationId) {
+        store.remove(conversationId);
     }
 }
 
@@ -292,19 +304,30 @@ public class TokenAwareMemory implements ChatMemory {
 
     private final int maxTokens;
     private final TokenCounter tokenCounter;
+    private final Map<String, List<Message>> store = new ConcurrentHashMap<>();  // 示意存储
 
     @Override
-    public void add(String conversationId, Message message) {
-        List<Message> messages = get(conversationId);
-        messages.add(message);
+    public void add(String conversationId, List<Message> messages) {
+        List<Message> all = new ArrayList<>(get(conversationId));
+        all.addAll(messages);
 
         // 按 Token 数量裁剪
-        while (estimateTotalTokens(messages) > maxTokens && messages.size() > 2) {
+        while (estimateTotalTokens(all) > maxTokens && all.size() > 2) {
             // 保留 System Message（第一条）和最近的消息
-            messages.remove(1);  // 移除第二条（最旧的对话消息）
+            all.remove(1);  // 移除第二条（最旧的对话消息）
         }
 
-        save(conversationId, messages);
+        store.put(conversationId, all);
+    }
+
+    @Override
+    public List<Message> get(String conversationId) {
+        return new ArrayList<>(store.getOrDefault(conversationId, List.of()));
+    }
+
+    @Override
+    public void clear(String conversationId) {
+        store.remove(conversationId);
     }
 
     private int estimateTotalTokens(List<Message> messages) {
@@ -328,7 +351,8 @@ public class SummarizingMemoryManager {
     private static final int SUMMARIZE_THRESHOLD = 4000;  // 超过 4000 Token 触发摘要
 
     public void manageContext(String conversationId) {
-        List<Message> messages = chatMemory.get(conversationId, 20);   // lastN 必带
+        // javap 实证：ChatMemory.get(String) 单参（无 lastN 参数；窗口裁剪靠 MessageWindowChatMemory 的 maxMessages）
+        List<Message> messages = chatMemory.get(conversationId);
 
         int totalTokens = messages.stream()
             .mapToInt(m -> tokenCounter.count(m.getText()))
@@ -581,22 +605,30 @@ public class TokenCountingAdvisor implements CallAdvisor {
     private final AtomicInteger totalInputTokens = new AtomicInteger(0);
     private final AtomicInteger totalOutputTokens = new AtomicInteger(0);
 
+    // javap 实证：CallAdvisor 只有 adviseCall（无单参 after）；ChatClientResponse.chatResponse() 取 ChatResponse
+    // Usage 真实方法 getPromptTokens()/getCompletionTokens()（org.springframework.ai.chat.metadata.Usage）
     @Override
-    public ChatClientResponse after(ChatClientResponse advisedResponse) {
-        Usage usage = advisedResponse.response().getMetadata().getUsage();
+    public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
+        ChatClientResponse advisedResponse = chain.nextCall(request);
 
-        int input = usage.getPromptTokens();
-        int output = usage.getCompletionTokens();
+        Usage usage = advisedResponse.chatResponse().getMetadata().getUsage();
+        if (usage != null) {
+            int input = usage.getPromptTokens();
+            int output = usage.getCompletionTokens();
 
-        totalInputTokens.addAndGet(input);
-        totalOutputTokens.addAndGet(output);
+            totalInputTokens.addAndGet(input);
+            totalOutputTokens.addAndGet(output);
 
-        // 记录到 Micrometer
-        meters.counter("agent.tokens", "direction", "input").increment(input);
-        meters.counter("agent.tokens", "direction", "output").increment(output);
+            // 记录到 Micrometer
+            meters.counter("agent.tokens", "direction", "input").increment(input);
+            meters.counter("agent.tokens", "direction", "output").increment(output);
+        }
 
         return advisedResponse;
     }
+
+    @Override
+    public String getName() { return "TokenCountingAdvisor"; }
 }
 
 // 注册

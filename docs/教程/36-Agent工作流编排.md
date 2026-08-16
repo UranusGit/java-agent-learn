@@ -1,10 +1,10 @@
-# 31-Agent 工作流编排
+# 36-Agent 工作流编排
 
 > **定位**：讲透 Agent 工作流编排——DAG 有向无环图编排执行步骤、条件分支与循环的动态决策、状态机与工作流的选型权衡、Spring AI 生态中的编排框架集成。读完这篇，你能把多个 Agent / 工具编排成一条可控的执行流水线。
 >
 > **读者画像**：已经能让单个 Agent 调用工具和 RAG，需要把多个步骤编排成复杂工作流的开发者。
 >
-> **前置阅读**：[03-工具调用](03-工具调用.md)、[30-高级 RAG 与 Agentic RAG](35-高级RAG与AgenticRAG.md)。
+> **前置阅读**：[03-工具调用](03-工具调用.md)、[35-高级 RAG 与 Agentic RAG](35-高级RAG与AgenticRAG.md)。
 
 ---
 
@@ -149,7 +149,7 @@ public class OrderAnalysisWorkflow {
 }
 ```
 
-> **并发提示**：Java 21 的虚拟线程让 `CompletableFuture.supplyAsync` 的线程池开销大幅降低，详见 [33-Agent 性能优化](38-Agent性能优化.md)。
+> **并发提示**：Java 21 的虚拟线程让 `CompletableFuture.supplyAsync` 的线程池开销大幅降低，详见 [38-Agent 性能优化](38-Agent性能优化.md)。
 
 ---
 
@@ -339,8 +339,9 @@ graph TB
 Spring AI Alibaba Graph 提供了声明式的 Agent 图编排能力：
 
 ```java
-// 概念示例：用 Alibaba Graph 定义 Agent 工作流
-// 注意：具体 API 以官方文档为准，此处展示设计思路
+// 概念代码：Spring AI Alibaba Graph 是阿里云开源生态项目（非 Spring AI 官方 API），
+// 坐标如 com.alibaba.cloud.ai:spring-ai-alibaba-graph，需自行在 pom.xml 引入，
+// 且 API 随版本演进可能变化。以下仅示意设计思路，具体以官方文档为准。
 
 // 定义节点
 Graph agentGraph = Graph.builder()
@@ -382,6 +383,8 @@ graph LR
 在 Spring Boot 中可通过互操作调用 Koog：
 
 ```java
+// 概念代码：Koog 是第三方 Kotlin Agent 编排框架（非 Spring AI 官方组件），
+// 需自行在 pom.xml 引入对应依赖；具体 API 以官方文档为准，此处仅展示集成思路。
 // 在 Java 中调用 Koog 定义的 Agent 图
 // 通过 Spring 的 Bean 注入 Kotlin 定义的工作流
 @Autowired
@@ -545,10 +548,11 @@ public class WorkflowTracingAspect {
 | **混合模式** | 外层状态机 + 内层 DAG 是生产常见架构 |
 | **容错** | 重试 + 降级 + 补充（Saga） |
 
-**下一篇**：[32-自我反思与 Agent 评估](37-自我反思与Agent评估.md) — Reflection 模式、评估指标体系、A/B 测试与回归测试。
+**下一篇**：[37-自我反思与 Agent 评估](37-自我反思与Agent评估.md) — Reflection 模式、评估指标体系、A/B 测试与回归测试。
 
 ---
 
-> **前置回顾**：[30-高级 RAG 与 Agentic RAG](35-高级RAG与AgenticRAG.md)讲了 Agentic RAG 的反思机制——本章的 IterativeRefinementWorkflow 是它的通用化抽象。
-> **性能**：工作流中并行节点的性能优化，详见 [33-Agent 性能优化](38-Agent性能优化.md)。
+> **前置回顾**：[35-高级 RAG 与 Agentic RAG](35-高级RAG与AgenticRAG.md)讲了 Agentic RAG 的反思机制——本章的 IterativeRefinementWorkflow 是它的通用化抽象。
+> **性能**：工作流中并行节点的性能优化，详见 [38-Agent 性能优化](38-Agent性能优化.md)。
 > **治理**：多 Agent 工作流的资源治理与配额控制，详见 [教程 26-多租户隔离与资源治理]。
+> **事件驱动**：工作流的异步/事件驱动形态（命令队列 + 消费组工作机群 + Saga 补偿），详见 [附录 17-Kafka/09-Spring集成与Agent事件驱动落地] 与 [附录 07-企业级架构模式/02-事件驱动Agent架构]。

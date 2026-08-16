@@ -150,7 +150,7 @@ public record ResourceQuota(
 
 ### 2.3 Agent 状态机
 
-Agent OS 中的 Agent 有明确的生命周期状态机，与 [教程 11-Agent 状态管理](../教程/12-Agent状态管理.md) 中讨论的业务层状态不同，这是 **运行时级别** 的状态：
+Agent OS 中的 Agent 有明确的生命周期状态机，与 [教程 12-Agent 状态管理](../教程/12-Agent状态管理.md) 中讨论的业务层状态不同，这是 **运行时级别** 的状态：
 
 ```mermaid
 stateDiagram-v2

@@ -4,7 +4,7 @@
 >
 > **定位**：一套面向中高级 Java 开发者的 AI Agent 架构师完整教程体系——从核心概念到前沿研究，从教程到实战项目，覆盖 Agent 开发的全生命周期。
 >
-> **文档规模**：229 篇文档（教程 48 + 附录 51 + 项目 120 + 前沿 10）。2026-08-15 完成全量学习路线排序与进阶补充：新增教程 47-ComputerUse、附录 16-AIInfra 与推理部署、全量学习顺序路线图（见下文「推荐学习路线」）。
+> **文档规模**：257 篇文档（教程 50 + 附录 76 + 项目 120 + 前沿 11）。2026-08-15 完成全量学习路线排序与进阶补充；2026-08-16 新增附录 17-Kafka（10 篇）、18-Observation（8 篇）、19-Agent沙箱（1 篇）、12-评估生态（+3 篇）、11/16/03 扩充各 1 篇、教程 48-多模态、49-支付、前沿 10-边缘Agent，并启动教程 48 篇全量修复+深化（见 PLAN.md）。
 
 ---
 
@@ -22,7 +22,9 @@ docs/
 │   ├── 01-Spring-AI框架入门.md
 │   ├── ...
 │   ├── 46-SpringAI2-Agentic架构.md
-│   └── 47-ComputerUse与浏览器Agent.md
+│   ├── 47-ComputerUse与浏览器Agent.md
+│   ├── 48-多模态Agent开发.md
+│   └── 49-Agent经济与支付集成.md
 │
 ├── 项目/                                ← 14 个互相独立的项目（00-13），按编号依次实战
 │   ├── 00-智能客服系统/                  # 内部从 00-需求分析 迭代到 05-核心代码讲解
@@ -30,14 +32,17 @@ docs/
 │   ├── ...
 │   └── 13-事件溯源Agent运行时平台/
 │
-├── 附录/                                ← 17 个主题子文件夹（00-16），按编号下钻
+├── 附录/                                ← 20 个主题子文件夹（00-19），按编号下钻
 │   ├── 00-Java21新特性/
 │   ├── ...
-│   └── 16-AIInfra与推理部署/             # 新增：vLLM/GPU调度
+│   ├── 16-AIInfra与推理部署/             # 新增：vLLM/GPU调度
+│   ├── 17-Kafka/                        # 新增：Kafka 事件骨干（10 篇）
+│   ├── 18-Observation/                  # 新增：Micrometer Observation 可观测（8 篇）
+│   └── 19-Agent沙箱与执行环境/           # 新增：沙箱技术对比与选型
 │
-└── 前沿/                                ← 10 篇（00-09），最后扩展视野
+└── 前沿/                                ← 11 篇（00-10），最后扩展视野
     ├── 00-A2A协议.md
-    └── 09-Agent经济与支付.md
+    └── 10-边缘Agent与端云协同.md
 ```
 
 **板块定位**：教程=教材（讲透每个知识点）｜项目=实战（互相独立，从最小 demo 迭代到企业级）｜附录=教程的下钻层（深度补充）｜前沿=技术雷达。学习时的阻塞路由：项目受阻→查教程对应篇→还不够深→查附录对应主题。
@@ -111,6 +116,8 @@ docs/
 | 45 | [Agent 架构反模式与避坑指南](教程/45-Agent架构反模式与避坑指南.md) | 十大反模式、避坑清单、收官总结 |
 | 46 | [SpringAI2-Agentic 架构](教程/46-SpringAI2-Agentic架构.md) | Agentic 模式、Spring AI 2.0 架构演进 |
 | 47 | [ComputerUse 与浏览器 Agent](教程/47-ComputerUse与浏览器Agent.md) | 截图循环、Playwright MCP、护栏与审计 |
+| 48 | [多模态 Agent 开发](教程/48-多模态Agent开发.md) | 图像/音频/文档输入、多模态 RAG、VLM 边界、图内注入 |
+| 49 | [Agent 经济与支付集成](教程/49-Agent经济与支付集成.md) | 授权三闸、支付轨道、支付工具幂等、风险面 |
 
 ---
 
@@ -134,7 +141,7 @@ docs/
 | [00-Java 21 新特性](附录/00-Java21新特性/00-虚拟线程.md) | 虚拟线程、Record、密封类 | 3 |
 | [01-LLM 基础理论](附录/01-LLM基础理论/00-Transformer架构.md) | Transformer、Embedding、上下文窗口与 Token | 3 |
 | [02-Prompt 工程](附录/02-Prompt工程/00-Prompt设计模式.md) | 设计模式、模板管理、注入防御 | 3 |
-| [03-Spring AI 源码解析](附录/03-Spring-AI源码解析/00-ChatClient源码.md) | ChatClient 源码、Advisor 执行链 | 2 |
+| [03-Spring AI 源码解析](附录/03-Spring-AI源码解析/00-ChatClient源码.md) | ChatClient 源码、Advisor 执行链、流式执行链 | 3 |
 | [04-测试策略](附录/04-测试策略/00-单元测试.md) | 单元测试、集成测试、Eval 评估 | 3 |
 | [05-SpringAI2-API 基准](附录/05-SpringAI2-API基准/00-Advisor与ChatMemory.md) | Advisor/ChatMemory/MCP/Tool/Observation 真实 API 对照 | 3 |
 | [06-WebFlux 与响应式编程](附录/06-WebFlux与响应式编程/00-Reactor核心.md) | Reactor、背压、WebFlux vs MVC | 3 |
@@ -142,12 +149,15 @@ docs/
 | [08-架构决策方法论](附录/08-架构决策方法论/00-ADR架构决策记录.md) | ADR 架构决策记录 | 1 |
 | [09-Agent 安全深度](附录/09-Agent安全深度/00-Prompt注入分类与案例.md) | Prompt 注入、Tool Poisoning、DLP | 3 |
 | [10-语义缓存与性能](附录/10-语义缓存与性能/00-语义缓存实现.md) | 语义缓存、Prompt/KV Cache、批量推理 | 3 |
-| [11-知识图谱工程](附录/11-知识图谱工程/00-Neo4j落地GraphRAG.md) | Neo4j 落地 GraphRAG | 1 |
-| [12-评估与可观测生态](附录/12-评估与可观测生态/00-Langfuse与Ragas集成.md) | Langfuse、Ragas 集成 | 1 |
+| [11-知识图谱工程](附录/11-知识图谱工程/00-Neo4j落地GraphRAG.md) | Neo4j 落地 GraphRAG、GraphRAG 工程化 | 2 |
+| [12-评估与可观测生态](附录/12-评估与可观测生态/00-Langfuse与Ragas集成.md) | Langfuse/Ragas、LLM-as-Judge 工程化、数据集版本化、A/B 统计 | 4 |
 | [13-AI 治理与合规](附录/13-AI治理与合规/00-NIST-AI-RMF框架.md) | NIST AI RMF、模型卡片、数据隐私与偏见检测 | 3 |
 | [14-Agent 交互设计](附录/14-Agent交互设计/00-Agent用户体验设计.md) | Agent 用户体验设计 | 1 |
 | [15-开源代码深度分析](附录/15-开源代码深度分析/00-总览与架构解析.md) | DeepSeek Harness 全量代码分析 + Java 取经手册 | 13 |
-| [16-AIInfra 与推理部署](附录/16-AIInfra与推理部署/00-vLLM推理服务与SpringAI集成.md) | vLLM 推理服务、GPU 调度与 K8s 部署 | 2 |
+| [16-AIInfra 与推理部署](附录/16-AIInfra与推理部署/00-vLLM推理服务与SpringAI集成.md) | vLLM 推理服务、GPU 调度、vLLM 调优与容量规划 | 3 |
+| [17-Kafka](附录/17-Kafka/00-Kafka全景与核心概念.md) | 事件骨干：生产者/消费者/事务/存储/调优/Streams/Connect/运维/Spring 落地 | 10 |
+| [18-Observation](附录/18-Observation/00-Observation全景与核心概念.md) | Micrometer Observation：核心 API/Boot 集成/自定义扩展/Trace 传播/Agent 实战/指标治理/日志与Collector | 8 |
+| [19-Agent沙箱与执行环境](附录/19-Agent沙箱与执行环境/00-沙箱技术对比与选型.md) | Docker/gVisor/Kata/Firecracker/WASM 对比与选型 | 1 |
 
 ---
 
@@ -162,6 +172,7 @@ docs/
 | [04](前沿/04-MCP生态全景.md) | MCP 生态全景 | Server 注册中心、服务发现、工具市场、企业 Gateway |
 | [05](前沿/05-Agent记忆前沿.md) | Agent 记忆前沿 | 记忆演化、神经记忆、持久化、遗忘机制 |
 | [06](前沿/06-Spring-AI生态全景.md) | Spring AI 生态全景 | Spring AI Alibaba、Koog、JManus 对比与选型 |
+| [10](前沿/10-边缘Agent与端云协同.md) | 边缘 Agent 与端云协同 | 端云五形态、边缘推理栈、断网韧性、经济账 |
 
 ---
 
@@ -259,7 +270,7 @@ flowchart TD
 |----|----------|------|
 | **项目主线** | 项目 05-企业级Agent中台（00→09，10 篇：LLM网关→ControlPlane→工具服务化→可观测→业务线隔离→灰度AB→高可用容灾→核心代码） | 企业级能力的集中落地 |
 | 配套教程 | 教程 20-管控分离架构 → 21-微服务拆分与Agent部署 → 22-全链路可观测性 → 23-工具执行可观测与审计 → 24-多页面流式响应与会话管理 → 25-历史记录持久化与合规 → 26-多租户隔离与资源治理 → 27-成本治理与Token计量 → 28-Human-in-the-Loop与审批流 → 29-灰度发布与版本管理 → 30-容错与弹性设计 → 31-安全与权限控制 → 32-模型路由与降级 → 33-部署与运维 | 企业级主干教程，与项目05迭代一一呼应 |
-| 下钻附录 | 附录 07-企业级架构模式/00-ControlPlane设计模式、01-Agent沙箱与隔离机制、02-事件驱动Agent架构；附录 06-WebFlux与响应式编程/00-Reactor核心、01-背压与流量控制、02-WebFlux-vs-MVC | 架构模式与响应式编程深水区 |
+| 下钻附录 | 附录 07-企业级架构模式/00-ControlPlane设计模式、01-Agent沙箱与隔离机制、02-事件驱动Agent架构；附录 06-WebFlux与响应式编程/00-Reactor核心、01-背压与流量控制、02-WebFlux-vs-MVC | 架构模式与响应式编程深水区；02-事件驱动涉及 Kafka 时下钻 [附录 17-Kafka](附录/17-Kafka/00-Kafka全景与核心概念.md)（00-09 全 10 篇）；教程 22/23 的 Observation 机制下钻 [附录 18-Observation](附录/18-Observation/00-Observation全景与核心概念.md)（00-05 全 6 篇） |
 
 ### 阶段 6｜行业纵深（4~6 周）
 
@@ -281,7 +292,7 @@ flowchart TD
 
 | 层 | 阅读顺序 | 说明 |
 |----|----------|------|
-| **项目主线** | 项目 10-数据智能分析平台（SQL安全/语义层/数据权限/AgenticRAG）→ 项目 11-工业质检与预测性维护（多模态/边缘/时序）→ 项目 12-研发效能DevOps平台（多Agent评审/工作流/评估闭环）→ 项目 13-事件溯源Agent运行时平台（事件溯源会话日志/能力缝/工具管线）——**按职业方向选读**：数据方向优先10、工业方向优先11、效能方向优先12、运行时方向优先13 | 四大行业纵深，全读约 3 个月 |
+| **项目主线** | 项目 10-数据智能分析平台（SQL安全/语义层/数据权限/AgenticRAG）→ 项目 11-工业质检与预测性维护（多模态/边缘/时序）→ 项目 12-研发效能DevOps平台（多Agent评审/工作流/评估闭环）→ 项目 13-事件溯源Agent运行时平台（事件溯源会话日志/能力缝/工具管线）——**按职业方向选读**：数据方向优先10、工业方向优先11、效能方向优先12、运行时方向优先13 | 四大行业纵深，全读约 3 个月；项目 13 的事件骨干机制下钻 [附录 17-Kafka](附录/17-Kafka/00-Kafka全景与核心概念.md)（尤其 03-事务/09-Spring落地） |
 | **附录主线** | 附录 16-AIInfra与推理部署/00-vLLM推理服务与SpringAI集成、01-GPU调度与K8s部署 | 自建推理能力，呼应教程 39 自建vs商用决策 |
 | 下钻附录 | 附录 15-开源代码深度分析/00-总览与架构解析 → 11-设计哲学与架构模式 → 12-Java工程师借鉴手册（三篇必读）→ 01-10 各子系统篇（按需） | DeepSeek Harness 全量代码分析，站在巨人肩膀上 |
 
@@ -289,9 +300,9 @@ flowchart TD
 
 | 层 | 阅读顺序 | 说明 |
 |----|----------|------|
-| 教程主线 | 教程 47-ComputerUse与浏览器Agent | 前沿 07/08 的教程锚点 |
-| 前沿全景 | 前沿 00-A2A协议 → 01-Agent操作系统 → 02-多模态Agent → 03-Agent评测基准 → 04-MCP生态全景 → 05-Agent记忆前沿 → 06-Spring-AI生态全景 → 07-ComputerUse与AgenticBrowser → 08-Agent技能包Skills → 09-Agent经济与支付 | 扩展视野，保持技术雷达 |
-| 下钻附录 | 附录 14-Agent交互设计/00-Agent用户体验设计 | Agent UX 收官 |
+| 教程主线 | 教程 47-ComputerUse与浏览器Agent → 48-多模态Agent开发 → 49-Agent经济与支付集成 | 前沿 07/08、02、09 的教程锚点 |
+| 前沿全景 | 前沿 00-A2A协议 → 01-Agent操作系统 → 02-多模态Agent → 03-Agent评测基准 → 04-MCP生态全景 → 05-Agent记忆前沿 → 06-Spring-AI生态全景 → 07-ComputerUse与AgenticBrowser → 08-Agent技能包Skills → 09-Agent经济与支付 → 10-边缘Agent与端云协同 | 扩展视野，保持技术雷达 |
+| 下钻附录 | 附录 14-Agent交互设计/00-Agent用户体验设计；附录 19-Agent沙箱与执行环境/00-沙箱技术对比与选型（呼应教程 47/48）；附录 16-AIInfra与推理部署（教程 48 成本模型） | Agent UX 收官；边缘与沙箱纵深 |
 
 ---
 

@@ -1,6 +1,6 @@
 # Advisor 执行链源码解析：拦截链原理与自定义
 
-> 「本文是对 [教程 13-Advisor §1-§5] 的深入展开」
+> 「本文是对 [教程 14-Advisor §1-§5] 的深入展开」
 
 > **定位**：深入分析 Spring AI 2.0 Advisor 机制的设计原理、责任链模式实现、同步与流式链的差异，以及如何编写生产级 Advisor（安全审计、语义缓存、多模型路由）。
 >
@@ -72,8 +72,9 @@ classDiagram
 
     Advisor <|-- CallAdvisor
     Advisor <|-- StreamAdvisor
-    StreamAdvisor <|-- CallAdvisor   %% 简化示意: 真实 2.0 中两者均直接 extends Advisor
-    %% 注意: 2.0 没有 BaseAdvisor 基类（1.x 的 before/after 形态已废弃，见附录 12 基准）
+    CallAdvisor <|-- BaseAdvisor   %% 简化示意: 真实 2.0 中 BaseAdvisor 同时 extends CallAdvisor+StreamAdvisor
+    StreamAdvisor <|-- BaseAdvisor
+    %% 注意: BaseAdvisor 在 2.0.0 真实存在（before/after 带 AdvisorChain 参数，javap 实证；真实签名见附录 05 基准 §3）
 ```
 
 ### 2.2 关键接口定义
@@ -103,8 +104,11 @@ public interface StreamAdvisor extends Advisor {
                                            StreamAdvisorChain chain);
 }
 
-// 双模式基类（推荐继承）
-public abstract class BaseAdvisor implements CallAdvisor, StreamAdvisor {  // 简化示意模型（讲解用，2.0 真实形态见附录 12 基准）
+// 双模式基类（推荐继承）——简化示意模型（讲解用）
+// ⚠️ 概念代码：真实 2.0.0 中 BaseAdvisor 的 before/after 是「带 AdvisorChain 参数」的抽象方法：
+//    before(ChatClientRequest, AdvisorChain) / after(ChatClientResponse, AdvisorChain)
+//    （javap 实证 spring-ai-client-chat-2.0.0.jar；完整真实签名见 [附录 05-SpringAI2-API基准 §3]）
+public abstract class BaseAdvisor implements CallAdvisor, StreamAdvisor {
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request,
@@ -121,7 +125,7 @@ public abstract class BaseAdvisor implements CallAdvisor, StreamAdvisor {  // �
         return chain.nextStream(processed).map(this::after);
     }
 
-    // 子类覆盖这两个方法即可
+    // 子类覆盖这两个方法即可（真实签名需带 AdvisorChain 参数）
     protected ChatClientRequest before(ChatClientRequest request) {
         return request;
     }
@@ -296,68 +300,67 @@ public class LoggingAdvisor implements CallAdvisor {
 
 ```java
 @Component
+@Component
 @Order(50)  // 最先执行，缓存命中时短路
-public class SemanticCacheAdvisor implements CallAdvisor {
+public class SemanticCacheAdvisor implements CallAdvisor, StreamAdvisor {
 
     private final VectorStore vectorStore;
-    private final ChatModel embeddingModel;
 
-    @Override
-    protected ChatClientRequest before(ChatClientRequest request) {
-        // 1. 计算查询的 embedding
-        float[] queryEmbedding = embedding(request.prompt());
-
-        // 2. 在缓存中搜索相似查询
-        List<CacheEntry> similar = vectorStore.similaritySearch(
-            SearchRequest.query(queryEmbedding)
-                .topK(1)
-                .similarityThreshold(0.95)
-        );
-
-        if (!similar.isEmpty()) {
-            // 3. 缓存命中 → 标记短路
-            request.context().put("cache.hit", similar.get(0).answer());
-        }
-
-        return request;
-    }
-
+    // ⚠ 修正（javap 实证）：CallAdvisor 无单参 before()——缓存查找逻辑并入 adviseCall；
+    // SearchRequest 无静态 query()（用 builder().query(String)）；context() 只读，不直接 put
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request,
                                            CallAdvisorChain chain) {
-        // 检查缓存命中
-        if (request.context().containsKey("cache.hit")) {
-            String cached = (String) request.context().get("cache.hit");
+        // 1. 在缓存中按查询文本搜索相似
+        List<CacheEntry> similar = vectorStore.similaritySearch(
+            SearchRequest.builder()
+                .query(request.prompt().getContents())
+                .topK(1)
+                .similarityThreshold(0.95)
+                .build()
+        );
+
+        if (!similar.isEmpty()) {
+            // 2. 缓存命中 → 短路（不调用 chain.nextCall）
             metrics.increment("cache.hit");
             return ChatClientResponse.builder()
-                .chatResponse(buildResponse(cached))
+                .chatResponse(buildResponse(similar.get(0).answer()))
                 .context(request.context())
                 .build();
-            // 不调用 chain.nextCall → 短路！
         }
 
+        // 3. 缓存未命中 → 放行并缓存新结果
         metrics.increment("cache.miss");
         ChatClientResponse response = chain.nextCall(request);
-
-        // 缓存新结果
         vectorStore.add(List.of(
             Document.builder().text(request.prompt().getContents())
                 .metadata(Map.of("answer", response.chatResponse().getResult().getOutput().getText()))
                 .build()
         ));
-
         return response;
     }
 
     @Override
     public Flux<ChatClientResponse> adviseStream(ChatClientRequest request,
                                                    StreamAdvisorChain chain) {
-        if (request.context().containsKey("cache.hit")) {
-            String cached = (String) request.context().get("cache.hit");
-            return Flux.just(buildResponse(cached));
+        List<CacheEntry> similar = vectorStore.similaritySearch(
+            SearchRequest.builder()
+                .query(request.prompt().getContents())
+                .topK(1)
+                .similarityThreshold(0.95)
+                .build()
+        );
+        if (!similar.isEmpty()) {
+            return Flux.just(ChatClientResponse.builder()
+                .chatResponse(buildResponse(similar.get(0).answer()))
+                .context(request.context())
+                .build());
         }
         return chain.nextStream(request);
     }
+
+    @Override
+    public String getName() { return "SemanticCacheAdvisor"; }
 }
 ```
 

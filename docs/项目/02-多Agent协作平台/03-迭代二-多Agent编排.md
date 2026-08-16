@@ -1183,7 +1183,7 @@ import java.util.UUID;
 
 /**
  * 用 LLM 把自然语言任务拆解为结构化 DAG。
- * 结构化输出用 entity(DagDefinition.class)——Spring AI 2.0 真实重载（附录 12-02 §2）。
+ * 结构化输出用 entity(DagDefinition.class)——Spring AI 2.0 真实重载（附录 05-02 §2）。
  */
 @Service
 public class TaskParser {
@@ -1609,7 +1609,7 @@ graph TB
 
 ### ADR 002-08：持久化双层——Redis 实时快照 + PostgreSQL 审计/恢复
 - **决策**：`TaskStateStore`（Redis）存实时 DAG 快照与事件流；`TaskRepository`（PostgreSQL）存任务与节点行用于审计与重启恢复
-- **取舍理由**：Redis 快读写（编排热路径）、PostgreSQL 可靠（审计合规），各取所长；恢复路径先 Redis 快照，全量可靠重建见 [教程 35]
+- **取舍理由**：Redis 快读写（编排热路径）、PostgreSQL 可靠（审计合规），各取所长；恢复路径先 Redis 快照，全量可靠重建见 [教程 40-长任务持久化与中断恢复]
 
 ---
 

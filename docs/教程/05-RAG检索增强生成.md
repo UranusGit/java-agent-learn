@@ -100,7 +100,7 @@ List<Document> pdfDocs = new PagePdfDocumentReader("classpath:docs/manual.pdf").
 List<Document> mdDocs = new MarkdownDocumentReader("classpath:docs/guide.md").get();
 ```
 
-> **需在 pom.xml 中添加依赖**（PDF 读取）：`spring-ai-pdf-document-reader`
+> **需在 pom.xml 中添加依赖**（PDF 读取）：`spring-ai-pdf-document-reader`；（Markdown 读取）：`spring-ai-markdown-document-reader`
 
 ### 3.2 文本分块
 
@@ -109,19 +109,19 @@ List<Document> mdDocs = new MarkdownDocumentReader("classpath:docs/guide.md").ge
 ```java
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 
-// 将文档分块——每块约 800 Token，重叠 100 Token
-TokenTextSplitter splitter = new TokenTextSplitter(
-    800,   // 每块最大 Token 数
-    100,   // 相邻块之间的重叠 Token 数（保证语义连贯）
-    5,     // 最小块大小
-    10000, // 最大 Tokens 数（安全上限）
-    true   // 是否在 Token 级别保持完整
-);
+// 将文档分块——Spring AI 2.0.0：构造器自 2.0.0-M3 起弃用（forRemoval），统一使用 builder()
+TokenTextSplitter splitter = TokenTextSplitter.builder()
+        .withChunkSize(800)            // 每个 chunk 的目标 token 数
+        .withMinChunkSizeChars(100)    // chunk 内段落最小字符数
+        .withMinChunkLengthToEmbed(5)  // 短于该长度的 chunk 跳过嵌入
+        .withMaxNumChunks(10000)       // 单文档最大 chunk 数
+        .withKeepSeparator(true)       // 切分时保留分隔符
+        .build();
 
 List<Document> chunks = splitter.apply(documents);
 ```
 
-**为什么要重叠？**
+**注意：`TokenTextSplitter` 并没有「重叠」参数**——`withMinChunkSizeChars(100)` 表示 chunk 内段落最小字符数，不是相邻块的重叠窗口。重叠是分块领域的通用策略（下图为通用示意），Spring AI 内置的 `TokenTextSplitter` 不提供；若业务确需重叠切分，需要自定义 `DocumentTransformer`。
 
 ```mermaid
 graph LR
@@ -265,6 +265,14 @@ String answer = client.prompt()
         .call()
         .content();
 ```
+> **需在 pom.xml 中添加依赖**（`QuestionAnswerAdvisor` 所在模块）：2.0.0 起模块名从 `spring-ai-advisors-vector-store` 改为 `spring-ai-vector-store-advisor`（老坐标已不存在）——版本走 `spring-ai-bom`，不写 `<version>`：
+>
+> ```xml
+> <dependency>
+>     <groupId>org.springframework.ai</groupId>
+>     <artifactId>spring-ai-vector-store-advisor</artifactId>
+> </dependency>
+> ```
 
 ### 5.2 Advisor 内部做了什么
 
@@ -319,6 +327,14 @@ ChatClient client = ChatClient.builder(chatModel)
 ### 6.1 数据摄入（一次性）
 
 ```java
+import org.springframework.ai.document.Document;
+import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
+import org.springframework.ai.transformer.splitter.TokenTextSplitter;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.stereotype.Component;
+import jakarta.annotation.PostConstruct;
+import java.util.List;
+
 @Component
 public class KnowledgeBaseLoader {
 
@@ -333,8 +349,14 @@ public class KnowledgeBaseLoader {
         // 1. 读取文档
         List<Document> docs = new PagePdfDocumentReader("classpath:docs/product-manual.pdf").get();
 
-        // 2. 分块
-        TokenTextSplitter splitter = new TokenTextSplitter(800, 100, 5, 10000, true);
+        // 2. 分块（Spring AI 2.0.0：构造器弃用，等价改写——参数逐位映射到 builder）
+        TokenTextSplitter splitter = TokenTextSplitter.builder()
+                .withChunkSize(800)            // 每个 chunk 的目标 token 数
+                .withMinChunkSizeChars(100)    // chunk 内段落最小字符数
+                .withMinChunkLengthToEmbed(5)  // 短于该长度的 chunk 跳过嵌入
+                .withMaxNumChunks(10000)       // 单文档最大 chunk 数
+                .withKeepSeparator(true)       // 切分时保留分隔符
+                .build();
         List<Document> chunks = splitter.apply(docs);
 
         // 3. 添加元数据
@@ -354,6 +376,12 @@ public class KnowledgeBaseLoader {
 ### 6.2 检索增强（在线）
 
 ```java
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.web.bind.annotation.*;
+
 @RestController
 public class KnowledgeController {
 
@@ -414,9 +442,9 @@ List<Document> results = vectorStore.similaritySearch(
 | 问题 | 原因 | 解决方案 |
 |------|------|---------|
 | 检索到无关内容 | 相似度阈值太低 | 提高 `similarityThreshold` |
-| 检索不到相关内容 | 分块太大/太小 | 调整分块大小和重叠 |
+| 检索不到相关内容 | 分块太大/太小 | 调整 `chunkSize`（`TokenTextSplitter` 无重叠参数） |
 | 同义词检索不到 | Embedding 模型不擅长该领域 | 换更好的 Embedding 模型 |
-| 跨段落信息丢失 | 分块切断了语义 | 调整重叠大小或用语义分块 |
+| 跨段落信息丢失 | 分块切断了语义 | 自定义重叠分块或改用语义分块 |
 
 ### 8.2 上下文窗口溢出
 
@@ -468,7 +496,7 @@ LLM 可能无视检索到的上下文，自己编造答案。缓解策略：
 | **topK + similarityThreshold** | 控制检索结果数量和质量的核心参数 |
 | **元数据过滤** | 按类别/权限/租户过滤检索范围 |
 
-**下一篇**：[06-ReAct 推理模式](07-ReAct推理模式.md) — Thought-Action-Observation 循环，Agent 的核心推理引擎。
+**下一篇**：[07-ReAct 推理模式](07-ReAct推理模式.md) — Thought-Action-Observation 循环，Agent 的核心推理引擎。
 
 ---
 

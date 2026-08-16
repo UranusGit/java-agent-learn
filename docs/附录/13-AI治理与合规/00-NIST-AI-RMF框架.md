@@ -291,7 +291,8 @@ public class AIRmfMeasureAdvisor implements CallAdvisor {
         }
 
         // MEASURE：采集偏差与性能指标
-        Usage usage = resp.response().metadata().usage();
+        // javap 实证：ChatClientResponse.chatResponse() → ChatResponse.getMetadata() → ChatResponseMetadata.getUsage()
+        Usage usage = resp.chatResponse().getMetadata().getUsage();
         meters.counter("agent.rmf.tokens",
                 "useCase", useCaseId,
                 "type", "prompt")
@@ -309,23 +310,41 @@ public class AIRmfMeasureAdvisor implements CallAdvisor {
 public class AIRmfManageAdvisor implements CallAdvisor {
 
     private final AIRiskPolicyStore policies;
+    private final HitlApprovalService hitlApprovalService;
 
+    // ⚠ 修正（javap 实证）：ToolAroundAdvisorChain/aroundTool/nextAroundTool、req.toolName()/toolArguments() 均不存在；
+    // ChatClientRequest 只有 prompt()/context()。工具级 HITL 审批的正确落点见
+    // [教程 28-Human-in-the-Loop与审批流 §正确落点]（ToolCallback 包装层 / ToolCallingManager 装饰器）。
+    // 此处 Advisor 只做「请求级」风控分级。
     @Override
-    public ChatClientResponse aroundTool(ChatClientRequest req, ToolAroundAdvisorChain chain) {
-        String useCaseId = req.context().get("useCaseId");
+    public ChatClientResponse adviseCall(ChatClientRequest req, CallAdvisorChain chain) {
+        String useCaseId = (String) req.context().get("useCaseId");
         AIRmfContext ctx = policies.getContext(useCaseId);
 
-        // 高风险用例 + 敏感工具 → 强制审批
-        if (ctx.riskLevel() == RiskLevel.HIGH
-                && ctx.sensitiveTools().contains(req.toolName())) {
-            return hitlApprovalService.request(req.toolName(), req.toolArguments())
-                .flatMap(approved -> approved
-                    ? Mono.just(chain.nextAroundTool(req))
-                    : Mono.just(rejected(req)))
-                .block();
+        // 高风险用例 → 请求级人工确认；低/中风险放行（中风险限流可在此叠加）
+        if (ctx.riskLevel() == RiskLevel.HIGH) {
+            Boolean approved = hitlApprovalService.requestApproval(useCaseId)
+                    .block(Duration.ofSeconds(30));   // 同步调用；响应式链中调用方须 subscribeOn(boundedElastic)
+            if (Boolean.FALSE.equals(approved)) {
+                return rejected(req);
+            }
         }
-        return chain.nextAroundTool(req);
+        return chain.nextCall(req);
     }
+
+    private ChatClientResponse rejected(ChatClientRequest req) {
+        ChatResponse error = ChatResponse.builder()
+                .generations(List.of(new Generation(
+                        new AssistantMessage("高风险用例未获审批，请求被拒绝"))))
+                .build();
+        return ChatClientResponse.builder()
+                .chatResponse(error)
+                .context(req.context())
+                .build();
+    }
+
+    @Override
+    public String getName() { return "AIRmfManageAdvisor"; }
 }
 ```
 

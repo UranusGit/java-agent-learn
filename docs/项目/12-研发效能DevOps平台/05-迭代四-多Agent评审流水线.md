@@ -1,6 +1,6 @@
 # 项目 12：研发效能 DevOps 平台 — 05-迭代四：多 Agent 评审流水线
 
-> **定位**：把"单 Agent 审查"升级为"并行专业 Sub-Agent（架构/安全/性能/合规）fan-out + 强聚合层"——确定性静态层前置把误报压到 < 5%，聚合层做去重/共识/幻觉过滤/争议上抛。教程 08 多 Agent + 教程 31 工作流的落地。本文给出**完整可手写代码**（一行不省略，含全部 import）。
+> **定位**：把"单 Agent 审查"升级为"并行专业 Sub-Agent（架构/安全/性能/合规）fan-out + 强聚合层"——确定性静态层前置把误报压到 < 5%，聚合层做去重/共识/幻觉过滤/争议上抛。教程 09 多 Agent + 教程 36 工作流的落地。本文给出**完整可手写代码**（一行不省略，含全部 import）。
 >
 > **读者画像**：已完成 [04-迭代三-CICD诊断Agent](04-迭代三-CICD诊断Agent.md)。
 >
@@ -54,7 +54,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/** 安全 Agent 专属工具：挂 SAST 结果交叉确认（工具层，不是 Advisor——[教程 22 §正确落点]）。 */
+/** 安全 Agent 专属工具：挂 SAST 结果交叉确认（工具层，不是 Advisor——HITL 落点见 [教程 28-Human-in-the-Loop与审批流]）。 */
 @Component
 public class SastTools {
 

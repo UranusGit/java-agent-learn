@@ -1,4 +1,4 @@
-# 15-微服务拆分与 Agent 部署
+# 21-微服务拆分与 Agent 部署
 
 > **定位**：讲透 Agent 系统的微服务化拆分策略——哪些组件应该独立部署、服务间如何通信（同步 gRPC/REST vs 异步消息队列）、API 网关层设计、Spring Cloud 集成方案。读完这篇，你能设计出可独立扩展、可独立部署的 Agent 微服务架构。
 >
@@ -754,13 +754,15 @@ public class AIGatewayConfiguration {
 
 ```java
 // Spring AI 2.0.0
-// 自定义限流过滤器——基于 Redis 的令牌桶
+// 自定义限流过滤器——基于 Redis 的令牌桶（响应式实现）
+// WebFlux 铁律：EventLoop 上禁止阻塞调用，Redis 必须用 ReactiveRedisTemplate，
+// 故用 ReactiveStringRedisTemplate（org.springframework.data.redis.core.ReactiveStringRedisTemplate）。
 @Component
 public class TokenRateLimiter implements GatewayFilter {
 
-    private final RedisTemplate<String, String> redisTemplate;
+    private final ReactiveStringRedisTemplate redisTemplate;
 
-    public TokenRateLimiter(RedisTemplate<String, String> redisTemplate) {
+    public TokenRateLimiter(ReactiveStringRedisTemplate redisTemplate) {
         this.redisTemplate = redisTemplate;
     }
 
@@ -775,20 +777,24 @@ public class TokenRateLimiter implements GatewayFilter {
         }
 
         String key = "rate_limit:" + userId;
-        Long current = redisTemplate.opsForValue().increment(key);
-
-        if (current == 1) {
-            // 第一次请求，设置过期时间（1 分钟）
-            redisTemplate.expire(key, Duration.ofMinutes(1));
-        }
-
-        int limit = 60;  // 每分钟 60 次请求
-        if (current > limit) {
-            exchange.getResponse().setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
-            return exchange.getResponse().setComplete();
-        }
-
-        return chain.filter(exchange);
+        return redisTemplate.opsForValue().increment(key)
+                .flatMap(current -> {
+                    // 第一次请求，设置过期时间（1 分钟）
+                    if (current == 1) {
+                        return redisTemplate.expire(key, Duration.ofMinutes(1))
+                                .thenReturn(current);
+                    }
+                    return Mono.just(current);
+                })
+                .flatMap(current -> {
+                    int limit = 60;  // 每分钟 60 次请求
+                    if (current > limit) {
+                        exchange.getResponse()
+                                .setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
+                        return exchange.getResponse().setComplete();
+                    }
+                    return chain.filter(exchange);
+                });
     }
 }
 ```
@@ -1136,3 +1142,5 @@ graph TB
 > **下一篇**：[22-全链路可观测性](22-全链路可观测性.md) — 微服务拆分后，跨服务追踪和监控变得至关重要。
 >
 > **想深入**：[24-多页面流式响应与会话管理](24-多页面流式响应与会话管理.md) — SSE 在网关层的代理和连接管理。
+>
+> **想深入**：消息队列选型（Kafka vs RabbitMQ vs RocketMQ vs Pulsar）与事件骨干的生产级机制，见 [附录 17-Kafka/00-Kafka全景与核心概念]（10 篇）；跨服务 Trace 在 HTTP/消息边界的传播机制，见 [附录 18-Observation/04-链路追踪与上下文传播]。

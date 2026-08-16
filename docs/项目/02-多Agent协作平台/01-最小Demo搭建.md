@@ -135,10 +135,9 @@ spring:
       base-url: https://api.deepseek.com   # DeepSeek 兼容 OpenAI 协议
       api-key: ${DEEPSEEK_API_KEY}          # 环境变量，不落明文
       chat:
-        options:
-          model: deepseek-chat
-          temperature: 0.7
-          max-tokens: 2048
+        model: deepseek-chat          # Spring AI 2.0.0：无 options 中缀，参数直挂
+        temperature: 0.7
+        max-tokens: 2048
   data:
     redis:
       host: localhost
@@ -423,11 +422,10 @@ public class AgentExecutor {
         var builder = chatClientBuilder.defaultSystem(agent.systemPrompt());
         if (agent.modelConfig() != null) {
             var config = agent.modelConfig();
-            builder = builder.defaultOptions(OpenAiChatOptions.builder()
+            builder = builder.defaultOptions(OpenAiChatOptions.builder()   // Spring AI 2.0.0：defaultOptions 收 Builder
                     .model(config.model())
                     .temperature(config.temperature())
-                    .maxTokens(config.maxTokens())
-                    .build());
+                    .maxTokens(config.maxTokens()));
         }
         return builder.build();
     }

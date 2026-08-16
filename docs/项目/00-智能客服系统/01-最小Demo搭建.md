@@ -3,7 +3,7 @@
 > **定位**：从零创建 Spring Boot 4.1 + Spring AI 2.0 项目骨架，实现最简 ChatClient + WebFlux + SSE 流式对话接口。读完这篇，你能跑通「用户提问 → AI 流式回复」完整链路。本文给出**完整可手写代码**（一行不省略）。
 > **读者画像**：刚读完需求分析，准备动手写代码的开发者。
 > **前置阅读**：[00-需求分析与架构设计]。
-> **关联教程**：[教程 01-Spring AI 框架入门]、[教程 02-ChatClient 与对话模型]、[教程 09-SSE 流式通信]；API 真实性以 [附录 05-SpringAI2-API基准] 为准。
+> **关联教程**：[教程 01-Spring AI 框架入门]、[教程 02-ChatClient 与对话模型]、[教程 10-SSE 流式通信]；API 真实性以 [附录 05-SpringAI2-API基准] 为准。
 
 ---
 
@@ -95,8 +95,7 @@ spring:
       base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
       api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
       chat:
-        options:
-          model: deepseek-chat
+        model: deepseek-chat          # Spring AI 2.0.0：无 options 中缀，参数直挂
 server:
   port: 8080
 ```
@@ -125,6 +124,7 @@ package com.shop.customer.web;
 import com.shop.customer.service.ChatService;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 @RestController
 @RequestMapping("/api")
@@ -136,9 +136,9 @@ public class ChatController {
         this.chatService = chatService;
     }
 
-    // 一次性对话
+    // 一次性对话（阻塞 LLM 调用收敛到 boundedElastic，不占 EventLoop）
     @PostMapping("/chat")
-    public String chat(@RequestParam String sessionId, @RequestBody String message) {
+    public Mono<String> chat(@RequestParam String sessionId, @RequestBody String message) {
         return chatService.chat(sessionId, message);
     }
 
@@ -158,6 +158,8 @@ package com.shop.customer.service;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 @Service
 public class ChatService {
@@ -168,11 +170,13 @@ public class ChatService {
         this.chatClient = chatClient;
     }
 
-    public String chat(String sessionId, String message) {
-        return chatClient.prompt()
+    // 同步一次性对话：call() 是阻塞调用，收敛到 boundedElastic（WebFlux 铁律）
+    public Mono<String> chat(String sessionId, String message) {
+        return Mono.fromCallable(() -> chatClient.prompt()
                 .user(message)
                 .call()
-                .content();
+                .content())
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     public Flux<String> chatStream(String sessionId, String message) {

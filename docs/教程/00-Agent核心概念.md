@@ -117,15 +117,24 @@ Model 是 Agent 的核心推理引擎。它负责：
 ```java
 // Spring AI 2.0.0
 // ChatModel 是所有对话模型的统一抽象
-public interface ChatModel extends Model<ChatModelRequest, ChatModelResponse> {
+// javap 实证（spring-ai-model-2.0.0）：interface ChatModel extends Model<Prompt, ChatResponse>, StreamingChatModel
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.StreamingChatModel;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.Model;
+import reactor.core.publisher.Flux;
 
-    ChatResponse call(ChatModelRequest request);
+public interface ChatModel extends Model<Prompt, ChatResponse>, StreamingChatModel {
 
-    Flux<ChatResponse> stream(ChatModelRequest request);
+    // 同步调用：输入 Prompt，返回完整 ChatResponse
+    ChatResponse call(Prompt prompt);
+
+    // 流式调用：返回逐 chunk 的 Flux<ChatResponse>（StreamingChatModel 提供的默认方法）
+    Flux<ChatResponse> stream(Prompt prompt);
 }
 ```
 
-Spring AI 为每个模型提供商提供了实现（`OpenAiChatModel`、`AnthropicChatModel` 等），切换模型只需改配置，不改代码。
+Spring AI 为每个模型提供商提供了实现（`OpenAiChatModel`、`DeepSeekChatModel` 等，javap 实证均存在于 2.0.0 jar），切换模型只需改配置，不改代码。
 
 > **遇到阻塞？→ [教程 01-Spring-AI框架入门]**：了解 Spring AI 2.0 的完整架构和项目搭建。
 > **遇到阻塞？→ [教程 02-ChatClient与对话模型]**：深入 ChatClient API 和 Prompt 工程。
@@ -200,7 +209,14 @@ graph LR
 ```java
 // Spring AI 2.0.0
 // ChatMemory 管理会话历史
+// 源码实证（spring-ai-model-2.0.0）：Builder 默认使用 InMemoryChatMemoryRepository；
+// 显式设置 chatMemoryRepository 可切换为 JDBC/Redis 等持久化仓库
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
+import org.springframework.ai.chat.memory.MessageWindowChatMemory;
+
 ChatMemory chatMemory = MessageWindowChatMemory.builder()
+    .chatMemoryRepository(new InMemoryChatMemoryRepository())  // 内存存储（重启丢失，生产请用 JDBC/Redis 仓库）
     .maxMessages(20)  // 保留最近 20 条消息
     .build();
 
@@ -311,9 +327,9 @@ Spring AI 2.0 的架构设计遵循三个原则：
 ```java
 // 切换模型只需改配置，代码零修改
 // application.yml
-// spring.ai.openai.chat.options.model: gpt-4o
+// spring.ai.openai.chat.model: gpt-4o        // 2.0.0 起配置项去掉 .options 中缀
 // 改为：
-// spring.ai.openai.chat.options.model: deepseek-chat
+// spring.ai.openai.chat.model: deepseek-chat
 ```
 
 `ChatModel`、`VectorStore`、`EmbeddingModel` 都是接口，有多套实现。你的业务代码面向接口编程，切换提供商改配置即可。
@@ -358,6 +374,14 @@ ChatClient client = ChatClient.builder(chatModel)
     .defaultTools(new OrderTools(), new FaqTools())               // 工具
     .build();
 ```
+> **需在 pom.xml 中添加依赖**（`QuestionAnswerAdvisor` 所在模块）：2.0.0 起模块名从 `spring-ai-advisors-vector-store` 改为 `spring-ai-vector-store-advisor`（老坐标已不存在）——版本走 `spring-ai-bom`，不写 `<version>`：
+>
+> ```xml
+> <dependency>
+>     <groupId>org.springframework.ai</groupId>
+>     <artifactId>spring-ai-vector-store-advisor</artifactId>
+> </dependency>
+> ```
 
 每个能力（记忆、RAG、日志、工具）都是一个 Advisor，通过链式组装。增删能力只需增删一行 Advisor 配置。
 

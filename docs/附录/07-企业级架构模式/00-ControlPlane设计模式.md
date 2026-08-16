@@ -1,6 +1,6 @@
 # Control Plane 设计模式：Agent 系统的管控分离架构
 
-> 「本文是对 [教程 14-管控分离] 的深入展开」
+> 「本文是对 [教程 20-管控分离] 的深入展开」
 
 > **定位**：系统讲解 Agent 系统中 Control Plane（管控面）与 Data Plane（数据面/执行面）的分离设计——架构职责划分、控制流与数据流的解耦、策略下发机制、以及 Spring AI 2.0 中的实现模式。
 >
@@ -239,12 +239,14 @@ public class ControlPlaneInterceptor implements Advisor {
             case DENY -> throw new PolicyDeniedException(decision.getReason());
             case RATE_LIMITED -> throw new RateLimitedException(decision.getLimit());
             case REDIRECT -> request = request.mutate()
-                .model(decision.getTargetModel())
+                // javap 实证：Builder 无 .model()——改模型需重建 Prompt 的 ChatOptions
+                .prompt(new Prompt(request.prompt().getInstructions(),
+                        OpenAiChatOptions.builder().model(decision.getTargetModel()).build()))
                 .build();
         }
 
-        // 3. 通过熔断器执行
-        return circuitBreaker.executeSupplier(() -> chain.nextAround(request));
+        // 3. 通过熔断器执行（javap 实证：链方法是 nextCall/nextStream，无 nextAround）
+        return circuitBreaker.executeSupplier(() -> chain.nextCall(request));
     }
 }
 ```
@@ -372,32 +374,50 @@ flowchart TB
 
 ```java
 @Component
-public class QuotaEnforcementAdvisor implements Advisor {
+public class QuotaEnforcementAdvisor implements CallAdvisor {
 
     private final QuotaService quotaService;
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request,
                                           CallAdvisorChain chain) {
-        String tenantId = request.context().get("tenantId");
-        int estimatedTokens = request.estimatedTokens();
+        String tenantId = (String) request.context().get("tenantId");
+        // javap 实证：ChatClientRequest 无 estimatedTokens()/metadata()/nextAround()——
+        // 估算需自行实现（基于 request.prompt().getContents()）
+        int estimatedTokens = estimateTokens(request);
 
         // 1. 检查配额
         if (!quotaService.tryConsume(tenantId, estimatedTokens)) {
+            // 短路：直接返回 ChatClientResponse（不调用 chain）
+            ChatResponse error = ChatResponse.builder()
+                    .generations(List.of(new Generation(
+                            new AssistantMessage("配额不足，请升级套餐或等待配额刷新"))))
+                    .build();
             return ChatClientResponse.builder()
-                .response("配额不足，请升级套餐或等待配额刷新")
-                .build();
+                    .chatResponse(error)
+                    .context(request.context())
+                    .build();
         }
 
         // 2. 执行请求
-        ChatClientResponse response = chain.nextAround(request);
+        ChatClientResponse response = chain.nextCall(request);
 
-        // 3. 回补实际消耗（估算 vs 实际）
-        int actualTokens = response.metadata().usage().totalTokens();
-        quotaService.adjust(tenantId, estimatedTokens, actualTokens);
+        // 3. 回补实际消耗（估算 vs 实际）——Usage.getTotalTokens()（javap 实证）
+        Usage usage = response.chatResponse().getMetadata().getUsage();
+        if (usage != null) {
+            quotaService.adjust(tenantId, estimatedTokens, usage.getTotalTokens());
+        }
 
         return response;
     }
+
+    private int estimateTokens(ChatClientRequest request) {
+        return estimate(request.prompt().getContents());  // 业务自实现
+    }
+
+    @Override
+    public String getName() { return "QuotaEnforcementAdvisor"; }
+}
 }
 ```
 
@@ -490,4 +510,4 @@ Control Plane 设计模式是 Agent 系统从"能跑"走向"企业级可治理"�
 5. **多租户隔离**——通过配额管理和模型路由，实现不同租户等级的资源隔离和差异化服务。
 6. **可观测性三支柱**——Metrics（指标监控）、Traces（分布式追踪）、Logs（结构化日志）统一采集，支持全链路审计。
 
-在 [教程 14-管控分离] 中，这些架构模式被应用于具体的 Agent 编排场景，本文提供了设计原则和组件级实现的完整蓝图。
+在 [教程 20-管控分离] 中，这些架构模式被应用于具体的 Agent 编排场景，本文提供了设计原则和组件级实现的完整蓝图。

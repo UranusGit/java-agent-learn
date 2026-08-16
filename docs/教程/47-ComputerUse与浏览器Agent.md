@@ -1,4 +1,4 @@
-# Computer Use 与浏览器 Agent
+# 47-Computer Use 与浏览器 Agent
 
 > **定位**：本文讲 Computer Use（让模型操作真实计算机：屏幕截图→视觉理解→鼠标键盘动作）与浏览器 Agent（Browser Use：操作真实浏览器完成导航、表单、抓取）两类"具身化"Agent 的工程实现。读者画像：已完成阶段 5~7 学习、掌握工具调用与 MCP 协议的进阶开发者。前置阅读：[教程 03-工具调用]、[教程 11-MCP协议]、[教程 31-安全与权限控制]。想深入前沿视角，看 [前沿 07-ComputerUse与AgenticBrowser]、[前沿 08-Agent技能包Skills]。
 
@@ -91,10 +91,12 @@ MCP 客户端依赖（需在 pom.xml 中添加依赖）：
 <!-- 需在 pom.xml 中添加依赖 -->
 <dependency>
     <groupId>org.springframework.ai</groupId>
-    <artifactId>spring-ai-starter-mcp-client-webflux</artifactId>
+    <artifactId>spring-ai-starter-mcp-client</artifactId>
     <version>2.0.0</version><!-- Spring AI 2.0.0 -->
 </dependency>
 ```
+
+> 注：MCP 客户端 starter 为 `spring-ai-starter-mcp-client`（无 `-webflux` 变体）；stdio 传输内置在 starter 中。若走 WebFlux HTTP 传输（streamable-http），另加 `org.springframework.ai:mcp-spring-webflux`。坐标见 [附录 05-SpringAI2-API基准/01-MCP真实API与坐标]。
 
 配置（`application.yml`）：
 

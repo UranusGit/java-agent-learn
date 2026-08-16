@@ -1,6 +1,6 @@
 # Tool Poisoning 攻击：工具投毒的攻防博弈
 
-> 「本文是对 [教程 25-安全权限 §4] 的深入展开」
+> 「本文是对 [教程 31-安全与权限控制 §4] 的深入展开」
 >
 > 技术栈：Spring Boot 4.1 + Spring AI 2.0.0 + WebFlux + Java 21
 
@@ -121,7 +121,7 @@ LLM 在多工具环境下可能选错，尤其是在描述暗示"新版更好"�
 
 ### 4.1 策略一：工具描述审查（注册时）
 
-在工具注册到 `ToolRegistry` 之前，对其描述做静态扫描，检测嵌入的越权指令。
+在工具通过 `ToolCallbackProvider` 或 `ChatClient.tools(...)` 注册之前，对其描述做静态扫描，检测嵌入的越权指令。
 
 ```java
 @Component
@@ -227,30 +227,44 @@ private boolean isAllowedDomain(String email) {
 记录每次工具调用的完整信息，建立正常行为基线，偏离基线触发告警。
 
 ```java
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
+
+// 2.0 真实落点：工具级审计/拦截挂在 ToolCallback 包装层（不存在 ToolAroundAdvisorChain；
+// 工具循环由 ToolCallingAdvisor + ToolCallingManager 驱动，逐次执行都会经过 ToolCallback.call）。
 @Component
-public class ToolAuditAdvisor implements CallAdvisor {
+public class ToolAuditCallback implements ToolCallback {
+    private final ToolCallback delegate;
     private final MeterRegistry meters;
     private final AuditLogger logger;
 
+    public ToolAuditCallback(ToolCallback delegate) {
+        this.delegate = delegate;
+    }
+
     @Override
-    public ChatClientResponse aroundTool(ChatClientRequest req, ToolAroundAdvisorChain chain) {
-        String tool = req.toolName();
-        String tenantId = req.context().get("tenantId");
+    public ToolDefinition getToolDefinition() {
+        return delegate.getToolDefinition();
+    }
 
-        // 1. 记录调用
-        logger.info("工具调用 tenant={} tool={} args={}",
-            tenantId, tool, req.toolArguments());
+    @Override
+    public String call(String toolInput) {
+        String tool = delegate.getToolDefinition().name();
 
-        // 2. 频率基线：单会话内某工具调用次数
-        int count = getSessionToolCount(tool);
-        meters.counter("agent.tool.calls",
-            "tool", tool, "tenant", tenantId).increment();
+        // 1. 记录调用（工具参数以 JSON 字符串形式进入）
+        logger.info("工具调用 tool={} args={}", tool, toolInput);
+
+        // 2. 频率基线：单会话内某工具调用次数（简化：进程内计数器）
+        long count = sessionToolCount(tool);
+        meters.counter("agent.tool.calls", "tool", tool).increment();
         if (count > getBaseline(tool)) {
             logger.warn("工具调用频率异常 tool={} count={}", tool, count);
             // 可触发人工确认或限流
         }
 
-        return chain.nextAroundTool(req);
+        // 3. 执行真实工具
+        return delegate.call(toolInput);
     }
 }
 ```
@@ -260,13 +274,16 @@ public class ToolAuditAdvisor implements CallAdvisor {
 对内部开发的工具做数字签名，注册时校验签名，防止供应链篡改。
 
 ```java
+// 概念代码：Spring AI 无 ToolRegistry 类；用自建注册表（Map）管理已签名工具
+private final Map<String, ToolCallback> signedTools = new ConcurrentHashMap<>();
+
 public void registerSignedTool(ToolCallback tool, byte[] signature) {
     byte[] toolHash = sha256(tool.getToolDefinition().description() +
                               tool.getToolDefinition().name());
     if (!verify(toolHash, signature, TRUSTED_PUBLIC_KEY)) {
         throw new SecurityException("工具签名校验失败: " + tool.getToolDefinition().name());
     }
-    registry.add(tool);
+    signedTools.put(tool.getToolDefinition().name(), tool);
 }
 ```
 
@@ -383,4 +400,4 @@ Tool Poisoning 是 Agent 安全体系中**最易被忽视、却最致命**的攻
 
 > 来源参考：[企业级 Agent 落地，绕不开的 4 个工程问题](https://www.infoq.cn/article/qKW5Yu1ORiqMmX6mlLJ6) — 报告指出 94% 的 Agent 平台可被工具投毒攻击。这个数字本身就是对"工具安全必须作为头等大事"的最强警告。
 
-把上述防御策略落地到 Spring AI 2.0 的 `ToolRegistry` + Advisor 链（CallAdvisor）+ `ToolCallback` 抽象上，工具投毒的风险就能被压缩到可接受的范围。但记住——安全永远是过程而非终点，新的攻击手法会持续出现，红队用例库必须随之更新。
+把上述防御策略落地到 Spring AI 2.0 的 `ToolCallbackProvider` 工具注册、`ToolCallback` 包装层（审计/签名/HITL 的挂载点）、以及 `ToolCallingAdvisor` + `ToolCallingManager` 驱动的工具循环上，工具投毒的风险就能被压缩到可接受的范围。但记住——安全永远是过程而非终点，新的攻击手法会持续出现，红队用例库必须随之更新。

@@ -136,7 +136,7 @@ graph TB
     style 视觉Agent fill:#e3f2fd
 ```
 
-这个"感知-决策-行动-验证"循环是视觉 Agent 的核心模式。注意它与 [教程 06-ReAct 推理模式](../教程/07-ReAct推理模式.md) 中的 Thought-Action-Observation 循环是同构的——只是 Observation 从文本变成了图像。
+这个"感知-决策-行动-验证"循环是视觉 Agent 的核心模式。注意它与 [教程 07-ReAct 推理模式](../教程/07-ReAct推理模式.md) 中的 Thought-Action-Observation 循环是同构的——只是 Observation 从文本变成了图像。
 
 ### 2.3 典型应用：自动化测试 Agent
 
@@ -491,7 +491,7 @@ graph TB
     style GEN_I fill:#ffab91
 ```
 
-这要求多模态 Agent 必须有严格的成本治理——[教程 21-成本治理与 Token 计量](../教程/27-成本治理与Token计量.md) 中的策略需要扩展到多模态场景。
+这要求多模态 Agent 必须有严格的成本治理——[教程 27-成本治理与 Token 计量](../教程/27-成本治理与Token计量.md) 中的策略需要扩展到多模态场景。
 
 ---
 

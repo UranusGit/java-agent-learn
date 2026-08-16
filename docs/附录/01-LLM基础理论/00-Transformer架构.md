@@ -230,7 +230,7 @@ flowchart LR
 - **Eval 评估**：`temperature=0`（贪心），保证可复现。
 - **生产环境避免极端值**：`temperature>1.5` 经常产生乱码，`top_p<0.1` 容易死循环。
 
-Spring AI 通过 `ChatOptions` / `OpenAiChatOptions` / `AnthropicChatOptions` 暴露这些参数，建议把它们做成**按场景预设的 profile**，而不是让业务代码每次手填。
+Spring AI 通过 `ChatOptions` / `OpenAiChatOptions` / `DeepSeekChatOptions`（本体系经 `spring-ai-starter-model-openai` 走 DeepSeek 兼容通道）暴露这些参数，建议把它们做成**按场景预设的 profile**，而不是让业务代码每次手填。
 
 ## 10. KV Cache：推理加速的关键
 
@@ -285,41 +285,39 @@ KV cache 是 LLM 推理的核心优化，但也带来两个工程问题：
 ```java
 /**
  * 按场景预设解码参数 profile。
- * 把这些 profile 做成 Bean，业务代码注入即可，避免散落的硬编码。
+ * 每个方法返回 Options Builder，供 ChatClient.prompt().options(...) 直接消费
+ * （2.0 的 options 接收的是 ChatOptions$Builder，不是构建好的实例）。
  */
 public class DecodeProfiles {
 
     /** 代码生成 / 工具调用：求稳定，低温度 */
-    public static ChatOptions codeGeneration() {
+    public static OpenAiChatOptions.Builder codeGeneration() {
         return OpenAiChatOptions.builder()
-            .withTemperature(0.2)
-            .withTopP(0.9)
-            .withMaxTokens(4096)
-            .withFrequencyPenalty(0.0)
-            .build();
+            .temperature(0.2)            // 2.0 Builder 方法无 1.x 的 with 前缀
+            .topP(0.9)
+            .maxTokens(4096)
+            .frequencyPenalty(0.0);
     }
 
     /** 创意写作：求多样，高温度 */
-    public static ChatOptions creativeWriting() {
+    public static OpenAiChatOptions.Builder creativeWriting() {
         return OpenAiChatOptions.builder()
-            .withTemperature(0.9)
-            .withTopP(0.95)
-            .withFrequencyPenalty(0.5)   // 抑制重复用词
-            .withPresencePenalty(0.3)    // 鼓励主题发散
-            .build();
+            .temperature(0.9)
+            .topP(0.95)
+            .frequencyPenalty(0.5)       // 抑制重复用词
+            .presencePenalty(0.3);       // 鼓励主题发散
     }
 
     /** Eval 评估：贪心，可复现 */
-    public static ChatOptions eval() {
+    public static OpenAiChatOptions.Builder eval() {
         return OpenAiChatOptions.builder()
-            .withTemperature(0.0)        // 贪心解码
-            .withTopP(1.0)
-            .withSeed(42L)               // 固定随机种子
-            .build();
+            .temperature(0.0)            // 贪心解码
+            .topP(1.0)
+            .seed(42);                   // 固定随机种子（Integer）
     }
 }
 
-// 使用示例
+// 使用示例：options(...) 接收 Builder
 @Service
 public class CodeAgentService {
     private final ChatClient client;

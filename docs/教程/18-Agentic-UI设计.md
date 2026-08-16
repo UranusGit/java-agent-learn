@@ -1,8 +1,8 @@
-# 44-Agentic UI 设计
+# 18-Agentic UI 设计
 
-> **定位**：本文是 React 路线的收官篇——从"渲染一条文本流"进化到"渲染一个 Agent 的完整行为"：事件协议设计、思考过程展示、工具调用透明化、生成式 UI（JSON→组件）、HITL 审批交互。读者画像：已读完 [教程 41-43]，能实现流式对话界面的开发者。前置阅读：[教程 17-React与SSE流式UI]、后端事件源见 [教程 19-流式工具调用与事件协议]。
+> **定位**：本文是 React 路线的收官篇——从"渲染一条文本流"进化到"渲染一个 Agent 的完整行为"：事件协议设计、思考过程展示、工具调用透明化、生成式 UI（JSON→组件）、HITL 审批交互。读者画像：已读完 [教程 15-17]，能实现流式对话界面的开发者。前置阅读：[教程 17-React与SSE流式UI]、后端事件源见 [教程 19-流式工具调用与事件协议]。
 >
-> **为什么这是架构师课题**：Agentic UI 的事件协议是前后端共同的架构契约——它决定了后端 ToolCallingManager 的拦截点暴露什么信息、HITL 挂起如何恢复、工具参数是否泄露敏感数据。协议设计错了，前后端要一起返工。本文与 [教程 45] 构成同一契约的两端视角。
+> **为什么这是架构师课题**：Agentic UI 的事件协议是前后端共同的架构契约——它决定了后端 ToolCallingManager 的拦截点暴露什么信息、HITL 挂起如何恢复、工具参数是否泄露敏感数据。协议设计错了，前后端要一起返工。本文与 [教程 19-流式工具调用与事件协议] 构成同一契约的两端视角。
 
 ---
 
@@ -50,7 +50,7 @@ flowchart TB
 
 ### 2.1 事件模型定义
 
-这是本体系前后端统一的 Agent 事件协议（TypeScript 侧定义；后端 sealed interface 镜像见 [教程 45 §2]）：
+这是本体系前后端统一的 Agent 事件协议（TypeScript 侧定义；后端 sealed interface 镜像见 [教程 19-流式工具调用与事件协议 §2]）：
 
 ```ts
 // 每个事件都有：id（单调递增，用于断点恢复去重）+ type
@@ -68,7 +68,7 @@ type AgentEvent =
   // —— 工具调用 ——
   | (BaseEvent & { type: 'tool_start';
       toolCallId: string; name: string;
-      args: Record<string, unknown>;          // 后端已脱敏（DLP，见附录 08-02）
+      args: Record<string, unknown>;          // 后端已脱敏（DLP，见 [附录 09-Agent安全深度/02-数据泄露防护]）
       parallelGroup?: number })               // 同组并行工具
   | (BaseEvent & { type: 'tool_progress'; toolCallId: string; message: string })  // 长任务进度
   | (BaseEvent & { type: 'tool_end';
@@ -96,7 +96,7 @@ type AgentEvent =
 | 决策 | 理由 | 备选与取舍 |
 |------|------|-----------|
 | 事件用 `type` 可辨识联合 | 前端 switch 穷尽检查、后端 sealed interface 一一映射 | 无 schema 的裸 JSON——类型不安全，弃 |
-| `id` 单调递增进每条事件 | 断线重连去重与恢复（[教程 43 §3.2]） | 时间戳做 id——时钟偏移不可靠，弃 |
+| `id` 单调递增进每条事件 | 断线重连去重与恢复（[教程 17-React与SSE流式UI §3.2]） | 时间戳做 id——时钟偏移不可靠，弃 |
 | 思考与输出分开（thought/token） | UI 折叠默认不同：思考默认收起、输出默认展开 | 混在一条流——前端无法区分渲染，弃 |
 | 工具参数完整下发（脱敏后） | 用户需要看"Agent 要用什么参数执行"才能审批 | 只发工具名——审批变成盲签，不可接受 |
 | `resultPreview` 而非完整结果 | 工具结果可能巨大（文件/列表），防前端卡死；详情按需拉取 | 全量推送——渲染内存失控，弃 |
@@ -145,7 +145,7 @@ function agentRoundReducer(state: AgentRoundState, e: AgentEvent): AgentRoundSta
       return { ...state, status: 'running', pendingApproval: null };
 
     case 'token':
-      return { ...state, answerText: state.answerText + e.content };  // 生产中走 rAF 缓冲（教程 43 §4）
+      return { ...state, answerText: state.answerText + e.content };  // 生产中走 rAF 缓冲（教程 17 §4）
 
     case 'round_end':
       return { ...state, status: 'done', usage: e.usage, finishReason: e.finishReason };
@@ -154,7 +154,7 @@ function agentRoundReducer(state: AgentRoundState, e: AgentEvent): AgentRoundSta
       return { ...state, status: e.recoverable ? 'running' : 'error' };
 
     default:
-      return exhaustiveCheck(e);  // 编译期穷尽保护（[教程 41 §4.2]）
+      return exhaustiveCheck(e);  // 编译期穷尽保护（[教程 15 §4.2]）
   }
 }
 ```
@@ -228,7 +228,7 @@ function ToolTimeline({ toolCalls }: { toolCalls: ToolCallInfo[] }) {
 }
 ```
 
-**后端配合点**：`tool_progress` 事件要求长任务工具通过 `ToolContext` 或日志通道回报进度（实现见 [教程 45 §4]）。前端没有魔法——进度可见性是后端事件喂出来的。
+**后端配合点**：`tool_progress` 事件要求长任务工具通过 `ToolContext` 或日志通道回报进度（实现见 [教程 19-流式工具调用与事件协议 §3]）。前端没有魔法——进度可见性是后端事件喂出来的。
 
 ### 3.3 审批卡：HITL 的前端形态
 
@@ -265,7 +265,7 @@ function ApprovalCard({ approval, onRespond }: {
 
 ```mermaid
 flowchart LR
-    LLM["LLM 结构化输出<br/>(教程 12)"] --> SCHEMA["UI Schema<br/>(受限 DSL，非任意 HTML)"]
+    LLM["LLM 结构化输出<br/>(教程 13)"] --> SCHEMA["UI Schema<br/>(受限 DSL，非任意 HTML)"]
     SCHEMA -->|SSE payload| REG["前端组件注册表<br/>type → 组件"]
     REG --> C1["OrderTable"]
     REG --> C2["ChartCard"]
@@ -324,7 +324,7 @@ sequenceDiagram
 
     FE->>BE: POST /chat (SSE 开始)
     BE->>FE: tool_start / approval_request 事件
-    Note over BE: 挂起：轮次状态 Checkpoint 化<br/>（教程 35 §Checkpoint）
+    Note over BE: 挂起：轮次状态 Checkpoint 化<br/>（教程 40 §2 检查点）
     BE->>FE: round_end(finishReason="awaiting_approval")
     Note over FE: 连接正常关闭，UI 显示审批卡
 
@@ -365,7 +365,7 @@ sequenceDiagram
 - 工具调用密集的 Agent（客服工单、数据分析、运维巡检）——工具卡片/并行组直接适用
 - 有危险操作需审批的 Agent（退款、删除、变更）——审批卡 + 挂起恢复
 - 结果天然结构化的场景（报表、订单、图表）——生成式 UI
-- 高风险行业（金融/医疗）——过程透明与审计备注是合规需求（[教程 38]）
+- 高风险行业（金融/医疗）——过程透明与审计备注是合规需求（[教程 43-Agent治理与合规框架]）
 
 ### 不适用场景
 

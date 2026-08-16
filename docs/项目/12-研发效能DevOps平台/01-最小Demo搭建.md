@@ -117,8 +117,7 @@ spring:
       base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
       api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
       chat:
-        options:
-          model: deepseek-chat
+        model: deepseek-chat          # Spring AI 2.0.0：无 options 中缀，参数直挂
     vectorstore:
       pgvector:
         index-type: HNSW
@@ -197,7 +196,7 @@ public class RagConfig {
 
     @Bean
     public ChatClient chatClient(ChatClient.Builder builder, VectorStore vectorStore) {
-        // 声明式 RAG：每次请求自动检索 + 注入上下文。真实包路径是 ...advisor.vectorstore（[附录 12-00 §1.4]）
+        // 声明式 RAG：每次请求自动检索 + 注入上下文。真实包路径是 ...advisor.vectorstore（[附录 05-00 §1.4]）
         QuestionAnswerAdvisor ragAdvisor = QuestionAnswerAdvisor.builder(vectorStore)
                 .searchRequest(SearchRequest.builder()
                         .topK(5)
@@ -212,6 +211,14 @@ public class RagConfig {
     }
 }
 ```
+> **需在 pom.xml 中添加依赖**（`QuestionAnswerAdvisor` 所在模块）：2.0.0 起模块名从 `spring-ai-advisors-vector-store` 改为 `spring-ai-vector-store-advisor`（老坐标已不存在）——版本走 `spring-ai-bom`，不写 `<version>`：
+>
+> ```xml
+> <dependency>
+>     <groupId>org.springframework.ai</groupId>
+>     <artifactId>spring-ai-vector-store-advisor</artifactId>
+> </dependency>
+> ```
 
 ### 3.6 `JavaChunk.java`（AST 感知分块载体）
 
@@ -313,7 +320,7 @@ public class FtsStore {
                     plainto_tsquery('english', :query)) DESC
                 LIMIT :topK
                 """;
-        // query(RowMapper) 直接返回 List<T>（JdbcClient 真实 API）
+        // Boot 4.1 JdbcClient：query(RowMapper) 返回 MappedQuerySpec，.list() 得到 List<Document>（javap 实证）
         return jdbcClient.sql(sql)
                 .param("query", query)
                 .param("repo", repo)
@@ -322,11 +329,12 @@ public class FtsStore {
                     Map<String, Object> meta = new HashMap<>();
                     meta.put("file_path", rs.getString("file_path"));
                     meta.put("repo", repo);
-                    return Document.builder()            // 2.0 式 builder（[附录 12-02 §4]）
+                    return Document.builder()            // 2.0 式 builder（[附录 05-02 §4]）
                             .text(rs.getString("body"))
                             .metadata(meta)
                             .build();
-                });
+                })
+                .list();
     }
 }
 ```
@@ -362,7 +370,7 @@ public class CodeSearchService {
 
     /** 三路混合检索（v1 先做向量 + FTS 两路，v2 加符号图）。返回按 RRF 分数降序的命中。 */
     public List<CodeHit> search(String query, String repo, int topK) {
-        // ① 向量检索（语义）——pre-filter 按 repo 元数据过滤，防跨仓泄漏（[教程 25 §权限前置]）
+        // ① 向量检索（语义）——pre-filter 按 repo 元数据过滤，防跨仓泄漏（[教程 31-安全与权限控制 §数据不出域]）
         List<Document> semantic = vectorStore.similaritySearch(
                 SearchRequest.builder()
                         .query(query)
@@ -500,7 +508,7 @@ public class CodeQaService {
                 .system("你是资深 Java 工程师，基于给定代码片段回答问题。引用来源必须是 file_path 或 file:line。")
                 .user("问题：" + question + "\n\n代码片段：\n" + hitsToPrompt(hits))
                 .call()
-                .entity(CodeAnswer.class))               // 真实重载（[附录 12-02 §2]）
+                .entity(CodeAnswer.class))               // 真实重载（[附录 05-02 §2]）
             .subscribeOn(Schedulers.boundedElastic());   // 同步 LLM 调用放 boundedElastic，EventLoop 不 block
     }
 
@@ -580,4 +588,4 @@ mvn spring-boot:run
 
 ## 7. 总结
 
-v1 用完整可手写代码立住了代码库 RAG 地基：`JavaChunkIndexer` 做 AST 感知分块（胜负手）、`FtsStore` 补关键词精确路、`CodeSearchService` 用 RRF 融合两路、`CodeQaService` 注入上下文生成带引用溯源的答案。**所有 API 均按 [附录 12] 基准书写**（`QuestionAnswerAdvisor` 真实包路径、`SearchRequest.builder()`、`Document.builder()`、`entity(Class)`）。
+v1 用完整可手写代码立住了代码库 RAG 地基：`JavaChunkIndexer` 做 AST 感知分块（胜负手）、`FtsStore` 补关键词精确路、`CodeSearchService` 用 RRF 融合两路、`CodeQaService` 注入上下文生成带引用溯源的答案。**所有 API 均按 [附录 05-SpringAI2-API基准] 书写**（`QuestionAnswerAdvisor` 真实包路径、`SearchRequest.builder()`、`Document.builder()`、`entity(Class)`）。

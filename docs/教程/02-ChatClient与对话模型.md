@@ -72,8 +72,7 @@ public class ChatClientConfig {
                 .defaultSystem("你是一个专业的 Java 架构师助手，回答简洁准确。")
                 .defaultOptions(OpenAiChatOptions.builder()
                         .temperature(0.3)  // 低温度=更确定
-                        .maxTokens(2000)
-                        .build())
+                        .maxTokens(2000))   // Spring AI 2.0.0：defaultOptions 直接收 Builder（不带 .build()）
                 .build();
     }
 }
@@ -111,7 +110,7 @@ public class MultiChatClientConfig {
                 .defaultSystem("你是一个严格的代码审查专家，逐行检查代码问题")
                 .defaultOptions(OpenAiChatOptions.builder()
                         .temperature(0.0)  // 代码审查需要确定性
-                        .build())
+                        )
                 .build();
     }
 }
@@ -239,6 +238,10 @@ String answer = chatClient.prompt()
 ### 5.1 同步调用（`call()`）
 
 ```java
+// Spring AI 2.0.0
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.metadata.Usage;
+
 // 等待 LLM 完整回复后返回
 String content = chatClient.prompt()
         .user("写一个冒泡排序")
@@ -252,9 +255,10 @@ ChatResponse response = chatClient.prompt()
         .chatResponse();
 
 // 从 metadata 中提取 Token 使用量
+// javap 实证：Usage 真实方法为 getPromptTokens()/getCompletionTokens()/getTotalTokens()
 Usage usage = response.getMetadata().getUsage();
-System.out.println("输入 Token: " + usage.getInputTokens());
-System.out.println("输出 Token: " + usage.getOutputTokens());
+System.out.println("输入 Token: " + usage.getPromptTokens());
+System.out.println("输出 Token: " + usage.getCompletionTokens());
 ```
 
 ### 5.2 流式调用（`stream()`）
@@ -343,16 +347,29 @@ List<Filmography> result = chatClient.prompt()
 
 ### 6.3 Schema 验证 + 自动重试（Spring AI 2.0 新特性）
 
+`entity(Class, Consumer<EntityParamSpec>)` 是真实重载（javap 实证），`EntityParamSpec` 提供 `validateSchema()` 与 `useProviderStructuredOutput()`：
+
 ```java
-// 真实重载：entity(Class) —— 框架保证 JSON→对象映射；语义验证由业务层自实现
+// Spring AI 2.0.0
+import org.springframework.ai.chat.client.advisor.StructuredOutputValidationAdvisor;
+
+// 方式一：entity(Class, spec) + validateSchema() —— 按 Class 生成 JSON Schema 并校验
 Filmography result = chatClient.prompt()
         .user("生成一个演员的电影作品列表")
         .call()
-        .entity(Filmography.class);
+        .entity(Filmography.class, spec -> spec.validateSchema());
+```
 
-// 注意：本体系基准中明确——entity(Class, spec -> ...) 的 spec-lambda
-// 自动验证/重试形态为虚构 API，不真实存在（见附录 05-SpringAI2-API基准/02 §2）
-// 需要 Schema 验证与重试 → 业务层自实现（参考教程 12 §5.3 的 retry 封装）
+要"校验失败自动重试"，挂 `StructuredOutputValidationAdvisor`（javap 实证：`builder().outputType(Type).maxRepeatAttempts(int)`）：
+
+```java
+// 方式二：StructuredOutputValidationAdvisor 显式开启 Schema 校验 + 重试
+ChatClient client = ChatClient.builder(chatModel)
+        .defaultAdvisors(StructuredOutputValidationAdvisor.builder()
+                .outputType(Filmography.class)  // 输出目标类型
+                .maxRepeatAttempts(2)           // 校验失败自动重试最多 2 次
+                .build())
+        .build();
 ```
 
 > **遇到阻塞？→ [教程 13-结构化输出]**：JSON Schema、BeanOutputConverter、Provider Native Structured Output。
@@ -411,7 +428,7 @@ ChatClient 的所有 `default*` 配置都可以在运行时覆盖：
 // 构建时设置默认值
 ChatClient client = ChatClient.builder(chatModel)
         .defaultSystem("你是通用助手")
-        .defaultOptions(OpenAiChatOptions.builder().temperature(0.7).build())
+        .defaultOptions(OpenAiChatOptions.builder().temperature(0.7))   // 2.0.0：传 Builder，不带 .build()
         .build();
 
 // 运行时覆盖
@@ -419,8 +436,7 @@ String answer = client.prompt()
         .system("你现在是一个 Python 专家")  // 覆盖 defaultSystem
         .options(OpenAiChatOptions.builder()
                 .temperature(0.0)  // 覆盖 temperature
-                .model("deepseek-reasoner")  // 切换模型
-                .build())
+                .model("deepseek-reasoner"))  // 切换模型（2.0.0：options 同样收 Builder）
         .user("写一个快速排序")
         .call()
         .content();

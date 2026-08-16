@@ -78,12 +78,12 @@ management:
 
 spring:
   ai:
-    model:
-      chat:
-        observations:
-          # 确保观测指标已启用
-          include-prompt-content: false  # 出于隐私，不记录 Prompt 内容
-          include-completion-content: false
+    chat:
+      observations:
+        # 观测属性前缀 spring.ai.chat.observations（javap 实证 ChatObservationProperties）
+        # 真实键为 log-prompt / log-completion / include-error-logging，无 include-prompt-content
+        log-prompt: false       # 出于隐私，不记录 Prompt 内容
+        log-completion: false   # 出于隐私，不记录补全内容
 ```
 
 ### 2.3 从 ChatResponse 中读取 Token 用量
@@ -115,6 +115,7 @@ public class TokenUsageExample {
 
 ```java
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.memory.ChatMemory;
 import reactor.core.publisher.Mono;
 
 public class StreamingTokenMeter {
@@ -172,7 +173,10 @@ graph LR
 这是成本归因的核心组件——在每次 LLM 调用前后拦截，记录 Token 消耗并归因到正确的租户、用户和会话：
 
 ```java
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.*;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.core.Ordered;
 import reactor.core.publisher.Flux;
@@ -206,7 +210,7 @@ public class TokenMeteringAdvisor implements CallAdvisor, StreamAdvisor {
         ChatClientResponse response = chain.nextCall(request);
         long duration = System.nanoTime() - startTime;
 
-        Usage usage = response.response().getMetadata().getUsage();
+        Usage usage = response.chatResponse().getMetadata().getUsage();
         var record = buildRecord(request, usage, duration);
         meteringService.record(record);
 
@@ -221,7 +225,7 @@ public class TokenMeteringAdvisor implements CallAdvisor, StreamAdvisor {
 
         return chain.nextStream(request)
                 .doOnNext(response -> {
-                    var usage = response.response().getMetadata().getUsage();
+                    var usage = response.chatResponse().getMetadata().getUsage();
                     if (usage != null && usage.getTotalTokens() > 0) {
                         usageAccumulator.update(usage);
                     }
@@ -236,13 +240,14 @@ public class TokenMeteringAdvisor implements CallAdvisor, StreamAdvisor {
 
     private TokenUsageRecord buildRecord(ChatClientRequest request, Usage usage,
                                           long durationNanos) {
-        var ctx = request.context();
+        var ctx = request.context();  // Map<String,Object>：单参 get + 强转
         return new TokenUsageRecord(
-                ctx.get("tenantId", String.class),
-                ctx.get("userId", String.class),
-                ctx.get(ChatMemory.CONVERSATION_ID, String.class),
-                request.chatOptions() != null
-                        ? request.chatOptions().getModel()
+                (String) ctx.get("tenantId"),
+                (String) ctx.get("userId"),
+                (String) ctx.get(ChatMemory.CONVERSATION_ID),
+                // 2.0 ChatClientRequest 无 chatOptions()：模型信息从 prompt().getOptions() 取
+                request.prompt().getOptions() != null
+                        ? request.prompt().getOptions().getModel()
                         : "default",
                 usage.getPromptTokens(),
                 usage.getCompletionTokens(),
@@ -353,6 +358,13 @@ graph TB
 ### 4.2 预算检查 Advisor
 
 ```java
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatOptions;
+
 public class BudgetGuardAdvisor implements CallAdvisor {
 
     private final TokenQuotaService quotaService;
@@ -361,7 +373,7 @@ public class BudgetGuardAdvisor implements CallAdvisor {
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request,
                                        CallAdvisorChain chain) {
-        String tenantId = request.context().get("tenantId", String.class);
+        String tenantId = (String) request.context().get("tenantId"); // Spring AI 2.0.0：context() 是 Map，取值后强转
         int estimatedTokens = estimateTokens(request);
 
         if (!quotaService.canConsume(tenantId, estimatedTokens)) {
@@ -378,15 +390,17 @@ public class BudgetGuardAdvisor implements CallAdvisor {
         var downgradedOptions = OpenAiChatOptions.builder()
                 .model("gpt-4o-mini")
                 .build();
-        return ChatClientRequest.builder()
-                .from(original)
-                .chatOptions(downgradedOptions)
+        // 2.0 ChatClientRequest.Builder 无 from()/chatOptions()：
+        // 用 mutate() 以新 Prompt（携带降级后的 Options）重建请求
+        return original.mutate()
+                .prompt(new Prompt(original.prompt().getInstructions(), downgradedOptions))
                 .build();
     }
 
     private int estimateTokens(ChatClientRequest request) {
         // 粗略估算：每个英文单词约 1.3 个 Token，中文约 1-2 个 Token
-        int messageTokens = request.messages().stream()
+        // 2.0 ChatClientRequest 无 messages()：消息从 prompt().getInstructions() 取
+        int messageTokens = request.prompt().getInstructions().stream()
                 .mapToInt(m -> (int) (m.getText().length() * 0.5))
                 .sum();
         return messageTokens + 500;  // 预留输出空间
@@ -542,13 +556,14 @@ graph TB
 部分模型供应商（如 Anthropic Claude）支持 Prompt Caching——相同前缀的 Prompt 只计算一次费用，后续调用以极低价格复用。Spring AI 通过 ChatOptions 传递缓存控制参数：
 
 ```java
-import org.springframework.ai.anthropic.AnthropicChatOptions;
+import org.springframework.ai.chat.client.ChatClient;
 
 // ⚠ 修正: systemSpec.cacheLevel("aggressive") 是虚构 API——Prompt Caching
 // 不在 SystemSpec 上配置，而是按供应商在消息级设置（Anthropic 的 cache_control
 // 需要构造 Message 时声明，见附录 10-语义缓存与性能/01-Prompt缓存与KVCache §供应商差异）
 // 正确姿势（示意）: 在 ChatModelRequest 构造时按供应商配置缓存断点，
 // 或直接依赖供应商默认缓存策略；业务侧控制的是 System Prompt 前缀稳定性
+// 示意：claudeModel 为注入的 ChatModel（此处不引入 Anthropic 专属 API）
 ChatClient client = ChatClient.builder(claudeModel)
         .defaultSystem("你是企业级客服助手。以下是企业知识库：\n"
                       + knowledgeBaseService.getFullKnowledgeBase())

@@ -173,7 +173,7 @@ sequenceDiagram
 ### 3.2 Advisor 接口
 
 ```java
-public interface BaseAdvisor extends CallAdvisor, StreamAdvisor {   // 简化示意模型——2.0 中直接实现 CallAdvisor/StreamAdvisor（见附录 12 基准）
+public interface BaseAdvisor extends CallAdvisor, StreamAdvisor {   // 简化示意模型——真实 2.0.0 中 BaseAdvisor 存在（before/after 带 AdvisorChain 参数），也可直接实现 CallAdvisor/StreamAdvisor（javap 实证；真实签名见 [附录 05-SpringAI2-API基准 §3]）
 
     default String getName() {
         return this.getClass().getSimpleName();

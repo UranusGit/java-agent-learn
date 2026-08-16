@@ -89,6 +89,8 @@ graph TB
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-data-jpa</artifactId>
 </dependency>
+<!-- ⚠ 以下依赖需显式添加（本地未下载，未 javap 实证）：spring-boot-starter-data-jpa -->
+
 
 <dependency>
     <groupId>com.h2database</groupId>
@@ -254,7 +256,7 @@ graph TB
 package com.example.mcp.gateway.pool;
 
 import com.example.mcp.gateway.model.ToolInfo;
-import io.modelcontextprotocol.sdk.mcp.McpSyncClient;   // ⚠ MCP SDK 真实类型（附录 12-01）
+import io.modelcontextprotocol.client.McpSyncClient;   // ⚠ MCP SDK 真实类型（附录 05-01）
 
 import java.time.Instant;
 import java.util.List;
@@ -274,7 +276,7 @@ public class McpConnection {
     }
 
     private final String serverName;
-    private final McpSyncClient client;   // ⚠ MCP SDK 类型（附录 12-01）
+    private final McpSyncClient client;   // ⚠ MCP SDK 类型（附录 05-01）
     private volatile Status status;
     private final Instant connectedAt;
     private Instant lastHealthCheck;
@@ -325,7 +327,7 @@ public class McpConnection {
 ```java
 package com.example.mcp.gateway.pool;
 
-import io.modelcontextprotocol.sdk.mcp.McpSyncClient;   // ⚠ MCP SDK 真实类型（附录 12-01）
+import io.modelcontextprotocol.client.McpSyncClient;   // ⚠ MCP SDK 真实类型（附录 05-01）
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -414,7 +416,7 @@ package com.example.mcp.gateway.pool;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.modelcontextprotocol.sdk.mcp.McpSyncClient;   // ⚠ MCP SDK 真实类型（附录 12-01）
+import io.modelcontextprotocol.client.McpSyncClient;   // ⚠ MCP SDK 真实类型（附录 05-01）
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.io.ClassPathResource;
@@ -427,7 +429,7 @@ import java.util.List;
  * 启动时将注入的 List<McpSyncClient> 注册到连接池。
  *
  * ⚠ 修正（审计 2026-08-14）: 真实注入是 List<McpSyncClient>（每个 Server 一个），
- * 不是虚构的 Map<String, McpClient>（附录 12-01 §2.1）。
+ * 不是虚构的 Map<String, McpClient>（附录 05-01 §2.1）。
  * serverName 从 mcp-servers.json 的键顺序解析（与 starter 的注入顺序一致）。
  */
 @Component
@@ -536,7 +538,7 @@ public class ToolDiscoveryService {
      * 刷新单个连接的工具列表。
      */
     private void refreshConnection(McpConnection conn) {
-        // ⚠ 修正: listTools() 返回 ListToolsResult，需解包 .tools()（附录 12-01 §2.2）
+        // ⚠ 修正: listTools() 返回 ListToolsResult，需解包 .tools()（附录 05-01 §2.2）
         var tools = conn.getClient().listTools().tools();
 
         // 先清除该 Server 的旧工具
@@ -664,7 +666,7 @@ import com.example.mcp.gateway.pool.McpConnection;
 import com.example.mcp.gateway.registry.ToolDiscoveryService;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
-import io.modelcontextprotocol.sdk.mcp.spec.McpSchema.CallToolRequest;   // ⚠ MCP SDK 嵌套类型
+import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;   // ⚠ MCP SDK 嵌套类型
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -989,7 +991,7 @@ public class AuditLog {
 ```java
 package com.example.mcp.gateway.audit;
 
-import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaRepository;   // ⚠ 需引入依赖 org.springframework.boot:spring-boot-starter-data-jpa（本地未下载，未 javap 实证；以引入依赖后 javap 输出为准）
 
 import java.util.List;
 
@@ -1284,8 +1286,8 @@ curl http://localhost:8080/actuator/prometheus | grep mcp_tool
 ### ADR 03-04：serverName 从 `mcp-servers.json` 键顺序解析，而非伪造注册机制
 
 - **决策**：`PoolInitializer` 注入 `List<McpSyncClient>`，serverName 从配置文件键顺序读取（与 starter 注入顺序一致），失败退化为 `server-i`
-- **备选方案**：A. 虚构 `Map<String, McpClient>` 注入（不存在的注册机制，附录 12-01 §2.3 明确禁止）；B. 直接注入聚合 `ToolCallbackProvider`（丢失按 Server 路由能力）
-- **取舍理由**：附录 12-01 基准确认真实注入形态是 `List<McpSyncClient>`；按配置键序配对是唯一不依赖框架内部命名的可行方案
+- **备选方案**：A. 虚构 `Map<String, McpClient>` 注入（不存在的注册机制，附录 05-01 §2.3 明确禁止）；B. 直接注入聚合 `ToolCallbackProvider`（丢失按 Server 路由能力）
+- **取舍理由**：附录 05-01 基准确认真实注入形态是 `List<McpSyncClient>`；按配置键序配对是唯一不依赖框架内部命名的可行方案
 
 ---
 

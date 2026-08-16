@@ -170,12 +170,13 @@ import com.aiops.platform.ingest.KafkaConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
-import org.springframework.kafka.core.reactive.ReactiveKafkaProducerTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * 接收 Alertmanager webhook：规范化 → 进 Kafka 事件流。
@@ -188,11 +189,11 @@ public class AlertWebhookController {
     private static final String TOPIC = "ops.alerts";
 
     private final AlertNormalizer normalizer;
-    private final ReactiveKafkaProducerTemplate<String, AlertEvent> producer;
+    private final KafkaTemplate<String, AlertEvent> producer;
     private final AlertAuditStore auditStore;
 
     public AlertWebhookController(AlertNormalizer normalizer,
-                                  ReactiveKafkaProducerTemplate<String, AlertEvent> producer,
+                                  KafkaTemplate<String, AlertEvent> producer,
                                   AlertAuditStore auditStore) {
         this.normalizer = normalizer;
         this.producer = producer;
@@ -208,7 +209,11 @@ public class AlertWebhookController {
     }
 
     private Mono<Void> ingest(AlertEvent e) {
-        return producer.send(TOPIC, e.alertId(), e)
+        // KafkaTemplate.send 是阻塞式初始化调用（spring-kafka 4.x 无响应式模板）——
+        // 用 fromCallable + subscribeOn(boundedElastic) 桥接，发送本身是异步（CompletableFuture）。
+        return Mono.fromCallable(() -> producer.send(TOPIC, e.alertId(), e))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(future -> Mono.fromCompletionStage(future))
                 .then()
                 .onErrorResume(err -> {                    // Kafka 故障 → 直落审计（不丢告警）
                     log.warn("Kafka 不可用，告警直落审计库：{}", err.getMessage());
@@ -218,7 +223,7 @@ public class AlertWebhookController {
 }
 ```
 
-> **注意**：`KafkaConfig` 提供 `ReactiveKafkaProducerTemplate` Bean，见 [4.6 KafkaConfig.java]。
+> **注意**：`KafkaConfig` 提供 `KafkaTemplate` Bean，见 [4.6 KafkaConfig.java]。
 
 ### 4.5 `AlertAuditStore.java`（审计落库，JdbcClient）
 
@@ -233,7 +238,7 @@ import reactor.core.scheduler.Schedulers;
 
 /**
  * 审计落库：每条告警事件留痕（谁在何时收到什么告警）——后续迭代的复盘原料。
- * JdbcClient 是阻塞 JDBC，WebFlux 中必须用 boundedElastic 桥接（教程 37 §阻塞桥接）。
+ * JdbcClient 是阻塞 JDBC，WebFlux 中必须用 boundedElastic 桥接（[教程 42-响应式错误处理 §6]）。
  */
 @Repository
 public class AlertAuditStore {
@@ -275,7 +280,7 @@ public class AlertAuditStore {
 }
 ```
 
-### 4.6 `KafkaConfig.java`（Reactive Kafka 接线）
+### 4.6 `KafkaConfig.java`（Kafka 事件流接线）
 
 ```java
 package com.aiops.platform.ingest;
@@ -291,9 +296,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
-import org.springframework.kafka.core.reactive.ReactiveKafkaConsumerTemplate;
-import org.springframework.kafka.core.reactive.ReactiveKafkaProducerTemplate;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
 
@@ -302,6 +306,9 @@ import java.util.Map;
 
 /**
  * Kafka 事件流接线。Producer 与 Consumer 都用 JSON 序列化 AlertEvent。
+ * spring-kafka 4.x 已移除响应式模板（ReactiveKafkaProducerTemplate 不复存在）：
+ * Producer 走阻塞 KafkaTemplate（调用方用 boundedElastic 桥接），
+ * Consumer 走 @KafkaListener（专用消费线程，见 [4.7 AlertStreamProcessor.java]）。
  * 生产环境 bootstrap-servers 从环境变量注入，禁止硬编码。
  */
 @Configuration
@@ -321,8 +328,8 @@ public class KafkaConfig {
     }
 
     @Bean
-    public ReactiveKafkaProducerTemplate<String, AlertEvent> alertProducer() {
-        return new ReactiveKafkaProducerTemplate<>(alertProducerFactory());
+    public KafkaTemplate<String, AlertEvent> alertKafkaTemplate() {
+        return new KafkaTemplate<>(alertProducerFactory());
     }
 
     @Bean
@@ -337,11 +344,6 @@ public class KafkaConfig {
         props.put(JsonDeserializer.TRUSTED_PACKAGES, "com.aiops.platform.alert");
         return new DefaultKafkaConsumerFactory<>(props);
     }
-
-    @Bean
-    public ReactiveKafkaConsumerTemplate<String, AlertEvent> alertConsumer() {
-        return new ReactiveKafkaConsumerTemplate<>(alertConsumerFactory());
-    }
 }
 ```
 
@@ -354,41 +356,32 @@ import com.aiops.platform.alert.AlertAuditStore;
 import com.aiops.platform.alert.AlertEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
-import org.springframework.kafka.core.reactive.ReactiveKafkaConsumerTemplate;
+import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
-import reactor.core.publisher.Mono;
 
 /**
- * 消费 ops.alerts 事件流并落审计库。订阅在应用就绪后启动，
- * 失败记录日志但不终止 JVM（链路自愈由 v8 降级矩阵覆盖）。
+ * 消费 ops.alerts 事件流并落审计库。@KafkaListener 运行在 Kafka 专用消费线程
+ * （非 Netty EventLoop），内部阻塞落库不违反 WebFlux 铁律；
+ * 单条失败记录日志但不终止消费（链路自愈由 v8 降级矩阵覆盖）。
  */
 @Component
 public class AlertStreamProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(AlertStreamProcessor.class);
 
-    private final ReactiveKafkaConsumerTemplate<String, AlertEvent> consumer;
     private final AlertAuditStore auditStore;
 
-    public AlertStreamProcessor(ReactiveKafkaConsumerTemplate<String, AlertEvent> consumer,
-                                AlertAuditStore auditStore) {
-        this.consumer = consumer;
+    public AlertStreamProcessor(AlertAuditStore auditStore) {
         this.auditStore = auditStore;
     }
 
-    @EventListener(ApplicationReadyEvent.class)
-    public void consume() {
-        consumer.receiveAutoAck()
-                .flatMap(record -> auditStore.save(record.value())
-                        .onErrorResume(err -> {
-                            log.error("审计落库失败 key={}: {}", record.key(), err.getMessage());
-                            return Mono.empty();            // 单条失败不阻断后续记录
-                        }))
-                .subscribe(
-                        v -> {},
-                        err -> log.error("事件流消费中断", err));
+    @KafkaListener(topics = "ops.alerts", groupId = "aiops-alert-ingest")
+    public void consume(AlertEvent alert) {
+        try {
+            auditStore.save(alert).block();      // Kafka 消费线程阻塞可接受（非 EventLoop）
+        } catch (Exception e) {
+            log.error("审计落库失败 alertId={}: {}", alert.alertId(), e.getMessage());
+        }
     }
 }
 
@@ -427,7 +420,7 @@ spring:
     password: ${DB_PASSWORD:postgres}
 ```
 
-> **依赖**：基线 pom.xml（见 [00-需求分析与架构设计 §5.1](00-需求分析与架构设计.md)）已含 `spring-boot-starter-kafka`（Reactive 模板在 spring-kafka 模块内）、`spring-boot-starter-jdbc`、`postgresql`。v1 无需新增依赖。
+> **依赖**：基线 pom.xml（见 [00-需求分析与架构设计 §5.1](00-需求分析与架构设计.md)）已含 `spring-boot-starter-kafka`（spring-kafka 4.x 已移除响应式模板，本迭代走阻塞 `KafkaTemplate` + `@KafkaListener`）、`spring-boot-starter-jdbc`、`postgresql`。v1 无需新增依赖。
 
 ## 5. 验收标准
 
@@ -437,7 +430,7 @@ spring:
 | 2 | 幂等键 | 同 label 集告警的 alertId 稳定（fingerprint 相同） |
 | 3 | 审计留痕 | 每条告警事件入审计库（含 severity 归一化） |
 | 4 | 吞吐 | 单实例承受 2000 msg/min 不丢（Kafka 缓冲） |
-| 5 | 无阻塞 | 接入链路全程响应式（reactor.blocking.ops = 0） |
+| 5 | 无阻塞 | 阻塞调用（Kafka/JDBC）全部走 boundedElastic / Kafka 消费线程，EventLoop 零阻塞 |
 
 ## 6. 本迭代的 ADR
 

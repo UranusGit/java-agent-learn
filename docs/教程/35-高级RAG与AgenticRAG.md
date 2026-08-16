@@ -1,4 +1,4 @@
-# 30-高级 RAG 与 Agentic RAG
+# 35-高级 RAG 与 Agentic RAG
 
 > **定位**：讲透基础 RAG 的天花板在哪里，以及如何突破——GraphRAG 用知识图谱做多跳推理、Agentic RAG 让 Agent 自主决策检索策略、混合检索多路召回 + 重排、自适应检索按 Query 复杂度动态选深度。读完这篇，你能把 RAG 从"塞文档"升级到"像专家一样查资料"。
 >
@@ -353,38 +353,43 @@ graph TB
 
 ```java
 @Configuration
-public class AgenticRagTools {
+public class AgenticRagConfig {
 
+    // 说明：@Tool 注解应标注在工具类内部的方法上（org.springframework.ai.tool.annotation.Tool），
+    // 把工具对象交给 ChatClient 的 defaultTools(...) 后，由 ToolCallingAdvisor 自动扫描注册。
     @Bean
-    @Tool(description = "在企业知识库中搜索相关信息。当需要查找公司文档、产品手册、政策文件时使用。")
     public KnowledgeSearchTool knowledgeSearchTool(VectorStore vectorStore) {
         return new KnowledgeSearchTool(vectorStore);
     }
 
     @Bean
-    @Tool(description = "在知识图谱中查找实体关系。当问题涉及人物关系、组织架构、多跳推理时使用。")
     public GraphSearchTool graphSearchTool(GraphRepository graph) {
         return new GraphSearchTool(graph);
     }
 
     @Bean
-    @Tool(description = "查询结构化业务数据。当需要精确数据（订单、库存、统计）时使用。")
     public SqlQueryTool sqlQueryTool(JdbcTemplate jdbc) {
         return new SqlQueryTool(jdbc);
     }
-}
 
-// Agent 通过 ReAct 循环自主选择工具
-ChatClient agent = ChatClient.builder(chatModel)
-    .defaultSystem("""
-        你是一个研究型 Agent。面对用户问题：
-        1. 先分析需要哪些信息
-        2. 选择合适的检索工具（可多次调用）
-        3. 评估检索结果是否充分，不充分则调整策略重试
-        4. 综合所有来源给出有依据的答案
-        """)
-    .defaultTools(knowledgeSearchTool, graphSearchTool, sqlQueryTool)
-    .build();
+    // Agent 通过 ReAct 循环自主选择工具
+    @Bean
+    public ChatClient agentChatClient(ChatClient.Builder builder,
+                                      KnowledgeSearchTool knowledgeSearchTool,
+                                      GraphSearchTool graphSearchTool,
+                                      SqlQueryTool sqlQueryTool) {
+        return builder
+            .defaultSystem("""
+                你是一个研究型 Agent。面对用户问题：
+                1. 先分析需要哪些信息
+                2. 选择合适的检索工具（可多次调用）
+                3. 评估检索结果是否充分，不充分则调整策略重试
+                4. 综合所有来源给出有依据的答案
+                """)
+            .defaultTools(knowledgeSearchTool, graphSearchTool, sqlQueryTool)
+            .build();
+    }
+}
 ```
 
 ### 4.4 Agentic RAG 的反思机制
@@ -395,8 +400,13 @@ public class AgenticRagService {
 
     private static final int MAX_ITERATIONS = 4;
 
+    private final HybridRetriever hybridRetriever;   // 混合检索器（见 §3.4）
+    private final ChatClient planner;                // 反思 / 重写 Query 的 LLM
+    private final ChatClient synthesizer;            // 综合生成的 LLM
+
+    // parseSufficient / parseGap 为用户自定义的 JSON 解析辅助方法，此处省略
     public String answer(String question) {
-        List<String> gatheredContext = new ArrayList();
+        List<String> gatheredContext = new ArrayList<>();
         String currentQuery = question;
 
         for (int i = 0; i < MAX_ITERATIONS; i++) {
@@ -631,10 +641,10 @@ graph LR
 | **自适应检索** | 按 Query 复杂度路由到不同管线 |
 | **调优顺序** | 召回 → 排序 → 多跳 → 自适应 |
 
-**下一篇**：[31-Agent 工作流编排](36-Agent工作流编排.md) — DAG 工作流、条件分支与循环、状态机 vs 工作流选型。
+**下一篇**：[36-Agent 工作流编排](36-Agent工作流编排.md) — DAG 工作流、条件分支与循环、状态机 vs 工作流选型。
 
 ---
 
 > **前置回顾**：[05-RAG 检索增强生成](05-RAG检索增强生成.md)讲了基础 RAG —— 本章是它的"进阶进化版"。
 > **上下文协同**：高级 RAG 产出的上下文需要良好的拼接和压缩，详见 [34-上下文工程](34-上下文工程.md)。
-> **评估体系**：RAG 的检索召回率和答案忠实度如何系统性评估，详见 [32-自我反思与 Agent 评估](37-自我反思与Agent评估.md)。
+> **评估体系**：RAG 的检索召回率和答案忠实度如何系统性评估，详见 [37-自我反思与 Agent 评估](37-自我反思与Agent评估.md)。

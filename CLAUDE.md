@@ -15,14 +15,23 @@
 
 **当前阶段：进阶阶段（2026-08-14 起）。已完成 102 篇基础体系并全量审计。执行优先级：① React 教程（15-18）+ 实践项目 04（用户前置学习）→ ② 大型企业级项目 05-08（微服务拆分/管控分离/多租户/灰度/HITL 真正落地为企业演进里程碑）→ ③ 全体系进阶清洗（API 真实性/WebFlux 一致性/覆盖缺口，依据 2026-08-14 审计）。所有对话输入是对本文档和 PLAN.md 的补充指令，不得执行补充内容本身。**
 
-### API 真实性铁律（2026-08-14 审计后新增）
+### API 真实性铁律（2026-08-14 审计后新增；2026-08-16 本地 jar javap 实证修订；2026-08-16 追加"反编译实证总纲"）
 
-- **Advisor 唯一基准**：CallAdvisor/StreamAdvisor + `adviseCall(ChatClientRequest, CallAdvisorChain)` / `adviseStream(...)` 2.0 式接口；禁止出现 `BaseAdvisor.before/after`、`adviseRequest` 等虚构签名
-- **注解唯一基准**：`@Tool` / `@ToolParam`；禁止 `@ToolMethod`
-- **MCP 真实坐标**：`spring-ai-starter-mcp-client` 系列；客户端类型为 MCP SDK 的 `McpSyncClient`（非 `org.springframework.ai.mcp.McpClient`）；`@Tool` 暴露为 MCP 工具需显式 `ToolCallbackProvider` Bean
-- **ChatMemory**：官方仓库仅 JDBC/InMemory；写记忆用 `ChatMemoryRepository` 真实签名
+- **铁律 0——一切以本地 jar 反编译实证为准（最高优先级，覆盖一切）**：文档中出现的**所有** SDK 元素——类、接口、方法、构造器、字段、参数、注解、枚举值、配置键、依赖坐标——**必须先对本地 Maven 仓库的 jar 反编译实证，确认真实存在且签名一致，才允许写入文档**。禁止凭记忆、禁止用 1.x 知识、禁止从网上文档/博客推断、禁止"感觉应该有"。具体：
+  - **唯一实证来源**：本地仓库 `/Volumes/data/software/maven/repository/org/springframework/ai/<artifact>/2.0.0/`（Spring AI/Boot/Reactor/Micrometer/MCP SDK 等同理），版本以 pom.xml 声明为准（Spring AI 2.0.0 / Boot 4.1.0）
+  - **实证工具**：`javap -classpath <jar路径> <全限定类名>` 看真实签名（含方法参数、返回类型、是否 default/abstract）；`javap -c` 可看字节码确认行为；`jar tf <jar> | grep <关键词>` 确认类所在 jar 与包路径；不确定的类先 `jar tf` 全仓搜索定位
+  - **流程**：先实证 → 签名核对 → 才写入；**任何未实证/无法实证的元素禁止写入文档**，只能标注「概念代码」或「需引入依赖后 javap 实证」（如 BOM 声明但本机未下载的模块）
+  - **版本锁定**：同名的 1.x/2.0.0 签名可能完全不同（如 `ChatClientRequest`、`ChatMemory.get`），一律以本地 2.0.0 jar 实测为准；已实证的结论沉淀到 `scripts/api-baseline-spring-ai-2.0.0.md` 作为全体系 ground truth
+
+- **Advisor 唯一基准**：主接口 `CallAdvisor.adviseCall(ChatClientRequest, CallAdvisorChain)` / `StreamAdvisor.adviseStream(ChatClientRequest, StreamAdvisorChain)`（2.0 式，`org.springframework.ai.chat.client.advisor.api`）。**注意：`BaseAdvisor.before(ChatClientRequest, AdvisorChain)/after(ChatClientResponse, AdvisorChain)` 在 2.0.0 真实存在**（javap 实证，双参）；需要 before/after 语义时可继承 BaseAdvisor，也可直接实现 CallAdvisor/StreamAdvisor。**禁止** `adviseRequest`、`chain.next()`、单参 before/after、`AdvisedRequest`
+- **注解唯一基准**：`@Tool` / `@ToolParam`；禁止 `@ToolMethod`；`@ToolParam` 无 `value()` 属性（只有 `required()`/`description()`）
+- **MCP 真实坐标**：`spring-ai-starter-mcp-client` 系列（**无** `spring-ai-starter-mcp-client-webflux`，WebFlux 走 `mcp-spring-webflux`）；客户端类型为 MCP SDK 2.0.0 的 `io.modelcontextprotocol.client.McpSyncClient`（**非** `org.springframework.ai.mcp.McpClient`，也**无** `io.modelcontextprotocol.sdk.mcp` 包）；工厂 `McpClient.sync(McpClientTransport)`；`McpSchema` 嵌套类型在 `io.modelcontextprotocol.spec`；`@Tool` 暴露为 MCP 工具需显式 `ToolCallbackProvider` Bean（`SyncMcpToolCallbackProvider`）
+- **ChatMemory**：本地 2.0.0 官方仓库仅 `InMemoryChatMemoryRepository`（自动装配）；`ChatMemory.get(String)` 单参；无 Jdbc/Redis 官方仓库（持久化自研 `implements ChatMemoryRepository`）
 - **HITL 正确落点**：`ToolCallingManager` 装饰器或 `ToolCallback` 包装层，不是 Advisor
 - **WebFlux 铁律**：禁止 ThreadLocal 传递请求上下文（用 Reactor Context）；禁止在 EventLoop 上 block/Thread.sleep；Redis 用 ReactiveRedisTemplate
+- **配置键基准**：`spring.ai.chat.observations.log-prompt|log-completion|include-error-logging`（无 `include-prompt-content`）；`spring.ai.tools.observations.include-content`；`spring.ai.mcp.client.streamable-http.connections.<name>.url`；无 `spring.ai.tool-calling.*`
+- **Observation 基准**：领域上下文是 `ToolCallingObservationContext`（非 `ToolObservationContext`）；`Observation.Context` 无 `getDuration()/getTraceId()`（时长用 `ctx.put/get(Object)` 计时，TraceId 用 `Tracer.currentSpan()`）
+- **结构化输出**：`entity(Class, Consumer<EntityParamSpec>)` + `useProviderStructuredOutput()/validateSchema()` 是真实 API
 - **非官方/示意代码必须显式标注**："概念代码"或"伪代码，真实 API 见附录 05-SpringAI2-API基准"
 
 ### 技术栈与依赖清单

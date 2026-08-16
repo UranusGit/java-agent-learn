@@ -78,7 +78,7 @@
 ### A4. 能力缝 = 端口-适配器
 - **取什么**：三角色通常三包；提供者注册「能力」而非工具；策略以事件门存在（删掉策略插件工具仍能裸跑）。
 - **为什么**：治理不污染执行，策略可独立装卸。
-- **Java 落地**：接口包 + 实现包 + 消费者包；策略用 Advisor 而非硬编码进工具（呼应 [教程 13-Advisor链]）。
+- **Java 落地**：接口包 + 实现包 + 消费者包；策略用 Advisor 而非硬编码进工具（呼应 [教程 14-Advisor链与拦截器]）。
 
 ### A5. Control/Data 平面
 - **取什么**：配置/治理/编排（控制面）与执行/检索（数据面）分离；接入面是传输无关网关。
@@ -101,19 +101,19 @@
 
 | # | 取经点 | 核心逻辑 | Java 落地 |
 |---|---|---|---|
-| C1 | **turn/step/round 三层循环** | step=一次模型请求+工具；turn=零或多个 step；round=外层策略轮 | 显式状态机区分「请求/迭代/策略轮次」（[教程 06-ReAct][07-Plan]） |
+| C1 | **turn/step/round 三层循环** | step=一次模型请求+工具；turn=零或多个 step；round=外层策略轮 | 显式状态机区分「请求/迭代/策略轮次」（[教程 07-ReAct推理模式][教程 08-Plan-and-Execute模式]） |
 | C2 | **inbox 双列表（next-turn/next-step）** | 两条有序待处理列表；`claim` 取全部 next-step + 边界时 1 条 next-turn | 每 Agent 一个 FIFO 队列 + 优先级（next-step > next-turn） |
 | C3 | **max-tokens sticky** | 一旦某步 max-tokens，后到的正常完成步不得降级 turn 结果 | 回合终态取「最差完成度」，不被后续步骤覆盖 |
 | C4 | **Data decides** | 工具结果带 `concludesTurn` 终止 turn；pre-step 用 `steer()` 续 turn——用数据而非 listener 顺序决定 | 结果 DTO 携带「是否结束回合」字段，决策由数据流驱动 |
-| C5 | **工具三阶段管线 + 单调守卫** | pre（策略）/guards（只拒绝不可翻回）/execute（执行）/post（结果改写） | 四个拦截器；guards 只允许拒绝，deny 不可被后续翻回（[教程 13]） |
-| C6 | **executionMode fail-closed** | 未知/未声明/无效一律 exclusive（串行），只有显式声明才 parallel | 并行工具调用默认关，显式 `@ConcurrencySafe` 才开（[教程 33-性能优化]） |
+| C5 | **工具三阶段管线 + 单调守卫** | pre（策略）/guards（只拒绝不可翻回）/execute（执行）/post（结果改写） | 四个拦截器；guards 只允许拒绝，deny 不可被后续翻回（[教程 14-Advisor链与拦截器]） |
+| C6 | **executionMode fail-closed** | 未知/未声明/无效一律 exclusive（串行），只有显式声明才 parallel | 并行工具调用默认关，显式声明（如自定义 `@ConcurrencySafe` 注解）才开（[教程 38-Agent性能优化]） |
 | C7 | **取消语义分层** | `ABORTED_BEFORE_DISPATCH`（没跑）vs `ABORTED`（跑一半）；不 abandon 已启动 promise | 取消码区分「未启动/已启动」；启动后的任务 drain 而非丢弃 |
 | C8 | **深冻结不可变请求** | 请求对象 `deepFreeze`，监听器只读不可改写 | 请求 DTO 不可变（record + 防御性拷贝），拦截器只能包装 |
 | C9 | **提交即成功** | `append` 校验通过即成功，observer 失败逐监听器记日志不改返回值 | 事件写入先校验+持久化，观察者异常不影响提交结果 |
 | C10 | **双轨事件（durable/live）** | 持久事实走 session/event，实时控制走 agent/* | 见 A3 |
-| C11 | **initiator 因果归属** | `AsyncLocalStorage` 携带当前 initiator Agent，只做因果归属不是授权 | Java `ThreadLocal`/Reactor `Context` 传播调用方身份（注意 WebFlux 勿用 ThreadLocal，见 [教程 37]） |
+| C11 | **initiator 因果归属** | `AsyncLocalStorage` 携带当前 initiator Agent，只做因果归属不是授权 | Java `ThreadLocal`/Reactor `Context` 传播调用方身份（注意 WebFlux 勿用 ThreadLocal，用 Reactor Context，见 [教程 42-响应式错误处理]） |
 | C12 | **invariants 运行时不变式** | 包属不变式注册服务，守护「日志可重建」「turn/step 嵌套」「工具 call/result 配对」 | 契约/断言测试 + 运行时自检（[附录 04-测试策略]） |
-| C13 | **scope 作用域 + shadowing** | per-agent 注册；scoped 注册替换同名的全局孪生；restriction 过滤全局工具集 | 每会话一个「能力上下文」，会话级工具/提示隔离（[教程 20-多租户]） |
+| C13 | **scope 作用域 + shadowing** | per-agent 注册；scoped 注册替换同名的全局孪生；restriction 过滤全局工具集 | 每会话一个「能力上下文」，会话级工具/提示隔离（[教程 26-多租户隔离与资源治理]） |
 | C14 | **surface 分离模型可见/用户可见** | `replace` 遮蔽模型历史，`append-origin` 供人类 transcript | 模型历史可压缩改写，用户已见对话记录不可篡改——两条线分离 |
 | C15 | **运行时上下文去重** | 动态上下文仅在内容变化时写快照，未变化零写 | 上下文注入前比较内容，避免每 step 重复注入 |
 
@@ -124,17 +124,17 @@
 | # | 取经点 | 核心逻辑 | Java 落地 |
 |---|---|---|---|
 | M1 | **事件溯源 + 无平行 schema** | `SessionEvent` 是唯一模型；SQLite 行 1:1，JSONL 可读可打包 | 事件表即会话模型，不做「日志 + 平行存储」双写 |
-| M2 | **崩溃闭合孤儿 turn** | 恢复时把「未闭合 turn」合成 `turn/end {interrupted}`，闭合而非截断 | 事件存储恢复逻辑：检测孤儿 turn → 合成闭合事件（[教程 35-长任务持久化]） |
-| M3 | **write-behind 批量持久化** | 固定窗口批量写 + `flush()` 排空 + 崩溃安全原子写 | 批量 insert + 定时 flush + 事务边界（[教程 19]） |
+| M2 | **崩溃闭合孤儿 turn** | 恢复时把「未闭合 turn」合成 `turn/end {interrupted}`，闭合而非截断 | 事件存储恢复逻辑：检测孤儿 turn → 合成闭合事件（[教程 40-长任务持久化与中断恢复]） |
+| M3 | **write-behind 批量持久化** | 固定窗口批量写 + `flush()` 排空 + 崩溃安全原子写 | 批量 insert + 定时 flush + 事务边界（[教程 25-历史记录持久化与合规]） |
 | M4 | **每会话串行化** | 同一 session 的操作绝不交叉（`serialize(id, op)` 链） | 按 session 加锁/串行队列，防并发写交错 |
 | M5 | **宁可过度拒绝的格式策略** | `ignorable` 缺失即 required；未识别事件拒读 | 未知事件类型默认拒绝重建，防静默重建被掏空的会话 |
-| M6 | **shadow-price 协议** | 压缩/剪枝事件「紧邻替换前定价被影范围」，纯消费者零状态扣减 | Token 归因事件携带被影范围，消费者无需状态即可核算（[教程 21-成本治理]） |
+| M6 | **shadow-price 协议** | 压缩/剪枝事件「紧邻替换前定价被影范围」，纯消费者零状态扣减 | Token 归因事件携带被影范围，消费者无需状态即可核算（[教程 27-成本治理与Token计量]） |
 | M7 | **投影「状态引用即变化信号」** | `Object.is` 门控变化通知；whole-value 事件规则 | 投影 fold 返回新引用才触发通知，避免 diff 约定 |
 | M8 | **缓存永不超前日志** | projection cache 先 checkpoint 再 flush；message-feedback 先 flush 目标日志再写侧车 | 读缓存写前先保证对应日志已落盘 |
 | M9 | **durability → memory → event** | 写先落介质，再改内存，最后发事件；被拒写内存不动 | 存储写入顺序固定，读永不偏离介质 |
 | M10 | **冷读阶梯** | `cachedSnapshot → 缓存行 + tail replay → 全量重建`，列表读永不加载全日志 | 投影缓存 + 增量回放 + 全量重建三级降级 |
 | M11 | **前缀缓存复用** | 压缩/命名辅助调用复用对话自身前缀，KV cache 不击穿 | 压缩摘要/标题生成复用同一 system+messages 前缀 |
-| M12 | **遥测边界公理** | harness 止于 `emit()`，SDK 拥有 batching/retry/loss | 采集与交付分离，harness 不为遥测可靠性负责（[教程 16-可观测]） |
+| M12 | **遥测边界公理** | harness 止于 `emit()`，SDK 拥有 batching/retry/loss | 采集与交付分离，harness 不为遥测可靠性负责（[教程 22-全链路可观测性]） |
 | M13 | **附件 persist-before-event** | `saveImage` 持久化后才发引用；读取每次重校验 | 附件先落盘再入事件，引用不可解析即拒绝 |
 | M14 | **全文检索 live-preferred** | 查询优先读 live，持久行被 live 影盖则排除；revision+fingerprint 对账 | 搜索索引与 live 会话对账，避免读到过期状态 |
 
@@ -147,7 +147,7 @@
 | K1 | **Provider 注册能力而非工具** | 模型面 schema 唯一归属 tool-* 包；execute 细节永不漏到 wire | 工具 schema 与实现分离，模型只见干净调用面 |
 | K2 | **error-as-field 而非 rejection** | `ShellRunResult`/`CodeRunResult` 正交结果独立上报 | 结果 DTO 用独立字段（timedOut/aborted/denied），非嵌套 if |
 | K3 | **闭合判别联合 + assertNever** | 结果类型闭合联合，switch 后强制穷尽 | Java `sealed interface` + 穷尽 switch（Java 21）——新增变体编译器逼你处理全部分支 |
-| K4 | **策略以事件门存在** | fs 策略以 waterfall 存在，删掉策略插件工具仍能裸跑 | Advisor 拦截工具调用，策略可独立装卸（[教程 13]） |
+| K4 | **策略以事件门存在** | fs 策略以 waterfall 存在，删掉策略插件工具仍能裸跑 | Advisor 拦截工具调用，策略可独立装卸（[教程 14-Advisor链与拦截器]） |
 | K5 | **hostile-peer 心态** | worker 消息逐字段重建、binding 名 null-prototype、env 先 scrub | 外部进程/消息默认不可信，解析代码防御式 |
 | K6 | **explicit > implicit** | spec 全必填，默认值属于实现 config | 请求 DTO 必填校验，禁止隐式魔法值 |
 | K7 | **env scrub** | 子进程环境剥 `KEY/PASSWORD/SECRET/TOKEN/DSH_*` | `ProcessBuilder` 默认 scrubbed，凭据显式 merge |
@@ -162,11 +162,11 @@
 
 | # | 取经点 | 核心逻辑 | Java 落地 |
 |---|---|---|---|
-| S1 | **allow-list 沙箱** | 未授予即拒绝（Landlock 内核 allow-list）；fail-closed | 容器/seccomp 白名单；设计上「显式允许」而非黑名单（[教程 25-安全]） |
+| S1 | **allow-list 沙箱** | 未授予即拒绝（Landlock 内核 allow-list）；fail-closed | 容器/seccomp 白名单；设计上「显式允许」而非黑名单（[教程 31-安全与权限控制]） |
 | S2 | **per-call 而非 per-provider 策略** | `SandboxPolicy` 每次调用携带，两个消费方可不同边界 | 沙箱策略作为调用参数，支持同一执行器服务不同安全级 |
 | S3 | **凭证不落地** | 配置只存引用；describe 永不暴露值；错误诊断不引用秘密；空值即不存在 | `CredentialProvider` 只返回 `{value, source}`；日志/错误码不含密钥 |
-| S4 | **每操作解析凭证** | 消费方每请求 `resolve`，轮换零重启 | `CredentialProvider.resolve(ref)` 每次调用解析（[附录 12]） |
-| S5 | **审批审计对 + turn 包裹** | `approval/asked` + `approval/decided` 成对，必须 turn 包裹 | 审批开始/结束成对写事件存储，崩溃 tail 与审计可区分（[教程 22-HITL]） |
+| S4 | **每操作解析凭证** | 消费方每请求 `resolve`，轮换零重启 | `CredentialProvider.resolve(ref)` 每次调用解析（[附录 05-SpringAI2-API基准]） |
+| S5 | **审批审计对 + turn 包裹** | `approval/asked` + `approval/decided` 成对，必须 turn 包裹 | 审批开始/结束成对写事件存储，崩溃 tail 与审计可区分（[教程 28-Human-in-the-Loop与审批流]） |
 | S6 | **`never` 策略不可绕过** | 确定性拒绝在 waterfall 之前判定，prepend 不能绕过 | 策略优先级静态决定，后注册拦截器不可越权放行 |
 | S7 | **会话日志即安全状态** | sandbox/mode、approval/policy 都是 log-only 事件，折叠=重放 | 安全决策也走事件溯源，可审计可重放 |
 | S8 | **严格变宽升级** | 升级表 `read-only → workspace-write → full-access` 可穷举，非变宽永不提示 | 权限升级用有限状态表，拒绝任意升级请求 |
@@ -189,8 +189,8 @@
 | O5 | **fail-loud** | 缺能力 `UNSUPPORTED_CAPABILITY` 拒绝；移除 provider 不撤销已接受 run | 委托失败大声拒绝，不悄悄降级 |
 | O6 | **settlement 通知时机** | 子代理所有权释放之前通知，父在结构上不可能误判 settled | 生命周期顺序用「结构上不可能错」而非「运行时恰好对」 |
 | O7 | **事件 observe-only + 数据快照** | workflow/* payload 不带 live run，不能获得 cancel/dispose | 观察与控制分开，控制走服务方法 |
-| O8 | **Ralph = workflow + subagent 组合** | fresh-round + 结构化 handoff；共享工作区为权威 | 多轮反思用「新会话 + 结构化交接」，防上下文污染（[教程 32]） |
-| O9 | **goal phase 与 activation 分离** | durable phase 可重放；进程内 activation 永不持久化，恢复须人工授权 | 长任务状态可重放、自动续作须人工确认（[教程 35]） |
+| O8 | **Ralph = workflow + subagent 组合** | fresh-round + 结构化 handoff；共享工作区为权威 | 多轮反思用「新会话 + 结构化交接」，防上下文污染（[教程 37-自我反思与Agent评估]） |
+| O9 | **goal phase 与 activation 分离** | durable phase 可重放；进程内 activation 永不持久化，恢复须人工授权 | 长任务状态可重放、自动续作须人工确认（[教程 40-长任务持久化与中断恢复]） |
 | O10 | **后台任务 owner-relative 隔离** | controller/listener 只服务本 scope 的 agent | 后台任务按归属会话隔离，不跨会话互控 |
 | O11 | **schedule 会话内定时** | 到点以普通 turn 回原会话，无外部通知渠道 | 定时唤醒用「回到会话的普通 turn」，简单可靠 |
 | O12 | **整表替换 todo** | `todo_write` 每 call 完整列表，last-write-wins | 待办用整表快照而非部分更新，避免 diff 复杂度 |
@@ -203,7 +203,7 @@
 |---|---|---|---|
 | I1 | **契约层零 Node 依赖** | api/ 四象限消息不依赖宿主，浏览器可导入 | RPC 契约层独立于实现，前后端共享（对应 A7） |
 | I2 | **事件下行、unary 上行** | WebSocket downlink-only；上行走 POST | WebFlux SSE 下行 + REST 上行，避免双向长连接状态同步 |
-| I3 | **断线指数退避重连** | 500/2x/10s cap；rpcId 回显校验 | WebClient/SSE 重连策略 + 幂等请求 id（[教程 18-多页面流式]） |
+| I3 | **断线指数退避重连** | 500/2x/10s cap；rpcId 回显校验 | WebClient/SSE 重连策略 + 幂等请求 id（[教程 24-多页面流式响应与会话管理]） |
 | I4 | **profile 层叠同一实现** | composition/dump/boot 用同一 applyEntryPatches | 配置 dump 与实际 boot 同源，不漂移 |
 | I5 | **冷会话 preset 从日志解析** | 历史产生于何种组合，重建必须一致 | 恢复会话按日志记录的组合重建，不信 header |
 | I6 | **Remote 客户端不用 Proxy** | `Object.defineProperty` getter + $mount，卸载即 withdraw | RPC 客户端显式安装/卸载，生命周期可控 |
@@ -218,10 +218,10 @@
 
 | # | 取经点 | 核心逻辑 | Java 落地 |
 |---|---|---|---|
-| L1 | **适配器只产良构 chunk** | `LlmAdapter.stream()` 唯一必写；`BlockAssembler` 统一折叠 | 适配器统一产出流块，折叠归共享实现，杜绝各自为政（[教程 39-多模型]） |
-| L2 | **单 provider 调用 = 单尝试** | 适配器不做库级重试，重试在上层 | 重试不包在适配器里，放请求失败恢复层（[教程 24]） |
+| L1 | **适配器只产良构 chunk** | `LlmAdapter.stream()` 唯一必写；`BlockAssembler` 统一折叠 | 适配器统一产出流块，折叠归共享实现，杜绝各自为政（[教程 44-多模型协作与供应策略]） |
+| L2 | **单 provider 调用 = 单尝试** | 适配器不做库级重试，重试在上层 | 重试不包在适配器里，放请求失败恢复层（[教程 30-容错与弹性设计]） |
 | L3 | **持久化重试边界** | 重试挂在「请求未发任何 chunk」处，计数基于日志 | 重试条件「未产出流」+ 计数落库，重启不归零 |
-| L4 | **token-meter 回放感知** | provider usage 可信才复用，否则启发式重定价 | 无 provider usage 时的回退定价 + 压力判定（[教程 21]） |
+| L4 | **token-meter 回放感知** | provider usage 可信才复用，否则启发式重定价 | 无 provider usage 时的回退定价 + 压力判定（[教程 27-成本治理与Token计量]） |
 | L5 | **settings 三层解析** | schema 默认 → 组合 base → 用户节；deepFreeze 解析值 | 配置分层（默认/部署/用户）+ 解析结果不可变 |
 | L6 | **path-op 脱敏写** | 脱敏调用者用路径级写入，不能整体 replace（会静默删 secret） | 给「看过脱敏视图」的调用方一个不会误删密钥的写通道 |
 | L7 | **设置热发布** | watcher + debounce；读失败保 last-good | 配置文件热加载 + 失败保留最后好快照 |
@@ -236,7 +236,7 @@
 | # | 取经点 | 核心逻辑 | Java 落地 |
 |---|---|---|---|
 | N1 | **协议优先、双 SDK 孪生** | 多语言共享同一协议，客户端结构对齐 | 多语言 SDK 共享协议定义（proto/OpenAPI），避免各讲各的 |
-| N2 | **独立进程 + 协议驱动** | 运行时当子进程拉起，stdio JSON-RPC | 引擎与调用方进程隔离，跨语言可驱动（[教程 14-管控分离]） |
+| N2 | **独立进程 + 协议驱动** | 运行时当子进程拉起，stdio JSON-RPC | 引擎与调用方进程隔离，跨语言可驱动（[教程 20-管控分离架构]） |
 | N3 | **运行区间定义** | 从 inbox 收据 → 整 agent 空闲 = 调用方真正拥有的区间 | 自动化调用方明确定义「运行区间」，不因果归因单消息 |
 | N4 | **运行时强制显式配置** | 无配置即退出；zero-config 是包装层显式传参 | 运行时永远知道自己要跑什么，不搞隐藏回退 |
 | N5 | **Landlock 极简审计面** | ~300 行 C11 + 本地定义 UAPI + 静态 musl | 原生安全边界最小化 + 本地定义 API 摆脱版本差异 |
@@ -256,7 +256,7 @@
 | E6 | **双 Program 隔离声明合并** | Host/Client 在同一 key 声明合并冲突 → 拆两个 Program | Java 侧对应「模块边界/编译单元」分离，防声明冲突 |
 | E7 | **生成器 → 运行时共享事实** | persistence catalog 生成可编译 TS 源码 | 文档/运行时共享同一份「事实」，生成而非手写 |
 | E8 | **doc-typecheck** | 编译文档中的代码 fence，ignore 比例守卫 | 文档代码可编译 + 逃生舱比例受限 |
-| E9 | **worker 隔离 CPU 工作** | code-runtime/workflow 用 Worker Thread | CPU 密集工作在隔离线程/线程池，不阻塞事件循环（对应 [教程 37]） |
+| E9 | **worker 隔离 CPU 工作** | code-runtime/workflow 用 Worker Thread | CPU 密集工作在隔离线程/线程池，不阻塞事件循环（对应 [教程 38-Agent性能优化]） |
 | E10 | **constraints 门禁** | 遍历 Project Reference 图检查引用正确 leaf 配置 | 依赖方向约束（包只依赖接口包）用架构测试（ArchUnit） |
 
 ---

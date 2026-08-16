@@ -1,8 +1,8 @@
-# 43-React 与 SSE 流式 UI
+# 17-React 与 SSE 流式 UI
 
-> **定位**：本文是前后端衔接的实战核心篇——React 前端如何消费 WebFlux 后端的 SSE 流式响应：连接管理、事件解析、断线重连、token 批量渲染、取消与清理。读者画像：已掌握 [教程 41 组件/Hook]、[教程 42 状态分层] 的开发者。前置阅读：[教程 10-SSE流式通信]（后端视角）、[教程 42 §三层状态模型]。
+> **定位**：本文是前后端衔接的实战核心篇——React 前端如何消费 WebFlux 后端的 SSE 流式响应：连接管理、事件解析、断线重连、token 批量渲染、取消与清理。读者画像：已掌握 [教程 15 组件/Hook]、[教程 16 状态分层] 的开发者。前置阅读：[教程 10-SSE流式通信]（后端视角）、[教程 16-React状态管理 §5 三层状态模型]。
 >
-> **与教程 09 的分工**：教程 09 讲后端如何"产出"SSE 流（WebFlux Controller、Flux、心跳、代理配置）；本篇讲前端如何"消费"它。两端在"事件协议"处会合（协议设计深化见 [教程 18-Agentic-UI设计]、[教程 19-流式工具调用与事件协议]）。
+> **与教程 10 的分工**：教程 10 讲后端如何"产出"SSE 流（WebFlux Controller、Flux、心跳、代理配置）；本篇讲前端如何"消费"它。两端在"事件协议"处会合（协议设计深化见 [教程 18-Agentic-UI设计]、[教程 19-流式工具调用与事件协议]）。
 
 ---
 
@@ -80,7 +80,7 @@ async function streamChat(
 
 1. **跨 chunk 拆分**：TCP 分块不保证对齐 SSE 事件边界，一个 `"data: {\"type\":\"to"` 可能断在 JSON 中间——必须用 buffer 暂存，凑齐完整事件再解析。
 2. **多字节字符**：中文 UTF-8 一个字符 3 字节，chunk 可能截断在字节中间——`TextDecoder` 的 `{ stream: true }` 专门解决这个问题，漏掉会产生乱码。
-3. **AbortController**：用户切换会话/关闭页签时调用 `controller.abort()`，同时后端 `Flux.doOnCancel()` 会感知断开（[教程 09 §9 取消处理]）。
+3. **AbortController**：用户切换会话/关闭页签时调用 `controller.abort()`，同时后端 `Flux.doOnCancel()` 会感知断开（[教程 10-SSE流式通信 §5.5 取消传播]）。
 
 ### 1.3 SSE 帧解析器
 
@@ -97,7 +97,7 @@ function parseSSE(buffer: string): ParsedEvents {
     let eventName = 'message';
     let data = '';
     for (const line of frame.split('\n')) {
-      if (line.startsWith(':')) continue;            // 注释行：心跳（见教程 09 §7）
+      if (line.startsWith(':')) continue;            // 注释行：心跳（见教程 10 §10.3）
       if (line.startsWith('event:')) eventName = line.slice(6).trim();
       if (line.startsWith('data:')) data += line.slice(5).trim();
     }
@@ -113,13 +113,13 @@ function parseSSE(buffer: string): ParsedEvents {
 }
 ```
 
-注释行（`: keep-alive`）就是后端的心跳（[教程 09 §7 心跳保活]）——前端解析时静默跳过，但它的存在维持了代理不掐断连接。
+注释行（`: keep-alive`）就是后端的心跳（[教程 10-SSE流式通信 §10.3 心跳保活]）——前端解析时静默跳过，但它的存在维持了代理不掐断连接。
 
 ---
 
 ## 2. 封装为自定义 Hook：useChatStream
 
-把 §1 的底层机制封装成 Hook，组件只面对语义化状态（[教程 41 §3.4 自定义 Hook 是前端的领域服务层]）：
+把 §1 的底层机制封装成 Hook，组件只面对语义化状态（[教程 15 §3.4 自定义 Hook 是前端的领域服务层]）：
 
 ```tsx
 // hooks/useChatStream.ts
@@ -191,15 +191,15 @@ export function useChatStream(sessionId: string) {
 ```
 
 要点：
-- **AbortController 放 useRef** 而非 state——它变了不需要重渲染（[教程 41 §3.3]）
-- **依赖数组只有 sessionId**——send 的重建只随会话切换，输入内容变化不会导致 send 重建（对应 [教程 41 §3.2 的 SSE 依赖坑]）
+- **AbortController 放 useRef** 而非 state——它变了不需要重渲染（[教程 15 §3.3]）
+- **依赖数组只有 sessionId**——send 的重建只随会话切换，输入内容变化不会导致 send 重建（对应 [教程 15 §3.2 的 SSE 依赖坑]）
 - **主动取消与失败分流**——AbortError 是正常操作路径，不进错误态
 
 ---
 
 ## 3. 断线重连与 Last-Event-ID
 
-网络抖动、Nginx 超时（[教程 09 §8 代理配置]）、后端滚动发布，都会掐断连接。企业级前端必须有重连策略：
+网络抖动、Nginx 超时（[教程 10-SSE流式通信 §10.1 代理和超时]）、后端滚动发布，都会掐断连接。企业级前端必须有重连策略：
 
 ### 3.1 重连状态机
 
@@ -228,7 +228,7 @@ stateDiagram-v2
 
 ### 3.2 断点恢复的实现
 
-后端在每条事件上带递增序号 `id:` 字段（[教程 09 §5 ServerSentEvent 的 id 字段]、[教程 18 §Last-Event-ID 断点恢复]）。前端记录最新 id，重连时带上：
+后端在每条事件上带递增序号 `id:` 字段（[教程 10-SSE流式通信 §2.2 SSE 的数据格式]、[教程 10-SSE流式通信 §7 断点续传]）。前端记录最新 id，重连时带上：
 
 ```ts
 async function connectWithRecovery(sessionId: string, lastEventId: number) {
@@ -242,7 +242,7 @@ async function connectWithRecovery(sessionId: string, lastEventId: number) {
 }
 ```
 
-后端从 Redis/内存缓冲区重放 `lastEventId` 之后的事件（缓冲区设计见 [教程 18 §4 Sink 与事件缓冲]，多实例下经 Redis Stream 广播）。**前端恢复后要做去重**：丢弃 `event.id <= lastEventId` 的重放事件，从 `lastEventId + 1` 开始应用。
+后端从 Redis/内存缓冲区重放 `lastEventId` 之后的事件（缓冲区设计见 [教程 10-SSE流式通信 §7.2]，多实例下经 Redis Stream 广播见 [教程 24-多页面流式响应与会话管理 §4.2]）。**前端恢复后要做去重**：丢弃 `event.id <= lastEventId` 的重放事件，从 `lastEventId + 1` 开始应用。
 
 ```ts
 function handleRecoveredEvent(event: AgentEvent & { id: number }) {
@@ -306,7 +306,7 @@ export function useChatStream(sessionId: string) {
 
 ### 4.3 配套：状态下沉 + memo
 
-批量缓冲解决"频率"，还要解决"范围"（[教程 41 §5.3 状态下沉]、[教程 42 §4.3]）：
+批量缓冲解决"频率"，还要解决"范围"（[教程 15 §5.3 状态下沉]、[教程 16 §4.3]）：
 
 ```tsx
 // 只有流式输出区订阅高频状态；侧边栏/历史列表不参与 token 渲染
@@ -348,11 +348,11 @@ function ChatPage({ sessionId }: { sessionId: string }) {
 }
 ```
 
-组件/Hook 的清理函数（[教程 41 §3.2 useEffect 清理]）是 React 版的 try-with-resources。**每一条会"逃逸"的资源（连接、rAF、定时器、订阅）都必须有配对的清理**，否则会出现"后台还在收上一个会话的 token"这类诡异 bug。
+组件/Hook 的清理函数（[教程 15 §3.2 useEffect 清理]）是 React 版的 try-with-resources。**每一条会"逃逸"的资源（连接、rAF、定时器、订阅）都必须有配对的清理**，否则会出现"后台还在收上一个会话的 token"这类诡异 bug。
 
 ### 5.2 与后端多页面会话管理对齐
 
-多页签同时打开同一会话时，后端用会话级 Sink fan-out 把一条流推给所有连接（[教程 18 §多页面同步]）。前端侧的配合点：
+多页签同时打开同一会话时，后端用会话级 Sink fan-out 把一条流推给所有连接（[教程 24-多页面流式响应与会话管理 §5 多端同步]）。前端侧的配合点：
 - 每个页签独立建立 SSE 连接，携带同一 sessionId
 - 各页签独立渲染，不跨页签同步 UI（同步由服务端广播保证）
 - 页签关闭只断自己的连接；会话流的生命周期由服务端管理
@@ -375,7 +375,7 @@ function ChatPage({ sessionId }: { sessionId: string }) {
 | 无清理的连接 | 切会话后旧流仍在写入 | abortRef + useEffect 清理配对 |
 | 重连无退避 | 服务端故障时被重连风暴打爆 | 指数退避 + 上限 + 重试次数 |
 | 重放不去重 | 断线恢复后内容重复 | 记录 lastEventId，过滤 ≤id 的事件 |
-| 流式状态上提全局 | token 更新连坐全站渲染 | 高频状态隔离在流式组件（[教程 42 §5]） |
+| 流式状态上提全局 | token 更新连坐全站渲染 | 高频状态隔离在流式组件（[教程 16 §5]） |
 
 ---
 

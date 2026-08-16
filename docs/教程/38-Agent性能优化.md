@@ -1,10 +1,10 @@
-# 33-Agent 性能优化
+# 38-Agent 性能优化
 
 > **定位**：讲透 Agent 系统的性能优化全景——批量请求合并、并行工具调用、流式 + 缓存组合优化首字节延迟、Token 效率优化、Java 21 虚拟线程在 Agent 并发中的应用。读完这篇，你能把 Agent 的延迟降一半、成本降三成。
 >
 > **读者画像**：已经有可运行的 Agent，需要在大规模生产场景中优化延迟、吞吐量和成本的工程师。
 >
-> **前置阅读**：[34-上下文工程](34-上下文工程.md)、[31-Agent 工作流编排](36-Agent工作流编排.md)。
+> **前置阅读**：[34-上下文工程](34-上下文工程.md)、[36-Agent 工作流编排](36-Agent工作流编排.md)。
 
 ---
 
@@ -122,22 +122,26 @@ graph LR
 public class BatchEmbeddingService {
 
     private final EmbeddingModel embeddingModel;
+    private final VectorStore vectorStore;
 
     /**
-     * 批量向量化文档——比逐条快 5-10 倍
+     * 批量向量化——一次 API 调用返回全部向量
      */
-    public void embedDocuments(List<Document> docs) {
+    public List<float[]> embedTexts(List<String> texts) {
         // ❌ 慢：逐条 Embedding
-        // docs.forEach(doc -> embeddingModel.embed(doc.getText()));
+        // List<float[]> slow = texts.stream()
+        //     .map(embeddingModel::embed)
+        //     .toList();
 
-        // ✅ 快：批量 Embedding
-        List<String> texts = docs.stream().map(Document::getText).toList();
-        List<float[]> vectors = embeddingModel.embed(texts);  // 一次 API 调用
+        // ✅ 快：批量 Embedding（一次 API 调用）
+        return embeddingModel.embed(texts);
+    }
 
-        // 写入向量库
-        for (int i = 0; i < docs.size(); i++) {
-            docs.get(i).setEmbedding(vectors.get(i));
-        }
+    /**
+     * 写入向量库：VectorStore.add 内部调用注入的 EmbeddingModel 批量向量化，
+     * 无需手动给 Document 设置向量（Spring AI 2.0 的 Document 不持有 embedding 字段）。
+     */
+    public void index(List<Document> docs) {
         vectorStore.add(docs);
     }
 }
@@ -148,20 +152,39 @@ public class BatchEmbeddingService {
 对于需要聚合的独立请求，可以用微批次器在短时间窗口内收集请求后统一发送：
 
 ```java
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
+
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+
 @Service
 public class MicroBatcher<T, R> {
 
     private final int batchSize;
     private final Duration batchWindow;
     private final Function<List<T>, List<R>> batchFunction;
-    private final List<CompletableFuture<T>> pending = new ArrayList();
+    private final List<Map.Entry<T, CompletableFuture<R>>> pending = new ArrayList<>();
+    private Instant lastFlush = Instant.now();
+
+    public MicroBatcher(int batchSize, Duration batchWindow,
+                        Function<List<T>, List<R>> batchFunction) {
+        this.batchSize = batchSize;
+        this.batchWindow = batchWindow;
+        this.batchFunction = batchFunction;
+    }
 
     /**
-     * @param batchSize   每批最大数量
-     * @param batchWindow 最大等待时间（超过即发送不满的批次）
+     * @param request 待批处理的请求
+     * @return 由 flush 时统一完成的 Future
      */
-    public CompletableFuture<R> submit(T request) {
-        CompletableFuture<R> future = new CompletableFuture();
+    public synchronized CompletableFuture<R> submit(T request) {
+        CompletableFuture<R> future = new CompletableFuture<>();
         pending.add(Map.entry(request, future));
 
         if (pending.size() >= batchSize) {
@@ -171,10 +194,24 @@ public class MicroBatcher<T, R> {
     }
 
     @Scheduled(fixedDelay = 100)  // 每 100ms 检查一次
-    public void flushIfTimeout() {
-        if (!pending.isEmpty()) {
+    public synchronized void flushIfTimeout() {
+        if (!pending.isEmpty()
+                && Duration.between(lastFlush, Instant.now()).compareTo(batchWindow) >= 0) {
             flush();
         }
+    }
+
+    private void flush() {
+        if (pending.isEmpty()) {
+            return;
+        }
+        List<T> requests = pending.stream().map(Map.Entry::getKey).toList();
+        List<R> results = batchFunction.apply(requests);
+        for (int i = 0; i < pending.size(); i++) {
+            pending.get(i).getValue().complete(results.get(i));
+        }
+        pending.clear();
+        lastFlush = Instant.now();
     }
 }
 ```
@@ -247,21 +284,31 @@ public class ParallelToolExecutor {
 并行调用必须设置超时，防止某个慢工具拖垮整个请求：
 
 ```java
-public TravelInfo gatherAllWithTimeout(String city, String date) {
+// 接上例：在 ParallelToolExecutor 类中新增的带超时方法
+public TravelInfo gatherAllWithTimeout(String city, String date) throws InterruptedException {
+    // 创建三个独立的工具调用任务
+    CompletableFuture<Weather> weatherFuture =
+        CompletableFuture.supplyAsync(() -> weather.get(city, date));
+    CompletableFuture<List<Flight>> flightFuture =
+        CompletableFuture.supplyAsync(() -> flights.search(city, date));
+    CompletableFuture<List<Hotel>> hotelFuture =
+        CompletableFuture.supplyAsync(() -> hotels.search(city, date));
+
+    // 3 秒超时兜底：最多等 3 秒，超时则保留已完成的部分结果
+    CompletableFuture<Void> all = CompletableFuture.allOf(
+        weatherFuture, flightFuture, hotelFuture);
     try {
-        // ⚠ 修正: CompletableFuture.get(...) 返回 Void，链式 .join() 会 NPE
-        // 且 get() 超时会抛异常——部分结果的正确姿势是用 completeOnTimeout:
-        CompletableFuture.allOf(weatherFuture, flightFuture, hotelFuture)
-                .completeOnTimeout(null, 3, TimeUnit.SECONDS)  // 3 秒超时兜底
-                .join();
-    } catch (TimeoutException e) {
-        // 部分结果 + 降级处理
-        return TravelInfo.partial(
-            getCompleted(weatherFuture),
-            getCompleted(flightFuture),
-            getCompleted(hotelFuture)
-        );
+        all.get(3, TimeUnit.SECONDS);
+    } catch (TimeoutException | ExecutionException e) {
+        // 超时或失败：不中断已完成的任务，进入部分结果降级处理
     }
+
+    // 已完成的任务取结果，未完成的用空值兜底
+    return new TravelInfo(
+        weatherFuture.isDone() ? weatherFuture.join() : null,
+        flightFuture.isDone() ? flightFuture.join() : List.of(),
+        hotelFuture.isDone() ? hotelFuture.join() : List.of()
+    );
 }
 ```
 
@@ -384,8 +431,8 @@ OrderStatus result = chatClient.prompt()
 @Service
 public class ModelTierRouter {
 
-    private final ChatModel strongModel;  // 如 Claude Sonnet
-    private final ChatModel fastModel;    // 如 Claude Haiku
+    private final ChatModel strongModel;  // 如 deepseek-reasoner（R1）
+    private final ChatModel fastModel;    // 如 deepseek-chat（V3）
 
     public String answer(String question) {
         if (isSimpleQuestion(question)) {
@@ -452,7 +499,7 @@ spring:
       enabled: true   # 一行开启虚拟线程
 ```
 
-开启后，Spring MVC / WebFlux 的请求处理自动使用虚拟线程。
+开启后，Spring MVC（Servlet 容器如 Tomcat）的请求处理会自动使用虚拟线程。**本项目是 WebFlux（响应式事件循环），请求处理本身不走虚拟线程**——虚拟线程的价值在于承载 Agent 流程中的阻塞式调用（JDBC 查询、同步工具 SDK、LLM 同步客户端），让它们运行在独立执行器上而不阻塞事件循环。Agent 场景大量"等 LLM / 等工具 API 返回"的 I/O 等待正是虚拟线程的理想场景。
 
 ### 7.3 在 Agent 并发中的应用
 
@@ -461,7 +508,7 @@ spring:
 public class VirtualThreadAgentService {
 
     // Java 21 中直接用 Thread.startVirtualThread 创建虚拟线程
-    public List<ToolResult> callToolsParallel(List<ToolCall> calls) {
+    public List<ToolResult> callToolsParallel(List<ToolCall> calls) throws InterruptedException {
         List<ToolResult> results = new CopyOnWriteArrayList<>();
         List<Thread> threads = new ArrayList<>();
 
@@ -589,5 +636,5 @@ graph TB
 ---
 
 > **前置回顾**：[34-上下文工程](34-上下文工程.md)讲了 Token 预算分配——本章的 Token 效率优化是其延伸实践。
-> **工作流**：并行工具调用在工作流编排中的应用，详见 [31-Agent 工作流编排](36-Agent工作流编排.md)。
-> **评估**：优化效果需要量化评估，详见 [32-自我反思与 Agent 评估](37-自我反思与Agent评估.md)。
+> **工作流**：并行工具调用在工作流编排中的应用，详见 [36-Agent 工作流编排](36-Agent工作流编排.md)。
+> **评估**：优化效果需要量化评估，详见 [37-自我反思与 Agent 评估](37-自我反思与Agent评估.md)。

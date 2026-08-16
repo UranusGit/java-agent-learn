@@ -1,4 +1,4 @@
-# 09-SSE 流式通信
+# 10-SSE 流式通信
 
 > **定位**：讲透 SSE（Server-Sent Events）在 Agent 应用中的完整实践——SSE 原理、WebFlux Flux 流式响应、Spring AI 2.0 ChatClient.stream() 的使用、前端 EventSource 对接、与 WebSocket 的对比选型。读完这篇，你能实现"打字机效果"的流式 Agent 回复，让用户不再盯着空白页面等待。
 >
@@ -158,6 +158,7 @@ Spring AI 2.0 的 ChatClient 提供两种调用模式：
 
 ```java
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatResponse;
 import reactor.core.publisher.Flux;
 
 // Spring AI 2.0.0
@@ -294,6 +295,65 @@ eventSource.addEventListener("error", (event) => {
 });
 ```
 
+### 4.5 工具调用与流式的交织：`stream()` 遇到 tool call 会怎样？
+
+Agent 场景下，流式响应和工具调用会交织出现——用户问"我的订单到哪了"，Agent 要先调 `queryOrder` 工具，拿到结果后才开始流式生成文本。理解 `stream()` 对 tool call 的处理方式，是设计前端事件协议的前提。
+
+**框架默认行为**：Spring AI 的工具调用循环对 `stream()` 同样生效。2.0.0 起工具调用循环由 `ToolCallingAdvisor` 承担——注册了工具的 `ChatClient` 自动插入该 Advisor（`AdvisorParams.toolCallingAdvisorAutoRegister(false)` 可关闭自动注册、改为手动循环），框架在流式管道内部完成"收到工具调用 → 执行工具 → 把结果回灌模型 → 继续生成"的循环——**文本 chunk 会出现一段空窗**（工具执行期间没有任何内容下发），随后恢复。从纯文本流的视角看，这段空窗就是"Agent 正在干活但界面没反应"，用户体验的坑正在这里。完整的事件语义在 [教程 19-流式工具调用与事件协议] 展开，执行链源码见 [附录 03-Spring-AI源码解析/02-流式执行链源码解析]。
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器
+    participant S as WebFlux
+    participant C as ChatClient.stream()
+    participant T as 工具（queryOrder）
+
+    B->>S: GET /chat/stream
+    S->>C: prompt().stream()
+    Note over C: 第 1 轮：模型返回工具调用
+    C->>T: 执行 queryOrder（期间无 chunk 下发——空窗）
+    T-->>C: 订单数据
+    Note over C: 第 2 轮：工具结果回灌，模型开始生成
+    C-->>S: chunk: "您的订单"
+    S-->>B: event: message
+    C-->>S: chunk: "已到杭州转运中心"
+    S-->>B: event: message
+    C-->>S: 流完成
+    S-->>B: event: done
+```
+
+**前端如何收到"正在调用工具"状态**：SSE 是单向下行流，状态信息只能与文本 chunk **多路复用**在同一条流上——用 `ServerSentEvent.event()` 的事件类型区分通道（`message` = 文本增量，`tool_status` = 工具状态，`done`/`error` = 终态）：
+
+```java
+// Spring AI 2.0.0 — 概念代码：内容流与工具状态流多路复用
+// 状态事件的产生方式（自定义 StreamAdvisor / 工具回调侧发信号）见教程 19，
+// 真实 API 见附录 05-SpringAI2-API基准
+Flux<ServerSentEvent<String>> textStream = chatClient.prompt()
+        .user(message)
+        .stream()
+        .content()
+        .map(chunk -> ServerSentEvent.<String>builder()
+                .event("message")                 // 通道 1：文本增量
+                .data(chunk)
+                .build());
+
+Flux<ServerSentEvent<String>> toolStatus = toolEventSink.asFlux()   // 工具回调侧推送
+        .map(status -> ServerSentEvent.<String>builder()
+                .event("tool_status")             // 通道 2：工具执行状态
+                .data(status)                     // 如 {"tool":"queryOrder","phase":"running"}
+                .build());
+
+return Flux.merge(textStream, toolStatus);        // 两路合流，前端按 event 字段分发
+```
+
+```javascript
+// 前端按事件类型分发：文本进对话气泡，状态进"正在查询订单…"提示条
+eventSource.addEventListener("message", (e) => appendToUI(e.data));
+eventSource.addEventListener("tool_status", (e) => showToolIndicator(JSON.parse(e.data)));
+```
+
+**另一种取舍**：关闭 `ToolCallingAdvisor` 的自动注册（`AdvisorParams.toolCallingAdvisorAutoRegister(false)`；2.0.0 起 1.x 的 `internalToolExecutionEnabled` 选项已移除），让 tool call 以 chunk 形式出现在流里，由你的代码执行工具、手动发起第二轮 `stream()`。好处是工具执行完全可控（可加审批/审计/超时），代价是要自己管理多轮拼接——这是 HITL 审批与 [教程 28-Human-in-the-Loop与审批流] 的技术基础。
+
 ---
 
 ## 5. WebFlux Flux 流式响应深入
@@ -345,10 +405,14 @@ public Flux<String> stream(@RequestParam String message) {
             // 缓冲：每 3 个 chunk 合并一次（减少前端渲染次数）
             .buffer(3)
             .map(chunks -> String.join("", chunks))
-            // 背压：每 50ms 最多发一个事件（控制流速）
+            // 限流：每 50ms 最多发一个事件（平滑突发，控制下发速率）
+            // 注意这是"限流"不是"背压"——背压是消费者向生产者传导需求，
+            // delayElements 只是把匀速下发强加给下游，见 §5.5
             .delayElements(Duration.ofMillis(50));
 }
 ```
+
+> **术语澄清**：`delayElements` 常被误称为"背压"。它做的是**限流**——生产端按固定节奏下发，与消费者是否处理得过来无关。真正的**背压**是消费者把自己的处理能力（request(n)）反向传导给生产者，让上游按需生产，见 §5.5 与 [附录 06-WebFlux与响应式编程/01-背压与流量控制]。
 
 ### 5.3 合并多个流
 
@@ -375,12 +439,13 @@ public Flux<String> multiAgentStream(@RequestParam String message) {
 }
 ```
 
-### 5.4 会话记忆 + 流式
+### 5.4 会话记忆 + 流式：真实行为只有一个口径
 
-在流式模式下，记忆管理需要特别注意——因为流式调用不会自动写入记忆（同步调用会通过 ChatMemory Advisor 自动存储）：
+先给结论（依据 [附录 05-SpringAI2-API基准/00-Advisor与ChatMemory §流式调用与记忆写入]）：**只要 ChatClient 上注册了 `MessageChatMemoryAdvisor`，`call()` 和 `stream()` 都会自动写记忆**——记忆 Advisor 同时实现了同步与流式两个接口，在流式路径上于**流完成后聚合并写入完整回复**。会发生"不写记忆"的只有一种情况：**你没有注册记忆 Advisor，而是自己 `stream().content()` 裸消费流**——框架没有切入点替你写。两个前提一句话：Advisor 在，流式自动写；Advisor 不在，谁都不写。
 
 ```java
-// Spring AI 2.0.0 — 流式 + 会话记忆
+// Spring AI 2.0.0 — 流式 + 会话记忆（正确口径）
+// 前提：构建 ChatClient 时已 defaultAdvisors(MessageChatMemoryAdvisor...)
 @GetMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 public Flux<String> streamWithMemory(
         @RequestParam String message,
@@ -390,19 +455,38 @@ public Flux<String> streamWithMemory(
             .user(message)
             .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, sessionId))
             .stream()
-            .content()
-            // 流式模式下，记忆 Advisor 会在流完成后自动存储完整回复
-            // 前端会在流结束时收到所有 chunk
-            .doOnComplete(() -> {
-                log.info("Session {} stream completed", sessionId);
-            })
-            .doOnError(error -> {
-                log.error("Session {} stream error", sessionId, error);
-            });
+            .content();
+            // 不需要手动写入：MessageChatMemoryAdvisor 在流完成后自动聚合完整回复并写入 ChatMemory
+            // （本例未注册记忆 Advisor 时，下面的日志就是"记忆没写"的第一现场）
 }
 ```
 
+两个必须知道的边界：**① 流被取消/中断时，"流完成后写入"不会发生**——客户端断开（§10.4 的 `doOnCancel`）或上游异常中止时，这轮助手回复大概率没进记忆，下一轮对话模型会"失忆"；对断点续传敏感的场景要在 `doOnCancel`/`doOnError` 里把已收到的部分内容手动落盘（§7.3）。**② "写入的是聚合后的完整回复"**——中间 chunk 不会逐条入库，这对语义正确性是好事，但意味着流式部分结果的可用性完全依赖你自己的落盘逻辑。
+
 > → [教程 04-记忆与会话管理]：ChatMemory 的完整机制。
+> → [附录 05-SpringAI2-API基准/00-Advisor与ChatMemory]：流式与记忆写入的权威口径。
+
+### 5.5 真正的背压：慢消费者与取消传播
+
+背压在 SSE 场景有个特殊现实：**HTTP 响应体没有应用层的 request(n)**——浏览器 TCP 窗口和容器写缓冲才是真正的"消费者信号"。当客户端消费慢（弱网、标签页后台节流）时，未写出的数据会在服务端积压。Reactor 的 WebFlux 写路径感知到 TCP 背压后会向上游传导（暂停向 LLM 连接读取），但积压与慢消费者需要显式策略：
+
+```java
+// Spring AI 2.0.0 — 慢消费者治理：丢弃 + 超时 + 取消传播
+return chatClient.prompt()
+        .user(message)
+        .stream()
+        .content()
+        // 慢消费者消化不动就丢帧：UI 会少几个 chunk，
+        // 换来 EventLoop 不被慢连接拖垮（打字机场景丢帧几乎无感）
+        .onBackpressureDrop(dropped -> log.debug("dropped chunk: {}", dropped))
+        // 候选替代：onBackpressureLatest()（只保最新）或 onBackpressureBuffer(n, false)（有界缓冲，满则失败）
+        // 整流兜底：上游停顿超过 2 分钟视为异常，转 onError（§4.4 的 error 事件）
+        .timeout(Duration.ofMinutes(2));
+```
+
+> **WebFlux 铁律**：这条链路里**禁止**出现 `block()`/`blockLast()`/`Thread.sleep()`——Controller 返回 Flux 后由框架在合适线程上驱动，任何阻塞都会卡死 EventLoop；确需阻塞计算（如重 IO）用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`。慢消费者与算子选择的完整推演见 [附录 06-WebFlux与响应式编程/01-背压与流量控制]。
+
+**取消传播**是背压的孪生机制：客户端断开连接时，WebFlux 会向上游发出 `cancel` 信号——`doOnCancel` 能感知（§10.4），更重要的是**取消会沿流向上传播到 LLM HTTP 连接**，主动中止生成、释放连接与配额。这意味着"用户点停止"不只是前端停止渲染，服务端的 Token 消耗也随之停止（对按量计费的 LLM 是真金白银）。要防止取消后遗留副作用（如记忆半写、工具已执行未记录），在 `doOnCancel`/`doFinally` 里收尾，见 [教程 42-响应式错误处理]。
 
 ---
 
@@ -614,9 +698,110 @@ function ChatComponent() {
 
 ---
 
-## 7. SSE vs WebSocket：如何选型
+## 7. 断点续传：Last-Event-ID 与服务端事件缓冲
 
-### 7.1 技术对比
+### 7.1 自动重连的缺口：重连 ≠ 续传
+
+§6.3 的 EventSource 自动重连解决"连接断了"，但**不解决"内容丢了"**——重连后服务器从哪继续发？如果重连后从头重发，用户会看到回复"重播"；如果直接从当前生成进度发，断开期间的 chunk 就永远丢了。SSE 协议原生给了半个答案：
+
+- 每个事件可带 `id:` 字段（§4.3 里 `ServerSentEvent.id(...)`）；
+- EventSource **断线重连时自动携带最后收到的事件 ID**，放在 `Last-Event-ID` 请求头里。
+
+协议只负责"把断点位置告诉服务器"，**从断点恢复的能力要服务端自己建**——这就是事件缓冲回放设计。
+
+### 7.2 服务端事件缓冲 + 按 Last-Event-ID 回放
+
+设计三件套：**单调递增的事件 ID、按会话的事件环形缓冲、重连时的差量回放**。
+
+```mermaid
+flowchart TB
+    subgraph 断线前["正常下发（连接 1）"]
+        GEN["生成流<br/>(id=1..8 已发)"] --> BUF["会话缓冲区<br/>(环形，保留最近 N 条)"]
+        BUF --> C1["浏览器<br/>Last-Event-ID=5 时断线"]
+    end
+
+    subgraph 重连后["断点续传（连接 2）"]
+        C1 -->|"自动重连<br/>Header: Last-Event-ID: 5"| MATCH{"缓冲区能命中<br/>id>5 ?"}
+        MATCH -->|"命中"| REPLAY["回放 6,7,8（回放期不发增量）"]
+        MATCH -->|"缓冲被覆盖/无会话"| FALLBACK["无法续传：<br/>告知前端从当前进度继续"]
+        REPLAY --> LIVE["对齐进度后继续实时下发"]
+        FALLBACK --> LIVE
+    end
+
+    style BUF fill:#fff9c4
+    style REPLAY fill:#c8e6c9
+    style FALLBACK fill:#ffcdd2
+```
+
+服务端实现要点（简化示例）：
+
+```java
+// Spring AI 2.0.0 — 概念代码：按 Last-Event-ID 差量回放
+// 会话缓冲建议放内存 LRU（热点会话）+ 可选 Redis（跨实例），见教程 24 多实例讨论
+@GetMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<ServerSentEvent<String>> streamResume(
+        @RequestParam String message,
+        @RequestHeader(name = "Last-Event-ID", required = false) Long lastEventId,
+        @RequestParam String sessionId) {
+
+    SessionBuffer buffer = sessionBuffers.get(sessionId);   // 每会话的环形缓冲
+
+    Flux<ServerSentEvent<String>> replay = (buffer != null && lastEventId != null)
+            ? buffer.replayAfter(lastEventId)               // 回放断线期间的事件
+            : Flux.empty();
+
+    Flux<ServerSentEvent<String>> live = chatClient.prompt()
+            .user(message)
+            .stream()
+            .content()
+            .index()                                        // 0,1,2... 天然的单调递增 ID
+            .map(t -> ServerSentEvent.<String>builder()
+                    .id(String.valueOf(t.getT1() + 1))      // 与 Last-Event-ID 对齐
+                    .event("message")
+                    .data(t.getT2())
+                    .build());
+
+    return replay.concatWith(live);                         // 先回放，再续实时
+}
+```
+
+三个工程约束：**① ID 必须单调**（乱序 ID 会让 EventSource 的去重逻辑失效）；**② 缓冲有界**（环形缓冲保留最近 N 条，超龄回放请求只能降级，见 §7.3 的部分结果）；**③ 生成仍在进行时才谈得上"续传"**——如果生成已结束（LLM 调用已取消，见 §5.5 取消传播），重连后能回放的只有缓冲里已有的部分。多实例部署时缓冲与连接可能不在同一实例，需要粘性路由或把缓冲外置——完整的多页面/多实例会话治理见 [教程 24-多页面流式响应与会话管理]。
+
+### 7.3 流式中断后的部分结果处理
+
+"断了"之后服务端要回答两个问题：**已生成的部分内容怎么用？未完成的部分怎么交代？**
+
+```java
+// Spring AI 2.0.0 — 中断时的部分结果落盘（与 §5.4 的记忆边界互补）
+StringBuilder partial = new StringBuilder();
+
+return chatClient.prompt()
+        .user(message)
+        .stream()
+        .content()
+        .doOnNext(partial::append)                          // 顺手累积已生成内容
+        .doOnCancel(() -> {                                 // 客户端断开
+            persistPartial(sessionId, partial.toString());  // 部分结果落盘，供重连续传/下一轮兜底
+            log.info("stream cancelled at {} chars", partial.length());
+        })
+        .doOnError(e -> persistPartial(sessionId, partial.toString()));
+```
+
+部分结果的三个消费出口，按体验从好到差：
+
+| 出口 | 做法 | 适用 |
+|------|------|------|
+| **续传** | §7.2 的回放机制，前端无缝接上 | 中断时间短、缓冲还在 |
+| **续写** | 下一轮请求把部分结果作为上下文（"接着上文继续，不要重复"） | 部分内容有保留价值 |
+| **截断标记** | 在会话历史里给部分回复打 `[已中断]` 标记，模型知道上次没说完 | 部分内容已不可用，但需防止模型"假装说完了" |
+
+注意与 §5.4 的呼应：取消时 `MessageChatMemoryAdvisor` 不会写入这轮回复——**部分结果必须自己落盘**，它同时服务"续传缓冲"和"下一轮上下文"两个用途，一份数据两处价值。
+
+---
+
+## 8. SSE vs WebSocket：如何选型
+
+### 8.1 技术对比
 
 ```mermaid
 graph TB
@@ -644,7 +829,7 @@ graph TB
     style WS特性 fill:#fff9c4
 ```
 
-### 7.2 详细对比表
+### 8.2 详细对比表
 
 | 维度 | SSE | WebSocket |
 |------|-----|-----------|
@@ -658,7 +843,7 @@ graph TB
 | **实现复杂度** | 低 | 中 |
 | **适合场景** | LLM 流式输出、通知推送 | 实时聊天、游戏、协同编辑 |
 
-### 7.3 决策树
+### 8.3 决策树
 
 ```mermaid
 graph TB
@@ -675,7 +860,7 @@ graph TB
     style WS fill:#fff9c4
 ```
 
-### 7.4 Agent 场景下的选择
+### 8.4 Agent 场景下的选择
 
 对于 Agent 应用，绝大多数场景**SSE 是正确的选择**：
 
@@ -690,14 +875,14 @@ graph TB
 
 ---
 
-## 8. 完整示例：流式聊天 Controller
+## 9. 完整示例：流式聊天 Controller
 
 ```java
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
-import org.springframework.ai.chat.memory.repository.InMemoryChatMemoryRepository;
+import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
@@ -775,9 +960,9 @@ public class StreamChatController {
 
 ---
 
-## 9. 流式响应的注意事项
+## 10. 流式响应的注意事项
 
-### 9.1 代理和超时
+### 10.1 代理和超时
 
 很多反向代理（Nginx、API Gateway）有默认的响应超时和缓冲设置。流式响应需要特殊配置：
 
@@ -796,14 +981,14 @@ location /chat/stream {
 
 如果 `proxy_buffering` 没有关闭，Nginx 会缓存整个响应，等 LLM 生成完才一次性发给客户端——完全失去流式效果。
 
-### 9.2 浏览器连接数限制
+### 10.2 浏览器连接数限制
 
 HTTP/1.1 下，浏览器对同一域名的并发连接数有限制（通常 6 个）。如果多个标签页同时建立 SSE 连接，可能耗尽连接池。解决方案：
 
 - 使用 HTTP/2（多路复用，无连接数限制）
 - 用单个 SSE 连接 + 消息复用（一个连接服务多个会话）
 
-### 9.3 心跳保活
+### 10.3 心跳保活
 
 长时间没有数据的 SSE 连接可能被中间代理断开。定期发送心跳保持连接：
 
@@ -832,7 +1017,7 @@ private Flux<ServerSentEvent<String>> buildStream(String message, String session
 }
 ```
 
-### 9.4 客户端取消请求
+### 10.4 客户端取消请求
 
 用户点击"停止"按钮时，前端应主动关闭 SSE 连接：
 
@@ -865,9 +1050,41 @@ return chatClient.prompt()
         });
 ```
 
+### 10.5 长连接容量治理：每用户并发流上限
+
+SSE 是长连接，每条连接都占着一个服务端资源（响应式堆栈下不占线程，但占内存、文件描述符和到 LLM 的上游并发）。不做上限，一个用户开 20 个标签页重发请求就能吃掉可观的配额。治理分三层：
+
+- **入口层（WebFilter 全局闸门）**：按"用户 + 会话"维度计数，超过上限直接 `429 Too Many Requests`——最廉价的防线，在进入 LLM 之前就拒绝。
+- **应用层（同会话串行/排队）**：同一会话的并发流通常没有意义（记忆 Advisor 读取同一历史会产生竞态，见 [教程 12-Agent状态管理 §并发竞态]），"同会话最多 1 条活动流、后来者取消前者或排队"是更贴合业务的规则。
+- **上游层（LLM 连接池）**：客户端并发流的总量要和到 LLM 提供商的连接池/限流配额对齐——超卖的结果是全体用户的流一起变慢（连接排队），见 [教程 38-Agent性能优化]。
+
+```java
+// Spring AI 2.0.0 — 概念代码：每用户并发流上限（计数器用 ConcurrentHashMap + AtomicInteger）
+// 分布式部署时换 Redis 计数（ReactiveRedisTemplate），并设置 TTL 防止计数泄漏
+public Flux<ServerSentEvent<String>> guardedStream(String userId, String message) {
+    if (!streamLimiter.tryAcquire(userId, 3)) {          // 每用户最多 3 条并发流
+        return Flux.error(new ResponseStatusException(
+                HttpStatus.TOO_MANY_REQUESTS, "并发流已达上限，请先关闭其他对话"));
+    }
+    return buildStream(message, userId)
+            .doFinally(signal -> streamLimiter.release(userId));   // 正常/异常/取消都要释放
+}
+```
+
+### 10.6 优雅停机：流的 drain 与连接收尾
+
+滚动发布/重启时，直接 kill 会切断所有进行中的流——用户看到回复写到一半戛然而止，而且这些回复因为"流未完成"连记忆都没写入（§5.4）。优雅停机的正确顺序：
+
+1. **摘流量**：从负载均衡摘除本实例（不再有新连接），keep-alive 时间内存量连接继续服务；
+2. **等存量流自然完成**：给活动流一个 drain 窗口（如 60s），大部分生成能在此窗口内完成并正常写记忆、发 `done` 事件；Spring Boot 的 `server.shutdown=graceful` 处理的就是这一步；
+3. **窗口到了还没完的流主动收尾**：对仍在跑的流，服务端主动下发 `error`/`done` 事件告知"服务重启，请刷新续传"，并把部分结果落盘（§7.3）——前端配合 §7 的 Last-Event-ID 在新实例上续传；
+4. **释放资源**：关闭到 LLM 的连接池，注销限流计数。
+
+把"部分结果落盘 + 续传协议"纳入停机路径，滚动发布对用户的感知就从"回复断了"变成"轻微卡了一下又接上了"——这两节（§7 + §10.6）合起来才是流式通信的可用性闭环。多实例下的会话粘性与缓冲外置见 [教程 24-多页面流式响应与会话管理]。
+
 ---
 
-## 10. 适用场景与不适用场景
+## 11. 适用场景与不适用场景
 
 ### 适用场景
 
@@ -887,7 +1104,7 @@ return chatClient.prompt()
 
 ---
 
-## 11. 本章总结
+## 12. 本章总结
 
 | 概念 | 一句话 |
 |------|--------|
@@ -900,13 +1117,21 @@ return chatClient.prompt()
 | **Flux 链式操作** | filter/buffer/delayElements/onErrorResume 等流处理 |
 | **心跳保活** | 定期发送注释事件，防止代理断开空闲连接 |
 | **proxy_buffering off** | Nginx 必须关闭缓冲才能正常流式传输 |
+| **限流 vs 背压** | delayElements 是限流；背压是消费者向生产者传导 request(n)，慢消费者用 onBackpressureDrop 治理 |
+| **取消传播** | 客户端断开后 cancel 信号沿流向上传播，中止 LLM 生成、停止计费 |
+| **Last-Event-ID** | EventSource 重连自动携带断点 ID，服务端凭事件缓冲做差量回放续传 |
+| **部分结果处理** | 取消/异常时自己落盘已生成内容，续传/续写/截断标记三个出口 |
+| **容量治理** | 每用户并发流上限入口拦截 + 同会话串行 + 与 LLM 连接池对齐 |
+| **优雅停机** | 摘流量 → drain 存量流 → 收尾事件 + 部分结果落盘 → 释放资源 |
 | **vs WebSocket** | SSE 适合单向推送（LLM 输出），WebSocket 适合双向频繁通信 |
 
-**下一篇**：[13-结构化输出](13-结构化输出.md) — 让 Agent 输出可靠的 JSON、Entity 映射、输出校验。
+**下一篇**：[11-MCP协议](11-MCP协议.md) — 用标准化协议把工具生态接入 Agent。
 
 ---
 
 > → [教程 02-ChatClient 与对话模型]：ChatClient 的完整 API、同步/流式调用的基础。
 > → [教程 24-多页面流式响应与会话管理]：多标签页 SSE 连接管理、会话隔离。
-> 想深入？→ [教程 10-SSE流式通信（协议细节）与 [附录 14-Agent交互设计/00-Agent用户体验设计]（交互层）]：SSE 协议的完整规范和浏览器兼容性。
+> 想深入？→ [附录 03-Spring-AI源码解析/02-流式执行链源码解析]：`stream()` 从 Advisor 链到 Reactor Netty 写出端的完整执行链源码。
+> 想深入？→ [附录 06-WebFlux与响应式编程/01-背压与流量控制]：request(n)、onBackpressure* 算子族与取消传播的底层机制。
+> 想深入？→ [附录 18-Observation/00-Observation全景与核心概念]：流式调用的 Span 边界与流耗时/首 Token 延迟指标采集。
 > 遇到阻塞？→ [教程 42-响应式错误处理]（背压与流中断）与 [教程 38-Agent性能优化]（连接池与超时）。

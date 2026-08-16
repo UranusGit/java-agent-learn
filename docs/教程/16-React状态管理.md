@@ -1,6 +1,6 @@
-# 42-React 状态管理
+# 16-React 状态管理
 
-> **定位**：本文讲透 React 应用的状态管理全景——从 useState 的边界出发，经过 Context、Zustand，到服务端状态，最终落到 Agent 前端的三层状态模型。读者画像：已读完 [教程 15-React入门与现代前端工程]，能写函数组件与自定义 Hook 的开发者。前置阅读：[教程 41 §3 Hooks]。
+> **定位**：本文讲透 React 应用的状态管理全景——从 useState 的边界出发，经过 Context、Zustand，到服务端状态，最终落到 Agent 前端的三层状态模型。读者画像：已读完 [教程 15-React入门与现代前端工程]，能写函数组件与自定义 Hook 的开发者。前置阅读：[教程 15-React入门与现代前端工程 §3 Hooks]。
 >
 > **为什么状态管理是 Agent 前端的核心难题**：一个 Agent 控制台同时存在——高频流式状态（每秒几十 token）、会话级状态（历史、连接）、全局状态（用户、主题、租户）、服务端状态（会话列表、配额）。不分类管理，必然演变成"全局一个大 store，改一个 token 全页面重渲染"的灾难。这与后端把"控制面/数据面"分离是同构的架构问题（[教程 20-管控分离架构 §2]）。
 
@@ -96,7 +96,7 @@ function streamReducer(state: StreamState, action: StreamAction): StreamState {
 }
 ```
 
-注意这个模式与后端的状态机设计**完全同构**——[教程 12-Agent状态管理 §状态机]、[教程 28-Human-in-the-Loop与审批流 §审批状态机] 中的 Mermaid 状态图，可以直接映射为前端 reducer。前后端用同一张状态图对齐，是事件协议设计（[教程 44 §2]）的沟通基础。
+注意这个模式与后端的状态机设计**完全同构**——[教程 12-Agent状态管理 §状态机]、[教程 28-Human-in-the-Loop与审批流 §审批状态机] 中的 Mermaid 状态图，可以直接映射为前端 reducer。前后端用同一张状态图对齐，是事件协议设计（[教程 18-Agentic-UI设计 §2]）的沟通基础。
 
 **判断标准**：状态转换图能画出来 → useReducer；只是几个独立开关 → useState。
 
@@ -131,7 +131,7 @@ function SessionTitle() {
 }
 ```
 
-**Context 的真相**：它是"避免 props 钻取的依赖注入机制"，类似 Spring 的 ApplicationContext（[教程 41 §1.1]）。但 **Context 的 value 变化会让所有消费组件重渲染**——即使它们只用 value 里的一部分。所以：
+**Context 的真相**：它是"避免 props 钻取的依赖注入机制"，类似 Spring 的 ApplicationContext（[教程 15-React入门与现代前端工程 §1.1]）。但 **Context 的 value 变化会让所有消费组件重渲染**——即使它们只用 value 里的一部分。所以：
 
 - ✅ 适合：低频变化的值（当前会话 ID、主题、登录用户、租户标识）
 - ❌ 不适合：高频值（token 流——每 token 一次 context 更新 = 全应用重渲染）
@@ -249,7 +249,7 @@ queryKey: ['quota', tenantId, userId]         // 用户配额
 
 ### 4.3 分界线：什么不进 TanStack Query
 
-**流式数据不用 TanStack Query**。token 流是"持续推送"而非"请求-响应"，Query 的模型不匹配。流式状态的归宿是"下沉的自定义 Hook + ref 缓冲"（[教程 43 §5]）。这正呼应了开头的分类学：四类状态各归其位。
+**流式数据不用 TanStack Query**。token 流是"持续推送"而非"请求-响应"，Query 的模型不匹配。流式状态的归宿是"下沉的自定义 Hook + ref 缓冲"（[教程 17-React与SSE流式UI §4]）。这正呼应了开头的分类学：四类状态各归其位。
 
 ---
 
@@ -330,7 +330,7 @@ flowchart TB
 ### 不适用场景
 
 - 简单页面（一两个输入框）引入 Zustand/Query——过度工程，useState 足够
-- 需要跨标签页实时同步的全局状态—— Zustand 原生单页签，需配合 storage 持久化或 BroadcastChannel（多页签同步见 [教程 18] 后端方案）
+- 需要跨标签页实时同步的全局状态—— Zustand 原生单页签，需配合 storage 持久化或 BroadcastChannel（多页签同步见 [教程 24-多页面流式响应与会话管理] 后端方案）
 - 离线优先应用——需要更重的本地数据库方案，Query 只是缓存层
 - 极致简单的 SSR 场景——服务端状态的获取与注水需另行设计（本体系 SPA 架构不涉及）
 

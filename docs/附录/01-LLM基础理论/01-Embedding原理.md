@@ -222,9 +222,9 @@ public class EmbeddingService {
         return embeddingModel.embed(text);
     }
 
-    // 批量嵌入（更高效）
+    // 批量嵌入（更高效）——javap 实证：EmbeddingOptionsBuilder 不存在，用 DefaultEmbeddingOptions.builder()
     public List<float[]> embedBatch(List<String> texts) {
-        return embeddingModel.embed(texts, EmbeddingOptionsBuilder.builder().build());
+        return embeddingModel.embed(texts, DefaultEmbeddingOptions.builder().build());
     }
 }
 ```
@@ -271,12 +271,12 @@ spring:
 
 ```java
 // 使用不同的 Embedding 模型
+// javap 实证：OpenAiEmbeddingModel 真实构造含 (OpenAiEmbeddingOptions)；
+// OpenAiConnectionProperties/openAiApi+MetadataMode 三参构造均不存在。
+// 连接配置（base-url/api-key）走 spring.ai.openai.*（OpenAiCommonProperties 前缀 spring.ai.openai）。
 @Bean
-public EmbeddingModel embeddingModel(OpenAiConnectionProperties props) {
-    // 可以配置多个 EmbeddingModel，根据场景选择
+public EmbeddingModel embeddingModel() {
     return new OpenAiEmbeddingModel(
-        openAiApi,
-        MetadataMode.EMBED,
         OpenAiEmbeddingOptions.builder()
             .model("text-embedding-3-large")
             .dimensions(3072)  // 高维度 = 更精确
@@ -322,14 +322,14 @@ public class DocumentChunkingService {
     private final VectorStore vectorStore;
 
     public void indexDocument(Document document) {
-        // Spring AI 内置的 TokenTextSplitter
-        TokenTextSplitter splitter = new TokenTextSplitter(
-            500,   // 每块最大 token 数
-            100,   // 重叠区（保留上下文连贯性）
-            10,    // 最小块大小
-            5000,  // 最大块大小
-            true
-        );
+        // Spring AI 内置的 TokenTextSplitter（2.0.0 起构造器弃用 forRemoval，统一使用 builder()）
+        TokenTextSplitter splitter = TokenTextSplitter.builder()
+                .withChunkSize(500)            // 每个 chunk 的目标 token 数
+                .withMinChunkSizeChars(100)    // chunk 内段落最小字符数
+                .withMinChunkLengthToEmbed(10) // 短于该长度的 chunk 跳过嵌入
+                .withMaxNumChunks(5000)        // 单文档最大 chunk 数
+                .withKeepSeparator(true)       // 切分时保留分隔符
+                .build();
 
         List<Document> chunks = splitter.split(document);
 

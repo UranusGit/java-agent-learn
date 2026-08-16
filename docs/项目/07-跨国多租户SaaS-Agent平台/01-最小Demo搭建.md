@@ -228,8 +228,7 @@ spring:
       base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
       api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
       chat:
-        options:
-          model: deepseek-chat
+        model: deepseek-chat          # Spring AI 2.0.0：无 options 中缀，参数直挂
   r2dbc:
     url: r2dbc:postgresql://${DB_HOST:localhost}:5432/saas
     username: ${DB_USER:saas}
@@ -512,7 +511,7 @@ public record User(UUID id, UUID tenantId, String email, String passwordHash) {}
 ```java
 package com.acme.saas.identity;
 
-import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.r2dbc.core.DatabaseClient;   // ⚠ 需引入依赖 org.springframework.boot:spring-boot-starter-data-r2dbc（本地未下载，未 javap 实证；以引入依赖后 javap 输出为准）
 import org.springframework.stereotype.Repository;
 import reactor.core.publisher.Mono;
 
@@ -557,7 +556,7 @@ public class TenantRepository {
 ```java
 package com.acme.saas.identity;
 
-import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.r2dbc.core.DatabaseClient;   // ⚠ 需引入依赖 org.springframework.boot:spring-boot-starter-data-r2dbc（本地未下载，未 javap 实证；以引入依赖后 javap 输出为准）
 import org.springframework.stereotype.Repository;
 import reactor.core.publisher.Mono;
 
@@ -690,7 +689,7 @@ public class AgentConfig {
 
     @Bean
     public ChatMemory chatMemory() {
-        // 官方仅 InMemory / JDBC 两类仓库（附录 12-00 §2.2）；v1 用内存，后续迭代换持久化
+        // 官方仅 InMemory / JDBC 两类仓库（附录 05-00 §2.2）；v1 用内存，后续迭代换持久化
         return MessageWindowChatMemory.builder()
                 .chatMemoryRepository(new InMemoryChatMemoryRepository())
                 .maxMessages(20)
@@ -701,7 +700,7 @@ public class AgentConfig {
     public ChatClient chatClient(ChatClient.Builder builder, ChatMemory memory) {
         return builder
                 .defaultSystem("你是客户支持助手。回答要简洁、基于事实；不知道就明说不知道。")
-                .defaultAdvisors(new MessageChatMemoryAdvisor(memory))
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(memory).build())   // Spring AI 2.0.0：无 public 构造器
                 .build();
     }
 }
@@ -712,7 +711,7 @@ public class AgentConfig {
 ```java
 package com.acme.saas.conversation;
 
-import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.r2dbc.core.DatabaseClient;   // ⚠ 需引入依赖 org.springframework.boot:spring-boot-starter-data-r2dbc（本地未下载，未 javap 实证；以引入依赖后 javap 输出为准）
 import org.springframework.stereotype.Repository;
 import reactor.core.publisher.Mono;
 

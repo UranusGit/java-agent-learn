@@ -143,7 +143,7 @@ public class TestGenAgent {
                         + "\n真实调用方: " + codeIndex.getCallers(qualifiedName)
                         + "\n历史 bug: " + codeIndex.getHistoricalBugs(qualifiedName))
                 .call()
-                .entity(new ParameterizedTypeReference<List<GeneratedTest>>() {}))   // 真实泛型容器（[附录 12-02 §2]）
+                .entity(new ParameterizedTypeReference<List<GeneratedTest>>() {}))   // 真实泛型容器（[附录 05-02 §2]）
             .subscribeOn(Schedulers.boundedElastic());
     }
 }
@@ -451,6 +451,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 
 /** 把通过的测试开成 draft PR——AI 不直接进 CI，全部"机器生成 + 人工批准"。 */
 @Component
@@ -463,9 +464,10 @@ public class DraftPrService {
         this.webClient = webClientBuilder.baseUrl(baseUrl).build();
     }
 
-    public void openDraftPr(String targetRepo, String branch, String title, String description) {
+    /** 开 draft PR 返回 Mono<Void>，随响应式链传播，EventLoop 不 block（WebFlux 铁律）。 */
+    public Mono<Void> openDraftPr(String targetRepo, String branch, String title, String description) {
         String token = System.getenv("GITLAB_TOKEN");
-        webClient.post()
+        return webClient.post()
                 .uri("/api/v4/projects/{repo}/merge_requests", targetRepo)
                 .headers(h -> {
                     if (token != null) {
@@ -475,7 +477,7 @@ public class DraftPrService {
                 .bodyValue(new CreateMrRequest(branch, "main", title, description, true))
                 .retrieve()
                 .toBodilessEntity()
-                .block();   // 同步面（调度上下文）；生产用 Mono 走响应式链
+                .then();
     }
 
     public record CreateMrRequest(
@@ -534,8 +536,8 @@ public class TestGenController {
     }
 
     @PostMapping("/draft")
-    public void openDraft(@RequestBody DraftPrRequest req) {
-        draftPrService.openDraftPr(req.targetRepo(), "pr-testgen-" + req.feature(),
+    public Mono<Void> openDraft(@RequestBody DraftPrRequest req) {
+        return draftPrService.openDraftPr(req.targetRepo(), "pr-testgen-" + req.feature(),
                 "tests: " + req.feature(), req.description());
     }
 

@@ -77,7 +77,8 @@ import java.util.List;
 
 /**
  * LLM 结构化输出：生成的 SQL + 无法映射的字段。
- * 使用真实重载 entity(Class)——附录 12-02 §2，无 spec-lambda（虚构 API）。
+ * 用真实重载 entity(Class)（附录 05-02 §2 javap 实证：entity(Class, spec) 变体也真实存在，
+ * spec 仅 useProviderStructuredOutput()/validateSchema() 两个方法）。
  */
 public record GeneratedSql(String sql, List<String> missingFields) {}
 ```
@@ -234,14 +235,14 @@ public class TextToSqlService {
                     """)
                 .user("问题：" + question + "\n\nSchema:\n" + schema)
                 .call()
-                .entity(GeneratedSql.class))            // 真实重载 entity(Class)，附录 12-02 §2
+                .entity(GeneratedSql.class))            // 真实重载 entity(Class)，附录 05-02 §2
             .subscribeOn(Schedulers.boundedElastic())
             .flatMap(sqlExecutor::execute);
     }
 }
 ```
 
-「遇到阻塞？→ [教程 13-结构化输出 §entity()]——注意用 `entity(GeneratedSql.class)`，不用任何 spec-lambda（虚构 API）」
+「遇到阻塞？→ [教程 13-结构化输出 §entity()]——用 `entity(GeneratedSql.class)`（真实重载）；需要 provider 原生结构化输出或 schema 校验时，用 `entity(Class, spec -> ...)` 变体（spec 仅 `useProviderStructuredOutput()`/`validateSchema()`，附录 05-02 §2）」
 
 ### 3.9 `QueryController.java`（响应式入口）
 
@@ -323,7 +324,7 @@ curl -X POST "http://localhost:8080/api/query?userId=u1" \
 | # | 决策 | 理由 |
 |---|------|------|
 | ADR-500（最小 Demo） | 先跑通"问题→SQL→结果"链路 | 后续护栏/语义层/权限都在同一份链路上叠加 |
-| ADR-501（v1 内） | 结构化输出用 `entity(Class)` 真实重载 | 附录 12-02 明确 spec-lambda 全家族为虚构；改错即编译失败 |
+| ADR-501（v1 内） | 结构化输出用 `entity(Class)`；需要时用 `entity(Class, spec)`（spec 仅 `useProviderStructuredOutput()`/`validateSchema()`） | 附录 05-02 §2 javap 实证：两种形态均为真实 API |
 
 ## 5. v1 的痛点（驱动下一迭代）
 

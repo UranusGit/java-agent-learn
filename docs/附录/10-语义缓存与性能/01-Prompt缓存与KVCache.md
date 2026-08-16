@@ -1,6 +1,6 @@
 # Prompt 缓存与 KV Cache 深度解析
 
-> 「本文是对 [教程 33-性能优化 §2-§5] 的深入展开」
+> 「本文是对 [教程 38-Agent性能优化 §2-§5] 的深入展开」
 
 > **定位**：系统讲解 LLM 推理引擎的 Prompt Caching 机制——服务端 KV Cache 复用、OpenAI/Anthropic 的缓存 API、缓存命中条件，以及如何在 Agent 系统中设计 Prompt 结构最大化缓存命中率。
 >
@@ -140,9 +140,9 @@ ChatResponse response = chatClient.prompt()
 
 Usage usage = response.getMetadata().getUsage();
 
-// 查看缓存命中的 Token 数
-int promptTokens = usage.getPromptTokens();     // 总输入
-int cachedTokens = usage.getCachedTokens();     // 缓存命中的部分
+// 查看缓存命中的 Token 数（2.0 真实方法：getCacheReadInputTokens()）
+int promptTokens = usage.getPromptTokens();                 // 总输入
+long cachedTokens = usage.getCacheReadInputTokens();        // 缓存命中的部分
 
 log.info("总输入: {}, 缓存命中: {}, 实际计费输入: {}",
     promptTokens, cachedTokens, promptTokens - cachedTokens);
@@ -162,29 +162,28 @@ double totalCost = inputCost + cachedCost;
 Anthropic 的 Claude 需要显式标记要缓存的段落：
 
 ```java
+// 概念代码：Anthropic 需要显式标记缓存断点（cache_control 参数）。
+// 缓存标记是 Provider 专用能力，经 API 请求参数/头部透传，不属于 Spring AI Message API
+//（SystemMessage/UserMessage 均无 withCache/of 方法）；此处仅展示真实的消息构造。
 @Service
 public class ClaudeCacheService {
+
+    private final ChatClient claudeClient;
 
     public Mono<String> askWithCache(String userQuestion,
                                       List<Document> ragDocuments) {
 
-        // 构建消息，标记缓存断点
-        String prompt = MessageCreator.create(
-            // System Prompt → 缓存
-            SystemMessage.withCache("""
-                你是专业助手。
-                （大量固定内容，~3000 tokens）
-                """, "system-cache"),
-
-            // RAG 文档 → 缓存（如果同一文档集被多次查询）
-            UserMessage.withCache(
-                "参考文档：\n" + formatDocuments(ragDocuments),
-                "rag-cache"
-            ),
-
-            // 用户问题 → 不缓存（每次不同）
-            UserMessage.of(userQuestion)
-        );
+        // 构建消息：System Prompt 与 RAG 文档是相对固定内容（可命中前缀缓存）
+        Prompt prompt = Prompt.builder()
+            .messages(
+                new SystemMessage("""
+                    你是专业助手。
+                    （大量固定内容，~3000 tokens）
+                    """),
+                new UserMessage("参考文档：\n" + formatDocuments(ragDocuments)),
+                new UserMessage(userQuestion)
+            )
+            .build();
 
         return Mono.fromCallable(() ->
             claudeClient.prompt(prompt).call().content()
@@ -377,22 +376,27 @@ public class SharedKnowledgeService {
 ```java
 @Component
 public class CacheMetricsTracker {
+    private final MeterRegistry metrics;
+
+    public CacheMetricsTracker(MeterRegistry metrics) {
+        this.metrics = metrics;
+    }
 
     public void record(Usage usage) {
-        int total = usage.getPromptTokens();
-        int cached = usage.getCachedTokens();
-        int billable = total - cached;
+        long total = usage.getPromptTokens();             // 总输入
+        long cached = usage.getCacheReadInputTokens();    // 缓存命中（2.0 真实方法）
+        long billable = total - cached;
 
         // 缓存命中率
         double hitRate = total > 0 ? (double) cached / total : 0;
         metrics.gauge("prompt_cache.hit_rate", hitRate);
 
-        // 节省成本
-        double savedCost = cached * (0.0000025 - 0.00000125); // 正常价 - 缓存价
+        // 节省成本（正常价 - 缓存价）
+        double savedCost = cached * (0.0000025 - 0.00000125);
         metrics.counter("prompt_cache.cost_saved").increment(savedCost);
 
-        // 节省延迟
-        long savedLatencyMs = (long) (cached * 0.5); // 约每 token 节省 0.5ms
+        // 节省延迟（约每 token 节省 0.5ms）
+        long savedLatencyMs = (long) (cached * 0.5);
         metrics.counter("prompt_cache.latency_saved_ms").increment(savedLatencyMs);
     }
 }
@@ -450,10 +454,10 @@ List<ToolCallback> tools = allTools.stream()
     .filter(t -> isRelevant(t, query))
     .toList(); // 顺序可能不同 → 缓存失效
 
-// 正确：固定顺序
+// 正确：固定顺序（ToolCallback 无 getName()，经 getToolDefinition().name() 取名称）
 List<ToolCallback> tools = allTools.stream()
     .filter(t -> isRelevant(t, query))
-    .sorted(Comparator.comparing(ToolCallback::getName))
+    .sorted(Comparator.comparing(t -> t.getToolDefinition().name()))
     .toList();
 ```
 

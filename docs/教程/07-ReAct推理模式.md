@@ -1,4 +1,4 @@
-# 06-ReAct 推理模式
+# 07-ReAct 推理模式
 
 > **定位**：讲透 ReAct（Reasoning + Acting）模式——Thought-Action-Observation 循环的完整机制、与传统一问一答的本质区别、在 Spring AI 2.0 中通过 Advisor 链循环实现，以及与 Plan-and-Execute 模式的对比选型。读完这篇，你能让 Agent 在"边想边做"中自主完成复杂任务。
 >
@@ -245,46 +245,46 @@ ChatClient explicitReActAgent(ChatClient.Builder builder, TravelTools travelTool
 ReAct 循环如果不限制步数，可能陷入死循环（LLM 反复调用同一工具）。Spring AI 2.0 提供了循环控制机制：
 
 ```java
-import org.springframework.ai.chat.client.advisor.api.Advisor;
-
-// Spring AI 2.0.0 — 通过 ToolCallingAdvisor 配置控制循环
+// Spring AI 2.0.0 — 工具循环由 ToolCallingAdvisor + ToolCallingManager 驱动
 @Bean
 ChatClient boundedReActAgent(ChatClient.Builder builder, TravelTools tools) {
-    // 最大工具调用轮次（防止无限循环）
-    int maxIterations = 10;
-
     return builder
-            .defaultSystem("你是一个出行助手。")
+            .defaultSystem("""
+                你是一个出行助手。注意：
+                最多尝试 10 次工具调用；信息足够时立即给出最终答案。
+                """)
             .defaultTools(tools)
-            // ToolCallingAdvisor 已自动注册，可通过配置参数控制
             .build();
 }
 ```
 
 ```yaml
-# application.yml — 全局配置工具调用循环限制
+# application.yml — 全局配置 ToolCallingAdvisor
+# （spring.ai.chat.client.tool-calling.* 由 spring-ai-autoconfigure-model-chat-client 提供，2.0.0 无 max-iterations 配置键）
 spring:
   ai:
     chat:
       client:
         tool-calling:
-          enabled: true
-          max-iterations: 10    # 最大循环次数
-          advisor-order: 0      # Advisor 链中的位置
+          enabled: true        # 自动装配 ToolCallingAdvisor（默认开启）
+          advisor-order: 0     # ToolCallingAdvisor 在 Advisor 链中的位置
 ```
+
+> **注意**：2.0.0 没有 `max-iterations` 配置键——工具循环由 `ToolCallingAdvisor`（持 `ToolCallingManager`）驱动，一直执行到模型不再返回工具调用为止。要**硬性限制轮次**，需要在系统提示里约定尝试上限（如上例），或自定义一个守卫 Advisor（见 §3.5），或在 `ToolCallingAdvisor.builder().toolCallingManager(...)` 处注入带轮次上限的自定义 `ToolCallingManager`。
 
 ### 3.5 自定义 ReAct Advisor
 
 如果需要更细粒度地控制 ReAct 循环（比如在每一步加入日志、审批、条件终止），可以实现自定义 Advisor：
 
 ```java
-import org.springframework.ai.chat.client.advisor.api.*;
-import org.springframework.ai.chat.model.ChatResponse;
-import reactor.core.publisher.Flux;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
+import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
 
 // Spring AI 2.0.0 — 自定义 ReAct 控制 Advisor
-// ⚠ 修正: 步数计数用 Reactor Context 而非 ThreadLocal——
-// WebFlux 下同一线程复用多请求、一次请求跨线程切换，ThreadLocal 语义全错（见教程 37 §Context 传递）
+// ⚠ 2.0.0 的 ChatClientRequest 只有 prompt() 与 context() 两个成员；
+// 没有 1.x 的 userText()/systemText()/from()/contextEntry()——改写见下
 public class ReActControlAdvisor implements CallAdvisor {
 
     private final int maxSteps;
@@ -295,32 +295,42 @@ public class ReActControlAdvisor implements CallAdvisor {
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
-        // 从 Reactor Context 读当前步数（请求级，非线程级）
-        int current = request.context().getOrDefault("react.step", 0);
+        // 步数计数放在 ChatClientRequest.context（请求级，随链传递）；
+        // WebFlux 主链路禁止用 ThreadLocal——同一线程复用多请求、一次请求跨线程切换，ThreadLocal 语义全错
+        int current = (Integer) request.context().getOrDefault("react.step", 0);
+
+        var builder = ChatClientRequest.builder()
+                .prompt(request.prompt())
+                .context(request.context());
+
         if (current >= maxSteps) {
-            // 超过最大步数，在消息中注入"请立即给出最终答案"指令
-            request = ChatClientRequest.builder()
-                    .from(request)
-                    .systemText(request.systemText() +
+            // 超过最大步数：在系统消息末尾追加"请立即给出最终答案"指令
+            // （augmentSystemMessage(Function) 走 SystemMessage.mutate().text(...)，是追加语义）
+            builder.prompt(request.prompt().augmentSystemMessage(sm ->
+                    sm.mutate().text(sm.getText() +
                             "\n\n【系统警告】已达到最大推理步数(" + maxSteps +
-                            ")，请立即基于已有信息给出最终答案。")
-                    .build();
+                            ")，请立即基于已有信息给出最终答案。").build()));
         }
+
         // 步数 +1 写回上下文（随请求链传递，不跨线程污染）
-        request = ChatClientRequest.builder()
-                .from(request)
-                .contextEntry("react.step", current + 1)
+        request = builder
+                .context("react.step", current + 1)
                 .build();
 
-        // 记录每一步的推理日志
+        // 记录每一步的推理日志（用户输入从 Prompt 中取，而非不存在的 userText()）
         System.out.println("[ReAct] Step " + (current + 1) +
-                " | User: " + request.userText());
+                " | Prompt: " + request.prompt().getContents());
         return chain.nextCall(request);
     }
 
     @Override
     public int getOrder() {
         return 10; // 在 ToolCallingAdvisor 之后执行
+    }
+
+    @Override
+    public String getName() {
+        return "react-control";
     }
 }
 ```
@@ -392,7 +402,7 @@ N 轮 ReAct 循环 = N 次 LLM 调用，且 Token 消耗随轮数线性增长（
 
 | 策略 | 做法 | 效果 |
 |------|------|------|
-| **限制最大步数** | `max-iterations: 5` | 防止无限循环 |
+| **限制最大步数** | 系统提示约定尝试上限 + 自定义守卫 Advisor（§3.5） | 防止无限循环 |
 | **上下文压缩** | 每轮只保留 Thought 摘要，不保留完整工具返回 | 减少 Token 消耗 |
 | **提前退出** | Prompt 中指示"信息足够时立即回答" | 减少不必要的循环 |
 | **批量化工具** | 一个工具返回多个结果，减少调用轮次 | 减少 API 调用 |
@@ -472,7 +482,7 @@ graph TB
 | 旅行规划（多约束优化） | ReAct | 航班、酒店、景点互相影响，需要动态调整 |
 | CI/CD 部署流水线 | Plan-and-Execute | 步骤确定：构建→测试→部署→验证 |
 
-> → [教程 07-Plan-and-Execute 模式]：Plan-and-Execute 的完整实现和任务分解策略。
+> → [教程 08-Plan-and-Execute 模式]：Plan-and-Execute 的完整实现和任务分解策略。
 
 ---
 
@@ -480,6 +490,13 @@ graph TB
 
 ```java
 // Spring AI 2.0.0 — 完整的 ReAct 客服 Agent
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
 @Configuration
 public class ReActAgentConfig {
 
@@ -525,6 +542,14 @@ public class ReActAgentConfig {
     }
 }
 ```
+> **需在 pom.xml 中添加依赖**（`QuestionAnswerAdvisor` 所在模块）：2.0.0 起模块名从 `spring-ai-advisors-vector-store` 改为 `spring-ai-vector-store-advisor`（老坐标已不存在）——版本走 `spring-ai-bom`，不写 `<version>`：
+>
+> ```xml
+> <dependency>
+>     <groupId>org.springframework.ai</groupId>
+>     <artifactId>spring-ai-vector-store-advisor</artifactId>
+> </dependency>
+> ```
 
 ```java
 // Spring AI 2.0.0 — 客服工具集
@@ -667,10 +692,10 @@ public class CustomerServiceController {
 | **Observation** | 工具执行结果反馈给 LLM，影响下一轮推理 |
 | **ToolCallingAdvisor** | Spring AI 2.0 内置的 ReAct 实现——自动执行工具调用循环 |
 | **循环终止** | LLM 输出 Final Answer / 达到最大步数 / Token 超限 |
-| **成本控制** | 限制 max-iterations、优化 Prompt 减少不必要循环、批量化工具调用 |
+| **成本控制** | 限制最大步数（§3.4/§3.5）、优化 Prompt 减少不必要循环、批量化工具调用 |
 | **vs Plan-and-Execute** | ReAct 适合探索性任务，Plan-and-Execute 适合可预知的线性任务 |
 
-**下一篇**：[07-Plan-and-Execute 模式](08-Plan-and-Execute模式.md) — 先规划再执行，适合步骤明确的复杂任务。
+**下一篇**：[08-Plan-and-Execute 模式](08-Plan-and-Execute模式.md) — 先规划再执行，适合步骤明确的复杂任务。
 
 ---
 

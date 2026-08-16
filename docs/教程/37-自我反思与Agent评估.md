@@ -1,10 +1,10 @@
-# 32-自我反思与 Agent 评估
+# 37-自我反思与 Agent 评估
 
 > **定位**：讲透 Agent 的自我修正与质量保障——Reflection 模式（输出自评 → 迭代修正）、评估指标体系（准确率 / 延迟 / 成本 / Token 效率 / 工具调用成功率）、在线监控 + 离线评估闭环、A/B 测试与回归测试、Spring AI Evaluator API。读完这篇，你能让 Agent 像人类一样"检查自己的作业"，并建立系统化的质量度量体系。
 >
 > **读者画像**：已经能编排多 Agent 工作流，需要让 Agent 输出更可靠、并且能量化 Agent 质量的开发者。
 >
-> **前置阅读**：[31-Agent 工作流编排](36-Agent工作流编排.md)、[34-上下文工程](34-上下文工程.md)。
+> **前置阅读**：[36-Agent 工作流编排](36-Agent工作流编排.md)、[34-上下文工程](34-上下文工程.md)。
 
 ---
 
@@ -232,7 +232,7 @@ graph TB
 
 ## 4. Spring AI Evaluator API
 
-Spring AI 2.0 提供了内置的评估抽象，用于系统性评估生成质量。
+Spring AI 2.0 提供了评估抽象 `Evaluator`（`org.springframework.ai.evaluation`），以及两个内置评估器 `RelevancyEvaluator`、`FactCheckingEvaluator`（包坐标 `org.springframework.ai.chat.evaluation`）。**它们的底层都是 LLM-as-Judge**——基于注入的 `ChatClient.Builder` 构造专门的"评审 Prompt"调用 LLM 打分。自定义评估既可实现 `Evaluator` 接口，也可以直接用普通 `ChatClient` 调用。
 
 ### 4.1 Relevancy Evaluator（相关性评估）
 
@@ -240,23 +240,26 @@ Spring AI 2.0 提供了内置的评估抽象，用于系统性评估生成质量
 
 ```java
 import org.springframework.ai.evaluation.Evaluator;
-import org.springframework.ai.evaluation.RelevancyEvaluator;
+import org.springframework.ai.evaluation.EvaluationRequest;
 import org.springframework.ai.evaluation.EvaluationResponse;
+import org.springframework.ai.chat.evaluation.RelevancyEvaluator;
 
-// 创建相关性评估器
-Evaluator relevancyEvaluator = new RelevancyEvaluator(chatModel);
+// 创建相关性评估器：基于 ChatClient.Builder 构建，内部即 LLM-as-Judge
+Evaluator relevancyEvaluator = RelevancyEvaluator.builder()
+    .chatClientBuilder(chatClientBuilder)   // 注入的 ChatClient.Builder
+    .build();
 
-// 评估一条问答
+// 评估一条问答（retrievalDocs 为检索到的上下文，类型 List<Document>）
 EvaluationResponse result = relevancyEvaluator.evaluate(
     new EvaluationRequest(
-        userQuestion,         // 用户问题
-        retrievalContext,     // 检索到的上下文
-        agentAnswer           // Agent 的回答
+        userQuestion,         // 用户问题（String）
+        retrievalDocs,        // 检索到的上下文（List<Document>）
+        agentAnswer           // Agent 的回答（String）
     )
 );
 
 boolean isRelevant = result.isPass();
-double score = result.getScore();   // 0.0 - 1.0
+float score = result.getScore();   // 0.0 - 1.0
 String feedback = result.getFeedback();
 ```
 
@@ -265,14 +268,17 @@ String feedback = result.getFeedback();
 评估回答是否忠实于检索上下文（检测幻觉）：
 
 ```java
-import org.springframework.ai.evaluation.FactCheckingEvaluator;
+import org.springframework.ai.evaluation.Evaluator;
+import org.springframework.ai.evaluation.EvaluationResponse;
+import org.springframework.ai.chat.evaluation.FactCheckingEvaluator;
 
-Evaluator factChecker = new FactCheckingEvaluator(chatModel);
+// 创建事实核查评估器
+Evaluator factChecker = FactCheckingEvaluator.builder(chatClientBuilder).build();
 
 EvaluationResponse factResult = factChecker.evaluate(
     new EvaluationRequest(
         userQuestion,
-        retrievalContext,
+        retrievalDocs,
         agentAnswer
     )
 );
@@ -286,22 +292,31 @@ if (!factResult.isPass()) {
 ### 4.3 批量评估管线
 
 ```java
+@Slf4j
 @Service
+@RequiredArgsConstructor
 public class AgentEvaluationPipeline {
 
+    // TestExample 为用户自定义记录，例如：
+    // record TestExample(String id, String question, List<Document> context) {}
     private final Evaluator relevancyEvaluator;
     private final Evaluator factChecker;
+    private final ChatClient agent;
     private final List<TestExample> testDataset;
 
     /**
      * 对整个测试集做批量评估
      */
-    public EvaluationReport evaluate() {
-        EvaluationReport report = new EvaluationReport();
+    public void evaluate() {
+        int relevantPass = 0;
+        int factualPass = 0;
 
         for (TestExample example : testDataset) {
             // 运行 Agent
-            String answer = agent.call(example.question());
+            String answer = agent.prompt()
+                .user(example.question())
+                .call()
+                .content();
 
             // 评估
             boolean relevant = relevancyEvaluator
@@ -314,19 +329,21 @@ public class AgentEvaluationPipeline {
                     example.question(), example.context(), answer))
                 .isPass();
 
-            report.record(example.id(), relevant, factual);
+            if (relevant) relevantPass++;
+            if (factual) factualPass++;
         }
 
-        return report.summary();
+        log.info("相关性通过率: {}/{}，事实性通过率: {}/{}",
+            relevantPass, testDataset.size(), factualPass, testDataset.size());
     }
 }
 ```
 
-| Evaluator 类型 | 评估什么 | 底层原理 |
-|---------------|---------|---------|
-| RelevancyEvaluator | 回答是否切题 | LLM 判断 Q-A-Ctx 三者关系 |
-| FactCheckingEvaluator | 回答是否忠于上下文 | LLM 逐句核对答案与上下文 |
-| 自定义 Evaluator | 任意维度 | 实现 Evaluator 接口 |
+| Evaluator 类型 | 包坐标 | 评估什么 | 底层原理 |
+|---------------|--------|---------|---------|
+| `RelevancyEvaluator` | `org.springframework.ai.chat.evaluation` | 回答是否切题 | LLM-as-Judge 判断 Q-A-Ctx 三者关系 |
+| `FactCheckingEvaluator` | `org.springframework.ai.chat.evaluation` | 回答是否忠于上下文 | LLM 逐句核对答案与上下文 |
+| `Evaluator` 接口 | `org.springframework.ai.evaluation` | 自定义维度 | 实现 `evaluate(EvaluationRequest)` |
 
 ---
 
@@ -357,6 +374,15 @@ graph TB
 ### 5.1 在线监控实现
 
 ```java
+import io.micrometer.core.instrument.MeterRegistry;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.springframework.stereotype.Component;
+
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+
 @Aspect
 @Component
 public class AgentMonitoringAspect {
@@ -368,6 +394,7 @@ public class AgentMonitoringAspect {
     public Object monitor(ProceedingJoinPoint pjp) throws Throwable {
         long start = System.nanoTime();
         String requestId = UUID.randomUUID().toString();
+        String endpoint = pjp.getSignature().toShortString();
 
         try {
             Object result = pjp.proceed();
@@ -481,11 +508,35 @@ public class AbTestRouter {
 每次改 Prompt 或升级模型后，跑一遍固定的测试集，确保质量没有退化。
 
 ```java
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.evaluation.RelevancyEvaluator;
+import org.springframework.ai.evaluation.EvaluationRequest;
+import org.springframework.ai.evaluation.EvaluationResponse;
+import org.springframework.ai.evaluation.Evaluator;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;   // ⚠ 需引入依赖 org.springframework.boot:spring-boot-starter-test（本地未下载，未 javap 实证；以引入依赖后 javap 输出为准）
+
+import java.util.stream.Stream;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+// TestExample 为用户自定义记录，例如：
+// record TestExample(String question, List<Document> context, String expectedKeyword) {}
 @SpringBootTest
 class AgentRegressionTest {
 
+    private final ChatClient agent;
+    private final Evaluator relevancyEvaluator;
+
     @Autowired
-    private ChatClient agent;
+    AgentRegressionTest(ChatClient.Builder chatClientBuilder) {
+        this.agent = chatClientBuilder.build();
+        this.relevancyEvaluator = RelevancyEvaluator.builder()
+            .chatClientBuilder(chatClientBuilder)
+            .build();
+    }
 
     @ParameterizedTest
     @MethodSource("testDataset")
@@ -582,10 +633,10 @@ graph TB
 | **A/B 测试** | 确定性分流 + 统计显著性检验 |
 | **回归测试** | 固定测试集 + CI 集成 |
 
-**下一篇**：[33-Agent 性能优化](38-Agent性能优化.md) — 批量推理、并行工具调用、流式 + 缓存、虚拟线程。
+**下一篇**：[38-Agent 性能优化](38-Agent性能优化.md) — 批量推理、并行工具调用、流式 + 缓存、虚拟线程。
 
 ---
 
-> **前置回顾**：[31-Agent 工作流编排](36-Agent工作流编排.md)讲了 IterativeRefinementWorkflow——本章的 Reflection 模式是其理论支撑。
-> **RAG 评估**：检索召回率和答案忠实度的评估，详见 [30-高级 RAG 与 Agentic RAG](35-高级RAG与AgenticRAG.md) 第 7 节。
+> **前置回顾**：[36-Agent 工作流编排](36-Agent工作流编排.md)讲了 IterativeRefinementWorkflow——本章的 Reflection 模式是其理论支撑。
+> **RAG 评估**：检索召回率和答案忠实度的评估，详见 [35-高级 RAG 与 Agentic RAG](35-高级RAG与AgenticRAG.md) 第 7 节。
 > **上下文影响**：Token 效率与上下文工程紧密相关，详见 [34-上下文工程](34-上下文工程.md)。

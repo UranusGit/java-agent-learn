@@ -8,7 +8,7 @@
 
 > **关联教程**：[教程 03-工具调用](../../教程/03-工具调用.md)、[教程 12-Agent状态管理](../../教程/12-Agent状态管理.md)。
 
-> **API 真实性**：`@Tool`/`@ToolParam`（无 `@ToolMethod`）；工具拦截用 `ToolCallingManager` 装饰器（附录 12-02 §1.3，AOP 拦 `@Tool` 反射调用无效）。
+> **API 真实性**：`@Tool`/`@ToolParam`（无 `@ToolMethod`）；工具拦截用 `ToolCallingManager` 装饰器（附录 05-02 §1.3，AOP 拦 `@Tool` 反射调用无效）。
 
 ---
 
@@ -452,11 +452,10 @@ public class AgentExecutor {
         var builder = chatClientBuilder.defaultSystem(agent.systemPrompt());
         if (agent.modelConfig() != null) {
             var config = agent.modelConfig();
-            builder = builder.defaultOptions(OpenAiChatOptions.builder()
+            builder = builder.defaultOptions(OpenAiChatOptions.builder()   // Spring AI 2.0.0：defaultOptions 收 Builder
                     .model(config.model())
                     .temperature(config.temperature())
-                    .maxTokens(config.maxTokens())
-                    .build());
+                    .maxTokens(config.maxTokens()));
         }
         return builder.build();
     }
@@ -718,7 +717,7 @@ public final class ContextWindow {
 
 ### 10.1 为什么 AOP 拦 `@Tool` 无效
 
-> ⚠ **修正（审计 2026-08-14）**：用 Spring AOP `@Around("@annotation(Tool)")` 拦截 `@Tool` 方法**实际收不到**——Spring AI 通过反射调用工具方法，绕过 Spring 代理，切面不会触发（附录 12-02 §1.3）。**正确落点是 `ToolCallingManager` 装饰器**（工具意图已定、执行前后）或框架原生 Observation。
+> ⚠ **修正（审计 2026-08-14）**：用 Spring AOP `@Around("@annotation(Tool)")` 拦截 `@Tool` 方法**实际收不到**——Spring AI 通过反射调用工具方法，绕过 Spring 代理，切面不会触发（附录 05-02 §1.3）。**正确落点是 `ToolCallingManager` 装饰器**（工具意图已定、执行前后）或框架原生 Observation。
 
 ### 10.2 `observability/LoggingToolCallingManager.java`（ToolCallingManager 装饰器）
 
@@ -732,10 +731,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCall;
+import org.springframework.ai.chat.messages.AssistantMessage.ToolCall;   // javap 实证：工具调用是 AssistantMessage 的嵌套 record（id/type/name/arguments），非 model.tool.ToolCall
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.model.tool.ToolExecutionResult;
-import org.springframework.ai.tool.ToolCallingManager;
+import org.springframework.ai.model.tool.ToolCallingManager;   // Spring AI 2.0.0 真实包
 
 import java.util.List;
 
@@ -798,7 +797,7 @@ package com.example.orchestrator.config;
 
 import com.example.orchestrator.observability.LoggingToolCallingManager;
 import io.micrometer.core.instrument.MeterRegistry;
-import org.springframework.ai.tool.ToolCallingManager;
+import org.springframework.ai.model.tool.ToolCallingManager;   // Spring AI 2.0.0 真实包
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -829,10 +828,10 @@ spring:
   ai:
     tool:
       observations:
-        include-content: true    # 真实键：随版本核对（附录 12-02 §3.1）
+        include-content: true    # 真实键：随版本核对（附录 05-02 §3.1）
 ```
 
-自定义 `ObservationHandler<ToolObservationContext>` 把每次工具调用写入审计日志：
+自定义 `ObservationHandler<ToolCallingObservationContext>` 把每次工具调用写入审计日志：
 
 ```java
 // observability/ToolAuditObservationHandler.java
@@ -840,28 +839,38 @@ package com.example.orchestrator.observability;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
-import org.springframework.ai.observation.tool.ToolObservationContext;
+import org.springframework.ai.tool.observation.ToolCallingObservationContext;   // Spring AI 2.0.0 真实类
 import org.springframework.stereotype.Component;
 
 /**
- * 框架原生 Observation 钩子——工具调用 Span 停止时触发（附录 12-02 §3.1 真实接口）。
+ * 框架原生 Observation 钩子——工具调用 Span 停止时触发（附录 05-02 §3.1 真实接口）。
  */
 @Component
-public class ToolAuditObservationHandler implements ObservationHandler<ToolObservationContext> {
+public class ToolAuditObservationHandler implements ObservationHandler<ToolCallingObservationContext> {
 
     @Override
     public boolean supportsContext(Observation.Context context) {
-        return context instanceof ToolObservationContext;
+        return context instanceof ToolCallingObservationContext;
+    }
+
+    // Observation.Context 无 getDuration()（javap 实证）；时长需自己用 ctx.put/get(Object key) 计时
+    private static final Object START_KEY = new Object();
+
+    @Override
+    public void onStart(ToolCallingObservationContext ctx) {
+        ctx.put(START_KEY, System.nanoTime());   // Observation.Context.put(Object, T)（javap 实证）
     }
 
     @Override
-    public void onStop(ToolObservationContext ctx) {
-        // 真实取值路径：ctx 上的字段（toolDefinition/toolCall），非 context.getTraceId()
+    public void onStop(ToolCallingObservationContext ctx) {
+        // 真实取值路径：ctx 上的字段（toolDefinition/toolCallId），非 context.getTraceId()/getDuration()
         String toolName = ctx.getToolDefinition() != null ? ctx.getToolDefinition().name() : "unknown";
-        String callId = ctx.getToolCall() != null ? ctx.getToolCall().id() : "unknown";
+        String callId = ctx.getToolCallId() != null ? ctx.getToolCallId() : "unknown";   // Spring AI 2.0.0：getToolCallId() 直接取
+        Long startNanos = ctx.get(START_KEY);     // Observation.Context.get(Object)（javap 实证）
+        long durationMs = startNanos != null ? (System.nanoTime() - startNanos) / 1_000_000 : -1;
         System.out.println("[TOOL_OBS] name=" + toolName
                 + " callId=" + callId
-                + " duration=" + ctx.getDuration());
+                + " durationMs=" + durationMs);
     }
 }
 ```
@@ -912,7 +921,7 @@ graph TB
 
 ### ADR 002-04：会话用「自定义模型 + Redis String + TTL」，不用官方 ChatMemory
 - **决策**：`AgentSession`/`SessionMessage` 自定义 record，Redis String 存 JSON，TTL 24h，ReactiveRedisTemplate 全响应式
-- **取舍理由**：官方 `ChatMemoryRepository` 仅 InMemory/JDBC（Redis 需自研）；本项目需要会话上下文（`Map<String,Object> context`）与 Redis 复用，自定义模型更直接。若后续要跨服务共享记忆，可基于 `ChatMemoryRepository` 接口自研 Redis 实现（附录 12 §2.2）
+- **取舍理由**：官方 `ChatMemoryRepository` 仅 InMemory/JDBC（Redis 需自研）；本项目需要会话上下文（`Map<String,Object> context`）与 Redis 复用，自定义模型更直接。若后续要跨服务共享记忆，可基于 `ChatMemoryRepository` 接口自研 Redis 实现（附录 05 §2.2）
 
 ---
 

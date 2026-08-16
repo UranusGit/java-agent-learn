@@ -129,9 +129,8 @@ spring:
       api-key: ${DEEPSEEK_API_KEY}  # 从环境变量读取，不硬编码
       base-url: https://api.deepseek.com  # DeepSeek 兼容 OpenAI API
       chat:
-        options:
-          model: deepseek-chat  # 使用 DeepSeek 模型
-          temperature: 0.7      # 0=确定, 1=随机
+        model: deepseek-chat  # 2.0.0 配置键直接是 chat.model（.options 中缀已废弃，javap 实证 OpenAiChatProperties.CONFIG_PREFIX = "spring.ai.openai.chat"）
+        temperature: 0.7      # 0=确定, 1=随机
 ```
 
 **关键配置说明**：
@@ -219,8 +218,7 @@ graph TB
 
     subgraph 实现层["实现层（各提供商）"]
         OA["OpenAiChatModel"]
-        AN["AnthropicChatModel"]
-        DS["DeepSeek（OpenAI 兼容）"]
+        AN["DeepSeekChatModel"]
         PG[("PgVector")]
         RD[("Redis")]
         CH[("Chroma")]
@@ -231,7 +229,6 @@ graph TB
     ADV --> CM
     CM --> OA
     CM --> AN
-    CM --> DS
     ADV --> VS
     VS --> PG
     VS --> RD
@@ -327,6 +324,14 @@ ChatClient client = ChatClient.builder(chatModel)
     )
     .build();
 ```
+> **需在 pom.xml 中添加依赖**（`QuestionAnswerAdvisor` 所在模块）：2.0.0 起模块名从 `spring-ai-advisors-vector-store` 改为 `spring-ai-vector-store-advisor`（老坐标已不存在）——版本走 `spring-ai-bom`，不写 `<version>`：
+>
+> ```xml
+> <dependency>
+>     <groupId>org.springframework.ai</groupId>
+>     <artifactId>spring-ai-vector-store-advisor</artifactId>
+> </dependency>
+> ```
 
 > **遇到阻塞？→ [教程 14-Advisor链与拦截器]**：Advisor API 深入、自定义 Advisor、执行顺序。
 

@@ -113,7 +113,7 @@ public class AgentConfig {
 }
 ```
 
-> 说明：v1 不接记忆与工具（刻意最小）。迭代一给 ChatClient 挂 `MessageChatMemoryAdvisor`（[附录 12-00 §2]），迭代二注册 `@Tool`（[附录 12-02 §1]）。
+> 说明：v1 不接记忆与工具（刻意最小）。迭代一给 ChatClient 挂 `MessageChatMemoryAdvisor`（[附录 05-00 §2]），迭代二注册 `@Tool`（[附录 05-02 §1]）。
 
 ### 4.3 参考后端：SSE Controller（v1 最小版）
 
@@ -192,7 +192,7 @@ export type AgentEvent =
 ### 4.5 前端：SSE 消费封装（完整）
 
 ```ts
-// services/sse.ts —— fetch + ReadableStream 消费 SSE（教程 43 §1.2-1.3，完整版）
+// services/sse.ts —— fetch + ReadableStream 消费 SSE（教程 17 §1.2-1.3，完整版）
 import type { AgentEvent } from '../types/events';
 
 export interface StreamHandlers {
@@ -253,7 +253,7 @@ export function parseSSE(buffer: string): ParsedEvents {
   for (const frame of frames) {
     let data = '';
     for (const line of frame.split('\n')) {
-      if (line.startsWith(':')) continue;                 // 心跳注释行（教程 09 §7）
+      if (line.startsWith(':')) continue;                 // 心跳注释行（教程 10 §10.3）
       if (line.startsWith('data:')) data += line.slice(5).trim();
     }
     if (data) {
@@ -271,7 +271,7 @@ export function parseSSE(buffer: string): ParsedEvents {
 ### 4.6 前端：useChatStream Hook（v1 完整版）
 
 ```ts
-// hooks/useChatStream.ts —— v1：本地 useState 版；迭代一升级为 reducer（教程 42 §2.2）
+// hooks/useChatStream.ts —— v1：本地 useState 版；迭代一升级为 reducer（教程 16 §2.2）
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { streamChat } from '../services/sse';
 import type { AgentEvent } from '../types/events';
@@ -284,7 +284,7 @@ export function useChatStream() {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // rAF 批量缓冲：token 先进 ref，每帧最多一次渲染（教程 43 §4.2）
+  // rAF 批量缓冲：token 先进 ref，每帧最多一次渲染（教程 17 §4.2）
   const pendingRef = useRef<string[]>([]);
   const rafRef = useRef<number | null>(null);
 
@@ -332,7 +332,7 @@ export function useChatStream() {
           onEvent: handleEvent,
           onDone: () => flush(),
           onError: err => {
-            if (err.name === 'AbortError') return;   // 主动取消不是错误（教程 43 §2）
+            if (err.name === 'AbortError') return;   // 主动取消不是错误（教程 17 §2）
             flush(); setStatus('error'); setError(err.message);
           },
         },
@@ -343,7 +343,7 @@ export function useChatStream() {
     }
   }, [handleEvent, flush]);
 
-  // 卸载清理纪律：abort 连接 + 取消 rAF（教程 43 §5.1）
+  // 卸载清理纪律：abort 连接 + 取消 rAF（教程 17 §5.1）
   useEffect(() => () => { abortRef.current?.abort(); flush(); }, [flush]);
 
   return { text, status, error, send, cancel: () => abortRef.current?.abort() };
@@ -524,7 +524,7 @@ curl -N -X POST "http://localhost:8080/api/chat" \
 
 ### ADR 04-02：取消用 AbortController + ref，AbortError 静默分流
 - **决策**：`abortRef` 存控制器；`onError` 里 `err.name === 'AbortError'` 直接 return
-- **取舍理由**：主动取消是正常操作路径，不是故障；进错误态会吓到用户（[教程 43 §2]）
+- **取舍理由**：主动取消是正常操作路径，不是故障；进错误态会吓到用户（[教程 17 §2]）
 
 ## 7. 验收与手动测试清单
 

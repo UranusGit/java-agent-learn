@@ -1,4 +1,4 @@
-# 附录 12-01：MCP 真实 API 与依赖坐标基准
+# 附录 05-01：MCP 真实 API 与依赖坐标基准
 
 > **定位**：本文是对 [教程 11-MCP协议 §API] 的深入展开，也是全体系的 **MCP API 真实性基准**：真实 starter 坐标、真实客户端类型（`McpSyncClient` 而非虚构的 `org.springframework.ai.mcp.McpClient`）、`@Tool` 暴露为 MCP 工具的正确姿势、Streamable HTTP 传输。前置阅读：[教程 11-MCP协议]。
 
@@ -6,13 +6,13 @@
 
 ## 1. 真实依赖坐标（对照表）
 
-| 用途 | 真实坐标（Spring AI 2.0.0 生态） | 审计发现的错误坐标 |
+| 用途 | 真实坐标（Spring AI 2.0.0 生态，javap/本地仓库实证） | 审计发现的错误坐标 |
 |------|--------------------------------|-------------------|
-| MCP 客户端（同步） | `org.springframework.ai:spring-ai-starter-mcp-client` | ❌ `spring-ai-mcp-client-spring-boot-starter` |
-| MCP 客户端（WebFlux） | `org.springframework.ai:spring-ai-starter-mcp-client-webflux` | 同上变体 |
-| MCP 服务端（同步 Servlet） | `org.springframework.ai:spring-ai-starter-mcp-server`（或 webmvc 变体） | ❌ `spring-ai-mcp-server-spring-boot-starter` |
+| MCP 客户端（同步+HTTP） | `org.springframework.ai:spring-ai-starter-mcp-client`（其 POM 传递 `spring-ai-autoconfigure-mcp-client-httpclient` + `spring-ai-mcp` + `spring-ai-mcp-annotations`） | ❌ `spring-ai-mcp-client-spring-boot-starter` |
+| MCP 客户端（WebFlux 传输） | `spring-ai-starter-mcp-client` + `org.springframework.ai:mcp-spring-webflux`（提供 `WebClientStreamableHttpTransport`/`WebFluxSseClientTransport`）——**不存在 `spring-ai-starter-mcp-client-webflux`** | ❌ `spring-ai-starter-mcp-client-webflux` |
+| MCP 服务端（同步 Servlet） | `org.springframework.ai:spring-ai-starter-mcp-server` | ❌ `spring-ai-mcp-server-spring-boot-starter` |
 | MCP 服务端（WebFlux） | `org.springframework.ai:spring-ai-starter-mcp-server-webflux` | 同上变体 |
-| MCP 底层 SDK | `io.modelcontextprotocol.sdk:mcp`（Spring AI 传递引入） | - |
+| MCP 底层 SDK | `io.modelcontextprotocol.sdk:mcp`（2.0.0，Spring AI 传递引入） | - |
 
 > 使用规则不变：均需在 pom.xml 中添加依赖；版本随 Spring AI BOM 2.0.0 管理。
 
@@ -22,7 +22,8 @@
 
 ```java
 // Spring AI 2.0.0 —— 自动配置提供的是 MCP SDK 的客户端与聚合 Provider
-// McpSyncClient 来自 io.modelcontextprotocol.sdk（不是 org.springframework.ai.mcp.McpClient）
+// McpSyncClient 来自 MCP SDK 2.0.0：io.modelcontextprotocol.client.McpSyncClient
+//（javap 实证 mcp-core-2.0.0.jar；不是 org.springframework.ai.mcp.McpClient，也不是 .sdk.mcp 包）
 private final List<McpSyncClient> mcpClients;          // 多 Server 时注入 List
 
 // 或直接注入框架组装好的工具 Provider（推荐，省去手工转换）
@@ -86,15 +87,18 @@ public class McpServerConfig {
 | Streamable HTTP | **现行标准**（2025-03+） | 单端点 POST+mixin 流式响应，取代 HTTP+SSE |
 
 ```yaml
-# 客户端连接配置（真实结构）
+# 客户端连接配置（javap 实证 McpStreamableHttpClientProperties）
+# 真实键结构：spring.ai.mcp.client.streamable-http.connections.<name>.{url, endpoint}
 spring:
   ai:
     mcp:
       client:
-        streamable-http-connections:      # 现行传输
-          server1:
-            url: https://tools.internal/mcp
-        # ❌虚构形态: spring.ai.mcp.client.servers 的扁平列表结构
+        streamable-http:
+          connections:
+            server1:
+              url: https://tools.internal/mcp
+        # ❌ 错误写法: spring.ai.mcp.client.streamable-http-connections（把前缀与字段名连写）
+        # ❌ 虚构: spring.ai.mcp.client.servers 扁平列表
 ```
 
 **旧稿必修点**（教程 10 / 前沿 04 / 项目 03）：传输层对照表补 Streamable HTTP 行；`HttpSseClientTransport` 的近似拼写更正为现行 SDK 类名（以所引版本 SDK 为准，建议统一走 starter 自动配置少手写传输类）。
@@ -112,7 +116,7 @@ spring:
 
 | 从（虚构/过时） | 到（基准） |
 |----------------|-----------|
-| `org.springframework.ai.mcp.McpClient` | `io.modelcontextprotocol.sdk.mcp.McpSyncClient`（注入 List） |
+| `org.springframework.ai.mcp.McpClient` / `.sdk.mcp.McpSyncClient` | `io.modelcontextprotocol.client.McpSyncClient`（MCP SDK 2.0.0，注入 List） |
 | `callTool(name, argsMap)` | `callTool(new CallToolRequest(name, argsMap))` |
 | `mcpClient.listTools()` 直返工具列表 | 返回 `ListToolsResult` 解包 |
 | `spring-ai-mcp-*-spring-boot-starter` | `spring-ai-starter-mcp-*` |

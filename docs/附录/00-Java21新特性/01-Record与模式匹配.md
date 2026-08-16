@@ -188,7 +188,7 @@ Java 21 引入了 Record 解构模式，可以直接"拆开"Record：
 // 假设有如下 Record
 public record AgentDecision(String action, Map<String, Object> params, double confidence) {}
 
-// Record 解构模式（Java 21+, --enable-preview）
+// Record 解构模式（Java 21 正式特性，JEP 440，无需 --enable-preview）
 public String describe(Object obj) {
     return switch (obj) {
         case AgentDecision(String action, Map<String, Object> params, double conf)
@@ -272,11 +272,12 @@ public Mono<String> routeMessage(ChatMessage message) {
             yield handleCommand(um.getText());
         }
         case UserMessage um -> {
-            // 普通用户消息
-            yield chatClient.prompt()
-                .user(um.getText())
-                .retrieve()
-                .content();
+            // 普通用户消息（blocking 调用移到 boundedElastic，避免占住 EventLoop）
+            yield Mono.fromCallable(() -> chatClient.prompt()
+                    .user(um.getText())
+                    .call()
+                    .content())
+                .subscribeOn(Schedulers.boundedElastic());
         }
         case SystemMessage sm -> {
             // 系统消息不转发给 LLM
@@ -529,4 +530,4 @@ Java 21 的 Record、Pattern Matching 和 Switch 表达式三者协同，为 Age
 2. **Pattern Matching** 消除了类型检查后的冗余转型，Record 解构模式让数据提取一步到位
 3. **Switch 表达式 + Pattern Switch** 让 Agent 消息路由、决策处理更加清晰安全，穷举性检查提供编译时保障
 
-这三者的组合不是"语法糖"——它们改变了 Agent 领域模型的设计方式。在结构化输出（教程 12）、Agent 状态管理（教程 11）、多 Agent 协作（教程 08）中，Record + Pattern Matching 都是代码简洁性和类型安全性的基石。
+这三者的组合不是"语法糖"——它们改变了 Agent 领域模型的设计方式。在结构化输出（教程 13-结构化输出）、Agent 状态管理（教程 12-Agent状态管理）、多 Agent 协作（教程 09-多Agent协作）中，Record + Pattern Matching 都是代码简洁性和类型安全性的基石。

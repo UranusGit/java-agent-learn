@@ -116,6 +116,8 @@ graph LR
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
+        <!-- ⚠ 以下依赖需显式添加（本地未下载，未 javap 实证）：spring-boot-starter-data-jpa -->
+
 
         <!-- PostgreSQL 驱动 -->
         <dependency>
@@ -178,12 +180,10 @@ spring:
       api-key: ${OPENAI_API_KEY}
       base-url: ${OPENAI_BASE_URL:https://api.openai.com}
       chat:
-        options:
-          model: gpt-4o
-          temperature: 0.3          # 低温度：事实性问答需要确定性
+        model: gpt-4o          # Spring AI 2.0.0：无 options 中缀，参数直挂
+        temperature: 0.3          # 低温度：事实性问答需要确定性
       embedding:
-        options:
-          model: text-embedding-3-small  # 1536 维，性价比高
+        model: text-embedding-3-small  # 1536 维，性价比高
     vectorstore:
       pgvector:
         index-type: HNSW            # 近似搜索索引
@@ -294,6 +294,7 @@ public class AiConfig {
 package com.example.docassistant.model;
 
 import com.example.docassistant.model.enums.DocumentStatus;
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -353,7 +354,7 @@ public enum DocumentStatus {
 package com.example.docassistant.repository;
 
 import com.example.docassistant.model.DocumentEntity;
-import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaRepository;   // ⚠ 需引入依赖 org.springframework.boot:spring-boot-starter-data-jpa（本地未下载，未 javap 实证；以引入依赖后 javap 输出为准）
 
 import java.util.UUID;
 
@@ -1026,9 +1027,9 @@ graph TB
 - **决策**：WebFlux 下 `@RequestPart("file") FilePart` + `DataBufferUtils.join` 读字节，阻塞 ETL 用 `subscribeOn(Schedulers.boundedElastic())`
 - **取舍理由**：MVC 的 `spring.servlet.multipart` 在 WebFlux 下不生效；FilePart 是响应式原生类型，避免 EventLoop 上阻塞（WebFlux 铁律）
 
-### ADR 001-03：结构化输出用 entity(Class) 真实重载，不用带 spec-lambda 的虚构变体
-- **决策**：`chatClient.prompt()...call().entity(QaResponse.class)`，禁止 `entity(Class, spec -> ...)` 全家族（[附录 12-02 §2] 确认其为虚构 API）
-- **取舍理由**：仅两种真实形态（Class / ParameterizedTypeReference），带 lambda 的重载不存在，照抄会编译失败
+### ADR 001-03：结构化输出用 entity(Class)，spec-lambda 变体同样真实（javap 实证）
+- **决策**：`chatClient.prompt()...call().entity(QaResponse.class)`；`entity(Class, Consumer<EntityParamSpec>)` 带 lambda 的变体也是真实重载（`useProviderStructuredOutput()` / `validateSchema()`，javap 实证），需要「使用供应商原生结构化输出 / 校验 Schema」时用它（[附录 05-02 §2]）
+- **取舍理由**：两种形态都真实存在（`entity(Class)` / `entity(Class, spec)` 等 6 种重载）；本项目迭代零用最简形态，无校验需求，后续迭代可升级到 `spec -> spec.validateSchema()`
 
 ---
 

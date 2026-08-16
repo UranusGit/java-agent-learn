@@ -1,6 +1,6 @@
 # Agent Eval 评估：从准确率到综合质量度量
 
-> 「本文是对 [教程 32-自我反思 §3-§5] 的深入展开」
+> 「本文是对 [教程 37-自我反思与Agent评估 §3-§5] 的深入展开」
 
 > **定位**：系统讲解 AI Agent 输出质量的评估方法论——数据集构建、评估指标（准确率/忠实度/相关性/延迟/成本）、LLM-as-Judge 模式、A/B 测试框架，以及如何建立持续评估的 CI 流程。
 >
@@ -272,6 +272,8 @@ graph LR
 ---
 
 ## 4. LLM-as-Judge
+
+> **框架内置评估器**（javap 实证 2026-08-16）：Spring AI 2.0.0 官方存在 Evaluator 体系——`org.springframework.ai.evaluation.Evaluator`/`EvaluationRequest`/`EvaluationResponse`（spring-ai-commons）+ `org.springframework.ai.chat.evaluation.RelevancyEvaluator`/`FactCheckingEvaluator`（spring-ai-client-chat，基于 `ChatClient.Builder`，内部即 LLM-as-Judge）。下方自研 Judge 是可定制写法；标准场景可直接用官方 Evaluator。
 
 ### 4.1 LLM 评分模式
 

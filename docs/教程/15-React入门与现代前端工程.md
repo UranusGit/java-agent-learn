@@ -1,4 +1,4 @@
-# 41-React 入门与现代前端工程
+# 15-React 入门与现代前端工程
 
 > **定位**：本文是 React 学习路线的第一篇——从 Java 开发者视角讲透 React 的核心心智模型与现代前端工程，为后续 Agent 前端（流式 UI、Agentic UI）打地基。读者画像：熟悉 Java/Spring 但前端经验有限或停留在 jQuery/JSP 时代的中高级开发者。前置阅读：无（本篇自包含）；后端衔接篇见 [教程 10-SSE流式通信 §5]。
 >
@@ -135,7 +135,7 @@ function Card({ title, collapsible = false, children }: CardProps) {
 // 使用：<Card title="工具调用记录">...</Card> 之间的内容就是 children
 ```
 
-**组合优于继承**——React 社区与《Effective Java》在此观点一致。没有组件继承，只有组合：`<Card>` 包 `<ToolCallTimeline>` 包 `<JsonViewer>`。Agent 前端的常见错误是把一个大组件写到底（前端的 God Component 反模式，呼应 [教程 40-Agent架构反模式 §God Agent]）。
+**组合优于继承**——React 社区与《Effective Java》在此观点一致。没有组件继承，只有组合：`<Card>` 包 `<ToolCallTimeline>` 包 `<JsonViewer>`。Agent 前端的常见错误是把一个大组件写到底（前端的 God Component 反模式，呼应 [教程 45-Agent架构反模式与避坑指南 §2 God Agent]）。
 
 ### 2.3 组件拆分原则
 
@@ -238,7 +238,7 @@ function useChatStream(sessionId: string) {
 
   useEffect(() => {
     const controller = new AbortController();
-    // fetch + ReadableStream 逻辑（详见教程 43）
+    // fetch + ReadableStream 逻辑（详见教程 17）
     return () => controller.abort();
   }, [sessionId]);
 
@@ -325,7 +325,7 @@ React 19（2024 年底发布，2026 年已是成熟主流）相对旧版的关�
 |------|------|---------------|
 | `use()` Hook | 在渲染中读取 Promise/Context | 组件级加载态简化 |
 | `useOptimistic` | 乐观更新内置支持 | "发送消息立即上屏"不再手写回滚 |
-| `useActionState` / `useTransition` 表单扩展 | 表单提交与 pending 状态 | 审批表单、HITL 交互（呼应 [教程 22]） |
+| `useActionState` / `useTransition` 表单扩展 | 表单提交与 pending 状态 | 审批表单、HITL 交互（呼应 [教程 28-Human-in-the-Loop与审批流]） |
 | Server Components（RSC） | 组件在服务端渲染 | **本体系不采用**——后端是 WebFlux 纯 API 服务，前端是独立 SPA，RSC 需要 Node 中间层 |
 | 文档元数据原生支持 | `<title>` 等可直接写在组件里 | 多会话页签标题管理 |
 
@@ -341,7 +341,7 @@ React 19（2024 年底发布，2026 年已是成熟主流）相对旧版的关�
 | `node_modules/` | 本地仓库（每个项目一份，必须进 .gitignore） |
 | `npx` | `mvn exec`（执行一次性命令） |
 
-Agent 前端最小依赖集：`react`、`react-dom`、`typescript`、`vite`——其余按需（路由用 react-router，服务端状态用 TanStack Query，见 [教程 42]）。
+Agent 前端最小依赖集：`react`、`react-dom`、`typescript`、`vite`——其余按需（路由用 react-router，服务端状态用 TanStack Query，见 [教程 16-React状态管理 §4]）。
 
 ---
 
@@ -398,7 +398,7 @@ function StreamingOutput({ sessionId }: { sessionId: string }) {
 }
 ```
 
-这一原则在 [教程 43 §性能优化] 会结合 token 批量缓冲（每 50ms 批量 setState 而非每 token 一次）进一步展开。
+这一原则在 [教程 17-React与SSE流式UI §4] 会结合 token 批量缓冲（每 50ms 批量 setState 而非每 token 一次）进一步展开。
 
 ---
 
@@ -429,7 +429,7 @@ flowchart TB
     style Backend fill:#fff9c4
 ```
 
-后端每部分的实现分别对应：SSE Controller（[教程 10-SSE流式通信 §4]）、跨页面会话管理（[教程 24-多页面流式响应与会话管理]）、前端事件协议设计（[教程 44]）。本篇的组件/Hook 模型是这座桥的地基。
+后端每部分的实现分别对应：SSE Controller（[教程 10-SSE流式通信 §4]）、跨页面会话管理（[教程 24-多页面流式响应与会话管理]）、前端事件协议设计（[教程 18-Agentic-UI设计]）。本篇的组件/Hook 模型是这座桥的地基。
 
 ---
 
@@ -441,7 +441,7 @@ flowchart TB
 | 直接改 state | `messages.push(msg)` 后 UI 不更新 | 不可变更新 `[...messages, msg]` |
 | effect 万能主义 | 所有逻辑塞 useEffect | effect 只做"与外部系统同步"；数据转换用 useMemo，事件响应用回调 |
 | key 用数组索引 | 列表插入/重排时状态错乱 | 用稳定业务 ID |
-| props 钻取 | 数据传 5 层只为给最深组件 | Context 或状态库（[教程 42 §3]） |
+| props 钻取 | 数据传 5 层只为给最深组件 | Context 或状态库（[教程 16-React状态管理 §3]） |
 | 每渲染重建昂贵对象 | filter/sort 直接写在 JSX 里 | useMemo 缓存 |
 | 忽视严格模式警告 | 开发时数据获取两次 | StrictMode 双调用是故意的，暴露 effect 清理缺失 |
 | 把 React 当 jQuery | DOM 查询满天飞 | 状态驱动 UI，ref 仅限 DOM 接入与外部库桥接 |

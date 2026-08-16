@@ -1,6 +1,6 @@
 # 项目 09：智能运维 AIOps 平台 — 04-迭代三：自动处置与 HITL 审批
 
-> **定位**：把处置动作建模为工具，按"可逆性×爆炸半径"分级——低风险自动执行、中风险 HITL 审批、高风险升级。HITL 落点在 ToolCallingManager 装饰器（非 Advisor）。教程 22 的完整落地。本文代码为**完整可手写**（含全部 import、无省略），审批守卫模式与 [项目 13-事件溯源Agent运行时平台/05-迭代四-安全审批与凭证] 同构。
+> **定位**：把处置动作建模为工具，按"可逆性×爆炸半径"分级——低风险自动执行、中风险 HITL 审批、高风险升级。HITL 落点在 ToolCallingManager 装饰器（非 Advisor）。教程 28 的完整落地。本文代码为**完整可手写**（含全部 import、无省略），审批守卫模式即教程 28 的 HITL 模式落地。
 >
 > 「遇到阻塞？→ [教程 28-Human-in-the-Loop与审批流 全篇]、[教程 30-容错与弹性设计 §熔断]、[附录 05-SpringAI2-API基准/02 §ToolCallingManager]」
 
@@ -49,7 +49,7 @@ sequenceDiagram
         TCM->>K8S: 执行
     else AutonomyLevel.FORBIDDEN（高风险）
         RS-->>TCM: FORBIDDEN
-        TCM-->>LLM: ToolExecutionResult.rejected("高风险禁止自动执行")
+        TCM-->>LLM: ToolExecutionResult(returnDirect=true, ToolResponseMessage 拒绝原因)
     end
 ```
 
@@ -262,7 +262,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * HITL 审批：approval/asked + approval/decided 成对落库（审计可回放）。
  * 无 answerer / 超时 → Unavailable（fail-closed，绝不自动通过）。
- * 注意：request() 是同步阻塞等待，调用方应在 boundedElastic 线程（教程 37 §阻塞桥接）。
+ * 注意：request() 是同步阻塞等待，调用方应在 boundedElastic 线程（[教程 42-响应式错误处理 §6]）。
  */
 @Service
 public class ApprovalService {
@@ -329,25 +329,25 @@ public class ApprovalService {
 ```java
 package com.aiops.platform.remediate;
 
-import org.springframework.ai.chat.messages.ToolCallMessage;
+import org.springframework.ai.chat.messages.AssistantMessage;      // 内含嵌套 record ToolCall
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCall;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.model.tool.ToolCallingManager;       // Spring AI 2.0.0 真实包
 import org.springframework.ai.model.tool.ToolExecutionResult;
-import org.springframework.ai.tool.ToolCallingManager;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
  * HITL 审批守卫：装饰 ToolCallingManager（拦截"工具意图返回后、执行前"时点），
  * 命中处置工具清单 → 按 RiskScorer 分级：AUTO 放行 / REQUIRE_APPROVAL 审批 / FORBIDDEN 拒绝。
  * 审批拒绝后 Agent 不得重试同一动作（返回 rejected 结果，防绕过）。
- * 正确落点：非 Advisor（Advisor 环绕整个 ChatClient 边界，看不到工具执行时点，[附录 12-02 §1.3]）。
+ * 正确落点：非 Advisor（Advisor 环绕整个 ChatClient 边界，看不到工具执行时点，[附录 05-SpringAI2-API基准/02 §1.3]）。
  */
 @Component
 public class RemediationApprovalManager implements ToolCallingManager {
@@ -373,10 +373,10 @@ public class RemediationApprovalManager implements ToolCallingManager {
     @Override
     public ToolExecutionResult executeToolCalls(Prompt prompt, ChatResponse chatResponse) {
 
-        List<ToolCall> calls = extractToolCalls(chatResponse);
+        List<AssistantMessage.ToolCall> calls = extractToolCalls(chatResponse);
         String sessionId = sessionIdOf(prompt);
 
-        for (ToolCall call : calls) {
+        for (AssistantMessage.ToolCall call : calls) {
             if (!REMEDIATION_TOOLS.contains(call.name())) {
                 continue;                                  // 非处置工具放行
             }
@@ -387,21 +387,30 @@ public class RemediationApprovalManager implements ToolCallingManager {
                     ApprovalOutcome outcome = approvalService.request(
                             sessionId, call.name(), call.id(), "处置动作需审批", APPROVAL_TIMEOUT);
                     if (!(outcome instanceof ApprovalOutcome.AllowedOnce)) {
-                        return ToolExecutionResult.rejected(call,
-                                "处置被否决: " + outcome);   // 拒绝后 Agent 不得重试（防绕过）
+                        return rejected(call, "处置被否决: " + outcome);  // 拒绝后 returnDirect=true，Agent 不得继续重试（防绕过）
                     }
                 }
                 case FORBIDDEN -> {
-                    return ToolExecutionResult.rejected(call,
-                            "高风险动作禁止自动执行，已升级 on-call");
+                    return rejected(call, "高风险动作禁止自动执行，已升级 on-call");
                 }
             }
         }
         return delegate.executeToolCalls(prompt, chatResponse);
     }
 
+    /** 构造拒绝结果：ToolResponseMessage 承载拒绝原因，returnDirect=true 终止工具循环（防绕过）。 */
+    private ToolExecutionResult rejected(AssistantMessage.ToolCall call, String reason) {
+        return ToolExecutionResult.builder()
+                .conversationHistory(List.of(ToolResponseMessage.builder()
+                        .responses(List.of(new ToolResponseMessage.ToolResponse(
+                                call.id(), call.name(), reason)))
+                        .build()))
+                .returnDirect(true)
+                .build();
+    }
+
     /** 把 ToolCall 转成可打分的 RemediationAction（impact/recoverability/complexity 来自工具注册元数据）。 */
-    private RemediationAction toAction(ToolCall call) {
+    private RemediationAction toAction(AssistantMessage.ToolCall call) {
         // 简化：从工具描述/参数推断影响面。生产可维护"工具→风险参数"注册表。
         double recoverability = switch (call.name()) {
             case "restartDeployment", "redirectTraffic" -> 0.9;    // 可逆性高
@@ -413,7 +422,7 @@ public class RemediationApprovalManager implements ToolCallingManager {
         return new RemediationAction(call.name(), call.arguments(), impact, recoverability, complexity);
     }
 
-    private List<ToolCall> extractToolCalls(ChatResponse chatResponse) {
+    private List<AssistantMessage.ToolCall> extractToolCalls(ChatResponse chatResponse) {
         return chatResponse.getResults().stream()
                 .map(g -> g.getOutput().getToolCalls())
                 .flatMap(List::stream)
@@ -421,8 +430,8 @@ public class RemediationApprovalManager implements ToolCallingManager {
     }
 
     private String sessionIdOf(Prompt prompt) {
-        return (String) ((ToolCallingChatOptions) prompt.getOptions())
-                .getContext().getOrDefault("sessionId", "unknown");
+        Map<String, Object> ctx = ((ToolCallingChatOptions) prompt.getOptions()).getToolContext();
+        return ctx == null ? "unknown" : (String) ctx.getOrDefault("sessionId", "unknown");
     }
 }
 ```

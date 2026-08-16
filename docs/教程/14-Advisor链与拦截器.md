@@ -1,4 +1,4 @@
-# 13-Advisor 链与拦截器
+# 14-Advisor 链与拦截器
 
 > **定位**：讲透 Advisor——Spring AI 的核心架构模式。Advisor 接口、执行链机制、前置/后置处理、Order 顺序控制、内置 Advisor 全览、自定义 Advisor 的完整实现，以及 Advisor 与 Spring MVC Interceptor/Filter 的深度对比。读完这篇，你能通过 Advisor 链实现任何 Agent 级别的横切关注点。
 >
@@ -65,29 +65,30 @@ Advisor 是 Spring AI 中的**拦截器接口**，允许你在 LLM 调用前后�
 Spring AI 2.0 的 Advisor 体系按**调用模式**拆为两个接口（`CallAdvisor` 同步 / `StreamAdvisor` 流式），统一操作 `ChatClientRequest` / `ChatClientResponse`，通过**责任链**（`chain.nextCall()` / `chain.nextStream()`）传递控制：
 
 ```java
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.StreamAdvisor;
-import org.springframework.ai.chat.client.advisor.api.ChatClientRequest;
-import org.springframework.ai.chat.client.advisor.api.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
 import org.springframework.ai.chat.client.advisor.api.StreamAdvisorChain;
+import org.springframework.core.Ordered;
+import reactor.core.publisher.Flux;
 
-// Spring AI 2.0.0 — 同步调用的 Advisor 接口
-public interface CallAdvisor extends Advisor {
-
-    // 责任链：处理请求并决定是否继续传递
-    // 前置逻辑写在 nextCall 之前，后置逻辑写在 nextCall 之后（洋葱模型）
-    ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain);
-
-    default String getName() { return this.getClass().getSimpleName(); }
+// Spring AI 2.0.0 — 真实签名（javap 实证）：
+// Advisor extends Ordered，getName() 是抽象方法（没有默认实现）；CallAdvisor/StreamAdvisor 只声明 adviseCall/adviseStream
+public interface Advisor extends Ordered {
+    String getName();
 }
 
-// 流式调用的 Advisor 接口（stream() 时走这条链）
+// 同步调用：责任链调用点叫 nextCall（不是 1.x 的 next()）
+public interface CallAdvisor extends Advisor {
+    ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain);
+}
+
+// 流式调用：责任链调用点叫 nextStream
 public interface StreamAdvisor extends Advisor {
-
     Flux<ChatClientResponse> adviseStream(ChatClientRequest request, StreamAdvisorChain chain);
-
-    default String getName() { return this.getClass().getSimpleName(); }
 }
 ```
 
@@ -98,26 +99,19 @@ public interface StreamAdvisor extends Advisor {
 这两个对象是 Advisor 操作的核心——它们封装了请求和响应的完整信息，且支持不可变修改（mutate）。
 
 ```java
-// ChatClientRequest 包含的信息
-public class ChatClientRequest {
-    String userText;           // 用户消息
-    String systemText;         // 系统消息
-    Map<String, Object> context;  // Advisor 上下文（跨 Advisor 传递）
-    ChatOptions options;       // 模型参数（temperature 等）
-    List<Message> messages;    // 完整消息列表
-    List<ToolCallback> tools;  // 工具列表
-    // ... 其他字段
-    
-    // 不可变修改
-    ChatClientRequestBuilder mutate();
-}
+// 真实形态（javap 实证）：两个 record，1.x 的 userText/systemText/messages/tools 字段已不存在，
+// 只有下列成员——取系统/用户文本须走 prompt() → Prompt#getInstructions() 按角色筛选
+record ChatClientRequest(Prompt prompt, Map<String, Object> context) { }
+//  访问器：request.prompt() / request.context()
+//  不可变派生：request.copy() / request.mutate()（返回 Builder）/ ChatClientRequest.builder()
 
-// ChatClientResponse 包含的信息
-public class ChatClientResponse {
-    ChatResponse response;       // LLM 的响应
-    Map<String, Object> context; // Advisor 上下文
-    ChatClientResponseBuilder mutate();
-}
+record ChatClientResponse(ChatResponse chatResponse, Map<String, Object> context) { }
+//  访问器：response.chatResponse() / response.context()
+//  不可变派生：response.copy() / response.mutate() / ChatClientResponse.builder()
+
+// Builder 真实方法（无 user()/system()/messages()/contextValue()/from()）：
+//  ChatClientRequest.Builder  : prompt(Prompt) | context(Map) | context(String, Object) | build()
+//  ChatClientResponse.Builder : chatResponse(ChatResponse) | context(Map) | context(String, Object) | build()
 ```
 
 ### 2.3 Advisor 链的执行流程
@@ -191,10 +185,10 @@ Order 值决定了 Advisor 的执行位置。正确的顺序对功能正确性�
 
 | Advisor | 默认 Order | 职责 | 为什么需要这个顺序 |
 |---------|-----------|------|------------------|
-| `MessageChatMemoryAdvisor` | 100 | 注入历史消息 | 最先执行——其他 Advisor 需要看到完整历史 |
-| `QuestionAnswerAdvisor` | 200 | RAG 检索增强 | 在记忆之后——基于完整上下文检索文档 |
-| 内容安全（自研） | 300 | 内容安全过滤 | 在 RAG 之后——检查最终 Prompt 的安全性（非官方内置，自研实现） |
-| 工具调用（框架内置） | 400 | 工具调用循环 | 最接近 LLM——工具执行在 ToolCallingManager 层，非 Advisor |
+| `MessageChatMemoryAdvisor` | `HIGHEST_PRECEDENCE+200`（`Advisor.DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER`，javap 实证） | 注入历史消息 | 靠近外层——其他 Advisor 需要看到完整历史 |
+| `QuestionAnswerAdvisor` | 内置默认（builder 可 `order(n)` 调整，javap 实证） | RAG 检索增强 | 在记忆之后——基于完整上下文检索文档 |
+| `SafeGuardAdvisor`（内置） | 内置默认（builder 可 `order(n)`） | 内容安全过滤 | 靠外拦截敏感词，可直接短路 |
+| `ToolCallingAdvisor`（框架内置） | `HIGHEST_PRECEDENCE+300`（`ToolCallingAdvisor.DEFAULT_ORDER`，javap 实证） | 工具调用循环 | 最接近 LLM——工具循环由它驱动，执行在 `ToolCallingManager` 层 |
 
 ### 3.2 Order 设计原则
 
@@ -213,10 +207,13 @@ graph TB
 ### 3.3 自定义 Order
 
 ```java
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
-import org.springframework.core.annotation.Order;
+import org.springframework.ai.chat.memory.ChatMemory;
 
 // Spring AI 2.0.0 — 自定义 Advisor 顺序
 @Bean
@@ -229,9 +226,11 @@ ChatClient chatClient(
     return builder
             .defaultAdvisors(
                     // Order 最小的在最外层
-                    cacheAdvisor,           // Order=0：缓存检查（可能短路）
+                    cacheAdvisor,           // Order=-100：缓存检查（可能短路）
                     loggingAdvisor,         // Order=50：日志记录
-                    MessageChatMemoryAdvisor.builder(chatMemory).build()  // Order=100：记忆
+                    // 记忆 Advisor 默认 Order = HIGHEST_PRECEDENCE + 200（javap 实证），
+                    // 这里显式 order(100) 只是让示例顺序直观
+                    MessageChatMemoryAdvisor.builder(chatMemory).order(100).build()  // 记忆
             )
             .build();
 }
@@ -242,18 +241,22 @@ public class LoggingAdvisor implements CallAdvisor {
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
-        log.info("用户输入: {}", request.userText());
-        ChatClientRequest effective = request;
-        ChatClientResponse response = chain.nextCall(effective);
-        log.info("LLM 输出: {}", response.response().getResult().getOutput().getText());
+        // 2.0 没有 request.userText()：用 prompt().getContents() 拿到整包消息文本
+        log.info("用户输入: {}", request.prompt().getContents());
+        ChatClientResponse response = chain.nextCall(request);
+        // 2.0 响应取文本：record 分量 chatResponse()（不是 1.x 的 response()）
+        log.info("LLM 输出: {}", response.chatResponse().getResult().getOutput().getText());
         return response;
-    
     }
 
+    @Override
+    public String getName() {
+        return "LoggingAdvisor";
+    }
 
     @Override
     public int getOrder() {
-        return 50;  // 在 Memory Advisor（100）之前执行
+        return 50;  // 在显式 order(100) 的记忆 Advisor 之前执行
     }
 }
 ```
@@ -271,9 +274,9 @@ Spring AI 2.0 提供了丰富的内置 Advisor，覆盖最常见的横切关注�
 | `MessageChatMemoryAdvisor` | 自动管理对话历史 | 多轮对话的记忆注入和存储 |
 | `ToolCallingAdvisor` | 自动工具调用循环 | 注册工具后自动插入 |
 | `QuestionAnswerAdvisor` | RAG 检索增强 | 基于用户问题检索文档并注入 |
-| 内容安全（自研） | 内容安全过滤 | 阻止敏感话题或恶意输入（非官方内置） |
-| `PromptChatMemoryAdvisor` | 紧凑式记忆注入 | 将历史压缩为摘要而非逐条注入 |
-| Token 预算（自研） | Token 预算控制 | 非内置——需自研实现 CallAdvisor 裁剪（见附录 12 基准 §1.4） |
+| `SafeGuardAdvisor` | 内容安全过滤 | 内置敏感词拦截（见 §4.4），可能短路调用 |
+| `PromptChatMemoryAdvisor`（1.x，已移除） | ~~紧凑式记忆注入~~ | 2.0.0 起删除，官方仅保留 `MessageChatMemoryAdvisor`；历史压缩需自研（见 [教程 39-高级记忆架构]） |
+| Token 预算（自研） | Token 预算控制 | 非内置——需自研实现 CallAdvisor 裁剪（见附录 05-SpringAI2-API基准/00-Advisor与ChatMemory） |
 
 ### 4.2 MessageChatMemoryAdvisor 详解
 
@@ -329,16 +332,17 @@ sequenceDiagram
 ### 4.3 QuestionAnswerAdvisor（RAG）详解
 
 ```java
-import org.springframework.ai.chat.client.advisor.QuestionAnswerAdvisor;
-import org.springframework.ai.rag.preretrieval.query.transformation.QueryTransformer;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
+import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 
 // Spring AI 2.0.0 — RAG Advisor 配置
 ChatClient client = ChatClient.builder(chatModel)
         .defaultAdvisors(
-                QuestionAnswerAdvisor.builder(vectorSearch)
-                        .queryTransformers(QueryTransformer.builder()
-                                .queryRewrite()  // 查询重写
+                QuestionAnswerAdvisor.builder(vectorStore)
+                        .searchRequest(SearchRequest.builder()
+                                .topK(5)
+                                .similarityThreshold(0.7)
                                 .build())
                         .build()
         )
@@ -351,41 +355,34 @@ String answer = client.prompt()
         .content();
 // LLM 看到的 Prompt 包含检索到的文档片段
 ```
+> **需在 pom.xml 中添加依赖**（`QuestionAnswerAdvisor` 所在模块）：2.0.0 起模块名从 `spring-ai-advisors-vector-store` 改为 `spring-ai-vector-store-advisor`（老坐标已不存在）——版本走 `spring-ai-bom`，不写 `<version>`：
+>
+> ```xml
+> <dependency>
+>     <groupId>org.springframework.ai</groupId>
+>     <artifactId>spring-ai-vector-store-advisor</artifactId>
+> </dependency>
+> ```
 
-### 4.4 内容安全过滤（自研实现——非官方内置）
+> **Builder 真实方法（javap 实证）**：`searchRequest` / `promptTemplate` / `protectFromBlocking` / `scheduler` / `order`——**没有 `queryTransformers` 挂载点**；查询变换（重写/压缩/翻译）在 spring-ai-rag 模块的 `RetrievalAugmentationAdvisor` 一侧（真实类是 `RewriteQueryTransformer` 等，`QueryTransformer` 本身是接口、无 builder 工厂）。
+
+
+### 4.4 内容安全过滤（内置 SafeGuardAdvisor）
+
+**审计纠错**：`SafeGuardAdvisor` 是 2.0.0 **真实存在**的内置组件（javap 实证：`org.springframework.ai.chat.client.advisor.SafeGuardAdvisor`，构造 `(List<String>)` / `(List<String>, String, int)` / `builder()`，Builder 有 `sensitiveWords(...)`、`failureResponse(...)`、`order(...)`）——不是虚构 API：
 
 ```java
-// ⚠ 修正: "SafeGuardAdvisor.builder().sensitiveWords(...)" 是审计发现的虚构 API
-// 官方无此内置组件——内容安全过滤需自研 CallAdvisor（短路实现见 §2.1）:
-public class SensitiveContentAdvisor implements CallAdvisor {
+// Spring AI 2.0.0 — 内置 SafeGuardAdvisor
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.SafeGuardAdvisor;
 
-    private final List<String> blockedWords;
-    private final String blockMessage;
-
-    public SensitiveContentAdvisor(List<String> blockedWords, String blockMessage) {
-        this.blockedWords = blockedWords;
-        this.blockMessage = blockMessage;
-    }
-
-    @Override
-    public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
-        boolean hit = blockedWords.stream().anyMatch(request.userText()::contains);
-        if (hit) {
-            // 短路: 不调用 chain.nextCall，直接返回拦截消息（没有"标记跳过"API）
-            return ChatClientResponse.builder()
-                    .from(request)
-                    .content(blockMessage)
-                    .build();
-        }
-        return chain.nextCall(request);
-    }
-}
-
-// 使用
 ChatClient client = ChatClient.builder(chatModel)
-        .defaultAdvisors(new SensitiveContentAdvisor(
-                List.of("密码", "身份证", "银行卡号"),
-                "抱歉，出于安全考虑，我无法处理此类信息。"))
+        .defaultAdvisors(
+                SafeGuardAdvisor.builder()
+                        .sensitiveWords(List.of("密码", "身份证", "银行卡号"))
+                        .failureResponse("抱歉，出于安全考虑，我无法处理此类信息。")
+                        .build()
+        )
         .build();
 
 // 用户输入包含敏感词时，直接返回拦截消息，不调用 LLM
@@ -396,6 +393,8 @@ String answer = client.prompt()
 // answer = "抱歉，出于安全考虑，我无法处理此类信息。"
 ```
 
+**短路的实现原理**（若要自研）：不调用 `chain.nextCall()`，直接返回一个手工构造的 `ChatClientResponse`——真实姿势是用 `ChatClientResponse.builder().chatResponse(...)`（没有 `.from(request).content(...)` 这套虚构方法），构造 `ChatResponse` 需要一个 `Generation`，见 §5.4 的响应重建示例。
+
 ---
 
 ## 5. 自定义 Advisor：完整实现
@@ -403,8 +402,8 @@ String answer = client.prompt()
 ### 5.1 场景一：请求/响应日志 Advisor
 
 ```java
-import org.springframework.ai.chat.client.advisor.api.ChatClientRequest;
-import org.springframework.ai.chat.client.advisor.api.ChatClientResponse;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
 import org.slf4j.Logger;
@@ -421,17 +420,19 @@ public class LoggingAdvisor implements CallAdvisor {
     public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
         long startTime = System.currentTimeMillis();
 
-        // 将开始时间存入上下文，供 after() 使用
+        // 2.0 上下文写入用 Builder.context(key, value)（没有 contextValue()）；
+        // 用户文本从 prompt().getContents() 取（没有 request.userText()）
         ChatClientRequest effective = request.mutate()
-                .contextValue("requestStartTime", startTime)
-                .contextValue("userText", request.userText())
+                .context("requestStartTime", startTime)
+                .context("userText", request.prompt().getContents())
                 .build();
         ChatClientResponse response = chain.nextCall(effective);
-        Long startTime = response.context().get("requestStartTime");
-        String userText = response.context().get("userText");
 
-        long duration = System.currentTimeMillis() - startTime;
-        String llmResponse = response.response()
+        // context 值是 Object，取出后需转型
+        long duration = System.currentTimeMillis() - (Long) response.context().get("requestStartTime");
+        String userText = (String) response.context().get("userText");
+        // 2.0 响应取文本：chatResponse()（record 分量，不是 1.x 的 response()）
+        String llmResponse = response.chatResponse()
                 .getResult()
                 .getOutput()
                 .getText();
@@ -445,9 +446,12 @@ public class LoggingAdvisor implements CallAdvisor {
                 """, userText, llmResponse, duration);
 
         return response;
-    
     }
 
+    @Override
+    public String getName() {
+        return "LoggingAdvisor";
+    }
 
     @Override
     public int getOrder() {
@@ -459,68 +463,76 @@ public class LoggingAdvisor implements CallAdvisor {
 ### 5.2 场景二：缓存 Advisor（短路调用）
 
 ```java
-import org.springframework.ai.chat.client.advisor.api.ChatClientRequest;
-import org.springframework.ai.chat.client.advisor.api.ChatClientResponse;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.time.Duration;
+import java.util.List;
 
 // Spring AI 2.0.0 — Redis 缓存 Advisor（可能短路 LLM 调用）
+// 说明：CallAdvisor 走同步路径，用 StringRedisTemplate 合理；若在 StreamAdvisor/EventLoop 上
+// 必须换 ReactiveStringRedisTemplate（WebFlux 铁律见附录 06）。
 @Component
 public class CacheAdvisor implements CallAdvisor {
 
     private final StringRedisTemplate redis;
-    private final ObjectMapper objectMapper;
 
-    public CacheAdvisor(StringRedisTemplate redis, ObjectMapper objectMapper) {
+    public CacheAdvisor(StringRedisTemplate redis) {
         this.redis = redis;
-        this.objectMapper = objectMapper;
     }
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
-        String cacheKey = "llm:cache:" + request.userText().hashCode();
+        // 2.0 没有 request.userText()：用整包消息文本做缓存键素材
+        String cacheKey = "llm:cache:" + request.prompt().getContents().hashCode();
 
         String cached = redis.opsForValue().get(cacheKey);
         if (cached != null) {
-            // 缓存命中——标记为已缓存，后续 Advisor 可据此短路
-        ChatClientRequest effective = request.mutate()
-                    .contextValue("cacheHit", true)
-                    .contextValue("cachedResponse", cached)
-                    .build();
+            // 缓存命中——不调用 chain.nextCall，直接短路返回（构造 ChatClientResponse 的真实 API 见 §5.4）
+            return shortCircuit(request, cached);
         }
 
-        // 缓存未命中——继续正常流程
-        return request.mutate()
-                .contextValue("cacheKey", cacheKey)
+        // 缓存未命中——继续正常流程，并记住 cacheKey 供响应侧回写
+        ChatClientRequest effective = request.mutate()
+                .context("cacheKey", cacheKey)
                 .build();
         ChatClientResponse response = chain.nextCall(effective);
-        Boolean cacheHit = response.context().get("cacheHit");
-        if (Boolean.TRUE.equals(cacheHit)) {
-            // 缓存命中：跳过缓存写入
-            return response;
-        }
 
-        // 缓存未命中：将结果存入 Redis，TTL 1 小时
-        String cacheKey = response.context().get("cacheKey");
-        if (cacheKey != null) {
-            String llmResponse = response.response()
+        // context 值是 Object，取出后转型
+        String key = (String) response.context().get("cacheKey");
+        if (key != null) {
+            String llmResponse = response.chatResponse()
                     .getResult()
                     .getOutput()
                     .getText();
-            redis.opsForValue().set(cacheKey, llmResponse, 
-                    java.time.Duration.ofHours(1));
+            redis.opsForValue().set(key, llmResponse, Duration.ofHours(1));
         }
-
         return response;
-    
     }
 
+    @Override
+    public String getName() {
+        return "CacheAdvisor";
+    }
 
     @Override
     public int getOrder() {
         return -100;  // 在所有 Advisor 之前执行，可能直接短路
+    }
+
+    private ChatClientResponse shortCircuit(ChatClientRequest request, String cached) {
+        ChatResponse chatResponse = new ChatResponse(
+                List.of(new Generation(new AssistantMessage(cached))));
+        return ChatClientResponse.builder()
+                .chatResponse(chatResponse)
+                .context(request.context())
+                .build();
     }
 }
 ```
@@ -528,10 +540,16 @@ public class CacheAdvisor implements CallAdvisor {
 ### 5.3 场景三：多租户 Advisor（动态注入上下文）
 
 ```java
-import org.springframework.ai.chat.client.advisor.api.ChatClientRequest;
-import org.springframework.ai.chat.client.advisor.api.ChatClientResponse;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.prompt.Prompt;
+
+import java.util.ArrayList;
+import java.util.List;
 
 // Spring AI 2.0.0 — 多租户上下文注入 Advisor
 @Component
@@ -543,13 +561,14 @@ public class TenantContextAdvisor implements CallAdvisor {
         this.tenantService = tenantService;
     }
 
-        @Override
+    @Override
     public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
-        // 从 Advisor 上下文中获取租户 ID
-        String tenantId = request.context().get("tenantId");
-        if (tenantId == null) {
-        ChatClientRequest effective = request;
+        // 从 Advisor 上下文读取租户 ID（context 值是 Object，需转型；缺租户信息就原样放行）
+        Object tenantIdObj = request.context().get("tenantId");
+        if (tenantIdObj == null) {
+            return chain.nextCall(request);   // 唯一出口分支一
         }
+        String tenantId = (String) tenantIdObj;
 
         // 加载租户配置
         TenantConfig config = tenantService.getConfig(tenantId);
@@ -566,21 +585,26 @@ public class TenantContextAdvisor implements CallAdvisor {
                 config.brandName()
         );
 
-        // 追加到现有 System Message
-        String existingSystem = request.systemText();
-        String enhancedSystem = (existingSystem != null ? existingSystem + "\n\n" : "")
-                + tenantSystemPrompt;
+        // 2.0 没有 request.systemText() / mutate().system(...)：
+        // 正确姿势是重建 Prompt 的消息列表，把租户 System Message 追加到最前
+        List<Message> instructions = new ArrayList<>(request.prompt().getInstructions());
+        instructions.add(0, new SystemMessage(tenantSystemPrompt));
 
-        return request.mutate()
-                .system(enhancedSystem)
+        ChatClientRequest effective = request.mutate()
+                .prompt(new Prompt(instructions, request.prompt().getOptions()))
                 .build();
-        return chain.nextCall(effective);
+
+        return chain.nextCall(effective);     // 唯一出口分支二
     }
 
+    @Override
+    public String getName() {
+        return "TenantContextAdvisor";
+    }
 
     @Override
     public int getOrder() {
-        return 90;  // 在 Memory Advisor（100）之前执行
+        return 90;  // 在显式 order(100) 的 Memory Advisor 之前执行
     }
 }
 ```
@@ -588,10 +612,19 @@ public class TenantContextAdvisor implements CallAdvisor {
 ### 5.4 场景四：敏感信息脱敏 Advisor
 
 ```java
-import org.springframework.ai.chat.client.advisor.api.ChatClientRequest;
-import org.springframework.ai.chat.client.advisor.api.ChatClientResponse;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisor;
 import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.Prompt;
+
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Pattern;
 
 // Spring AI 2.0.0 — 响应脱敏 Advisor
@@ -607,31 +640,30 @@ public class MaskingAdvisor implements CallAdvisor {
 
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest request, CallAdvisorChain chain) {
-        // 对用户输入中的敏感信息也进行脱敏
-        String masked = maskSensitive(request.userText());
-        ChatClientRequest effective = request.mutate().user(masked).build();
+        // 请求侧：脱敏 UserMessage 文本，重建 Prompt（2.0 没有 mutate().user(...)）
+        List<Message> instructions = new ArrayList<>();
+        for (Message m : request.prompt().getInstructions()) {
+            instructions.add(m instanceof UserMessage userMsg
+                    ? new UserMessage(maskSensitive(userMsg.getText()))
+                    : m);
+        }
+        ChatClientRequest effective = request.mutate()
+                .prompt(new Prompt(instructions, request.prompt().getOptions()))
+                .build();
+
         ChatClientResponse response = chain.nextCall(effective);
-        String original = response.response()
-                .getResult()
-                .getOutput()
-                .getText();
-        String masked = maskSensitive(original);
+
+        // 响应侧：脱敏输出文本，重建 ChatResponse/Generation（2.0 响应不可就地 mutate）
+        String original = response.chatResponse().getResult().getOutput().getText();
+        String maskedText = maskSensitive(original);
+        ChatResponse maskedResponse = new ChatResponse(
+                List.of(new Generation(new AssistantMessage(maskedText))),
+                response.chatResponse().getMetadata());
 
         return response.mutate()
-                .response(response.response().mutate()
-                        .generator(map -> map.values().stream()
-                                .findFirst()
-                                .map(g -> g.mutate()
-                                        .output(g.getOutput().mutate()
-                                                .text(masked)
-                                                .build())
-                                        .build())
-                                .orElse(g))
-                        .build())
+                .chatResponse(maskedResponse)
                 .build();
-    
     }
-
 
     private String maskSensitive(String text) {
         if (text == null) return null;
@@ -645,6 +677,11 @@ public class MaskingAdvisor implements CallAdvisor {
         text = ID_CARD_PATTERN.matcher(text).replaceAll(m -> 
                 m.group().substring(0, 6) + "********" + m.group().substring(14));
         return text;
+    }
+
+    @Override
+    public String getName() {
+        return "MaskingAdvisor";
     }
 
     @Override
@@ -663,7 +700,9 @@ public class MaskingAdvisor implements CallAdvisor {
 ```java
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.client.advisor.QuestionAnswerAdvisor;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -689,8 +728,8 @@ public class FullAdvisorChainConfig {
                         maskingAdvisor,            // Order=10：脱敏
                         loggingAdvisor,            // Order=0：日志（覆盖最外层）
                         tenantAdvisor,             // Order=90：租户上下文
-                        MessageChatMemoryAdvisor.builder(chatMemory).build(),  // Order=100：记忆
-                        QuestionAnswerAdvisor.builder(vectorSearch).build()     // Order=200：RAG
+                        MessageChatMemoryAdvisor.builder(chatMemory).order(100).build(),  // 默认 HIGHEST_PRECEDENCE+200（javap 实证），显式 order(100) 维持本节排序
+                        QuestionAnswerAdvisor.builder(vectorStore).build()     // RAG（内置默认 order）
                 )
                 .build();
     }
@@ -803,7 +842,7 @@ graph TB
 **短路含义不同**：
 - Filter 短路：不调用 `chain.doFilter()` → 直接返回 HTTP 响应
 - Interceptor 短路：`preHandle()` 返回 `false` → 请求不到达 Controller
-- Advisor 短路：**不调用 `chain.nextCall()`** 直接返回结果（见附录 12 基准）
+- Advisor 短路：**不调用 `chain.nextCall()`** 直接返回结果（见附录 05-SpringAI2-API基准/00-Advisor与ChatMemory）
 
 **组合使用**：在实际项目中三者可以共存。
 
@@ -863,7 +902,7 @@ graph LR
 | **MessageChatMemoryAdvisor** | 自动注入历史消息并存储新消息——多轮对话的基础 |
 | **QuestionAnswerAdvisor** | 自动检索文档并注入 Prompt——RAG 的核心 |
 | **SafeGuardAdvisor** | 敏感词过滤和内容安全——可能短路调用 |
-| **短路调用** | `before()` 阶段直接返回结果，跳过 LLM 调用（如缓存命中） |
+| **短路调用** | `adviseCall/adviseStream` 阶段不调用 `chain.nextCall()` 直接返回结果（如缓存命中） |
 | **vs Filter/Interceptor** | Advisor 作用于 LLM 调用链，Filter/Interceptor 作用于 HTTP 请求链——各司其职 |
 
 ---

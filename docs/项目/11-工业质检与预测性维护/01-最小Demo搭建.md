@@ -93,6 +93,8 @@
             <groupId>org.springframework.integration</groupId>
             <artifactId>spring-integration-mqtt</artifactId>
         </dependency>
+        <!-- ⚠ 以下依赖需显式添加（本地未下载，未 javap 实证）：spring-integration-mqtt -->
+
         <!-- 需在 pom.xml 中添加：TDengine 时序库 JDBC 驱动 -->
         <dependency>
             <groupId>com.taosdata.jdbc</groupId>
@@ -120,8 +122,7 @@ spring:
       base-url: https://api.deepseek.com          # v1 未调用 LLM；v2 起作为默认模型通道
       api-key: ${DEEPSEEK_API_KEY:sk-placeholder}  # 环境变量，不落明文；placeholder 避免启动失败
       chat:
-        options:
-          model: deepseek-chat
+        model: deepseek-chat          # Spring AI 2.0.0：无 options 中缀，参数直挂
   datasource:
     url: jdbc:TAOS-RS://taos-server:6041/iq_plant   # TDengine REST 连接
     username: root
@@ -334,7 +335,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.integration.dsl.IntegrationFlow;
-import org.springframework.integration.mqtt.inbound.MqttPahoMessageDrivenChannelAdapter;
+import org.springframework.integration.mqtt.inbound.MqttPahoMessageDrivenChannelAdapter;   // ⚠ 需引入依赖 org.springframework.integration:spring-integration-mqtt（本地未下载，未 javap 实证；以引入依赖后 javap 输出为准）
 import org.springframework.messaging.Message;
 
 @Configuration
@@ -346,9 +347,10 @@ public class SensorIngestConfig {
 
     @Bean
     public IntegrationFlow mqttInboundFlow(SensorIngestService service) {
+        // 构造器参数顺序为 (clientId, url, topics)：第一个是 clientId，第二个才是 brokerUrl
         return IntegrationFlow.from(
                         new MqttPahoMessageDrivenChannelAdapter(
-                                brokerUrl, clientId, topicPattern),
+                                clientId, brokerUrl, topicPattern),
                         e -> e.id("sensorMqttInbound"))
                 .transform(Message::getPayload)                     // 原始 payload → String
                 .<String, SensorReading>transform(service::parse)   // 解析为 SensorReading

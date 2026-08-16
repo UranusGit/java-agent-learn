@@ -1,6 +1,6 @@
 # 项目 10：数据智能分析平台 — 05-迭代四：多数据源 Agentic RAG
 
-> **定位**：Agent 决策"查哪个库、怎么跨库关联"——Data Catalog 中枢 + Router/分解/融合 + 决策 trace。跨库关联用语义层预定义 join 图（v3 的扩展），不让 LLM 现场 join。教程 30 §Agentic 检索的落地。本文给出**完整可手写代码**（一行不省略）。
+> **定位**：Agent 决策"查哪个库、怎么跨库关联"——Data Catalog 中枢 + Router/分解/融合 + 决策 trace。跨库关联用语义层预定义 join 图（v3 的扩展），不让 LLM 现场 join。教程 35 §Agentic 检索的落地。本文给出**完整可手写代码**（一行不省略）。
 >
 > 「遇到阻塞？→ [教程 35-高级RAG与AgenticRAG §Agentic 检索]、[教程 09-多Agent协作]、[附录 01-LLM基础理论/01-Embedding原理]」
 
@@ -233,12 +233,12 @@ public class CatalogTools {
 package com.group.dataplat.config;
 
 import com.group.dataplat.catalog.CatalogTools;
-import org.springframework.ai.model.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.ToolCallbackProvider;   // Spring AI 2.0.0 真实包
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-/** @Tool 不会自动注册——必须显式声明 ToolCallbackProvider（附录 12-02 §1）。 */
+/** @Tool 不会自动注册——必须显式声明 ToolCallbackProvider（附录 05-02 §1）。 */
 @Configuration
 public class CatalogToolConfig {
 

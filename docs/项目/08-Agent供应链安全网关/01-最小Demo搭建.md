@@ -280,7 +280,7 @@ public interface AuditSink {
 ```java
 package com.group.secgw.audit;
 
-import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.r2dbc.core.DatabaseClient;   // ⚠ 需引入依赖 org.springframework.boot:spring-boot-starter-data-r2dbc（本地未下载，未 javap 实证；以引入依赖后 javap 输出为准）
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
