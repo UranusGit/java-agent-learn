@@ -915,11 +915,11 @@ graph TB
 
 ## 12. ADR 演进决策
 
-### ADR 002-03：工具拦截用 `ToolCallingManager` 装饰器，弃用 AOP
+### ADR 002-05：工具拦截用 `ToolCallingManager` 装饰器，弃用 AOP
 - **决策**：工具日志/指标通过装饰 `ToolCallingManager` 实现；明确标注 AOP 拦 `@Tool` 为无效方案
 - **取舍理由**：Spring AI 反射调用工具方法绕过 Spring 代理，AOP 收不到；`ToolCallingManager` 是「工具意图已定、执行前后」的唯一稳定层，也是后续迭代三 HITL 审批的同一落点
 
-### ADR 002-04：会话用「自定义模型 + Redis String + TTL」，不用官方 ChatMemory
+### ADR 002-06：会话用「自定义模型 + Redis String + TTL」，不用官方 ChatMemory
 - **决策**：`AgentSession`/`SessionMessage` 自定义 record，Redis String 存 JSON，TTL 24h，ReactiveRedisTemplate 全响应式
 - **取舍理由**：官方 `ChatMemoryRepository` 仅 InMemory/JDBC（Redis 需自研）；本项目需要会话上下文（`Map<String,Object> context`）与 Redis 复用，自定义模型更直接。若后续要跨服务共享记忆，可基于 `ChatMemoryRepository` 接口自研 Redis 实现（附录 05 §2.2）
 

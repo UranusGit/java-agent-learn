@@ -695,11 +695,11 @@ graph LR
 
 ## 12. ADR 演进决策
 
-### ADR 002-01：v0 立 Agent 抽象 + 注册中心接口，底层实现可替换
+### ADR 002-03：v0 立 Agent 抽象 + 注册中心接口，底层实现可替换
 - **决策**：`AgentDefinition` 用 record（不可变）；`AgentRegistry` 用接口 + 内存实现，返回类型全 `Mono/Flux`
 - **取舍理由**：接口名先立、实现后换——迭代二把内存实现换成 Redis 实现时上层零改动；record 不可变保证注册后不被篡改
 
-### ADR 002-02：LLM 统一走 OpenAI 协议 + DeepSeek base-url
+### ADR 002-04：LLM 统一走 OpenAI 协议 + DeepSeek base-url
 - **决策**：不用 `spring-ai-starter-model-deepseek`，用 `spring-ai-starter-model-openai` + `base-url: https://api.deepseek.com`，模型参数用 `OpenAiChatOptions`
 - **取舍理由**：DeepSeek 兼容 OpenAI 协议，一套坐标适配多个兼容模型（换模型只改 base-url），也是全体系统一坐标
 

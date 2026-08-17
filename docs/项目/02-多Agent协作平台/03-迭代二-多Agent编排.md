@@ -1595,19 +1595,19 @@ graph TB
 
 ## 13. ADR 演进决策
 
-### ADR 002-05：Agent 注册中心用 Redis 能力索引，而非线性扫描
+### ADR 002-07：Agent 注册中心用 Redis 能力索引，而非线性扫描
 - **决策**：`agent:cap:{capability}` Set 索引 + `agent:def:{agentId}` 本体，路由 O(1) 取候选
 - **取舍理由**：以「写侧多一次 Set 写入」换「读侧 O(1)」——编排场景读多写少；同时天然支持跨实例发现（为微服务化预留）
 
-### ADR 002-06：Agent 间通信选 Redis Pub/Sub，弃「直接调用」与「黑板模式」
+### ADR 002-08：Agent 间通信选 Redis Pub/Sub，弃「直接调用」与「黑板模式」
 - **决策**：进程内 Sinks + 跨进程 Redis Pub/Sub 两层模型；请求-响应用 correlationId 关联
 - **取舍理由**：直接调用紧耦合、黑板模式需锁；消息总线完全解耦，新增 Agent 只需订阅频道
 
-### ADR 002-07：DAG 引擎用「响应式事件驱动」而非「同步拓扑排序」
+### ADR 002-09：DAG 引擎用「响应式事件驱动」而非「同步拓扑排序」
 - **决策**：`findReadyNodes` 找出就绪节点 → `flatMap` 并行执行 → 节点完成回调重新调度；`claimed` 集合防并行分支重复调度
 - **取舍理由**：同步拓扑排序要阻塞等待节点完成，无法支撑高并发；响应式不阻塞，一个引擎可同时管理大量任务。代价是调试复杂度上升（[教程 42-响应式错误处理]）
 
-### ADR 002-08：持久化双层——Redis 实时快照 + PostgreSQL 审计/恢复
+### ADR 002-10：持久化双层——Redis 实时快照 + PostgreSQL 审计/恢复
 - **决策**：`TaskStateStore`（Redis）存实时 DAG 快照与事件流；`TaskRepository`（PostgreSQL）存任务与节点行用于审计与重启恢复
 - **取舍理由**：Redis 快读写（编排热路径）、PostgreSQL 可靠（审计合规），各取所长；恢复路径先 Redis 快照，全量可靠重建见 [教程 40-长任务持久化与中断恢复]
 

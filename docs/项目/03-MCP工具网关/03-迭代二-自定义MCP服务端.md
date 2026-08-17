@@ -27,7 +27,7 @@
 | 4 | 多模型策略 | `StrategySelector.selectModel("cost-first", tool, ctx)` 返回 deepseek-v3/gpt-4o/claude-sonnet-4 |
 | 5 | 可用性 | 单 Server 故障不影响其他 Server 的工具调用（隔离达标） |
 
-**本迭代明确不做**：不做 HITL 人工审批（落点在 `ToolCallingManager`，见 [教程 22-Human-in-the-Loop 与审批流](../../教程/28-Human-in-the-Loop与审批流.md)）、不做 Redis 会话、不做网关多实例。
+**本迭代明确不做**：不做 HITL 人工审批（落点在 `ToolCallingManager`，见 [教程 28-Human-in-the-Loop与审批流](../../教程/28-Human-in-the-Loop与审批流.md)）、不做 Redis 会话、不做网关多实例。
 
 ## 3. 完整代码（照抄即可，一行不省略）
 
@@ -65,7 +65,7 @@ spring:
         transport: streamable-http
 ```
 
-> **MCP 服务端详解** → [教程 10-MCP 协议](../../教程/11-MCP协议.md) 第 4 节讲解了 `spring-ai-starter-mcp-server` 的配置方式，以及外部 MCP 客户端如何连接和发现工具。
+> **MCP 服务端详解** → [教程 11-MCP协议](../../教程/11-MCP协议.md) 第 4 节讲解了 `spring-ai-starter-mcp-server` 的配置方式，以及外部 MCP 客户端如何连接和发现工具。
 > ⚠ 修正（审计 2026-08-14）: `@Tool` **不会**自动注册为 MCP 工具——必须显式声明 `ToolCallbackProvider` Bean（`MethodToolCallbackProvider.builder().toolObjects(...)`），见 §3.5（附录 05-01 §3）。
 
 ### 3.3 业务服务与领域模型
