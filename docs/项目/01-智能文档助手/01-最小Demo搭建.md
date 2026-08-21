@@ -938,7 +938,7 @@ curl -X POST http://localhost:8080/api/documents/upload \
 
 # 响应示例
 {
-  "documentId": "a1b2c3d4-...",
+  "documentId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
   "title": "employee-handbook.md",
   "status": "READY",
   "chunkCount": 12
@@ -955,11 +955,11 @@ curl -X POST http://localhost:8080/api/qa \
 
 # 响应示例
 {
-  "answer": "根据员工手册，年假超过5天需要部门总监审批...",
+  "answer": "根据员工手册，年假超过5天需要部门总监审批；5天及以内由直属主管即可审批，请提前3个工作日提出申请。",
   "sources": [
     {
       "documentTitle": "employee-handbook.md",
-      "relevantText": "请假审批权限：3天以内直属主管审批，3-5天经理审批，超过5天需总监审批...",
+      "relevantText": "请假审批权限：3天以内直属主管审批，3-5天经理审批，超过5天需总监审批，且须提前3个工作日提交请假单。",
       "similarity": 0.87
     }
   ],
@@ -979,7 +979,25 @@ data: 员工
 data: 手册
 data: ，
 data: 出差
-...
+data: 报销
+data: 需
+data: 先
+data: 填写
+data: 报销单
+data: ，
+data: 附
+data: 发票
+data: ，
+data: 经
+data: 直属
+data: 主管
+data: 审批
+data: 后
+data: 交
+data: 财务
+data: 打款
+data: 。
+data: [DONE]
 ```
 
 ### 6.4 Demo 验证清单
