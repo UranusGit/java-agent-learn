@@ -435,7 +435,9 @@ private Mono<Boolean> evaluateLoop(DagDefinition dag, DagNode finished) {
 复杂任务单层 DAG 太扁平（20+ 节点挤一张图）。引入 `NodeType.SUBTASK`：节点挂一个子蓝图，引擎递归执行，子图对父图只暴露"最终产物"。
 
 ```java
-// DagEngine.executeNode 的 SUBTASK 分支（节选）
+// DagEngine.executeNode：三分支（SUBTASK / APPROVAL / TASK）。
+// 节选延续自 04-迭代三 §6.4 的 DagEngine：agentRouter / agentExecutor / approvalGateway /
+// buildContext / buildNodePrompt 等成员在该迭代已完整定义，此处不复述字段声明。
 private Flux<DagEvent> executeNode(DagDefinition dag, DagNode node) {
     if (node.type() == NodeType.SUBTASK) {
         DagBlueprint blueprint = readBlueprint(node.config());       // config.subDag
@@ -451,7 +453,64 @@ private Flux<DagEvent> executeNode(DagDefinition dag, DagNode node) {
                         e.data(), NodeStatus.DONE))
                 .flatMapMany(updated -> schedule(updated));
     }
-    // ...原有 TASK / APPROVAL 分支
+    // 审批节点：阻塞等待人工决策，仅 APPROVE 才放行（04-迭代三 §6.4）
+    if (node.type() == NodeType.APPROVAL) {
+        return executeApprovalNode(dag, node);
+    }
+    // 普通 TASK 节点：评分路由 → 标记 RUNNING → 流式执行 → 标记 DONE → 递归调度
+    RoutingContext ctx = buildContext(dag);
+    return agentRouter.route(node, ctx)
+            .flatMapMany(agent -> {
+                String prompt = buildNodePrompt(dag, node);
+                return stateStore.updateNodeStatus(dag.taskId(), node.nodeId(),
+                                NodeStatus.RUNNING, agent.agentId())
+                        .flatMapMany(updated ->
+                                agentExecutor.execute(agent, prompt, List.of())
+                                        .collectList()
+                                        .flatMapMany(tokens -> {
+                                            String result = String.join("", tokens);
+                                            return stateStore.updateNodeResult(
+                                                            dag.taskId(), node.nodeId(),
+                                                            result, NodeStatus.DONE)
+                                                    .flatMapMany(updatedDone -> Flux.concat(
+                                                            Flux.just(new DagEvent(dag.dagId(), node.nodeId(),
+                                                                    EventType.NODE_COMPLETED, result)),
+                                                            schedule(updatedDone)));
+                                        })
+                                        .onErrorResume(ex -> handleNodeFailure(dag, node, ex)));
+            });
+}
+
+/** 审批节点执行：Sinks 挂起等人工决策，超时自动 REJECT（不自动通过）。 */
+private Flux<DagEvent> executeApprovalNode(DagDefinition dag, DagNode node) {
+    ApprovalRequest request = new ApprovalRequest(
+            UUID.randomUUID().toString(), dag.taskId(), node.nodeId(),
+            node.description(), "审批节点：" + node.description(),
+            node.config() != null ? node.config() : Map.of(),
+            LocalDateTime.now());
+    return approvalGateway.requestApproval(dag.taskId(), node.nodeId(), request)
+            .flatMapMany(result -> switch (result.decision()) {
+                case APPROVE -> stateStore.updateNodeResult(
+                                dag.taskId(), node.nodeId(),
+                                "Approved: " + result.comment(), NodeStatus.DONE)
+                        .flatMapMany(updated -> Flux.concat(
+                                Flux.just(new DagEvent(dag.dagId(), node.nodeId(),
+                                        EventType.NODE_COMPLETED, "Approved")),
+                                schedule(updated)));
+                case REJECT -> stateStore.updateNodeStatus(
+                                dag.taskId(), node.nodeId(), NodeStatus.FAILED, null)
+                        .flatMapMany(updated -> Flux.just(new DagEvent(dag.dagId(), node.nodeId(),
+                                EventType.TASK_FAILED, "Rejected: " + result.comment())));
+                case MODIFY -> stateStore.updateGlobalContext(
+                                dag.taskId(), result.modifications())
+                        .then(stateStore.updateNodeResult(
+                                dag.taskId(), node.nodeId(),
+                                "Modified: " + result.comment(), NodeStatus.DONE))
+                        .flatMapMany(updated -> Flux.concat(
+                                Flux.just(new DagEvent(dag.dagId(), node.nodeId(),
+                                        EventType.NODE_COMPLETED, "Modified")),
+                                schedule(updated)));
+            });
 }
 ```
 
