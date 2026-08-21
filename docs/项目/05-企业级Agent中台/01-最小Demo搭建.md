@@ -595,7 +595,15 @@ mvn spring-boot:run
 # curl -N -X POST "http://localhost:8080/da/chat" \
 #   -H "Content-Type: application/json" \
 #   -d '{"sessionId":"s1","userId":"u1","message":"查一下 2026-07 的销售额"}'
-# 应收到 SSE 流：data:{"delta":"..."} ... data:{"type":"Done"}
+# 应收到 SSE 流：
+#   data:{"delta":"2026"}
+#   data:{"delta":"年"}
+#   data:{"delta":" "}
+#   data:{"delta":"7"}
+#   data:{"delta":"月"}
+#   data:{"delta":"销售额为1,280万元，同比+12%"}
+#   data:{"delta":"\n\n"}
+#   data:{"type":"Done"}
 ```
 
 ## 4. 验收标准
