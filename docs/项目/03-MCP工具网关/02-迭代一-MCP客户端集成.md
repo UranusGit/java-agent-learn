@@ -884,7 +884,7 @@ package com.example.mcp.gateway.config;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
-import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCustomizer;
+import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;  // Boot 4.1.0 实证
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -1120,8 +1120,8 @@ CREATE INDEX idx_status    ON audit_logs (status);
 ```java
 package com.example.mcp.gateway.pool;
 
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.boot.health.contributor.Health;
+import org.springframework.boot.health.contributor.HealthIndicator  // Boot 4.1.0 实证;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
