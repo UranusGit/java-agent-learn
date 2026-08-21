@@ -382,9 +382,46 @@ public Mono<QueryResult> guardedExecute(String sql, UserContext user) {
             return Mono.error(new SqlRejectedException("租户上下文缺失，拒绝执行"));
         }
         GuardrailPolicy policy = GuardrailPolicy.forRole(user.role());
-        // …… 校验/档位化 EXPLAIN/执行，同 v2 链路，MAX_ROWS/MAX_COST/TIMEOUT 换 policy 值
+        // —— 校验/档位化 EXPLAIN/执行（同 v2 链路，把硬编码 MAX_ROWS/MAX_COST/TIMEOUT 换成按角色 policy 值）——
         return doGuarded(sql, user, policy);
     });
+}
+
+/**
+ * 护栏链实际执行（v2 QueryGuardService.guardedExecute 的档位化版本）：
+ * ① 语法校验 → ② 强制 LIMIT(policy.maxRows) → ③ EXPLAIN 预检(policy.maxCost) → ④ 执行+超时(policy.timeout) → ⑤ 审计
+ * JDBC 阻塞 API，subscribeOn(boundedElastic) 守护 EventLoop。
+ */
+private Mono<QueryResult> doGuarded(String sql, UserContext user, GuardrailPolicy policy) {
+    SqlVerdict verdict = guardrail.validate(sql);
+    if (!verdict.allowed()) {
+        auditStore.record(user, sql, new AuditOutcome(0, 0, verdict.reason()));
+        return Mono.error(new SqlRejectedException(verdict.reason()));
+    }
+    String limited = ensureLimit(sql, policy.maxRows());
+    return Mono.fromCallable(() -> {
+        PlanCost cost = explainCost(limited);                             // EXPLAIN 预检
+        if (cost.estimatedRows() > policy.maxRows()
+                || cost.estimatedCost() > policy.maxCost()) {
+            auditStore.record(user, sql, new AuditOutcome(0, 0, "代价超限: " + cost));
+            throw new QueryTooExpensiveException(cost);
+        }
+        long start = System.currentTimeMillis();
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(limited);
+        long durationMs = System.currentTimeMillis() - start;
+        auditStore.record(user, sql, new AuditOutcome(rows.size(), durationMs, null));
+        return new QueryResult(rows, limited, rows.size(), durationMs);
+    }).timeout(policy.timeout()).subscribeOn(Schedulers.boundedElastic());   // ④ 超时用 policy.timeout
+}
+
+private String ensureLimit(String sql, int maxRows) {
+    return HAS_LIMIT.matcher(sql).find() ? sql : sql + " LIMIT " + maxRows;
+}
+
+private PlanCost explainCost(String sql) {
+    List<Map<String, Object>> plan = jdbcTemplate.queryForList("EXPLAIN " + sql);
+    String first = String.valueOf(plan.get(0).values().iterator().next());
+    return new PlanCost(extractLong(first, "rows="), extractLong(first, "cost="));
 }
 ```
 
