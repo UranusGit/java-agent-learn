@@ -289,7 +289,7 @@ public class GroupReflectionService {
                 请输出 JSON：
                 {
                   "scores": [
-                    {"nodeId":"...","completeness":1-5,"consistency":1-5,
+                    {"nodeId":"被评节点ID","completeness":1-5,"consistency":1-5,
                      "evidence":1-5,"conflictWith":"矛盾的 nodeId 或 null","comment":"一句话"}
                   ],
                   "hasConflict": true/false,
@@ -623,7 +623,7 @@ curl -s http://localhost:8080/actuator/prometheus | grep orchestrator
 
 ```bash
 # 构造冲突任务：node-2 与 node-3 的 prompt 注入互相矛盾的"事实"
-curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "..."}'
+curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "评估自研缓存中间件的并发上限：node-2 认为支持50万QPS，node-3 认为仅支持5万QPS"}'
 # 任务完成后触发反思（或等待 TASK_COMPLETED 自动触发）
 psql -c "SELECT task_id, has_conflict, summary FROM reflection_report ORDER BY id DESC LIMIT 3;"
 # 预期：has_conflict = true，scores 里出现 conflictWith 非空的条目，告警通道收到通知

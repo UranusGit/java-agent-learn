@@ -943,7 +943,7 @@ curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "写报告并发
 
 # 验证：
 redis-cli KEYS "report:draft:*"      # 预期：该任务的草稿 key 已被补偿删除
-psql -c "SELECT node_id, status FROM dag_node WHERE task_id='...';"
+psql -c "SELECT node_id, status FROM dag_node WHERE task_id='task-abc';"
 # 预期：node-2 = COMPENSATED, node-4 = FAILED, 任务 = COMPENSATED
 ```
 
@@ -951,7 +951,7 @@ psql -c "SELECT node_id, status FROM dag_node WHERE task_id='...';"
 
 ```bash
 # 1. 提交 5 节点任务，观察到 node-3 started 后立即 kill 应用
-curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "..."}'
+curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "调研竞品并输出对比报告"}'
 kill -9 $(pgrep -f orchestrator)
 
 # 2. 重启应用，观察恢复日志

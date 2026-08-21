@@ -1549,19 +1549,19 @@ event:node_started
 data:{"nodeId":"node-1","capability":"research","agent":"research-agent"}
 
 event:node_completed
-data:{"nodeId":"node-1","result":"AI Agent 框架发展趋势..."}
+data:{"nodeId":"node-1","result":"2025-2026 年 AI Agent 框架发展趋势：从单 Agent 走向多 Agent 协作，工具调用标准化（MCP/Tool Protocol），RAG 深度融合与可控记忆演进。"}
 
 event:node_started
 data:{"nodeId":"node-2","capability":"writing","agent":"research-agent"}
 
 event:node_completed
-data:{"nodeId":"node-2","result":"AI Agent 框架发展报告（中文）..."}
+data:{"nodeId":"node-2","result":"《AI Agent 框架发展报告（中文）》——第一章概述多 Agent 协作与工具生态，第二章分析主流框架（Spring AI、LangGraph、CrewAI）对比，第三章给出选型与演进路线。"}
 
 event:node_started
 data:{"nodeId":"node-3","capability":"translation","agent":"translator-agent"}
 
 event:node_completed
-data:{"nodeId":"node-3","result":"AI Agent Framework Report (English)..."}
+data:{"nodeId":"node-3","result":"AI Agent Framework Report (English): Chapter 1 introduces multi-agent collaboration and the tool ecosystem; Chapter 2 compares main frameworks (Spring AI, LangGraph, CrewAI); Chapter 3 presents selection and evolution roadmap."}
 
 event:task_completed
 data:{"dagId":"dag-xyz","totalTime":"23s"}
