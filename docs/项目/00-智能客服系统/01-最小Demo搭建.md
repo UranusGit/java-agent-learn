@@ -200,9 +200,25 @@ mvn spring-boot:run
 # curl -X POST "http://localhost:8080/api/chat/stream" -H "Content-Type: text/plain" -d "你好"  # 流式
 ```
 
-## 3. 验收
+## 3. 验证包（手工测试与验证）
+**前置条件**：`demo` 启动成功（8080 端口）；`DEEPSEEK_API_KEY` 已配置。
 
-- [x] `POST /api/chat` 返回完整回答
-- [x] `POST /api/chat/stream` 返回增量 token（SSE）
+**材料 A——curl 命令**：
+
+```bash
+curl -X POST "http://localhost:8080/api/chat" -H "Content-Type: text/plain" -d "你好"
+curl -N -X POST "http://localhost:8080/api/chat/stream" -H "Content-Type: text/plain" -d "你好"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料A 第一条 | 200 返回完整中文回答（JSON/text 均可，内容非空非报错） |
+| 2 | 材料A 第二条（-N 关缓冲） | SSE 流式收到多个增量 data: 块（≥3 块），非一次性整段 |
+| 3 | 发送空字符串 | 明确 4xx/提示，不 500 |
+
+**失败排查**：①401→Key 未注入环境；②一次性整段→Flux 被某层聚合（检查是否误用 block/call().content()）；③500→WebClient 超时（模型服务不可达）。
+
 
 > **定位回顾**：本篇搭建基座。下一站 [02-迭代一-工具集成]——给客服加查 FAQ、查订单、查物流三个工具。
