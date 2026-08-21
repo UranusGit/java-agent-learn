@@ -178,7 +178,7 @@ public class ChatClientConfig {
 > </dependency>
 > ```
 
-> `QuestionAnswerAdvisor` 的真实包路径是 `...advisor.vectorstore`（教程 05 旧稿曾写错），以 [附录 05-00 §1.4] 为准。
+> `QuestionAnswerAdvisor` 的真实包路径是 `org.springframework.ai.chat.client.advisor.vectorstore`（教程 05 旧稿曾写错），以 [附录 05-00 §1.4] 为准。
 
 ## 3. 验证包（手工测试与验证）
 **前置条件**：02 已通过；产品手册已 ETL 入库（≥50 块）；金标 20 问（手册内有答案）。

@@ -77,7 +77,7 @@ public class TenantTaggingAdvisor implements CallAdvisor, StreamAdvisor {
 | Advisor | 用途 | 常见误传 |
 |---------|------|---------|
 | `MessageChatMemoryAdvisor` | 记忆写入（call/stream 皆可） | 旧名 `MessageChatMemoryAdvisor` 在 1.0 曾叫 ChatMemoryAdvisor——2.0 以 builder 用法为准（见 §2） |
-| `QuestionAnswerAdvisor` | RAG 检索问答 | 包路径是 `...advisor.vectorstore`（教程 05 旧稿曾写错） |
+| `QuestionAnswerAdvisor` | RAG 检索问答 | 包路径是 `org.springframework.ai.chat.client.advisor.vectorstore`（教程 05 旧稿曾写错） |
 | `SimpleLoggerAdvisor` | 请求/响应日志 | - |
 
 `TokenBudgetAdvisor` **不是内置组件**（审计发现教程 11/13 与教程 01 的内置表口径不一）——上下文预算需自行实现（正确姿势：实现 CallAdvisor + StreamAdvisor，在 adviseCall 里压缩 messages）。本项目体系中的 `TokenMeteringAdvisor`、`TenantTaggingAdvisor` 等均为**自定义示例类**，不是框架 API。

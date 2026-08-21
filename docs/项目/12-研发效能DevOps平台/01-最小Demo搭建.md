@@ -196,7 +196,7 @@ public class RagConfig {
 
     @Bean
     public ChatClient chatClient(ChatClient.Builder builder, VectorStore vectorStore) {
-        // 声明式 RAG：每次请求自动检索 + 注入上下文。真实包路径是 ...advisor.vectorstore（[附录 05-00 §1.4]）
+        // 声明式 RAG：每次请求自动检索 + 注入上下文。真实包路径是 org.springframework.ai.chat.client.advisor.vectorstore（[附录 05-00 §1.4]）
         QuestionAnswerAdvisor ragAdvisor = QuestionAnswerAdvisor.builder(vectorStore)
                 .searchRequest(SearchRequest.builder()
                         .topK(5)
