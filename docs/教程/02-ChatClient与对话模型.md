@@ -311,6 +311,28 @@ sequenceDiagram
 
 ---
 
+## 5.5 调用的失效模式与错误处理（企业级必修）
+
+demo 示例从不告诉你 LLM 调用会怎么坏。生产里 ChatClient 的失效有五类，处置各不相同：
+
+| 失效 | 表现 | 处置 |
+|------|------|------|
+| 限流/配额 | 429、Retry-After 头 | `retryWhen(Retry.backoff(...))` 指数退避，尊重服务端头 |
+| 超时 | 无响应挂死 | 构建期配 `timeout`（WebClient/HttpClient 层），不要裸等 |
+| 内容截断 | `finishReason=length` | 检查 `ChatResponse.getResult().getMetadata().getFinishReason()`，截断≠完成，要续写或报错 |
+| 流中断 | `stream()` 中途 onError | 流式部分结果要决定"保留部分输出+标注"还是整体重试——见教程 42 |
+| 模型过载/降级 | 5xx | 降级路由（教程 32），不要原地重试打爆 |
+
+```java
+// 流式 + 退避重试 + 部分结果保护的骨架（Spring AI 2.0.0 / WebFlux）
+Flux<String> safe = chatClient.prompt().user(q).stream().content()
+    .retryWhen(Retry.backoff(2, Duration.ofSeconds(1))
+        .filter(e -> e instanceof WebClientResponseException.TooManyRequests))
+    .onErrorResume(e -> Flux.just("（生成中断，已保留部分内容）")); // 业务决策：保部分
+```
+
+> **遇到阻塞？→ [教程 42-响应式错误处理]**：onErrorResume/onErrorMap/retryWhen 的完整语义与流中断恢复。
+
 ## 6. 结构化输出：让 LLM 返回 Java 对象
 
 LLM 默认返回纯文本字符串。但企业级应用通常需要结构化数据（POJO / JSON）。
@@ -444,6 +466,15 @@ String answer = client.prompt()
 
 ---
 
+## 8.5 边界情况与常见误区（踩坑清单）
+
+1. **ChatClient 是线程安全的，但带状态的 Advisor 链不是自动安全**——自定义 Advisor 里放可变字段（计数器/缓存）时，多请求并发共享同一实例；计数要用原子类型，上下文要走 Reactor Context（教程 26）。
+2. **多轮上下文不会自动带上**——ChatClient 每次调用都是无状态的；"多轮对话"要靠 `MessageChatMemoryAdvisor`（教程 04/12），新手最常以为框架帮你记住了历史。
+3. **上下文长度是硬预算**——System+历史+工具 Schema+用户输入全算 token；超长不是报错而是静默截断或 400。工具多时 Schema 占用惊人（教程 34 的五层预算分配）。
+4. **`entity()` 失败的三种形态**——模型输出夹带 markdown 代码围栏、字段名对不上 Schema、返回了合法 JSON 但语义错（Schema 校验抓不住第三种，需要业务断言）。
+5. **Builder 是 prototype 的**——`ChatClient.Builder` 每次注入都是新实例，所以"配置多个不同默认值的 client"互不污染；但不要把 Builder 当单例缓存复用。
+6. **temperature 不是"创意旋钮"是分布形状**——0.0 也不保证完全确定（采样实现差异）；要确定性输出用结构化输出+校验，别指望温度。
+
 ## 9. 适用场景与不适用场景
 
 ### ✅ 适用场景
@@ -472,6 +503,8 @@ String answer = client.prompt()
 | **entity()** | 结构化输出，LLM 回复直接映射为 Java 对象 |
 | **模板引擎** | StringTemplate，`{变量}` 语法，支持外部化 Prompt 文件 |
 | **默认配置** | `default*` 系列方法设置默认值，运行时可覆盖 |
+| **失效模式** | 限流退避/超时/截断检查/流中断保部分/降级路由五类各有处置 |
+| **无状态** | 多轮记忆靠 Memory Advisor，框架不自动记历史 |
 
 **下一篇**：[03-工具调用](03-工具调用.md) — Function Calling、@Tool 注解、工具注册与发现。
 
