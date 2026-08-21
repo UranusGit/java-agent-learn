@@ -248,7 +248,8 @@ async function connectWithRecovery(sessionId: string, lastEventId: number) {
 function handleRecoveredEvent(event: AgentEvent & { id: number }) {
   if (event.id <= lastEventIdRef.current) return;  // 去重
   lastEventIdRef.current = event.id;
-  dispatch(/* ... */);
+  // 补发一个 SSE 事件进 reducer(状态机消费)
+  dispatch({ type: 'agent_event', payload: event });
 }
 ```
 

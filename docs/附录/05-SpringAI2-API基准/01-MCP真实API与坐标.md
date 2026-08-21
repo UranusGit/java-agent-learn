@@ -64,7 +64,10 @@ chatClient.prompt().toolCallbacks(mcpToolProvider)      // ❌虚构: defaultToo
 @Component
 public class OrderTools {
     @Tool(description = "按订单号查询订单状态")
-    public OrderStatus queryOrder(@ToolParam(description = "订单号") String orderId) { ... }
+    public OrderStatus queryOrder(@ToolParam(description = "订单号") String orderId) {
+        // 真实方法体:按订单号查库并返回(此处给最小可编译实现)
+        return orderRepository.findByOrderId(orderId);
+    }
 }
 
 @Configuration

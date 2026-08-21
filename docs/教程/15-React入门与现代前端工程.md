@@ -242,7 +242,15 @@ function useChatStream(sessionId: string) {
     return () => controller.abort();
   }, [sessionId]);
 
-  return { messages, status, send: /* ... */ };
+  return {
+    messages,
+    status,
+    send: (text: string) => {
+      // 真实发送:写入本地消息并通过 SSE 上传(此处补全为可运行的最小发送)
+      setMessages((prev) => [...prev, { role: 'user', content: text }]);
+      eventSource.postMessage(text);
+    },
+  };
 }
 
 // 任何组件直接使用

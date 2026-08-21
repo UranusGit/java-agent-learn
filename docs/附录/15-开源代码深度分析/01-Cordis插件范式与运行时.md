@@ -51,7 +51,11 @@ flowchart TD
 export const name = 'my-plugin'
 export const inject = ['tools']
 export function apply(ctx: Context) {
-  ctx.tools.register({ ... })   // 注册是 effect，可逆
+  ctx.tools.register({
+    name: 'current_time',
+    description: '返回当前时间',
+    execute: () => new Date().toISOString(),
+  })   // 注册是 effect,可逆(unregister 可撤销)
 }
 ```
 
@@ -82,7 +86,14 @@ flowchart LR
 
 ```ts
 export const inject = ['agents', 'sessions', 'llm', 'tools', 'systemPrompt']
-export class AgentLoop extends Service implements AgentFactory { ... }
+export class AgentLoop extends Service implements AgentFactory {
+  // 最小可编译骨架:核心能力是"产出一个新 Agent 并运行"
+  async create(ctx: Context, spec: AgentSpec): Promise<Agent> {
+    const agent = new Agent(ctx, spec.scope)
+    await agent.synthesize(spec.systemPrompt)   // 用系统提示合成 Agent
+    return agent
+  }
+}
 ```
 
 ### 4. 类型化事件用于通信

@@ -133,14 +133,17 @@ reactor.core.publisher$FluxMap$MapSubscriber.onNext(FluxMap.java:106)
 // JDBC 是阻塞的——在 WebFlux 中直接用会阻塞 Event Loop！
 @GetMapping("/user")
 public Mono<User> getUser() {
-    User user = jdbcTemplate.queryForObject(...); // ← 阻塞 Event Loop
+    User user = jdbcTemplate.queryForObject("SELECT * FROM t_user WHERE id = ?",
+                User.class, userId); // ← 阻塞 Event Loop
     return Mono.just(user); // 灾难性后果：整个服务卡住
 }
 
 // 正确：包装到 boundedElastic
 @GetMapping("/user")
 public Mono<User> getUser() {
-    return Mono.fromCallable(() -> jdbcTemplate.queryForObject(...))
+    return Mono.fromCallable(() -> jdbcTemplate.queryForObject(
+                "SELECT * FROM t_user WHERE id = ?", User.class, userId))
+            .mapNotNull(u -> u)
         .subscribeOn(Schedulers.boundedElastic());
 }
 ```

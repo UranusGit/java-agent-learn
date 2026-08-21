@@ -500,17 +500,17 @@ tokenStream.subscribe(new BaseSubscriber<String>() {
 // onBackpressureBuffer：缓冲
 Flux.range(1, 1000000)
     .onBackpressureBuffer(1000)  // 缓冲 1000 个
-    .subscribe(...);
+    .subscribe(i -> { if (i % 100000 == 0) System.out.println("已发射(缓冲): " + i); });
 
 // onBackpressureDrop：丢弃
 Flux.interval(Duration.ofMillis(1))
     .onBackpressureDrop(dropped -> log.warn("丢弃: {}", dropped))
-    .subscribe(...);
+    .subscribe(i -> System.out.println("背压丢弃策略收到: " + i));
 
 // onBackpressureLatest：只保留最新
 Flux.interval(Duration.ofMillis(10))
     .onBackpressureLatest()
-    .subscribe(...);
+    .subscribe(i -> System.out.println("Latest 保留最新值: " + i));
 ```
 
 > 背压的深入讨论见 [01-背压与流量控制](../06-WebFlux与响应式编程/01-背压与流量控制.md)。

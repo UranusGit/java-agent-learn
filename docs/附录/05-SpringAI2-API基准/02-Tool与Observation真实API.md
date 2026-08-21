@@ -112,7 +112,10 @@ public class ToolAuditObservationHandler implements ObservationHandler<ToolCalli
 
 // ③ @Observed 注解（Micrometer 真实注解——属性是 key-value 对，无 lowCardinalityKeyValue 单值属性）
 @Observed(name = "tool.execute", contextualName = "tool-exec")
-public Result execute(...) { ... }
+public Result execute(String toolName, Map<String, Object> args) {
+    // 真实方法体:执行工具并返回结果(此处省略具体工具逻辑,保留可编译骨架)
+    return new Result(toolName, args);
+}
 ```
 
 **审计发现的虚构项**：`ObservationContextHolder.get()`、`Observation.Context#getKeyValue(String)`、`ObservationHandlerGrouping`、`@Observed(lowCardinalityKeyValue = {...})` 单值属性、`context.getTraceId()`/`getSpanId()`——均非真实 API。TraceId 的真实获取：`tracer.currentSpan().context().traceId()`（Micrometer Tracing 的 `Tracer` Bean）。

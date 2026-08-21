@@ -74,22 +74,22 @@ God Agent 是 Agent 世界里的"上帝类"——一个 Agent 类承担所有职
 public class GodAgent {
 
     // 客服问答
-    public String answerCustomerQuestion(String question) { ... }
+    public String answerCustomerQuestion(String question) { return "未区分职责的入口,询问被塞进一个方法"; }
 
     // 数据分析
-    public String analyzeData(String data) { ... }
+    public String analyzeData(String data) { return "应该交给独立数据分析 Agent 的活"; }
 
     // 发送邮件
-    public void sendEmail(String to, String content) { ... }
+    public void sendEmail(String to, String content) { System.out.println("send to " + to); }
 
     // 文件处理
-    public String processFile(String filePath) { ... }
+    public String processFile(String filePath) { return "文件处理应与问答职责分离"; }
 
     // 代码生成
-    public String generateCode(String spec) { ... }
+    public String generateCode(String spec) { return "代码生成应独立成技能"; }
 
     // 翻译
-    public String translate(String text, String lang) { ... }
+    public String translate(String text, String lang) { return "翻译应由专门的翻译 Agent 完成"; }
 
     // 所有工具都在一个类里
     private static final List<Object> ALL_TOOLS = List.of(
