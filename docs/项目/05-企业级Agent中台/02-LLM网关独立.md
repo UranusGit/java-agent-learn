@@ -625,4 +625,4 @@ curl -X POST http://localhost:8080/api/{本迭代接口} \
 2. **策略无版本**：上周改的提示词把客服满意度改崩了，想回滚——发现没有历史版本
 3. **变更无灰度**：任何配置变更都是"全量即时生效"，出问题只能靠手速回改
 
-这些痛点指向"配置与策略需要集中管理、版本化、可灰度"——**Control Plane 建设**。→ [03-迭代二-ControlPlane建设.md](03-迭代二-ControlPlane建设.md)
+这些痛点指向"配置与策略需要集中管理、版本化、可灰度"——**Control Plane 建设**。→ [03-ControlPlane建设.md](03-ControlPlane建设.md)

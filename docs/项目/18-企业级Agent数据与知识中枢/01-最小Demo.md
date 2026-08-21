@@ -112,4 +112,4 @@ public class KnowledgeService {
 | 引用溯源 | [n]+源可核 | ✅ |
 | API 真实 | 全实证 | ✅ |
 
-**下一篇**：[02-迭代一-多源接入与Connector框架](02-迭代一-多源接入与Connector框架.md)。
+**下一篇**：[02-多源接入与Connector框架](02-多源接入与Connector框架.md)。

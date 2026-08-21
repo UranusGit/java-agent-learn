@@ -954,4 +954,4 @@ graph TB
 5. **上下文注入**——执行 Agent 前将历史消息注入 Prompt，支持多轮对话的上下文理解
 6. **可观测性**——`ToolCallingManager` 装饰器记录工具日志 + Micrometer 指标，为调试和审计提供基础
 
-下一篇 [03-迭代二-多Agent编排](03-迭代二-多Agent编排.md) 将引入 Agent 注册中心、Agent 间通信和并行编排——从单 Agent 跨越到多 Agent 协作。
+下一篇 [03-多Agent编排](03-多Agent编排.md) 将引入 Agent 注册中心、Agent 间通信和并行编排——从单 Agent 跨越到多 Agent 协作。

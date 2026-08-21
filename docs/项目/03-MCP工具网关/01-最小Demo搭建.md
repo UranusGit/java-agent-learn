@@ -721,7 +721,7 @@ sequenceDiagram
 3. 无监控无审计——每次调用的参数、结果、耗时都无从追溯
 4. 无权限控制——任何调用方都能调任何工具
 
-> **定位回顾**：v0 是"故意不完美"的地基。下一站 [02-迭代一-MCP 客户端集成](02-迭代一-MCP客户端集成.md)——用连接池解决痛点 1，用动态发现解决痛点 2，用可观测性 + 审计解决痛点 3。
+> **定位回顾**：v0 是"故意不完美"的地基。下一站 [02-MCP 客户端集成](02-MCP客户端集成.md)——用连接池解决痛点 1，用动态发现解决痛点 2，用可观测性 + 审计解决痛点 3。
 
 ---
 
@@ -739,4 +739,4 @@ sequenceDiagram
 
 5. **API 真实性**：所有代码按 [附录 05-01 MCP真实API与坐标](../../附录/05-SpringAI2-API基准/01-MCP真实API与坐标.md) 基准书写——客户端类型是 MCP SDK 的 `McpSyncClient`，调用签名是 `callTool(new CallToolRequest(name, args))`、`listTools()` 返回 `ListToolsResult` 解包，无虚构的 `org.springframework.ai.mcp.McpClient`。
 
-当前版本的局限很明显：只支持单个 MCP Server、没有权限控制、没有审计日志、没有容错机制。下一篇 [02-迭代一-MCP 客户端集成](02-迭代一-MCP客户端集成.md) 将引入多 Server 管理、MCP Client 连接池、全链路可观测性和审计日志，把网关推向生产可用。
+当前版本的局限很明显：只支持单个 MCP Server、没有权限控制、没有审计日志、没有容错机制。下一篇 [02-MCP 客户端集成](02-MCP客户端集成.md) 将引入多 Server 管理、MCP Client 连接池、全链路可观测性和审计日志，把网关推向生产可用。

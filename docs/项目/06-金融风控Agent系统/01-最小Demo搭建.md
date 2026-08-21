@@ -230,4 +230,4 @@ mvn spring-boot:run
 | 阻塞桥接 | `Mono.fromCallable(...).subscribeOn(boundedElastic)`，绝不在 EventLoop 上 block |
 | 分层校验 | 框架管格式，业务管语义——两层都要 |
 
-→ [02-迭代一-置信度与风险分级.md](02-迭代一-置信度与风险分级.md)
+→ [02-置信度与风险分级.md](02-置信度与风险分级.md)

@@ -349,4 +349,4 @@ curl -X POST "http://localhost:8080/api/query?userId=u1" \
 2. **Schema 全量注入**——200 张表 DDL 塞进 prompt，token 爆炸 + LLM 记不住后面的表
 3. **"这是对的吗？"**——业务不敢信黑盒 SQL
 
-这三个痛点指向 **v2 SQL 安全护栏**。→ [02-迭代一-SQL安全护栏.md](02-迭代一-SQL安全护栏.md)
+这三个痛点指向 **v2 SQL 安全护栏**。→ [02-SQL安全护栏.md](02-SQL安全护栏.md)
