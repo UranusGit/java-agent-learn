@@ -899,14 +899,14 @@ curl -X POST http://localhost:8080/api/workflow-templates \
     "version": 1,
     "matchHint": "生成/输出本月产品发布报告",
     "status": "ACTIVE",
-    "dagBlueprint": "{\"nodes\":[...],\"edges\":[...]}"
+    "dagBlueprint": "{\"nodes\":[{\"nodeId\":\"node-1\",\"description\":\"汇总本月产品数据\",\"requiredCapability\":\"research\"},{\"nodeId\":\"node-2\",\"description\":\"撰写发布报告\",\"requiredCapability\":\"writing\"},{\"nodeId\":\"node-3\",\"description\":\"质检发布要点\",\"requiredCapability\":\"analysis\"}],\"edges\":[{\"from\":\"node-1\",\"to\":\"node-2\"},{\"from\":\"node-2\",\"to\":\"node-3\"}]}"
   }'
 
 # 2. 注册 v2（CANARY，新增"合规前置审核"节点，灰度 20%）
 curl -X POST http://localhost:8080/api/workflow-templates \
   -d '{ "name": "monthly-release-report", "version": 2, "status": "CANARY",
         "canaryPercent": 20, "matchHint": "生成/输出本月产品发布报告",
-        "dagBlueprint": "{\"nodes\":[...(含 compliance 节点)...]}" }'
+        "dagBlueprint": "{\"nodes\":[{\"nodeId\":\"node-1\",\"description\":\"汇总本月产品数据\",\"requiredCapability\":\"research\"},{\"nodeId\":\"node-2\",\"description\":\"撰写发布报告\",\"requiredCapability\":\"writing\"},{\"nodeId\":\"node-3\",\"description\":\"compliance:发布前置合规审核\",\"requiredCapability\":\"compliance\"},{\"nodeId\":\"node-4\",\"description\":\"质检发布要点\",\"requiredCapability\":\"analysis\"}],\"edges\":[{\"from\":\"node-1\",\"to\":\"node-2\"},{\"from\":\"node-2\",\"to\":\"node-3\"},{\"from\":\"node-3\",\"to\":\"node-4\"}]}" }'
 
 # 3. 连续提交 10 次同类任务，检查 SSE 事件的 templateVersion 分布
 for i in $(seq 1 10); do

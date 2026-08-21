@@ -81,7 +81,7 @@ CREATE TABLE agent_event (                       -- 事件溯源（append-only�
     event_id   text PRIMARY KEY,
     session_id text NOT NULL REFERENCES conversation(id),
     seq        bigint NOT NULL,
-    type       text NOT NULL,                    -- USER_INPUT/LLM_INTENT/TOOL_CALL/...
+    type       text NOT NULL,                    -- USER_INPUT/LLM_INTENT/TOOL_CALL/TOOL_RESULT/LLM_RESPONSE/APPROVAL
     payload    text NOT NULL,                    -- 脱敏后事件内容
     confidence double precision,
     trace_id   text,

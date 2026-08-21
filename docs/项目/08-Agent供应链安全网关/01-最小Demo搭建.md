@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS audit_event (
     args_json       TEXT,                       -- 参数（脱敏后，JSON）
     result_preview  VARCHAR(500),               -- 结果摘要（截断 500 字符）
     duration_ms     BIGINT,
-    outcome         VARCHAR(32)  NOT NULL,      -- STARTED/COMPLETED/FAILED/CANCELLED...
+    outcome         VARCHAR(32)  NOT NULL,      -- STARTED/COMPLETED/FAILED/CANCELLED/QUARANTINED/DENIED/CONFIRM_REQUIRED
     tags_json       TEXT,                       -- 检测层标注（v4 起使用）
     ts              TIMESTAMP    NOT NULL
 );

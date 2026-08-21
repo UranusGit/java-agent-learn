@@ -214,7 +214,7 @@ erDiagram
 
     ENTITY {
         string name "规范全称（唯一键）"
-        string type "PERSON/ROLE/DEPARTMENT/..."
+        string type "PERSON/ROLE/DEPARTMENT/DOCUMENT/CHUNK/COMMUNITY"
         string embedding "实体名向量（消歧用）"
     }
     RELATES {

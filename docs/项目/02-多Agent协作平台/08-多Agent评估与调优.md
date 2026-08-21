@@ -99,8 +99,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 协作质量指标采集器：订阅全局事件总线 → Micrometer。
  * 指标清单：
  *   orchestrator.task.outcome{outcome=completed|failed|compensated}   Counter
- *   orchestrator.node.executions{capability=...}                      Counter（轮次分子）
- *   orchestrator.node.duration{capability=...}                        Timer
+ *   orchestrator.node.executions{capability=research|writing|translation|analysis}   Counter（轮次分子）
+ *   orchestrator.node.duration{capability=research|writing|translation|analysis}     Timer
  */
 @Component
 public class CollaborationMetricsCollector {
@@ -181,7 +181,7 @@ private Flux<String> streamWithUsage(ChatClient.ChatClientRequestSpec promptSpec
 }
 ```
 
-> 这一升级全程使用实证 API：`StreamResponseSpec.chatResponse()`（附录 05 基线 §15）、`ChatResponseMetadata.getUsage()` / `Usage.getPromptTokens()/getCompletionTokens()/getTotalTokens()`、`Generation.getOutput()` / `AbstractMessage.getText()`——本篇写作时对本地 2.0.0 jar 逐一 javap 复核。指标侧把 `usageEvents()` 聚合成 `orchestrator.tokens{agent=..., type=prompt|completion}` Counter，任务归因用 `a2a_call_audit` 同款模式加一张 `token_usage` 明细表即可。
+> 这一升级全程使用实证 API：`StreamResponseSpec.chatResponse()`（附录 05 基线 §15）、`ChatResponseMetadata.getUsage()` / `Usage.getPromptTokens()/getCompletionTokens()/getTotalTokens()`、`Generation.getOutput()` / `AbstractMessage.getText()`——本篇写作时对本地 2.0.0 jar 逐一 javap 复核。指标侧把 `usageEvents()` 聚合成 `orchestrator.tokens{agent=research-agent, type=prompt|completion}` Counter，任务归因用 `a2a_call_audit` 同款模式加一张 `token_usage` 明细表即可。
 
 ### 3.4 评估面全景
 
