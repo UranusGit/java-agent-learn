@@ -68,6 +68,7 @@ sequenceDiagram
 | 落盘 | turn 历史追加 JSONL | 与终态事件保序的锚点 |
 | 终态事件 | TurnComplete/TurnAborted/Error | 恰好一次 |
 | idle 钩子 | 全空闲时发会话级 idle | 多任务结束判定集中 |
+| **可见性事件** | ToolStart/ToolEnd/ThoughtDelta（01 定义的过程信号） | 工具/思考事件若在**各工具处各自发射**，走拦截路径/异常返回时会漏发、漏配；必须集中到 turn 的**采样边隙统一发射**——这是"过程可见性不残缺"的结构保证 |
 
 ## 五、验证包
 

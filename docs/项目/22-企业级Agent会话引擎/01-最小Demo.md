@@ -27,10 +27,41 @@ public sealed interface Op permits UserInput, Interrupt, Shutdown {}
 public record UserInput(String text) implements Op {}
 public record Interrupt() implements Op {}
 
-public sealed interface AgentEvent permits TurnStarted, Token, TurnComplete, TurnAborted {}
+// ⚠ 事件协议 = 完整的"过程可见性契约"（对照教程 19 的 12 事件类型）
+// 不只有生命周期，还含工具调用与思考过程——这是前端渲染"Agent 在干什么"的全部信号源
+public sealed interface AgentEvent permits
+        TurnStarted, ThoughtStart, ThoughtDelta, ThoughtEnd,
+        ToolStart, ToolProgress, ToolEnd,
+        Token, TurnComplete, TurnAborted, ErrorEvent {
+
+    long id();                   // 单调 id：断线续传去重依据（06 迭代）
+    long ts();                   // 时间戳：前端展示节奏
+}
+
+// —— 生命周期 ——
+public record TurnStarted(long id, long ts) implements AgentEvent {}
+public record TurnComplete(long id, long ts) implements AgentEvent {}
+public record TurnAborted(long id, long ts, String reason) implements AgentEvent {}
+public record ErrorEvent(long id, long ts, String code, String message) implements AgentEvent {}
+
+// —— 思考过程可见性（"Agent 在想什么"）——
+public record ThoughtStart(long id, long ts) implements AgentEvent {}
+public record ThoughtDelta(long id, long ts, String delta) implements AgentEvent {}   // 推理文本增量
+public record ThoughtEnd(long id, long ts) implements AgentEvent {}
+
+// —— 工具调用可见性（"Agent 在调什么工具/拿到了什么"）——
+public record ToolStart(long id, long ts, String toolName, String argsPreview) implements AgentEvent {}
+public record ToolProgress(long id, long ts, String delta) implements AgentEvent {}     // 长工具逐步进度
+public record ToolEnd(long id, long ts, String toolName, boolean ok,
+                      String resultPreview) implements AgentEvent {}                    // preview 截断（防爆）
+
+// —— 输出 ——
+public record Token(long id, long ts, String delta) implements AgentEvent {}
 ```
 
 **为什么契约先行**：Op/Event 枚举就是引擎对外 API 的全部——前端、持久化、测试全部对着契约编程，引擎内部随便重构（对照 [教程 19] 的事件协议，本项目把它下沉为"引擎级契约"）。
+
+**为什么事件必须含工具与思考过程**：企业级 Agent 的信任来自"看得见过程"。若事件只有 `Token`（最终文字），前端只能展示"一个黑盒在挤出文字"——用户不知道它查了哪个工具、检索了什么、为什么停顿。补上 `ThoughtDelta`（推理过程）、`ToolStart/ToolEnd`（调了什么、返回什么），前端才能渲染"Agent 正在查订单 → 已返回 3 条 → 正在组织回答"的完整过程。**这正是教程 19 定义的可见性标准，会话引擎作为过程载体必须内建**。
 
 ## 三、最小 Actor
 
@@ -99,6 +130,8 @@ flowchart LR
 
 **材料 B——事件计数**：订阅 `handle.events()` 收集到 List，提交 N=50 条输入、等全部 TurnComplete 后断言 `events.size() == 100`（每输入 TurnStarted+TurnComplete 各一）。
 
+**材料 C——工具可见性断言**：让模型在回答中调用一次工具（mock 工具），断言事件流出现 `ThoughtStart→ThoughtDelta*→ThoughtEnd` 与 `ToolStart→ToolEnd` 成对序列（顺序正确、无缺漏）。
+
 **步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
@@ -106,6 +139,7 @@ flowchart LR
 | 1 | 运行材料 A | sent ≤513；无 OutOfMemoryError；进程存活 |
 | 2 | 运行材料 B | 事件计数恰好 100，0 丢失 |
 | 3 | 检查 SessionHandle 公开成员 | 仅有 submit()/events()，无 setter/公开可变字段（编译期验证） |
+| 4 | 运行材料 C | 事件序列为 Thought*→ToolStart→ToolEnd→(Token*)；ToolStart/ThoughtEnd 各恰好 1；ToolEnd.resultPreview 有值且被截断（≤500 字符） |
 
 **失败排查**：① sent 超限→队列非有界或 submit 写成 drop 语义；② 事件丢→Sinks 用了 onOverflowDrop，应改 onOverflowBuffer；③ handle 暴露状态→字段 private final + record 封装。
 
