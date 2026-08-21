@@ -90,14 +90,22 @@ public class LlmProxyHandler {
 # 工业纪律：旁路系统的第一设计原则——治理可失联，业务不可中断
 ```
 
-## 五、测试与验证
+## 五、验证包（手工测试与验证）
+**前置条件**：单机 Sidecar（限流+遥测+逃生开关）实现；一个示例 Agent（OpenAI 兼容客户端）。
 
-```bash
-# 1. Agent 只改 base-url → 调用成功且遥测有记录（零代码改造验证）
-# 2. 压 15 QPS → 超过桶速的部分 429（本地限流生效）
-# 3. kill Sidecar + bypass=true → Agent 仍可直连（逃生门）
-# 4. 延迟基线：Sidecar 引入增量 ≤5ms
-```
+**材料 A——压测器**：wrk/hey 发 15 QPS 持续 30s；**材料 B——限流配置**（10 QPS 桶）。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | Agent 只改 base-url 指向 Sidecar | 调用成功；Sidecar 遥测有该次记录（零代码改造验证） |
+| 2 | 材料A 压测（桶 10） | 超桶速请求 429（本地限流生效）；≤10 QPS 正常通过 |
+| 3 | kill Sidecar 且 bypass=true | Agent 仍可直连上游（逃生门可用） |
+| 4 | 直连 vs 走 Sidecar 各 100 次计时 | Sidecar 增量延迟 ≤5ms |
+
+**失败排查**：①改 base-url 不通→Header 透传缺 Authorization；②限流不生效→桶算法全放行（检查窗口重置逻辑）；④超 5ms→每请求新建连接（上游连接池复用）。
+
 
 ## 六、本迭代痛点
 
