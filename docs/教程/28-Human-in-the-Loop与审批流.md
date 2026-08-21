@@ -938,3 +938,5 @@ public class HumanInTheLoopAdvisor implements CallAdvisor {
 - Spring AI ChatClient 与 Advisor：https://docs.spring.io/spring-ai/reference/api/chatclient.html
 - NIST AI Risk Management Framework（人工监督要求）：https://www.nist.gov/itl/ai-risk-management-framework
 - ISO/IEC 42001 AI 管理体系（高风险决策人工批准记录）：https://www.iso.org/standard/81230.html
+
+> **想深入？→ [附录 15/13-codex-harness/01-工具子系统与审批沙箱]**：审批三态推导表与结构化 key 会话缓存的工程级完整方案。

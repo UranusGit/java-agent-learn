@@ -966,3 +966,5 @@ flowchart TB
 > **想深入？→ [附录 05-SpringAI2-API基准/00-Advisor与ChatMemory]**：Advisor 与 ChatMemory 的全部真实签名与虚构 API 对照。
 > **想深入？→ [附录 06-WebFlux与响应式编程/00-Reactor核心]**：Reactor Context 的传播原理（contextWrite/deferContextual）。
 > **想深入？→ [附录 17-Kafka/04-日志存储与高可用复制]**：事件溯源日志的保留/压实策略——压实主题如何充当"每会话最新快照"的物化载体。
+
+> **想深入？→ [附录 15/13-codex-harness/00-总体架构与会话Actor]**：单写者 Actor + 版本号快照的会话状态管理参考实现。
