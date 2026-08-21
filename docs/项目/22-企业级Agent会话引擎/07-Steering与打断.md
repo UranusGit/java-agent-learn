@@ -87,4 +87,4 @@ stateDiagram-v2
 | 自动唤醒 | idle 后可叫醒 | ✅ |
 | 打断定格 | 部分结果保留 | ✅ |
 
-**下一篇**：[08-进阶一-Guardian自动审阅](08-进阶一-Guardian自动审阅.md)。
+**下一篇**：[08-Guardian自动审阅](08-Guardian自动审阅.md)。

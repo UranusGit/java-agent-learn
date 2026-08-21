@@ -87,4 +87,4 @@ record GuardianAssessment(int riskScore, String riskLevel,
 | 防套娃 | 路由断言 | ✅ |
 | 会话复用 | 延迟降半 | ✅ |
 
-**下一篇**：[09-进阶二-多线程与会话Fork](09-进阶二-多线程与会话Fork.md)。
+**下一篇**：[09-多线程与会话Fork](09-多线程与会话Fork.md)。
