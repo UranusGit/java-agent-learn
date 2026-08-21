@@ -1275,6 +1275,21 @@ curl http://localhost:8080/actuator/prometheus | grep mcp_tool
 
 ---
 
+## 9.5 MCP 工具进出过程可见
+
+> 过程可见性是工业级标配（[附录 14/01]）。MCP 网关**消费外部工具**、也把能力暴露给外部，这两条方向的过程都要看得见——用户要看到"调了哪个 MCP 服务器的方法、去了哪、返回什么"。
+
+网关 echo emit 工具进出事件：`{callId, 客户端/服务端方向, server, tool, 结果}`：
+
+| 方向 | 事件 | 用户看到 |
+|------|------|---------|
+| 出（消费） | OutboundToolStart{server,tool}` | "正在调 filesystem 服务器的 read_text" |
+| 出 | OutboundToolEnd{result-preview}` | "已返回："/workspace/hello.txt"" |
+| 进（被调） | InboundToolCalled{tool,caller}` | "外部调用了本网关的 echo 工具" |
+| 错误 | McpToolError{code,msg-preview}` | "工具调用失败：连接超时" |
+
+**四条纪律**：① 出入两个方向都发事件（网关是中转，双向可见）；② 结果 preview 截断且**不含凭证/鉴权头**（MCP 工具调用带 token 鉴权，事件绝不外泄）；③ 服务器维度展示，用户看到是哪个 MCP server 的哪个工具；④ 与 04 的凭证隔离衔接——事件可跟踪`callId`但查不到凭证。
+
 ## 10. ADR 演进决策
 
 ### ADR 03-03：连接池用 `ConcurrentHashMap` 存连接，健康状态用 `volatile` + 渐进式失败计数
