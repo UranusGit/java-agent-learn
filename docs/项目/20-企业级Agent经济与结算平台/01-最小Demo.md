@@ -65,14 +65,39 @@ flowchart LR
 - 包装位置：**ToolCallback 包装层**（HITL/拦截类逻辑的正确落点，见 [教程 30-HumanInTheLoop]——非 Advisor）。
 - 拒绝的艺术：拒绝信息要**可行动**（"剩余 ¥0.3，本次需 ¥0.5，可换免费数据源或申请追加"）——Agent 才能自主换路，而不是报错死循环。
 
-## 四、测试与验证
+## 四、验证包（手工测试与验证）
+**前置条件**：BudgetLedger（原子扣减版）+ 工具包装层实现；被包装的付费工具 mock（记执行次数）。
 
-```bash
-# 1. 放行：预算 ¥10，调 5 次 ¥1 工具 → 5 笔入账，余额 ¥5
-# 2. 拒绝：再调 ¥6 工具 → 抛 BudgetExceeded，账本仍 5 笔
-# 3. 对账：ledger 汇总 == 预算-余额
-# 4. 拒绝信息：Agent 收到可行动提示（含剩余额度与替代建议）
+**材料 A——扣减测试**（junit）：
+
+```java
+@Test void 预算内放行且逐笔记账() {
+    ledger.grant("s1", new BigDecimal("10"));
+    for (int i = 0; i < 5; i++) ledger.charge("s1", "weather", new BigDecimal("1"), "k" + i);
+    assertEquals(0, ledger.balance("s1").compareTo(new BigDecimal("5")));
+    assertEquals(5, ledger.entriesOf("s1").size());
+}
+@Test void 超预算拒绝且原子() {
+    ledger.grant("s1", new BigDecimal("10"));
+    assertThrows(BudgetExceededException.class,
+        () -> ledger.charge("s1", "weather", new BigDecimal("6"), "k9"));
+    assertEquals(10, ledger.balance("s1").intValue()); // 拒绝不扣减
+}
 ```
+
+**材料 B——拒绝信息检查**：捕获拒绝异常的消息文本。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料A 两个用例 | 全绿；拒绝后余额不变（原子性） |
+| 2 | 对账断言：∑entries 金额 == 预算-余额 | 恒等式成立 |
+| 3 | 检查材料B 文本 | 含剩余额度与金额、且含替代建议（可行动） |
+| 4 | 被拒后 Agent 继续 | 收到可行动信息后能换免费工具（mock 断言免费工具被调） |
+
+**失败排查**：①拒绝仍扣减→检查与扣减不在同一原子段（compute 内完成）；③无建议→拒绝信息只抛了金额差。
+
 
 ## 五、本迭代痛点
 

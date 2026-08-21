@@ -76,13 +76,27 @@ public class RegressionRunner {
 }
 ```
 
-## 四、测试与验证
+## 四、验证包（手工测试与验证）
+**前置条件**：金标 20 例（JSONL：question/expected/评分要点）+ RelevancyEvaluator（官方基准：`RelevancyEvaluator.builder().chatClientBuilder(judgeBuilder).build()` + `new EvaluationRequest(...)`）跑通。
 
-```bash
-# 1. 跑 20 例 → 报告通过率（如 16/20=0.8）
-# 2. 失败 4 例有逐例分数与回答（人工复核口径）
-# 3. 裁判一致性：抽 5 例人审对照（Judge 分数 vs 人工）
+**材料 A——金标样例**（`golden-20.jsonl`）：
+
+```json
+{"id":"g01","domain":"退款","question":"订单8812没收到货怎么退款","expected":"先查物流状态，未签收可申请仅退款，1-3个工作日到账","rubric":["提到查物流","提到仅退款路径","提到时效"]}
 ```
+
+**材料 B——人审表**：抽 5 例，人工按 rubric 打 0-2 分对照 Judge 分。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 跑 20 例 | 报告出通过率（如 16/20=0.8）；失败 4 例有逐例分数+回答原文 |
+| 2 | 材料B 对照 | Judge 与人审分相关系数 ≥0.7（方向一致） |
+| 3 | 人为注入一例明显跑题回答 | 该例相关度分显著低于均值（判定器有区分度） |
+
+**失败排查**：①Judge 全 0.9+ 无区分度→judge Prompt 缺评分锚点（把 rubric 写进判分上下文）；②跑不通→EvaluationRequest 参数顺序/类型与已实证基准不符。
+
 
 ## 五、本迭代痛点
 
