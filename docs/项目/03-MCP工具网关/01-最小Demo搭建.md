@@ -464,7 +464,7 @@ public class ToolRouter {
 }
 ```
 
-关于 `mcpClient.callTool()`：这是 Spring AI 对 MCP `tools/call` 的封装。底层会构造 `{"method": "tools/call", "params": {"name": "read_file", "arguments": {"path": "/tmp/..."}}}` 的 JSON-RPC 请求，发送给 MCP Server 子进程，等待返回结果。
+关于 `mcpClient.callTool()`：这是 Spring AI 对 MCP `tools/call` 的封装。底层会构造 `{"method": "tools/call", "params": {"name": "read_file", "arguments": {"path": "/tmp/report.txt"}}}` 的 JSON-RPC 请求，发送给 MCP Server 子进程，等待返回结果。
 
 > **工具调用机制详解** → [教程 03-工具调用](../../教程/03-工具调用.md) 第 2 节用完整的时序图讲解了工具调用从 LLM 决策到方法执行到结果返回的全过程，帮助理解工具调用的底层循环。
 
@@ -625,7 +625,7 @@ curl http://localhost:8080/tools
     "inputSchema": {
       "type": "object",
       "properties": {
-        "path": { "type": "string", "description": "..." }
+        "path": { "type": "string", "description": "The absolute path of the file to read." }
       },
       "required": ["path"]
     },
