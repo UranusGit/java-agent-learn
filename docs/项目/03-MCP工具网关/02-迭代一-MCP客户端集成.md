@@ -884,7 +884,7 @@ package com.example.mcp.gateway.config;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
-import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCustomizer;
+import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;  // Boot 4.1.0 实证：不在 actuator.autoconfigure.metrics
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
