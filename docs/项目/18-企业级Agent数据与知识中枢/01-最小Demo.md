@@ -78,7 +78,7 @@ public class KnowledgeService {
 // String context = blocks.stream()
 //         .map(b -> "[" + (i+1) + "] " + b.getText() + "（源：" + b.getMetadata().get("source") + "）")
 //         .collect(joining("\n"));
-// chatClient.prompt().system("仅依据以下资料回答并标注[n]引用：\n" + context).user(q)...
+// chatClient.prompt().system("仅依据以下资料回答并标注[n]引用：\n" + context).user(q).call()
 ```
 
 ## 四、验证包（手工测试与验证）

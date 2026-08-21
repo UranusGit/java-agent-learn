@@ -81,7 +81,7 @@ public class SessionCore {
         while (true) {
             Op op = take(commands);
             switch (op) {
-                case UserInput u -> runTurn(u);       // 单 turn：client.prompt().user(u.text())...
+                case UserInput u -> runTurn(u);       // 单 turn：client.prompt().user(u.text()).call()
                 case Interrupt i   -> abortActive();  // 02 迭代实现
                 case Shutdown s    -> { return; }
             }
