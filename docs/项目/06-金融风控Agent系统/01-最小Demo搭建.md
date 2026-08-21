@@ -202,7 +202,7 @@ export DEEPSEEK_API_KEY=sk-xxx
 mvn spring-boot:run
 # 测试：
 # curl -X POST "http://localhost:8080/api/pretrial?applicationId=SO-0001" \
-#   -H "Content-Type: text/plain" -d "营业执照: 广州XX贸易有限公司... 流水: 月均 50 万，年末 3 个月骤降..."
+#   -H "Content-Type: text/plain" -d "营业执照: 广州XX贸易有限公司，注册资本500万元，经营范围为纺织服装批发，成立满3年。流水: 公账月均回款 50 万元，年末 3 个月骤降至不足10万元。征信: 无逾期记录，负债率约45%，近期有1笔经营贷申请。"
 ```
 
 ## 5. 验收标准
