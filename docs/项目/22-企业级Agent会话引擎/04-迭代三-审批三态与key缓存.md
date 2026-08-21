@@ -50,14 +50,44 @@ flowchart TD
 - **升级链**：受限模式（只读/临时目录）先试 → 工具声明 `escalatable` 且被 Deny → 升级全权重试（审批缓存已批则免再问）——最小权限优先，体验与安全兼得。
 - **安全不变量**：被拒过的读操作永不升级出沙箱；升级重试需新审批（缓存已批除外）；一切异常（审批服务挂/超时/会话不在）落 Deny/Forbidden。
 
-## 五、测试与验证
+## 五、验证包
 
-```bash
-# 1. 推导表：8 格全分支单测 + 工具覆盖（请求自带策略覆盖默认）
-# 2. 缓存：同 key 免问/子集免问/超集再问；cwd 变化再问
-# 3. 升级：受限失败→升级成功；denied-read 场景禁止升级
-# 4. fail-closed：杀掉审批服务 → 全部请求落 Deny（无放行）
+**前置条件**：03 已通过；实现 `decide(policy, request)` 纯函数、ApprovalKey 缓存、升级路径。
+
+**材料 A——推导表参数化单测**（junit `@ParameterizedTest`）：
+
+```java
+static Stream<Arguments> matrix() {  // policy × restricted → expected
+    return Stream.of(
+        args(NEVER, true, SKIP),          args(NEVER, false, SKIP),
+        args(ON_REQUEST, true, NEEDS),    args(ON_REQUEST, false, SKIP),
+        args(GRANULAR_NO_SANDBOX, true, FORBIDDEN), args(GRANULAR, false, SKIP),
+        args(UNLESS_TRUSTED, true, NEEDS), args(UNLESS_TRUSTED, false, NEEDS));
+}
 ```
+
+**材料 B——key 构造样例**：
+
+```json
+{"cmd":"git status","cwd":"/repo/a","canonical":"git status"}
+{"path":"/etc/hosts"}         // 文件级：patch 内每个路径一个 key
+{"host":"api.example.com","protocol":"https","port":443}
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料A 8 格全跑 | 每格期望值精确匹配（无一格落 NEEDS 之外的意外态） |
+| 2 | 批准 `git status`（本会话）→ 同命令同 cwd 再请求 | 0 弹窗直接执行 |
+| 3 | 同命令换 cwd（/repo/b）再请求 | 重新弹窗（key 含 cwd） |
+| 4 | 批准 patch{a.md,b.md} 后请求只含 a.md 的 patch | 子集免问 |
+| 5 | 请求含 a.md,c.md（c 未批） | 重新弹窗（全 key 已批才命中） |
+| 6 | 受限执行 Denied 且工具 escalatable → 升级重试 | 升级执行成功；缓存已批时不二次弹窗 |
+| 7 | 构造 denied-read 场景升级 | 禁止升级，直接拒绝 |
+| 8 | kill 审批服务 → 发起需审批请求 | 落 Deny（0 放行；请求超时也算 Deny） |
+
+**失败排查**：① 矩阵错→把推导写成 if 链漏分支，改表驱动；②⑤ 误免问→命中条件写成"任一 key 已批"，应为**全部**；⑥ 死循环升级→升级次数上限；⑦ 升级漏拦→检查 denied-read 检查点在升级闸门内。
 
 ## 六、本迭代痛点
 

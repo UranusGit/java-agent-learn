@@ -69,14 +69,33 @@ sequenceDiagram
 | 终态事件 | TurnComplete/TurnAborted/Error | 恰好一次 |
 | idle 钩子 | 全空闲时发会话级 idle | 多任务结束判定集中 |
 
-## 五、测试与验证
+## 五、验证包
 
-```bash
-# 1. 优雅：任务内检查点自退 → done 计数=1、TurnAborted 延迟<100ms
-# 2. 强杀：任务不配合（不检查 cancelled）→ 100ms 后 dispose、无泄漏
-# 3. 单点：四类任务各跑一次 → onTaskFinished 断言每钩子恰好 1 次
-# 4. 保序：TurnAborted 事件之前 JSONL 必有"被打断"行（重放验证）
+**前置条件**：01 已通过；实现 SessionTask/TaskHandle/onTaskFinished 与 JSONL 追加。
+
+**材料 A——不配合取消的任务**（测强杀路径）：
+
+```java
+class StubbornTask implements SessionTask {           // 故意不检查 cancelled
+    public Mono<Void> run(TaskContext ctx) {
+        return Mono.delay(Duration.ofSeconds(60)).then(); // 长睡不响应取消
+    }
+    public Mono<Void> abort(AbortReason r) { return Mono.empty(); }
+}
 ```
+
+**材料 B——钩子计数器**：onTaskFinished 内对 `statsCount/persistCount/finalEventCount/idleCount` 各 ++（AtomicInteger），测试断言每类任务恰好 1。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 提交协作任务（run 内每 50ms 检查 cancelled）→ 50ms 后发 Interrupt | TurnAborted 在发出后 ≤150ms 到达（100ms 宽限内自退）；done 计数=1 |
+| 2 | 提交材料 A 任务 → 立即 Interrupt | 100ms 宽限超时 → dispose 强杀；线程池无残留（jstack 无 stubborn 线程） |
+| 3 | 依次跑 DIALOG/COMPACT/REVIEW/SHELL 四类任务 | 材料B 四计数各=1（异常路径也走单点：跑一个必抛错的任务，钩子仍=1） |
+| 4 | 打断后立即读 JSONL | "被打断"行**先于** TurnAborted 事件存在（对照事件到达时间戳） |
+
+**失败排查**：① 优雅超时→run 内没在长异步点套 `takeUntil(cancelSignal)`；② 钩子漏计→某任务类型绕过了统一 spawn 点（自查是否有第二个 spawn/dispatch 路径）；③ 保序失败→终态事件用了 `then()` 之外的发射路径，改 `persist().then(emit())`。
 
 ## 六、本迭代痛点
 

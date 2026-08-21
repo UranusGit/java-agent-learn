@@ -53,13 +53,27 @@ flowchart LR
     style NO fill:#ffcdd2
 ```
 
-## 四、测试与验证
+## 四、验证包（手工测试与验证）
+**前置条件**：实现 Recorder/Replayer/Differ；100 条历史请求（可手工导出 JSON）；两个 Agent Prompt 版本 v1/v2。
 
-```bash
-# 1. 自一致：v1 回放两遍 → diff=0
-# 2. 对比：注入已知变差的 Prompt → WORSE 计数>0 且差例可点开
-# 3. 规模：100 例回放 ≤5min
+**材料 A——录制文件**（`replay-r7.jsonl`，每行一例）：
+
+```json
+{"caseId":"c001","input":"查一下订单 8812 的物流","context":{"tenant":"acme","lang":"zh"}}
 ```
+
+**材料 B——自一致判定**：逐例比对两次输出（字符串相等或 embedding 相似度 ≥0.98 判 SAME）。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 同版本 v1 回放两遍，材料B 比对 | diff=0（100 例全 SAME） |
+| 2 | v1 vs v2 回放 | BETTER/WORSE/SAME 三计数之和=100；WORSE 清单按 caseId 可点开原始请求 |
+| 3 | 计时 | 100 例 ≤5min |
+
+**失败排查**：①自不一致→上下文未冻结（时间/随机数混入）或温度>0；②计数不符→去重逻辑吞案例；③超时→无并发（flatMap 并发 8 路）。
+
 
 ## 五、本迭代痛点
 

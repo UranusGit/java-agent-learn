@@ -74,13 +74,40 @@ flowchart LR
     style LOOP fill:#fff9c4
 ```
 
-## 五、测试与验证
+## 五、验证包
 
-```bash
-# 1. 反压：单线程狂发 1000 UserInput → offer 阻塞、无 OOM、全部最终处理
-# 2. 事件不丢：处理期间订阅事件 → 计数=处理数
-# 3. 封装：SessionHandle 上无任何可变状态暴露（编译期检查）
+**前置条件**：JDK 21；已实现 SessionCore/SessionHandle/AgentEvent；一个能响应的 ChatClient（可用 mock：固定返回 "ok"）。
+
+**材料 A——反压压测**（junit）：
+
+```java
+@Test void 反压_有界队列挂起不OOM() throws Exception {
+    var core = newSession(mockClient);
+    var handle = core.spawn();
+    var sent = new AtomicInteger();
+    var producer = Thread.ofVirtual().start(() -> {
+        for (int i = 0; i < 1000; i++) {
+            try { handle.submit(new UserInput("m" + i)); sent.incrementAndGet(); }
+            catch (InterruptedException e) { return; }
+        }
+    });
+    Thread.sleep(50); // 让队列先填满（容量512）
+    assertTrue(sent.get() <= 512 + 1, "队列满后提交者应被挂起，实际 " + sent.get());
+    producer.interrupt(); producer.join();
+}
 ```
+
+**材料 B——事件计数**：订阅 `handle.events()` 收集到 List，提交 N=50 条输入、等全部 TurnComplete 后断言 `events.size() == 100`（每输入 TurnStarted+TurnComplete 各一）。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 运行材料 A | sent ≤513；无 OutOfMemoryError；进程存活 |
+| 2 | 运行材料 B | 事件计数恰好 100，0 丢失 |
+| 3 | 检查 SessionHandle 公开成员 | 仅有 submit()/events()，无 setter/公开可变字段（编译期验证） |
+
+**失败排查**：① sent 超限→队列非有界或 submit 写成 drop 语义；② 事件丢→Sinks 用了 onOverflowDrop，应改 onOverflowBuffer；③ handle 暴露状态→字段 private final + record 封装。
 
 ## 六、本迭代痛点
 
