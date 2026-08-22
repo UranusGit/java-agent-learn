@@ -12,6 +12,10 @@
 
 **v1 只做三件事**：① 拉取/接收 Prometheus 告警；② 规范化为统一 `AlertEvent`；③ 写入 Kafka（事件流）+ 审计落库。
 
+### 1.1 本节核对（范围理解，一句话级）
+
+- [ ] 能一句话说清"最小 Demo 为什么是告警接入"：为后续降噪/RCA 提供共同的结构化原料。
+
 ## 2. 四问
 
 | 问 | 答 |
@@ -20,6 +24,12 @@
 | **影响了哪些模块** | 全新模块（v1 起步）：`alert`（模型/规范化）、`ingest`（Kafka 接线）、审计存储 |
 | **架构如何演进** | 从零到"结构化事件流最小内核"：webhook 双通道接入 → 规范化 → Kafka + 审计落库；后续降噪/RCA 全部消费同一事件流 |
 | **上一版痛点是什么** | 无（v1 起步）。对齐的行业现状：告警字段不一致（Prometheus label / ELK message / OTel span attribute），LLM 无法稳定消费 |
+
+### 2.1 本节核对（四问自测，轻量）
+
+- [ ] 能说出 v1 三件事（接入/规范化/落流+审计）各自的交付物。
+- [ ] 能解释"为什么不能直接做降噪"——字段不一致导致 LLM 无法稳定消费。
+- [ ] §1 与 §2 的痛点描述一致（同一故障爆多条相关告警）。
 
 ## 3. 接入流
 
@@ -38,6 +48,14 @@ flowchart LR
 ```
 
 **v1 关键决策**：`fingerprint` 是 Prometheus Alertmanager 的去重基准（label 集哈希），保留它是为了 v2 降噪时**确定性去重先行**（LLM 建在其上而非替代它，[调研 AIOps 2026 §告警降噪]）。
+
+### 3.1 本节核对（接入流理解）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 双通道都汇入同一规范化器 | webhook 与拉取两源在图中均指向 `AlertNormalizer` |
+| 2 | 降噪是 v2 起才消费事件流 | 图中降噪节点为虚线（`-.->`），不在 v1 链路内 |
+| 3 | fingerprint 与 alertId 职责不混 | fingerprint=Alertmanager 计算；alertId=本平台规范化后计算 |
 
 ## 4. 完整代码（照抄即可）
 
@@ -422,7 +440,47 @@ spring:
 
 > **依赖**：基线 pom.xml（见 [00-需求分析与架构设计 §5.1](00-需求分析与架构设计.md)）已含 `spring-boot-starter-kafka`（spring-kafka 4.x 已移除响应式模板，本迭代走阻塞 `KafkaTemplate` + `@KafkaListener`）、`spring-boot-starter-jdbc`、`postgresql`。v1 无需新增依赖。
 
-## 5. 验收标准
+### 4.10 本节测试与验证（告警接入、幂等键与审计落库）
+
+**前置条件**：PG（5432/aiops）与 Kafka（9092）可连；`db/schema-v1.sql` 已执行；应用按 §4.9 配置启动成功。
+
+**材料 A——webhook 模拟请求（两条同 label 集、顺序不同）**：
+
+```bash
+curl -s -X POST http://localhost:8080/webhooks/alertmanager \
+  -H "Content-Type: application/json" -d '{
+  "alerts": [
+    {"status":"firing","labels":{"alertname":"HighMemory","severity":"critical","instance":"db-01","job":"mysql"},
+     "annotations":{"summary":"内存 >90%"},"startsAt":"2026-08-22T08:00:00Z","fingerprint":"fp-001"},
+    {"status":"firing","labels":{"job":"mysql","instance":"db-01","severity":"critical","alertname":"HighMemory"},
+     "annotations":{"summary":"内存 >90%"},"startsAt":"2026-08-22T08:00:00Z","fingerprint":"fp-001"}
+  ]}'
+```
+
+**材料 B——审计核对 SQL**：
+
+```sql
+SELECT alert_id, fingerprint, severity, alert_name, status FROM alert_audit WHERE fingerprint = 'fp-001';
+SELECT labels_json FROM alert_audit WHERE fingerprint = 'fp-001' LIMIT 1;
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | curl 返回 | HTTP 200，无异常日志 |
+| 2 | 材料 B 第一条 | 仅 **1 行**（两条同 label 集 → 同一 alertId，`ON CONFLICT DO NOTHING` 幂等） |
+| 3 | severity 归一化 | `critical`（labels 里原值即 critical；若发 `P0` 也归一为 critical，见 §4.3 `normalizeSeverity`） |
+| 4 | labels_json | JSONB 存储完整 label 集，`annotations` 非 null（空时为 `{}`） |
+| 5 | 重放材料 A | 行数仍为 1（幂等键跨请求稳定） |
+| 6 | 停 Kafka 后再发一条（severity=warning） | 应用日志出现"Kafka 不可用，告警直落审计库"，且审计库新增该行（ADR-407 兜底生效） |
+| 7 | 线程模型抽检 | 日志无 `block()/blockFirst() are blocking` 警告（EventLoop 零阻塞） |
+
+**失败排查**：①表不存在→schema-v1.sql 未执行；②材料 B 查出 2 行→label 集实际不一致（多/少空格或隐藏 key），比对 labels_json；③步骤 6 未落审计→`onErrorResume` 未触发，确认 Kafka send 抛错而非静默重试堆积；④启动即反序列化失败→`JsonDeserializer.VALUE_DEFAULT_TYPE` 与 `AlertEvent` 全限定名不一致；⑤405/404→路径非 `/webhooks/alertmanager` 或未用 POST。
+
+## 5. 全篇回归验证
+
+> 各节的验证材料与断言已上移至 §4.10（本节测试与验证）；本表为整篇迭代的回归验收，不重复材料。
 
 | # | 验收项 | 标准 |
 |---|--------|------|
@@ -439,6 +497,14 @@ spring:
 | ADR-400（最小 Demo） | 告警统一模型先行，后续迭代全部消费它 | 不先定义 AlertEvent，降噪/RCA 会因字段不一致无法稳定消费 |
 | ADR-407（v1 预埋） | 告警是生命线：Kafka 故障直落审计，绝不丢 | 丢告警是确定性事故；降噪粗糙只是质量下降（v8 常驻） |
 
+### 6.1 本节核对（ADR 一致性）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | ADR-407 在代码中有落点 | `AlertWebhookController.ingest` 的 `onErrorResume` 直落审计（§4.4） |
+| 2 | ADR-400 的统一模型被后续迭代消费 | [02]/[03] 均以 `AlertEvent` 为输入 |
+| 3 | 决策与 [13-ADR架构决策记录 §3] 总账对齐 | ADR-400/407 在总账中存在且状态一致 |
+
 ## 7. v1 的痛点（驱动下一迭代）
 
 接入一周后，值班工程师反馈两个真实痛点：
@@ -447,3 +513,11 @@ spring:
 2. **没有"该先看哪条"**——降噪不只是删掉误报，还要告诉值班"这 20 条里，最先爆的是 DB 连接池"（拓扑感知的根因前置）
 
 这两个痛点指向 **v2 告警降噪聚类**。→ [02-告警降噪聚类.md](02-告警降噪聚类.md)
+
+### 7.1 本节核对（痛点与下一迭代对齐）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 痛点 1（告警洪水）能被 v2 主题覆盖 | [02-告警降噪聚类 §2] 三层流水线含语义聚类 |
+| 2 | 痛点 2（根因前置）有明确承接 | v2 拓扑感知降噪 / v3 RCA 编排任一承接 |
+| 3 | 痛点描述基于真实接入行为 | 与 §4.10 验证中观察到的告警形态一致 |

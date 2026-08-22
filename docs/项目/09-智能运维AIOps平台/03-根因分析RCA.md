@@ -17,6 +17,11 @@
 
 **新增需求量化目标**：根因定位 MTTR 从 45 分钟降到 10 分钟内；单次 RCA 平均 LLM Token ≤ 2k。
 
+### 1.1 本节核对（四问自测，轻量）
+
+- [ ] 能说出四类 Worker 各自的数据源与确定性方法（指标 Z-Score / 日志 Drain 聚类 / Trace 慢 Span / Runbook 向量）。
+- [ ] 能解释"确定性计算先行、LLM 只读结论"在代码中的两处落点（§3.4 检测 + §3.5 排序均为纯 Java）。
+
 ## 2. RCA 多 Agent 编排
 
 ```mermaid
@@ -36,6 +41,12 @@ flowchart TB
 ```
 
 **层级思想**（[调研 AIOps 2026 §RCA 编排]）：Triage 用启发式快速定位关注域；Planner 把"查什么"拆给并行 Worker（各自查一个数据源）；Supervisor 融合所有证据输出排序根因。**聚合 Agent 不重新分析，只做融合**。
+
+### 2.1 本节核对（编排理解）
+
+- [ ] 能对图中 Triage/Planner/Worker/Supervisor 四角色各说一句职责。
+- [ ] Worker 四路在代码中是 `Mono.zip` 并行（§3.7 `gatherEvidence`），与图一致。
+- [ ] Supervisor 对应 `RootCauseRanker.rank`（确定性融合，ADR-410）。
 
 ## 3. 完整代码（照抄即可）
 
@@ -557,7 +568,41 @@ CREATE TABLE IF NOT EXISTS rca_report (
 CREATE INDEX IF NOT EXISTS idx_rca_created ON rca_report (created_at);
 ```
 
-## 4. 验收标准
+### 3.11 本节测试与验证（RCA 编排与证据链）
+
+**前置条件**：v2 降噪已跑通（`incident` 表有数据）；Prometheus 可查（§3.9 配置）；`db/schema-v3.sql` 已执行；`TraceClient`/`LogIndexer` 已按你的监控栈给出最小实现（可先返回空列表）。
+
+**材料 A——Prometheus 直查核对**（验证 §3.2 客户端）：
+
+```bash
+curl -s "http://localhost:9090/api/v1/query_range?query=up&start=$(date -v-10M +%s)&end=$(date +%s)&step=60" | head -c 400
+```
+
+**材料 B——RCA 结果核对 SQL**：
+
+```sql
+SELECT incident_id, root_causes_json, runbook_ref, confidence FROM rca_report ORDER BY created_at DESC LIMIT 3;
+```
+
+**材料 C——最小验证程序思路（纯函数，可独立跑）**：把 §3.4 `MetricAnalyzer.detectAnomalies` 复制到 /tmp 下的小 main，喂入手工序列（前 9 个点 50±1、第 10 个点 90），断言检出 1 个异常且 |zScore| > 3。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料直查 | 返回 JSON 含 `data.result[].values`，证明 Prometheus 可用 |
+| 2 | 触发一次 RCA（对 v2 的 incident 调 `RcaOrchestrator.run` 或等待消费触发） | 日志出现 `RCA 启动 incident=... focus=<最早告警服务>` |
+| 3 | 材料 B | `rca_report` 新增一行；`root_causes_json` 按置信度降序 |
+| 4 | 证据链 | `evidence_chain` 非空数组（至少 1 条定位）；无证据时 LLM 应降 confidence |
+| 5 | Token 抽查 | 日志/观测里单次 RCA 的 LLM 调用 prompt 只含 top-3 候选摘要（不含原始序列） |
+| 6 | 材料 C | `detectAnomalies` 对注入尖点检出 1 条、恒值序列返回空（std=0 分支） |
+| 7 | LLM 降级 | 改错 api-key 重跑 → 日志"LLM 摘要失败，回退确定性报告"，`rca_report.confidence=0.5` 且 root_causes 仍在（确定性部分不依赖 LLM） |
+
+**失败排查**：①步骤 2 focus=unknown→告警 labels 缺 `service`（回查 `incident.root_service`）；②步骤 3 无报告→`Mono.zip` 某一路抛错（查 TraceClient/LogIndexer 是否抛未捕获异常）；③材料 C 检不出→序列太短导致 std 偏大或阈值 3σ 需按业务校准；④步骤 7 连回退都没有→`onErrorResume` 放在了 `subscribeOn` 之前被吞。
+
+## 4. 全篇回归验证
+
+> 各节材料与断言已上移至 §3.11；本表为整篇迭代的回归验收（含 50 起抽检类统计指标），不重复材料。
 
 | # | 验收项 | 标准 |
 |---|--------|------|
@@ -575,6 +620,15 @@ CREATE INDEX IF NOT EXISTS idx_rca_created ON rca_report (created_at);
 | ADR-410 | Supervisor 只融合不重分析 | 聚合 Agent 重新分析会引入不一致 |
 | ADR-411 | 处置建议带 citation | grounded 建议可被值班快速验证，防 LLM 幻觉处置 |
 
+### 5.1 本节核对（ADR 一致性）
+
+- [ ] ADR-409 落点 = §3.3 `ObservabilityTools` 的 `@Tool` 四件套；ADR-410 落点 = §3.5 `RootCauseRanker` 只融合；ADR-411 落点 = §3.6 `RunbookRetriever` + `RcaReport.runbookRef`。
+- [ ] 三条 ADR 与 [13-ADR架构决策记录 §3] 总账一致。
+
 ## 6. v3 的痛点（驱动下一迭代）
 
 RCA 能定位了，但**处置环节暴露风险**：上周一起 DB 连接池故障，值班确认根因后，需要重启 3 个有状态 Pod——手动执行用了 20 分钟，且执行前没做风险评估。**高危动作需要"可逆性分级 + 审批闸门"才能安全自动化**。→ [04-自动处置HITL.md](04-自动处置HITL.md)
+
+### 6.1 本节核对（痛点承接）
+
+- [ ] "可逆性分级"由 [04 §2] 渐进自主阶梯承接；"审批闸门"由 [04 §3] HITL 审批流承接。

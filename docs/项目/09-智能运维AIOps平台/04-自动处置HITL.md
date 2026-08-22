@@ -15,6 +15,11 @@
 | **架构如何演进** | 从"处置靠手动/凭经验"演进为"处置工具化 + 分级自动执行 + 审批闸门强制"：`风险打分 → 自动/审批/禁止` |
 | **上一版痛点是什么** | ① 处置手动执行、耗时长（重启 3 个 Pod 用了 20 分钟）② 无风险评估就执行 ③ 审批无架构强制 |
 
+### 1.1 本节核对（四问自测，轻量）
+
+- [ ] 能复述三级分级与默认档位（AUTO / REQUIRE_APPROVAL 默认 / FORBIDDEN）。
+- [ ] 能说出 HITL 落点是 ToolCallingManager 装饰器而非 Advisor（Advisor 看不到工具执行时点）。
+
 ## 2. 渐进自主阶梯
 
 | 档位 | 模式 | 本项目默认 |
@@ -26,6 +31,11 @@
 | 5 | 全自主 | 不开放 |
 
 **2026 行业共识**（[调研 AIOps 2026 §HITL]）：「模型输出是请求，不是授权」；自动化危险已被真实事故验证（2025-10 AWS/2025-11 Cloudflare 故障中自动化放大故障）。本项目的默认边界停在 **第 3 档"审批后执行"**，第 4 档"有界自主"只对少数验证过的低风险动作开放。
+
+### 2.1 本节核对（自主边界理解）
+
+- [ ] 能指出本项目不开放第 5 档，且第 4 档仅限"验证过的低风险动作"。
+- [ ] 能把 §4.3 `RiskScorer` 的 AUTO 判据（recoverability≥0.9 且 impact<0.2）与第 4 档"受限/可逆/低风险"对应起来。
 
 ## 3. HITL 审批流
 
@@ -52,6 +62,14 @@ sequenceDiagram
         TCM-->>LLM: ToolExecutionResult(returnDirect=true, ToolResponseMessage 拒绝原因)
     end
 ```
+
+### 3.1 本节核对（审批流理解）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 三分支穷尽 | AUTO 直执行 / REQUIRE_APPROVAL 挂起等待 / FORBIDDEN 拒绝，与 §4.6 switch 三 case 一致 |
+| 2 | fail-closed | 审批无响应/超时走 `Unavailable`，不会自动通过 |
+| 3 | 防绕过 | 拒绝结果 `returnDirect=true`，终止工具循环（ADR-414） |
 
 ## 4. 完整代码（照抄即可）
 
@@ -486,7 +504,42 @@ CREATE INDEX IF NOT EXISTS idx_approval_session ON approval_audit (session_id, a
 
 > v4 复用基线 pom 的 `spring-boot-starter-jdbc` + `postgresql`（审批审计）。无需新增依赖。
 
-## 5. 验收标准
+### 4.10 本节测试与验证（风险分级与审批闸门）
+
+**前置条件**：`db/schema-v4.sql` 已执行；`K8sClient` 等四个适配器已给出最小实现（可打日志不真执行）；`RemediationApprovalManager` 已作为 `ToolCallingManager` Bean 生效；`db/schema-v3.sql`（RCA）可用以便构造处置上下文。
+
+**材料 A——RiskScorer 分级边界用例**（把 §4.3 复制到 /tmp 小 main 或写单测）：
+
+| 用例 | impact | recoverability | complexity | 预期 |
+|------|--------|----------------|-----------|------|
+| R1 | 0.1 | 0.95 | 0.2 | AUTO |
+| R2 | 0.3 | 0.9 | 0.3 | REQUIRE_APPROVAL（risk=0.4·0.3+0.4·0.1+0.2·0.3=0.22） |
+| R3 | 0.9 | 0.1 | 0.9 | FORBIDDEN（risk=0.36+0.36+0.18=0.9 > 0.7） |
+| R4 | 恒值空序列类边界：impact=0.2, recoverability=0.9 | | | REQUIRE_APPROVAL（impact 不满足 <0.2） |
+
+**材料 B——审批审计核对 SQL**：
+
+```sql
+SELECT approval_id, tool_name, stage, detail, asked_at, decided_at
+FROM approval_audit ORDER BY asked_at DESC LIMIT 6;
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 A 四用例 | 分级结果与表中预期逐一一致（纯函数可直接断言） |
+| 2 | 触发一次 `flushCachePrefix`（recoverability=0.5 → REQUIRE_APPROVAL） | 日志"审批挂起 approvalId=..."；材料 B 出现 ASKED 行且 decided_at 为空 |
+| 3 | 调 `ApprovalService.decide(approvalId, new ApprovalOutcome.AllowedOnce())` | ASKED 之后新增 DECIDED 行；适配器日志显示 flush 执行 |
+| 4 | 再次发起但 decide 传 `Rejected("测试")` | 工具返回"处置被否决"；Agent 收到 returnDirect 终止，不再重试 |
+| 5 | 发起后不 decide，等 5 分钟超时 | outcome=Unavailable（fail-closed），动作未执行 |
+| 6 | 非处置工具（如 v3 的 queryMetrics）调用 | 直接放行，不产生审批记录 |
+
+**失败排查**：①闸门不生效（工具直接执行）→装饰器 Bean 未替换默认 ToolCallingManager（检查注入的 delegate 来源）；②步骤 3 不执行→decide 传的 approvalId 与日志不一致或 future 已超时完成；③步骤 5 自动执行了→`Unavailable` 未被当拒绝处理（确认 `instanceof AllowedOnce` 判断）；④AUDIT 只有 ASKED 无 DECIDED→request 抛异常中断，查 JDBC 报错。
+
+## 5. 全篇回归验证
+
+> 各节材料与断言已上移至 §4.10；本表为整篇迭代的回归验收（含 500 样本统计与渗透项），不重复材料。
 
 | # | 验收项 | 标准 |
 |---|--------|------|
@@ -504,6 +557,15 @@ CREATE INDEX IF NOT EXISTS idx_approval_session ON approval_audit (session_id, a
 | ADR-413 | 渐进自主，默认停在"审批后执行" | 自动化放大故障是真实事故（AWS/Cloudflare），保守优先 |
 | ADR-414 | 拒绝后禁止重试 | 消除"反复提交直到碰巧被批"的绕过面 |
 
+### 6.1 本节核对（ADR 一致性）
+
+- [ ] ADR-412 落点 = §4.6 `RemediationApprovalManager implements ToolCallingManager`；ADR-413 落点 = §4.3 AUTO 判据的保守取值；ADR-414 落点 = §4.6 `rejected` 的 `returnDirect(true)`。
+- [ ] 三条 ADR 与 [13-ADR架构决策记录 §3] 总账一致。
+
 ## 7. v4 的痛点（驱动下一迭代）
 
 自动处置跑通了，但**长任务巡检暴露短板**：巡检任务（逐集群检查证书过期/配额/异常 Pod）要跑 30 分钟，中途值班切走、进程重启，任务就断了，重跑浪费资源。**巡检需要 Checkpoint + 断点恢复**。→ [05-长任务巡检.md](05-长任务巡检.md)
+
+### 7.1 本节核对（痛点承接）
+
+- [ ] "Checkpoint + 断点恢复"由 [05 §2] 的 Checkpoint 机制承接。
