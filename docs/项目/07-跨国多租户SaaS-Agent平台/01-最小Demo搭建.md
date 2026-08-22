@@ -21,6 +21,11 @@
 
 **本迭代明确不做**：多租户隔离（v2）、配额限流（v3）、模型路由（v4）、计费（v5）。
 
+### 2.1 本节核对（最小 Demo 边界）
+
+- [ ] 四问的"架构演进"答案（WebFilter → Controller → ChatClient + R2DBC）与 §4 实际结构一致
+- [ ] 边界三件事（注册/登录/对话）与四个"明确不做"清单能复述——抄代码时不得预支 v2-v5 的复杂度
+
 ## 3. 数据模型（为多租户预留的伏笔）
 
 ```mermaid
@@ -117,6 +122,34 @@ CREATE TABLE message (
 
 CREATE INDEX idx_message_conversation ON message (conversation_id, created_at);
 ```
+
+### 3.2 本节测试与验证（建表与多租户伏笔）
+
+**前置条件**：PG 实例可连；`V1__init.sql` 已放入 `db/migrations/`；R2DBC/Flyway 配置就绪。
+
+**材料——表结构核对 SQL**：
+
+```sql
+-- ① 业务表清单（v1 全部在 public schema）
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'public' ORDER BY table_name;
+-- ② tenant_id 伏笔核对：四张业务表都应有该列
+SELECT table_name, column_name FROM information_schema.columns
+WHERE table_schema = 'public' AND column_name = 'tenant_id';
+-- ③ 索引核对
+SELECT indexname FROM pg_indexes WHERE tablename = 'message';
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 启动应用（触发 Flyway） | 日志出现 `V1__init.sql` 迁移成功，无报错 |
+| 2 | 材料① | 返回 tenant / saas_user / agent / conversation / message 五表（外加 flyway_schema_history） |
+| 3 | 材料② | saas_user / agent / conversation / message 四行（tenant 表自身除外） |
+| 4 | 材料③ | `idx_message_conversation` 存在 |
+
+**失败排查**：①迁移未执行→`spring.flyway.enabled` 未开或路径不对；②缺 tenant_id→SQL 抄漏列；③`gen_random_uuid()` 不存在→`CREATE EXTENSION pgcrypto` 未执行。
 
 ## 4. 完整代码（照抄即可，一行不省略）
 
@@ -357,6 +390,33 @@ public class TenantContextFilter implements WebFilter {
     }
 }
 ```
+
+#### 4.4.1 本节测试与验证（租户上下文过滤器）
+
+**前置条件**：`TenantContextFilter` 已注册为 `@Component`；§4.5 的登录端点可用（能取到合法 JWT）。
+
+**材料——探针 curl**：
+
+```bash
+# ① 无 Token 访问受保护端点
+curl -i -X POST "http://localhost:8080/conversations/00000000-0000-0000-0000-000000000001/messages" \
+  -H "Content-Type: application/json" -d '{"message":"hi"}'
+# ② 带伪造 Token
+curl -i -X POST "http://localhost:8080/conversations/00000000-0000-0000-0000-000000000001/messages" \
+  -H "Authorization: Bearer not-a-jwt" \
+  -H "Content-Type: application/json" -d '{"message":"hi"}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料① | HTTP 401（无 Authorization 头即被拒） |
+| 2 | 材料② | HTTP 401（parse 失败走 onErrorResume） |
+| 3 | 访问 `/api/auth/login`（白名单） | 不被过滤器拦截（直接进入 Controller） |
+| 4 | 检查代码 | 上下文经 `.contextWrite(ctx.put(...))` 写 Reactor Context，全程无 ThreadLocal |
+
+**失败排查**：①白名单路径仍 401→`WHITELIST_PREFIXES` 前缀抄错；②401 但 Token 合法→`JWT_SECRET` 与签发时不一致或过期（1 小时）。
 
 ### 4.5 身份：注册 / 登录 / JWT
 
@@ -669,6 +729,44 @@ public class IdentityController {
 
 > 注：登录时把 `tenant.plan()` 放进 JWT 是 v1 简化——v4 租户级路由时，每请求会从配置缓存取"租户档位 + 偏好"而非信任 JWT 里的 plan（防止 plan 变更后 JWT 陈旧）。
 
+#### 4.5.1 本节测试与验证（注册登录与 JWT）
+
+**前置条件**：§3.2 建表通过；jjwt 三件依赖已加。
+
+**材料——注册/登录 curl**：
+
+```bash
+# ① 注册
+curl -i -X POST "http://localhost:8080/api/auth/register" \
+  -H "Content-Type: application/json" \
+  -d '{"companyName":"Acme","adminEmail":"admin@acme.io","password":"s3cret-Pass"}'
+# ② 登录
+curl -s -X POST "http://localhost:8080/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@acme.io","password":"s3cret-Pass"}'
+# ③ 密码错误
+curl -i -X POST "http://localhost:8080/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@acme.io","password":"wrong"}'
+```
+
+**材料——JWT 载荷核对**（把②返回的 token 三段式的第二段 base64url 解码）：
+
+```bash
+echo '<token中段>' | base64 -d   # 应含 tenant_id / email / plan / sub / exp
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料① | HTTP 200，返回 tenantId + userId（UUID） |
+| 2 | 材料② | 返回 `{"token":"eyJ..."}`；材料载荷核对含 `plan":"FREE"`、`tenant_id` |
+| 3 | 材料③ | 非正常登录失败（switchIfEmpty 抛错，不返回 token） |
+| 4 | DB 抽查 | `saas_user.password_hash` 形如 `120000:<salt>:<hash>`（非明文） |
+
+**失败排查**：①注册 500→email 唯一冲突或迁移未跑；②JWT 解出无 plan→`issue()` claim 抄漏；③`WeakKeyException`→`JWT_SECRET` 不足 32 字节。
+
 ### 4.6 对话：ChatClient 装配 + SSE 端点
 
 `AgentConfig.java`（ChatClient + 会话记忆）：
@@ -824,6 +922,42 @@ public class ChatController {
 }
 ```
 
+#### 4.6.1 本节测试与验证（SSE 对话与消息落库）
+
+**前置条件**：§4.5.1 已拿到合法 JWT；`DEEPSEEK_API_KEY` 有效；先在 DB 插入一行 conversation（v1 无建会话端点，手工 INSERT）：
+
+```sql
+INSERT INTO conversation (tenant_id, user_id) SELECT tenant_id, id FROM saas_user LIMIT 1;
+SELECT id FROM conversation ORDER BY created_at DESC LIMIT 1;   -- 记下会话 ID
+```
+
+**材料——SSE 对话 curl**：
+
+```bash
+curl -N -X POST "http://localhost:8080/conversations/<会话ID>/messages" \
+  -H "Authorization: Bearer <JWT>" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"你好，你能做什么？"}'
+```
+
+**材料——落库核对 SQL**：
+
+```sql
+SELECT role, LEFT(content, 60), created_at FROM message
+WHERE conversation_id = '<会话ID>' ORDER BY created_at;
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 curl | SSE 流式返回（多段 data: 逐步到达，非一次性） |
+| 2 | 同一会话再问"我刚才问了什么" | 能复述上文（MessageChatMemoryAdvisor + conversationId 生效，窗口 20 条内） |
+| 3 | 材料 SQL | 出现 role=user 与 role=assistant 成对两行（assistant 为拼接全文） |
+| 4 | `jstack <pid> | grep -i block` | 对话期间无 EventLoop 阻塞（响应式链路未误用 block） |
+
+**失败排查**：①401→Token 过期/未带；②无记忆→`a.param(ChatMemory.CONVERSATION_ID, ...)` 抄漏或 conversationId 每次变化；③只落 user 不落 assistant→`.concatWith(Mono.defer(...))` 链没接上；④无 SSE 流感→客户端未用 `-N`。
+
 ### 4.7 项目结构
 
 ```
@@ -840,6 +974,11 @@ saas-agent-platform/
 
 单库单应用单 Redis 都没有（v1 连 Redis 都没引入）——**SaaS 的第一天和内部工具没有区别，这是刻意为之**。
 
+### 4.8 本节核对（项目结构）
+
+- [ ] 手写后的包结构与 §4.7 一致（identity / agent / conversation / tenant 四包）
+- [ ] v1 无 Redis、无配额、无计费相关类——结构核对即 §5 验收项 4「无过度设计」的 git 证据
+
 ## 5. 验收标准
 
 | # | 验收项 | 标准 |
@@ -849,12 +988,19 @@ saas-agent-platform/
 | 3 | 伏笔就位 | 全部业务表含 tenant_id；数据访问层统一经 TenantContextFilter 链路 |
 | 4 | 无过度设计 | 无配额/无计费/无灰度代码（git 历史可证） |
 
+> 本表即全篇回归口径：§3.2 / §4.4.1 / §4.5.1 / §4.6.1 各节验证全通过后，逐条对照本表复核。
+
 ## 6. ADR 决策
 
 | # | 决策 | 理由 |
 |---|------|------|
 | ADR-231 | v1 允许"正确架构缺席"，但埋两个接缝 | ① 业务表全带 `tenant_id`（v2 隔离的伏笔）② 请求上下文收敛到 `AuthContext`（v2 在 Filter 挂 RLS 绑定，业务零改动） |
 | ADR-232 | 上下文走 Reactor Context 而非 ThreadLocal | WebFlux 铁律——ThreadLocal 在响应式线程切换下必然串号 |
+
+### 6.1 本节核对（ADR 决策与痛点衔接）
+
+- [ ] ADR-231 的两个接缝（tenant_id 列 / AuthContext 收敛）能在 §3.1 SQL 与 §4.4 代码中指出具体位置
+- [ ] §7 的痛点（tenant_id 躺在表里、越权可探测）与 ADR-231 的"v2 在 Filter 挂 RLS 绑定"形成因果闭环
 
 ## 7. v1 的痛点
 
