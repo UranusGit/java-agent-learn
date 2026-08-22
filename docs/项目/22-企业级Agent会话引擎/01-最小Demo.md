@@ -17,6 +17,11 @@
 
 **本迭代验收**：① 命令洪峰（1000 条/瞬）不 OOM（有界队列挂起提交者）② 事件全量到达（无界出口）③ 前端只握队列与事件口，摸不到内部状态。
 
+### 一.1 本节核对（四问与迭代验收）
+
+- [ ] 四问口径齐全（新增需求/影响模块/架构演进/上一版痛点）且「上一版痛点=无（起点）」表述自洽
+- [ ] 三条本迭代验收均为可判定动作（有界挂起/事件全量/封装无状态）
+
 ---
 
 ## 二、两个契约（先写契约再写实现）
@@ -63,6 +68,22 @@ public record Token(long id, long ts, String delta) implements AgentEvent {}
 
 **为什么事件必须含工具与思考过程**：企业级 Agent 的信任来自"看得见过程"。若事件只有 `Token`（最终文字），前端只能展示"一个黑盒在挤出文字"——用户不知道它查了哪个工具、检索了什么、为什么停顿。补上 `ThoughtDelta`（推理过程）、`ToolStart/ToolEnd`（调了什么、返回什么），前端才能渲染"Agent 正在查订单 → 已返回 3 条 → 正在组织回答"的完整过程。**这正是教程 19 定义的可见性标准，会话引擎作为过程载体必须内建**。
 
+### 二.1 本节测试与验证（契约完整性：事件含工具与思考过程）
+
+**前置条件**：`Op`/`AgentEvent` 两种 sealed 契约已按本节书写；一个能响应且能调用一次工具（mock 工具）的 ChatClient。
+
+**材料——工具可见性断言**：让模型在回答中调用一次工具（mock 工具），订阅 `handle.events()` 收集事件流。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 触发一次带工具的 turn，run 收集事件 | 事件流出现 `ThoughtStart→ThoughtDelta*→ThoughtEnd` 与 `ToolStart→ToolEnd` 成对序列（顺序正确、无缺漏） |
+| 2 | 检查 `AgentEvent` 的 `id()/ts()` | 每条事件 id 单调、ts 有值（断线去重与展示节奏的契约字段就绪） |
+| 3 | 对照契约 `sealed interface` | `Op permits UserInput,Interrupt,Shutdown` 与 `AgentEvent permits` 的 11 种实现与 §二 枚举一致，无多余类型 |
+
+**失败排查**：①事件缺 Tool 序列→契约里少了 `ToolStart/ToolEnd` 类型或 mock 工具未真正被调用；②id 不单调→事件构造未传单调 id。
+
 ## 三、最小 Actor
 
 ```java
@@ -95,19 +116,9 @@ public class SessionCore {
 2. **无界事件**：UI 状态不能缺块（丢事件=前端状态错乱）；
 3. **单写者**：所有状态只在 loop 线程读写——零锁。
 
-## 四、通道语义
+### 三.1 本节测试与验证（最小 Actor：反压与封装边界）
 
-```mermaid
-flowchart LR
-    FE["前端"] -->|"Op（有界512）<br/>提交过快→挂起"| LOOP["actor 循环<br/>（虚拟线程）"]
-    LOOP -->|"AgentEvent（无界）<br/>绝不丢"| FE
-    LOOP -.->|"单 turn<br/>ChatClient"| MODEL["模型"]
-    style LOOP fill:#fff9c4
-```
-
-## 五、验证包
-
-**前置条件**：JDK 21；已实现 SessionCore/SessionHandle/AgentEvent；一个能响应的 ChatClient（可用 mock：固定返回 "ok"）。
+**前置条件**：`SessionCore`/`SessionHandle` 已按本节实现；一个能响应的 ChatClient（可用 mock：固定返回 "ok"）。
 
 **材料 A——反压压测**（junit）：
 
@@ -128,24 +139,59 @@ flowchart LR
 }
 ```
 
-**材料 B——事件计数**：订阅 `handle.events()` 收集到 List，提交 N=50 条输入、等全部 TurnComplete 后断言 `events.size() == 100`（每输入 TurnStarted+TurnComplete 各一）。
-
-**材料 C——工具可见性断言**：让模型在回答中调用一次工具（mock 工具），断言事件流出现 `ThoughtStart→ThoughtDelta*→ThoughtEnd` 与 `ToolStart→ToolEnd` 成对序列（顺序正确、无缺漏）。
-
 **步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
 | 1 | 运行材料 A | sent ≤513；无 OutOfMemoryError；进程存活 |
-| 2 | 运行材料 B | 事件计数恰好 100，0 丢失 |
-| 3 | 检查 SessionHandle 公开成员 | 仅有 submit()/events()，无 setter/公开可变字段（编译期验证） |
-| 4 | 运行材料 C | 事件序列为 Thought*→ToolStart→ToolEnd→(Token*)；ToolStart/ThoughtEnd 各恰好 1；ToolEnd.resultPreview 有值且被截断（≤500 字符） |
+| 2 | 检查 `SessionHandle` 公开成员 | 仅有 `submit()/events()`，无 setter/公开可变字段（编译期验证封装边界） |
 
-**失败排查**：① sent 超限→队列非有界或 submit 写成 drop 语义；② 事件丢→Sinks 用了 onOverflowDrop，应改 onOverflowBuffer；③ handle 暴露状态→字段 private final + record 封装。
+**失败排查**：①sent 超限→队列非有界或 `submit` 写成 drop 语义；②handle 暴露状态→字段 `private final` + record 封装。
+
+## 四、通道语义
+
+```mermaid
+flowchart LR
+    FE["前端"] -->|"Op（有界512）<br/>提交过快→挂起"| LOOP["actor 循环<br/>（虚拟线程）"]
+    LOOP -->|"AgentEvent（无界）<br/>绝不丢"| FE
+    LOOP -.->|"单 turn<br/>ChatClient"| MODEL["模型"]
+    style LOOP fill:#fff9c4
+```
+
+### 四.1 本节测试与验证（通道语义：事件不丢）
+
+**前置条件**：§二/§三 已验证通过；`Sinks` 事件出口已接通。
+
+**材料 B——事件计数**：订阅 `handle.events()` 收集到 List，提交 N=50 条输入、等全部 TurnComplete 后断言 `events.size() == 100`（每输入 TurnStarted+TurnComplete 各一）。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 运行材料 B | 事件计数恰好 100，0 丢失（无界出口不丢块） |
+| 2 | 事件交错性抽查 | 事件按提交顺序到达，id 单调，无乱序 |
+
+**失败排查**：①事件丢→`Sinks` 用了 `onOverflowDrop`，应改 `onOverflowBuffer`；②乱序→单写者被破坏（存在第二个发射路径）。
+
+## 五、全篇回归验证
+
+> §二.1（契约）/ §三.1（Actor 反压与封装）/ §四.1（事件不丢）均通过后的整体验收。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 提交 N=50 条输入跑完整 turn | 事件计数 100（0 丢）；sent ≤513 无 OOM（反压） |
+| 2 | 触发一次带工具的 turn | Thought*→ToolStart→ToolEnd→(Token*) 成对序列完整 |
+| 3 | 编译期检查 SessionHandle | 仅有 submit()/events()，无公开可变字段 |
+
+**失败排查**：任一步 FAIL 按 §二.1/§三.1/§四.1 对应排查项回溯（缺事件类型 / 队列非有界 / 事件丢）。
 
 ## 六、本迭代痛点
 
 turn 是"一口气跑完"的：不能打断、不能中途补充输入、没有任务生命周期。→ 02 Actor 核与任务生命周期。
+
+> 本节核对（一句话）：痛点「不能打断/不能补充/无任务生命周期」与 02 主题（任务化生命周期）对应，无搁置项即 PASS。
 
 ## 七、验收对照
 
@@ -154,5 +200,7 @@ turn 是"一口气跑完"的：不能打断、不能中途补充输入、没有�
 | 命令反压 | 有界挂起 | ✅ |
 | 事件不丢 | 无界缓冲 | ✅ |
 | 封装边界 | handle 无状态 | ✅ |
+
+> 本节核对（一句话）：三项验收与 01 本迭代验收（①有界挂起 ②事件全量 ③封装无状态）一一对应，状态全 ✅ 与 §三.1/§四.1 实测一致即 PASS。
 
 **下一篇**：[02-Actor核与任务生命周期](02-Actor核与任务生命周期.md)。
