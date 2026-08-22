@@ -16,8 +16,8 @@ spring:
       pgvector:
         index-type: hnsw
         distance-type: cosine_distance
-        dimensions: 1536
-        schema-name: demo02
+        dimensions: 1024
+        schema-name: demo01
         table-name: test01
         initialize-schema: true
         id-type: uuid

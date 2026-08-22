@@ -47,30 +47,61 @@ spring:
         dimensions: 1536
 ```
 
-### 2.3 `VectorStoreConfig.java`
+### 2.3 `VectorStoreConfig.java` ——【重要】不要手写 `vectorStore` bean
+
+> **⚠️ 2026-08-22 实证修正**：`spring-ai-starter-vector-store-pgvector` 自带的 `PgVectorStoreAutoConfiguration` **已注册名为 `vectorStore` 的 bean**（javap 实证：该方法标 `@ConditionalOnMissingBean`）。若再手写一个同名 `vectorStore` bean，会触发 `BeanDefinitionOverrideException`（Spring Boot 默认 `allow-bean-definition-overriding=false`）。**正确姿势：不手写 `vectorStore`，让 starter 自动配置接管**——它在启动时读取 `application.yml` 里 `spring.ai.vectorstore.pgvector.*` 的全部参数自动建库。你只需要提供一个 `TokenTextSplitter` bean：
 
 ```java
 package com.shop.customer.rag;
 
-import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
+import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.jdbc.core.JdbcTemplate;
 
+/** 只保留切分器；vectorStore 由 starter 自动配置提供，不要在 SQL 之外手动注册。 */
 @Configuration
 public class VectorStoreConfig {
 
     @Bean
-    public VectorStore vectorStore(JdbcTemplate jdbcTemplate, EmbeddingModel embeddingModel) {
-        // javap 实证：PgVectorStore.builder(JdbcTemplate, EmbeddingModel)
-        return PgVectorStore.builder(jdbcTemplate, embeddingModel).build();
+    public TokenTextSplitter tokenTextSplitter() {
+        // Spring AI 2.0.0：构造器自 2.0.0-M3 起弃用（forRemoval），统一使用 builder()
+        return TokenTextSplitter.builder()
+                .withChunkSize(800)            // 每个 chunk 的目标 token 数
+                .withMinChunkSizeChars(100)    // chunk 内段落最小字符数
+                .withMinChunkLengthToEmbed(5)  // 短于该长度的 chunk 跳过嵌入
+                .withMaxNumChunks(10000)       // 单文档最大 chunk 数
+                .withKeepSeparator(true)       // 切分时保留分隔符
+                .build();
     }
 }
 ```
 
-> `PgVectorStore.builder()` 的真实签名是 `(JdbcTemplate, EmbeddingModel)`（javap 实证，[教程 06-向量数据库选型] 与 [附录 05]）。`JdbcTemplate` 由 `spring-ai-starter-vector-store-pgvector` + `spring-boot-starter-jdbc` 自动装配，`EmbeddingModel` 由 OpenAI starter 自动装配。语义不变：`VectorStore` 是检索抽象。
+> **为什么不手写 `vectorStore`？** ① 手写的 `PgVectorStore.builder(jdbcTemplate, embeddingModel).build()` 是**空构建**，**读不到** yaml 里配的 `index-type/dimensions/schema/table` 等参数，配置会白白丢失；② 与 starter 自动配置同名冲突，直接启动失败。自动配置会完整读取 yaml 的 `spring.ai.vectorstore.pgvector.*` 并应用（含 `initialize-schema` 建表）。**二选一原则**：引了 starter 就用自动配置；只有当你确实需要自定义构建参数且想关掉自动配置时，才用下面 §2.3.1 的手写方式——两种方式互斥，禁止并存。
+
+> `PgVectorStore.builder()` 的真实签名是 `(JdbcTemplate, EmbeddingModel)`（javap 实证，[教程 06-向量数据库选型] 与 [附录 05]），仅在手写方式（§2.3.1）下使用。`JdbcTemplate` 由 `spring-ai-starter-vector-store-pgvector` + `spring-boot-starter-jdbc` 自动装配，`EmbeddingModel` 由 OpenAI starter 自动装配。
+
+#### 2.3.1（可选）必须手写 `vectorStore` 时的排他方式
+
+如果你坚持手写 `vectorStore`（例如要注入观测/自定义构建），必须**排除 starter 的自动配置**，否则同名 bean 冲突（`BeanDefinitionOverrideException`）。二选一：
+
+- **方式一（Java 排除）**：在启动类关掉自动配置——
+  ```java
+  @SpringBootApplication(exclude = {
+      org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration.class
+  })
+  ```
+  注意：排除后 yaml 的 `spring.ai.vectorstore.pgvector.*` **不再被自动读取**，你必须在手写 bean 里显式传参，否则建库参数（dimensions/schema）丢失。
+
+- **方式二（开关关闭）**：在 `application.yml` 加配置（具体开关键以 `PgVectorStoreProperties` 实证为准）：
+  ```yaml
+  spring:
+    ai:
+      vectorstore:
+        pgvector:
+          enabled: false   # 概念键，需按实际 `@ConditionalOnProperty` 前缀核对
+  ```
+
+> 一般场景**不需要走 §2.3.1**，直接交给自动配置即可（本节开头推荐）。
 
 ### 2.4 `KnowledgeBaseLoader.java`（ETL：读文档 → 切分 → 向量化 → 存库）
 
@@ -116,21 +147,7 @@ public class KnowledgeBaseLoader implements CommandLineRunner {
 }
 ```
 
-> `TokenTextSplitter` 需要作为 Bean 提供——在 `VectorStoreConfig` 加：
-
-```java
-    @Bean
-    public TokenTextSplitter tokenTextSplitter() {
-        // Spring AI 2.0.0：构造器自 2.0.0-M3 起弃用（forRemoval），统一使用 builder()
-        return TokenTextSplitter.builder()
-                .withChunkSize(800)            // 每个 chunk 的目标 token 数
-                .withMinChunkSizeChars(100)    // chunk 内段落最小字符数
-                .withMinChunkLengthToEmbed(5)  // 短于该长度的 chunk 跳过嵌入
-                .withMaxNumChunks(10000)       // 单文档最大 chunk 数
-                .withKeepSeparator(true)       // 切分时保留分隔符
-                .build();
-    }
-```
+> `TokenTextSplitter` 需要作为 Bean 提供——已在上文 §2.3 的 `VectorStoreConfig` 中定义（见 [§2.3](#23-vectorstoreconfigjava-重要不要手写-vectorstore-bean)）。
 
 ### 2.5 `ChatClientConfig` 更新（加 RAG Advisor）
 
@@ -180,21 +197,102 @@ public class ChatClientConfig {
 
 > `QuestionAnswerAdvisor` 的真实包路径是 `org.springframework.ai.chat.client.advisor.vectorstore`（教程 05 旧稿曾写错），以 [附录 05-00 §1.4] 为准。
 
+### 2.6 一句话说清：`QuestionAnswerAdvisor` 是什么
+
+它**不做回答，做检索增强**：调用链在真正调模型前，先用你的问题查向量库，把命中的文档块拼进 Prompt 当上下文，再让模型基于资料作答——这就是本项目的 RAG。它是 `BaseAdvisor` 实现，靠 `before`（检索注入）/ `after`（回写 `RETRIEVED_DOCUMENTS` 供观测）两钩子生效，所以挂在 `defaultAdvisors` 上所有调用自动生效。
+
+> **详细原理（两阶段时序图、为什么做成 Advisor、`topK`/`similarityThreshold` 调优、常见坑）→ [教程 14-Advisor链与拦截器 §4.3]**。本项目的落地代码与验证包就是这里的实践篇。
+
+### 2.7 参数速查（本项目取值）
+
+| 旋钮 | 本项目值 | 效果 | 详解 |
+|------|---------|------|------|
+| `topK` | 3 | 最多召回文档块数 | [教程 14-Advisor链与拦截器 §4.3.2] |
+| `similarityThreshold` | 0.7 | 低于该相似度的块**直接丢弃** | [教程 14-Advisor链与拦截器 §4.3.2] |
+
+**三项自查**（对照 §3 失败排查）：① import 必须为 `…advisor.vectorstore.QuestionAnswerAdvisor`（包名易写错）；② pom 已引 `spring-ai-vector-store-advisor` 模块；③ Advisor 挂了多半是库空（`KnowledgeBaseLoader` 没跑成）或 threshold 高到检不出东西。
+
 ## 3. 验证包（手工测试与验证）
-**前置条件**：02 已通过；产品手册已 ETL 入库（≥50 块）；金标 20 问（手册内有答案）。
 
-**材料 A——金标问题集**：20 个手册内问题（含 5 个"未写进 FAQ 的长尾问题"）；**材料 B——无关问题** 5 条（如"推荐个电影"）。
+> **前置**：产品手册已 ETL 入库（本 demo01 手册约 940 字节，`TokenTextSplitter` chunkSize=800 下切 1–2 块，入库即可）。以下问题按「手册正文真实内容」和仓库真实数据（FAQ 3 条、订单 2 单）逐一设计，可直接复制到 `/demo01/chat` 逐个提问。
 
-**步骤与断言**：
+### 材料 A——手册内可答（RAG 应命中 → 基于手册作答）
+
+直接引用 `src/main/resources/manual/产品手册.md` 正文出题（这是 RAG 唯一能召回的语料）：
+
+| # | 问题（可直接复制） | 手册依据 |
+|---|-------------------|---------|
+| A1 | 人工客服的上班时间是什么时候？ | 注意事项：「工作日 09:00 - 18:00」 |
+| A2 | 退款前需要注意什么？ | 注意事项：「退款需经过客户二次确认，禁止未确认直接退款」 |
+| A3 | 哪些情况需要转人工客服？ | 话术规范「无法确定的信息转人工」「涉及金额/退款/维权转人工」 |
+| A4 | 支持哪些支付方式？ | FAQ「支持支付宝、微信支付、银行卡及信用卡分期」 |
+| A5 | 怎么申请退货？ | FAQ「联系人工客服，15 天内支持无理由退货」 |
+| A6 | 客服回答有哪几条语气要求？ | 话术规范「语气友好、简洁明了」等 |
+| A7 | 本产品叫什么、是做什么的？ | 产品概述「面向电商场景的智能客服 Agent」 |
+
+### 材料 A'——长尾问题（未写进 FAQ，但手册有据 → RAG 兜底，FAQ 工具不命中）
+
+FAQ 工具（`FaqTool`）只有「退换货/以旧换新/发货时效」3 条。以下问题**手册有答案但 FAQ 查不到**，用来验证 RAG 兜底：
+
+| # | 问题（可直接复制） | 手册依据 |
+|---|-------------------|---------|
+| W1 | 退款之前需要客户做什么？ | 注意事项（二次确认） |
+| W2 | 订单有纠纷该怎么处理？ | 话术规范（维权转人工） |
+| W3 | 平台接不接受信用卡分期？ | FAQ（支付方式含信用卡分期） |
+| W4 | 值班时间之外客服在吗？ | 注意事项（工作时间之外无人工） |
+| W5 | 不确定的信息客服要怎么回应？ | 话术规范（转人工） |
+
+### 材料 A"——工具类（命中 FaqTool / OrderTool，验证工具链路）
+
+| # | 问题 | 预期命中的工具 |
+|---|------|---------------|
+| T1 | 退换货政策是什么 | FaqTool（faq=「退换货政策是什么」） |
+| T2 | 支持以旧换新吗 | FaqTool（faq=「支持以旧换新吗」） |
+| T3 | DD20240810 这个订单什么状态了 | OrderTool（订单「已发货/顺丰 SF123456789」） |
+| T4 | 查一下订单 DD20240811 | OrderTool（订单「待支付/无物流」） |
+| T5 | 我的订单 DD123456789 呢（不存在的单号）| OrderTool 返回 null → 如实说查不到 |
+
+### 材料 B——无关问题（RAG 应**拒绝召回**，明确"手册未提及"）
+
+| # | 问题（可直接复制） | 预期 |
+|---|-------------------|------|
+| X1 | 推荐一部好看的电影 | 不强行召回，答"手册未提及" |
+| X2 | 明天上海会下雨吗 | 同上 |
+| X3 | 帮我写一首关于秋天的诗 | 同上 |
+| X4 | 今天股票涨了吗 | 同上 |
+| X5 | 川菜怎么做 | 同上 |
+
+### 步骤与断言
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 材料A 20 问逐条 | 命中并回答正确 ≥18/20（Top-3 命中率 ≥90%） |
-| 2 | 长尾 5 问 | 全部从向量库召回回答（FAQ 工具不触发或先让位） |
-| 3 | 材料B 5 条 | 不强行召回（无相关块输出/明确"手册未提及"）；similarityThreshold=0.7 生效 |
-| 4 | 回答抽检 3 条 | 含引用/依据（能指出来自手册哪部分） |
+| 1 | 材料 A 七问逐条 | 命中并回答正确 ≥6/7 |
+| 2 | 材料 A' 五问逐条 | 全部能从向量库召回回答（FAQ 工具不触发） |
+| 3 | 材料 A" T1–T5 | T1–T4 命中工具返回真实数据；T5 如实返回"查不到" |
+| 4 | 材料 B 五条 | 明确"手册未提及"；similarityThreshold=0.7 生效（不强行召回） |
+| 5 | 回答抽检 3 条 | 含引用/依据（能指出来自手册哪一部分） |
 
-**失败排查**：①命中率低→分块过大（关键句被稀释）或 threshold 过高；③强召回→阈值过低或无阈值过滤；④无依据→检索块未注入 Prompt（RAG Advisor 未挂或 docs 为空）。
+### 失败排查
+
+- A 命中率低 → 分块过大（关键句被子块稀释）或 `topK`/`similarityThreshold` 过严
+- W/W1–W5 误触发 FAQ 工具 → FAQ 与手册措辞撞了，长尾口径要在 System Prompt 讲清"工具查不到再看手册"
+- B 强召回 → `similarityThreshold` 过低或未生效（确认 QuestionAnswerAdvisor 真的挂了）
+- T5 捏造物流 → `OrderTool` 返回 null 但 System Prompt 没约束"查不到就明说"
+- 全部无依据 → 检索块没注入 Prompt（RAG Advisor 未挂 or 向量库为空）
+
+## 4. 运行备注（本项目/本机实测，跟随项目迁移）
+
+> 以下为 demo01 工程在本机的实测排错记录。它们**只对本项目成立**，可能随向量库/模型部署变化，移植到别处必须先按当前环境复核。
+
+- **Maven profile 激活**：本项目核心依赖（webflux、spring-ai）在 Maven `demo` profile、向量依赖在 `pgvector` profile。命令行启动必须同时激活，否则抛 `NoClassDefFoundError: SpringApplication`（classpath 里连 spring-boot 都没有）：
+  ```bash
+  mvn -Ddemo.demo=demo -Ddemo.pgvector=pgvector -DskipTests spring-boot:run
+  ```
+  IDEA 里则把同一参数放入 Run Configuration 的 VM options（配合 `spring.profiles.active=demo01` 生效于 `application-demo01.yaml`）。
+
+- **嵌入维度必须等于模型真实输出**：PGVector 表的 `embedding` 列维度由配置 `spring.ai.vectorstore.pgvector.dimensions` 决定，必须与实际 embedding 模型输出一致。本机本地 embedding（`text-embedding-bge-large-zh-v1.5`）实测为 **1024 维**；配置写成 1536 会报 `expected 1536 dimensions, not 1024`。换模型/换部署时用一次实序（如 `curl POST /v1/embeddings`）确认真实维度再写配置。
+
+- **vectorStore bean 交由 starter 自动配置，勿手写同名 bean**：详见 §2.3 的实证修正——手写 `vectorStore` bean 会与 `PgVectorStoreAutoConfiguration` 冲突抛 `BeanDefinitionOverrideException`。
 
 
 > **定位回顾**：本篇让 Agent 会读文档。下一站 [04-记忆与会话]——接 ChatMemory 做多轮记忆。

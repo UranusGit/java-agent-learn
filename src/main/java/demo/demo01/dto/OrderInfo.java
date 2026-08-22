@@ -1,4 +1,7 @@
 package demo.demo01.dto;
 
-public class OrderInfo {
+import lombok.Builder;
+
+@Builder
+public record OrderInfo(String orderId, String status, String trackingNumber) {
 }

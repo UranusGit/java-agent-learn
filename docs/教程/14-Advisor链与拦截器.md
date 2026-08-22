@@ -366,6 +366,48 @@ String answer = client.prompt()
 
 > **Builder 真实方法（javap 实证）**：`searchRequest` / `promptTemplate` / `protectFromBlocking` / `scheduler` / `order`——**没有 `queryTransformers` 挂载点**；查询变换（重写/压缩/翻译）在 spring-ai-rag 模块的 `RetrievalAugmentationAdvisor` 一侧（真实类是 `RewriteQueryTransformer` 等，`QueryTransformer` 本身是接口、无 builder 工厂）。
 
+#### 4.3.1 它到底做了什么：检索增强被装进哪一环
+
+`QuestionAnswerAdvisor` **本身不回答任何问题**。它是 `BaseAdvisor` 实现（javap 实证，`before(ChatClientRequest, AdvisorChain)` / `after(...)` 双参签名），干的是把「检索增强」插进调用链——在真正调模型**之前**，用用户问题查一遍向量库，把命中的文档块拼进 Prompt 当上下文，再让模型基于资料作答。这就是 RAG 的装配环节。
+
+```mermaid
+sequenceDiagram
+    participant C as ChatClient
+    participant QA as QuestionAnswerAdvisor
+    participant VS as VectorStore
+    participant M as LLM
+
+    C->>QA: 进入 before(ChatClientRequest)
+    QA->>QA: 提取用户问题（user prompt/对话内容）
+    QA->>VS: similaritySearch(问题, topK, threshold)
+    VS-->>QA: 返回最相关文档块
+    QA->>QA: 拼装模板：System「基于以下资料回答」+ docs + 原问题
+    QA-->>C: 返回增强后的请求（已注入上下文）
+    C->>M: 真正调用模型
+    M-->>C: 基于资料作答
+    C->>QA: 进入 after，把检索结果附到响应供观测
+```
+
+**两阶段职责分工**：
+- **`before`（检索）**：调用 `vectorStore.similaritySearch()` 做向量相似度查询，把命中块注入 Prompt。副作用（读库）只发生在这步。
+- **`after`（观测）**：把 `RETRIEVED_DOCUMENTS`（本次命中的文档）写回响应/上下文，供 Observation、日志、评估取用——这是 RAG 可观测性和调试的抓手。
+
+**为什么做成 Advisor 而非硬编码进业务逻辑**：可插拔、可组合、可观测。挂在 `defaultAdvisors` 上，该 ChatClient 的所有调用自动生效；只想对个别请求做 RAG 时，改为调用时临时 `.advisors(...)`，不加到 default。
+
+#### 4.3.2 参数调优与常见坑
+
+| 旋钮 | 值 | 效果 | 太小 | 太大 |
+|------|----|------|------|------|
+| `topK` | 5（示例）/ 3（项目 00） | 最多召回条数 | 漏资料、答不全 | Prompt 塞噪音、Token 成本升 |
+| `similarityThreshold` | 0.7 | 低于该相似度的块**直接丢弃** | 无关文档混入、误导模型 | 检索频繁为空、RAG 失效 |
+
+- **包名坑**：真身在 `org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor`，不是 `…advisor.QuestionAnswerAdvisor`。
+- **依赖坑**：类在 `spring-ai-vector-store-advisor` 模块，未引则报找不到类（本节已给出依赖片段）。
+- **Advisor 挂了但无效果**：多半是向量库空空（ETL 没跑成）、或 threshold 高到检不出东西。先验证"无关问题"能稳定返回"无相关块"。
+- **WebFlux 阻塞**：若 VectorStore 非响应式，检索是阻塞操作。Builder 提供 `protectFromBlocking(true)` / `scheduler(...)` 把阻塞查询挪到专用线程，避免占用 EventLoop（呼应 WebFlux 铁律）。
+
+> **项目对照**：客服系统的落地代码、参数取值与验证包见 [项目 00-智能客服系统 §03 §2.6]。本文是原理篇，项目是实践篇。
+
 
 ### 4.4 内容安全过滤（内置 SafeGuardAdvisor）
 
