@@ -114,9 +114,57 @@ ChatMemory memory = MessageWindowChatMemory.builder()
 |------|------|------|
 | `InMemoryChatMemoryRepository` | 无（spring-ai-model 核心包） | 唯一官方实现；`ChatMemoryAutoConfiguration` 自动装配为 `ChatMemoryRepository` Bean（反编译实证：默认 `new InMemoryChatMemoryRepository()`） |
 
-**本地仓库未发现** `JdbcChatMemoryRepository` / `spring-ai-model-chat-memory-jdbc` / `MongoChatMemoryRepository` / `RedisChatMemoryRepository`——**这些都不是本地 2.0.0 依赖中存在的类**。持久化（JDBC/Redis/对象存储）需自行实现 `ChatMemoryRepository` 接口（`findConversationIds` / `findByConversationId` / `saveAll` / `deleteByConversationId`）。Redis 方案参考 [教程 25-历史记录持久化与合规 §自研仓库] 的正确姿势（用 `ReactiveRedisTemplate`）。`InMemoryChatMemory`（教程 09 旧稿）也不是类名——正确组合是 `InMemoryChatMemoryRepository` + `MessageWindowChatMemory`。
+**本地仓库未发现** `JdbcChatMemoryRepository` / `spring-ai-model-chat-memory-jdbc` / `MongoChatMemoryRepository` / `RedisChatMemoryRepository`——**这些都不是本地 2.0.0 依赖中存在的类**。持久化（JDBC/Redis/对象存储）需自行实现 `ChatMemoryRepository` 接口（`findConversationIds` / `findByConversationId` / `saveAll` / `deleteByConversationId`）。`InMemoryChatMemory`（教程 09 旧稿）也不是类名——正确组合是 `InMemoryChatMemoryRepository` + `MessageWindowChatMemory`。
 
-### 2.3 会话 ID 的标准传递
+### 2.3 自研持久化仓库的正确序列化范式（实锤：`Message` 不能 Jackson 直存）
+
+> **2026-08-22 实证补遗（本地 jar 反编译 + 独立 round-trip 实验 + 官方 2.1 源码比对）**。这是自研 `ChatMemoryRepository` 时**最容易踩、且踩了必在第二次请求报错**的坑，本体系此前因少这一条导致 `.md` 里出现错误写法，特此立为基准。
+
+**结论一句话：`Spring AI` 的 `Message` 对象绝不能用 `GenericJacksonJsonRedisSerializer`（或任何 Jackson JSON）直接序列化/反序列化持久化。必须"拆字段存 + 按类型 `.builder()` 重建"。**
+
+**实证链条**：
+
+1. **`Message` 及其子类没有反序列化构造器**（源码确认）：`UserMessage` 只有构造器 `UserMessage(@Nullable String textContent)` 与 `UserMessage(Resource)`，字段 `private final`，**无 `@JsonCreator`/`@JsonProperty`**。Jackson 3 找不到 "property-based Creator"。
+2. **round-trip 实验**（用 2.0.0 真实 jar 编译运行）：
+   - `new GenericJacksonJsonRedisSerializer(new ObjectMapper())`（裸 mapper 不开类型信息）→ serialize 成功，但 **deserialize 返回 `LinkedHashMap`**；
+   - `.builder().enableDefaultTyping(ptv)`（开了 `@class` 类型信息）→ 抛 `SerializationException: cannot construct instance of UserMessage (no property-based Creator)`。
+   - 两种看似"配置正确"的写法**都无法把 Redis 里的数据还原回 `Message`**。存入无代价，读取必炸。
+3. **第二次请求才报错**：`MessageWindowChatMemory.add()` 读回 `findByConversationId` 的列表后，`process()` 里 `new HashSet<>(memoryMessages)`（官方源码 `.filter(Message::...).forEach(...)`）把 `LinkedHashMap` 当 `Message` 强转 → `ClassCastException: LinkedHashMap cannot be cast to Message`。首次请求无历史读空列表不触发，故"第一次成功、第二次 500"。
+4. **官方自己的做法**（`main` 分支 `RedisChatMemoryRepository.java` 源码实证）：把每条 Message 转成 `Map<String,Object>`（含 `type`/`content`/`metadata`/`timestamp`），用 Gson 序列化存 RedisJSON；读取时 `gson.fromJson` 回 Map，再**按 `type` 字段手动用 `UserMessage.builder()`/`AssistantMessage.builder()`/`SystemMessage.builder()` 重建对象**，并还原 `toolCalls`/`media`。**官方从不把 `Message` 对象直接 JSON 化。**
+
+**正确范式（自研仓库实现，round-trip 全绿验证）**：
+
+```java
+// Spring AI 2.0.0 —— 存：Message → Map → JSON 字符串（StringRedisTemplate 存）
+private String toJson(Message m) {
+    Map<String, Object> doc = new HashMap<>();
+    doc.put("type", m.getMessageType().toString());  // 类型必须存，重建时靠它
+    doc.put("content", m.getText());
+    doc.put("metadata", Map.of());                    // 如需元数据自行填充
+    return objectMapper.writeValueAsString(doc);      // Map 可被 Jackson 正常序列化
+}
+
+// 读：JSON 字符串 → Map → 按 type 用 builder 重建（官方同款）
+private Message fromJson(String json) throws IOException {
+    Map<String, Object> doc = objectMapper.readValue(json, new TypeReference<>() {});
+    String type = (String) doc.get("type");
+    String content = (String) doc.get("content");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> metadata = (Map<String, Object>) doc.getOrDefault("metadata", Map.of());
+    switch (MessageType.valueOf(type)) {
+        case USER:      return UserMessage.builder().text(content).metadata(metadata).build();
+        case ASSISTANT: return AssistantMessage.builder().content(content).properties(metadata).build();
+        case SYSTEM:    return SystemMessage.builder().text(content).metadata(metadata).build();
+        default:        throw new IllegalStateException("未知消息类型: " + type);
+    }
+}
+```
+
+要点：① **消息类型必须显式写入**（`getMessageType()`），否则无法决定重建哪个子类；② 存的是可被 Jackson 序列化的 `Map`；③ 重建用 `builder()`（非构造器）；④ `AssistantMessage` 若需工具调用，序列化侧要另存 `toolCalls` 并重建 `AssistantMessage.ToolCall`（参照官方 §3 完整实现）。
+
+> **为何不能用 `RedisTemplate<String, Message>` + `GenericJacksonJsonRedisSerializer`**：运行期 500 的完整机制见上。你的 `ChatMemoryRepository` 应改用自动装配的 `StringRedisTemplate`（Boot 的 `DataRedisAutoConfiguration.stringRedisTemplate`，`@ConditionalOnMissingBean`），存 JSON 字符串而非对象。
+
+### 2.4 会话 ID 的标准传递
 
 ```java
 // 标准姿势: 通过 Advisor 参数传递（不是魔法字符串）
@@ -129,7 +177,7 @@ chatClient.prompt()
 // 常量名以所引入版本的 ChatMemory 定义为准，禁止抄字面量
 ```
 
-### 2.4 流式调用与记忆写入
+### 2.5 流式调用与记忆写入
 
 `MessageChatMemoryAdvisor` 对 `stream()` 同样生效（框架在流完成后写入完整响应）——教程 09 旧稿"流式不写记忆"与"自动写入"的矛盾表述以此为准：**用 MessageChatMemoryAdvisor 时流式会自动写入；自己手写 Flux 消费时不会**。
 
@@ -155,6 +203,7 @@ flowchart LR
 | 响应类型 | `AdvisedResponse` | `ChatClientResponse`（record: chatResponse + context） |
 | 会话参数 | 字面量字符串 | `ChatMemory.CONVERSATION_ID` 常量 |
 | 持久化记忆 | `RedisChatMemoryRepository` / `JdbcChatMemoryRepository` | 本地 2.0.0 无此类，自研 `implements ChatMemoryRepository`（标注示例实现） |
+| 序列化消息对象 | `GenericJacksonJsonRedisSerializer` 直存 `Message` | 禁止！读回 `LinkedHashMap`/`no property-based Creator`；正确=存 `Map` + 按 `type` 用 `builder()` 重建（见 §2.3） |
 | ChatMemory.get | `get(id, lastN)` 两参 | `get(id)` 单参（窗口裁剪靠 `maxMessages`） |
 
 ## 4. 总结
@@ -166,4 +215,6 @@ flowchart LR
 | 记忆组合 | MessageWindowChatMemory + Repository（本地 2.0.0 官方仅 InMemory；持久化需自研 ChatMemoryRepository） |
 | 会话 ID | `ChatMemory.CONVERSATION_ID` 常量 |
 | 流式+记忆 | MessageChatMemoryAdvisor 自动写入；手写 Flux 消费不写入 |
+| Message 持久化 | 禁止 Jackson 直存 Message（无 property-based Creator）；存 Map + 按 type 用 builder 重建（§2.3） |
+| 自研仓库存储载体 | 用 StringRedisTemplate 存 JSON 字符串（勿自定义 GenericJacksonJsonRedisSerializer 存对象） |
 | 存疑写法 | 标注"概念代码"并指向本基准 |

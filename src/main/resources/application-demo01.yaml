@@ -21,6 +21,11 @@ spring:
         table-name: test01
         initialize-schema: true
         id-type: uuid
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: ${REDIS_PASSWORD}
 
   datasource:
     url: jdbc:postgresql://localhost:5432/demo?currentSchema=demo01

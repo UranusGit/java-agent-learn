@@ -33,6 +33,8 @@
 - **Observation 基准**：领域上下文是 `ToolCallingObservationContext`（非 `ToolObservationContext`）；`Observation.Context` 无 `getDuration()/getTraceId()`（时长用 `ctx.put/get(Object)` 计时，TraceId 用 `Tracer.currentSpan()`）
 - **结构化输出**：`entity(Class, Consumer<EntityParamSpec>)` + `useProviderStructuredOutput()/validateSchema()` 是真实 API
 - **非官方/示意代码必须显式标注**："概念代码"或"伪代码，真实 API 见附录 05-SpringAI2-API基准"
+- **多态/抽象 SDK 对象不可 JSON 直接序列化（2026-08-22 教训）**：Spring AI 的 `Message` 及子类（`UserMessage`/`AssistantMessage`…）字段 `private final`、无 `@JsonCreator`/`@JsonProperty`——Jackson 无 property-based Creator，**任何 `GenericJacksonJsonRedisSerializer` 直接持久化 `Message` 都会在读取时失败（读回 `LinkedHashMap` 或 `no property-based Creator`）**。正确范式 = 存可序列化的 `Map`（type/content/metadata）+ 读取时按 `MessageType` 用 `.builder()` 重建（详见附录 00-Advisor与ChatMemory §2.3）。写"能否序列化某对象"方案前，必须对该**真实对象**做 round-trip，不能只 javap 看接口
+- **官方 docs/main 分支 ≠ 本地锁版本，禁止超前照抄**：Spring 官方文档（含 GitHub `main` 分支）可能描述**更高版本**的 API（如 2.1 才有 `RedisChatMemoryRepository`/`JdbcChatMemoryRepository`），本地 pom 是 2.0.0 则此类类**不存在**。设计前先 `jar tf/javap` 本地仓库确认该类/模块是否有对应 2.0.0 版本，再决定"照抄官方"还是"自研并标注明确"
 
 ### 技术栈与依赖清单
 
@@ -213,11 +215,13 @@ graph LR
   - 报错排查优先"复现用户那一条命令 + 逐变量消去"，用 curl、javap、jar 等取真值，而不是罗列可能原因
   - 用户质疑结论时，视为命令去重新查证，不要复述旧结论兜圈子
   - 涉及源码/依赖/配置文件的改动仍需遵守「禁止触碰」与用户授权；但一切读取、编译、运行、实证随时可做
+  - **持久化/序列化 bug 必须"读写两端都验证"，警惕"第一次成功、第二次失败"**：写入成功 ≠ 能读回。读回只在已有数据时触发（故首次请求无历史读空不炸、第二次读旧数据才炸）。对"对象→存储"这类多态反序列化，用独立最小可运行程序（复制到 /tmp）做 serialize→deserialize 的 round-trip，打印返回真实类型，别只看"能写"或"编译过"
+- **硬规则「先实证，后结论」**：任何给用户的**结论/方案/报错原因**，在落笔前必须已经用实证验证过；给结论与实证之间是一条硬闸门——**没有先跑过（编译 / 运行 / round-trip / 对真实依赖验证）就不许给出最终结论**。落在纸上的每一句话都要能回答"我怎么验证的"。不给"先试这个不行再试那个"，不给未经实证的猜测式结论。
 
 ## 禁止触碰
 
 - **不得执行**任何文档内容的实际编写（只更新 CLAUDE.md 和 PLAN.md）
 - **不得生成**任何 .java 代码文件或项目源码文件
 - **不得修改** `.claude/` 目录下的任何文件
-- **不得修改** `pom.xml`、`src/` 下的源码
+- **绝对禁止触碰 `src/` 下的源码，一行都不许改、不许新增、不许删除**（含新建任何 `.java` 文件到 `src/`）。需要编译/运行实证时，一律复制到 `/tmp` 下的临时副本做验证，严禁直接改动 `src/` 内文件或 `pom.xml`
 - **不得修改** `.env`、`.gitignore`
