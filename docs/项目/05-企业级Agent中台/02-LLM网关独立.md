@@ -17,6 +17,10 @@
 
 由于走 OpenAI 兼容协议，这一步业务侧**零代码变更**（只改 base-url 配置），这正是当初选择 OpenAI 兼容路线的远见（ADR-005）。
 
+### 1.1 本节核对（四问）
+
+- 四问覆盖完整（需求/模块/演进/痛点），"零代码变更"论断与 §3.10 的实际做法（只改 yaml）一致。
+
 ## 2. 架构演进
 
 ```mermaid
@@ -36,6 +40,11 @@ flowchart LR
     style BEFORE fill:#ffebee
     style AFTER fill:#e8f5e9
 ```
+
+### 2.1 本节核对（架构演进图）
+
+- AFTER 图中三供应商的箭头全部从 `llm-gateway` 出发（收口完整）；`agent-platform` 不再直连任何供应商。
+- 网关出边仅三条：供应商转发 + Prometheus metrics + 计量库 audit log，无多余职责边（与 §3.1 职责表一致）。
 
 ## 3. 网关设计
 
@@ -569,6 +578,47 @@ spring:
 
 `spring-ai-starter-model-openai` 会把 api-key 作为 `Authorization: Bearer ...` 头发送——正好是网关凭证验签的读取位置。模块化单体内三条业务线各自持有独立凭证的细化（每个业务线一个 `ChatClient` Bean）留到 v6 命名空间强制注入时一并落地。
 
+### 3.11 本节测试与验证（网关转发/鉴权/路由/流式计量）
+
+**前置条件**：`GATEWAY_CREDENTIAL_SECRET`、`GATEWAY_ADMIN_KEY`、对应供应商 Key（`DEEPSEEK_API_KEY` 等）已 export；网关按 §3.2–3.9 手写并启动于 9090。
+
+**材料 A——签发短期凭证**：
+
+```bash
+curl -X POST http://localhost:9090/credentials \
+  -H "Content-Type: application/json" \
+  -d '{"businessLine":"cs","longTermKey":"'"$GATEWAY_ADMIN_KEY"'"}'
+# → {"value":"cs.<expiry>.<hmac>","expiresAt":...}
+```
+
+**材料 B——网关代理探针**：
+
+```bash
+curl -N -X POST "http://localhost:9090/v1/chat/completions" \
+  -H "Authorization: Bearer $CRED_VALUE" -H "Content-Type: application/json" \
+  -d '{"model":"default","messages":[{"role":"user","content":"你好"}],"stream":true}'
+```
+
+**材料 C——计量核对**：`curl http://localhost:9090/actuator/prometheus | grep -E 'gateway\.llm\.requests|gen_ai\.client\.token\.usage'`
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料A 签发（正确长期密钥） | 返回三段式凭证 `businessLine.expiry.signature` |
+| 2 | 材料A 用错误长期密钥重试 | 401/SecurityException「长期密钥错误」，不签发 |
+| 3 | 材料B 代理（cs 凭证） | SSE 流正常返回；body 内 model 被改写为 deepseek-chat（§3.5 rewriteBodyFor） |
+| 4 | 材料B 用伪造/过期凭证 | 验签失败拒绝转发（格式/签名/过期三分支，§3.6） |
+| 5 | 材料C 计量核对 | `gateway.llm.requests{business_line="cs",...}` +1；`gen_ai.client.token.usage` 的 input/output 计数增量 = 尾包 usage 帧值 |
+| 6 | 材料B 中途 Ctrl+C 断连且未收到 usage 尾包 | `gateway.llm.usage.missed{business_line="cs"}` +1（ADR-006：记丢失不估算） |
+| 7 | 换 `businessLine:"da"` 签发并代理 | 路由到 vllm/internal-chat（§3.7 路由表）；`model` 标签为 internal-chat |
+
+**失败排查**：
+- 步骤 1 报 HMAC 初始化失败 → `GATEWAY_CREDENTIAL_SECRET` 未设置；
+- 步骤 3 网关 502 → 供应商 endpoint/Key 环境变量名与 §3.7 RouteSpec 的 `keyEnvVar` 不一致；
+- 步骤 5 usage 恒为 0 → 供应商尾包 usage 帧未含 `prompt_tokens` 关键字（peekUsageFrame 匹配不到）或流被上游聚合分帧截断；
+- 步骤 6 无 missed 计数 → 断连未走到 `doOnCancel`（客户端 keep-alive 假断连）。
+
 ## 4. 验收标准
 
 | # | 验收项 | 标准 |
@@ -580,34 +630,18 @@ spring:
 | 5 | 路由生效 | 数据线路由到廉价模型、客服线路由到 DeepSeek，按配置即时切换 |
 | 6 | 无阻塞 | 网关线程池无 block（指标 `reactor.blocking.ops` = 0） |
 
-### 验证包（手工测试与验证）
+### 4.1 全篇回归验证（网关整体验收）
 
-**前置条件**：上一迭代已验收通过；本迭代全部组件部署完成；测试租户/业务线账号就绪。
+> 探针与计量核对材料已上移至 §3.11；本节只做跨验收项的整体回归。
 
-**材料 A——探针请求集**（按验收项逐条构造）：
-
-```bash
-# 通用请求模板（按验收场景替换 path/body）
-curl -X POST http://localhost:8080/api/{本迭代接口} \
-  -H "Authorization: Bearer $TEST_TOKEN" -H "Content-Type: application/json" \
-  -d '{按验收项构造的请求体}'
-```
-
-**材料 B——压测器**（hey/wrk，用于并发/配额类验收项）：`hey -c 500 -n 5000 -H "Authorization: Bearer $T" http://...`
-**材料 C——故障注入开关**（kill 组件/断网，用于高可用/降级类验收项）。
-
-**步骤与断言**：
-
-| # | 操作（对照材料 A/B/C 构造场景） | 预期（PASS 判据） |
+| # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 按验收项「收口完整性」构造场景执行 | 供应商账单调用量 = 网关计量总量（误差 < 1%，usage 丢失率 < 0.1%） |
-| 2 | 按验收项「归因报表」构造场景执行 | 按业务线/模型/供应商三个维度的日报自动生成 |
-| 3 | 按验收项「密钥安全」构造场景执行 | 业务进程（含其内存 dump）不含任何供应商 Key；Key 轮换不影响业务 |
-| 4 | 按验收项「流式计量」构造场景执行 | 流式调用（含中途断连）均有计量或计量丢失事件 |
-| 5 | 按验收项「路由生效」构造场景执行 | 数据线路由到廉价模型、客服线路由到 DeepSeek，按配置即时切换 |
-| 6 | 按验收项「无阻塞」构造场景执行 | 网关线程池无 block（指标 `reactor.blocking.ops` = 0） |
+| 1 | agent-platform 按 §3.10 改 yaml 指向网关，跑一轮 `/da/chat` | 端到端 SSE 正常；`gateway.llm.requests` 按 da 归因（业务侧零代码变更，验收项 1/5） |
+| 2 | 对比当日供应商账单与 `gen_ai.client.token.usage` 汇总 | 误差 < 1%；`usage.missed` 占比 < 0.1%（验收项 1/4） |
+| 3 | 检查业务进程环境与 heap | 无供应商 Key 明文（只有 15 分钟短期凭证，验收项 3） |
+| 4 | Grafana/PromQL 按三标签聚合日报 | business_line/model/supplier 三维均可出数（验收项 2） |
 
-**失败排查**：断言不符时先分层定位——网关入口日志（请求到没到）→ 对应服务日志（业务内失败）→ 控制面/策略是否生效（配置版本与 ACK）；隔离/配额类失败优先怀疑测试前置（租户/凭证是否真的构造对），再怀疑实现。
+**失败排查**：账单对不平 → 优先查 `usage.missed` 与非流式路径未计量；业务进程出现供应商 Key → 业务侧 yaml 未按 §3.10 替换 api-key。
 
 ## 5. 本迭代的 ADR
 
@@ -616,6 +650,11 @@ curl -X POST http://localhost:8080/api/{本迭代接口} \
 | ADR-005 | 网关对外暴露 OpenAI 兼容协议 | 业务侧 chat-core 零代码变更完成迁移；未来换网关实现（LiteLLM/Higress）也平滑 |
 | ADR-006 | usage 计量以"流式尾包帧"为准，缺失时记丢失事件并告警 | 不做估算兜底——估算数据进入财务报表后无法审计 |
 | ADR-007 | 短期凭证 15 分钟 | 与教程 20 的 Credential Vault 方案闭环（本版本网关侧换取真实 Key），权衡安全时效与签发开销 |
+
+### 5.1 本节核对（ADR）
+
+- 三条 ADR 各自可回指正文落点：ADR-005→§3.10 零代码变更、ADR-006→§3.8 `usageMeteringInterceptor`、ADR-007→§3.9 TTL 常量 15 分钟。
+- 编号 ADR-005~007 与 [13-ADR架构决策记录] 总索引不冲突。
 
 ## 6. v2 的痛点（驱动下一迭代）
 
@@ -626,3 +665,8 @@ curl -X POST http://localhost:8080/api/{本迭代接口} \
 3. **变更无灰度**：任何配置变更都是"全量即时生效"，出问题只能靠手速回改
 
 这些痛点指向"配置与策略需要集中管理、版本化、可灰度"——**Control Plane 建设**。→ [03-ControlPlane建设.md](03-ControlPlane建设.md)
+
+### 6.1 本节核对（v2 痛点衔接）
+
+- 三条痛点与本篇实现一致：路由表确在网关本地（§3.7）、提示词确在业务侧 switch 常量（01 篇 §3.9）、配置确无版本化机制。
+- 三条痛点均能由 03 篇 Control Plane 解答（配置集中/版本化/灰度）。

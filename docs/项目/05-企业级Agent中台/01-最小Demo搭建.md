@@ -16,6 +16,11 @@
 
 > 拆分时机的判断信号（何时必须拆）见 [教程 21-微服务拆分与Agent部署 §8.1 拆还是不拆？]，本项目的实际触发点在迭代二之前揭晓。
 
+### 1.1 本节核对（为什么是模块化单体）
+
+- 三条理由与 ADR-001（[00-需求分析与架构设计 §4]）口径一致：边界先验证、重构成本对比、依赖规则即未来契约。
+- 拆分信号引用了 [教程 21 §8.1]，且本篇确实未引入任何分布式组件（无注册中心/远程调用）。
+
 ## 2. 模块化单体设计
 
 ### 2.1 模块划分与依赖规则
@@ -73,6 +78,14 @@ com.acme.agent
 │   └── da/api+internal/
 └── bootstrap/         # 组装根：Spring 配置、模块装配
 ```
+
+### 2.3 本节核对（模块划分与依赖规则）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 模块图中业务模块（CS/KM/DA）之间无边 | 无任何 CS→KM 类箭头 |
+| 2 | 三条依赖铁律与 §3.12 ArchitectureTest 的两条测试可对应 | 铁律 1、2 有测试覆盖（铁律 3 靠 review/包结构） |
+| 3 | 包结构与铁律一致 | 业务代码只 import `platform.*.api`，未 import `*.internal` |
 
 ## 3. 完整代码（照抄即可，一行不省略）
 
@@ -606,6 +619,34 @@ mvn spring-boot:run
 #   data:{"type":"Done"}
 ```
 
+### 3.14 本节测试与验证（模块化单体跑通数据线）
+
+**前置条件**：`DEEPSEEK_API_KEY` 已 export；`pom.xml`（§3.1）依赖已拉取；全部类按 §3.3–3.12 手写完成。
+
+**材料——探针请求**（来自 §3.13）：
+
+```bash
+curl -N -X POST "http://localhost:8080/da/chat" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"s1","userId":"u1","message":"查一下 2026-07 的销售额"}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean package`（含 §3.12 测试） | 编译通过；ArchUnit 两条测试绿（业务零互相依赖、internal 不可跨模块引用） |
+| 2 | `mvn spring-boot:run` 启动 | 无 `ChatMemory`/`ToolRegistry` bean 冲突；8080 端口监听 |
+| 3 | 材料探针请求 | 收到 SSE 流：多条 `data:{"delta":"..."}` 后以 `data:{"type":"Done"}` 结束（AgentEvent 序列化形态见 §3.5） |
+| 4 | 换 `message` 为"这张表有哪些字段" | 命中 `schema.describe` 工具，返回 §3.11 的示意字段串 |
+| 5 | 同一 sessionId 请求（二轮） | 会话记忆生效：`chatMemory.get("da:s1")` 有历史（§3.8 命名空间键） |
+
+**失败排查**：
+- 步骤 3 无输出/立即 Failed → `DEEPSEEK_API_KEY` 未注入或 base-url/model 配错（§3.2）；
+- 步骤 1 ArchUnit 红 → 业务代码 import 了别的业务模块或 `*.internal` 包，按报错的类回查 §2.1 铁律；
+- 步骤 5 无记忆 → `advisors(a -> a.param(ChatMemory.CONVERSATION_ID, ...))` 参数没传或键未带 `da:` 前缀；
+- 工具不触发 → `ToolWiringConfig` 只注册了 `da` 线（§3.10），`enabledTools` 名与 `@Tool(name=...)` 不一致时被 `DefaultToolRegistry.resolve` 静默过滤。
+
 ## 4. 验收标准
 
 | # | 验收项 | 标准 |
@@ -616,33 +657,17 @@ mvn spring-boot:run
 | 4 | 会话隔离 | 同一 sessionId 在不同业务线互不可见（memory 按 businessLine 前缀键） |
 | 5 | 单一部署 | 一个 jar、一个进程、一套配置 |
 
-### 验证包（手工测试与验证）
+### 4.1 全篇回归验证（最小 Demo 整体验收）
 
-**前置条件**：上一迭代已验收通过；本迭代全部组件部署完成；测试租户/业务线账号就绪。
+> 探针请求与工具/记忆断言材料已上移至 §3.14；本节只做跨验收项的整体回归，不重复材料。
 
-**材料 A——探针请求集**（按验收项逐条构造）：
-
-```bash
-# 通用请求模板（按验收场景替换 path/body）
-curl -X POST http://localhost:8080/api/{本迭代接口} \
-  -H "Authorization: Bearer $TEST_TOKEN" -H "Content-Type: application/json" \
-  -d '{按验收项构造的请求体}'
-```
-
-**材料 B——压测器**（hey/wrk，用于并发/配额类验收项）：`hey -c 500 -n 5000 -H "Authorization: Bearer $T" http://...`
-**材料 C——故障注入开关**（kill 组件/断网，用于高可用/降级类验收项）。
-
-**步骤与断言**：
-
-| # | 操作（对照材料 A/B/C 构造场景） | 预期（PASS 判据） |
+| # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 按验收项「三业务线 API」构造场景执行 | `POST /cs/chat`、`/km/chat`、`/da/chat` 各自可用，输出各自的系统提示词风格 |
-| 2 | 按验收项「工具隔离」构造场景执行 | `da` 无法调用 `cs` 的 `ticket.create` 工具（registry 按 businessLine 过滤） |
-| 3 | 按验收项「依赖规则」构造场景执行 | ArchUnit 测试通过：业务模块零互相依赖、internal 包不可跨模块引用 |
-| 4 | 按验收项「会话隔离」构造场景执行 | 同一 sessionId 在不同业务线互不可见（memory 按 businessLine 前缀键） |
-| 5 | 按验收项「单一部署」构造场景执行 | 一个 jar、一个进程、一套配置 |
+| 1 | 在 §3.14 通过的同一进程内，分别以 `businessLine` 为 cs/km/da 各发一轮（cs/km Controller 就绪后） | 三线输出各自系统提示词风格；同一 sessionId 跨线互不可见（验收项 1、4） |
+| 2 | 让 da 请求 `ticket.create`（cs 工具） | 被 `DefaultToolRegistry` 过滤，模型侧无该工具可调（验收项 2） |
+| 3 | 检查部署形态 | 单 jar 单进程单配置（验收项 5），`ps`/端口核对 |
 
-**失败排查**：断言不符时先分层定位——网关入口日志（请求到没到）→ 对应服务日志（业务内失败）→ 控制面/策略是否生效（配置版本与 ACK）；隔离/配额类失败优先怀疑测试前置（租户/凭证是否真的构造对），再怀疑实现。
+**失败排查**：跨线串会话 → `conversationId` 未拼 `businessLine:` 前缀（§3.8）；工具跨线可用 → `ToolWiringConfig` 的 Map 键写错或 resolve 未过滤。
 
 ## 5. v1 的痛点（演进的真实驱动力）
 
@@ -654,3 +679,8 @@ curl -X POST http://localhost:8080/api/{本迭代接口} \
 4. **单进程风险**：数据线的重查询把 CPU 打满，客服线的会话跟着抖——故障域没有隔离
 
 这四个痛点全部指向同一个解法：**LLM 调用收口到独立网关**。→ [02-LLM网关独立.md](02-LLM网关独立.md)
+
+### 5.1 本节核对（v1 痛点与下一迭代衔接）
+
+- 四条痛点各自在 02 篇有对应解法：成本黑箱→统一计量、密钥散乱→Key 收口、供应商锁定→网关抽象、单进程风险→故障域隔离（LLM 调用拆出）。
+- 痛点描述与本篇实际实现一致：v1 确实是单进程、Key 走环境变量、各线直连 DeepSeek（§3.2）。

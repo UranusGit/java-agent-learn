@@ -24,6 +24,10 @@
 
 **这是管控分离的分水岭**——数据面从自治转受控；控制面故障不得传染数据面（Pull 兜底）。
 
+### 1.1 本节核对（四问与痛点对策）
+
+- 四问完整；四行"痛点→对策"表每条对策在 §3 有落点（config-service/prompt-service/policy-service/版本号下发）。
+
 ## 2. 架构演进
 
 ```mermaid
@@ -60,6 +64,11 @@ flowchart TB
 | Push 长连接 | 策略（安全/预算类需即时） | 数据面连控制面的 SSE 长连接，变更事件即时推送 + 版本单调 | 秒级 |
 
 Pull 兜底的意义：控制面整体宕机时，数据面用最后已知配置继续运行（控制面故障**不传染**数据面——这是管控分离的生存纪律）。
+
+### 2.1 本节核对（双通道架构图）
+
+- 图中两条下发边与"Push+Pull 双通道"表逐行对应：Prompt/Config 走 Pull+版本号、Policy 走 Push SSE；心跳上报是反向对账边。
+- "控制面故障不传染数据面"（Pull 兜底）与验收项 4 对应，且 §3.2/§3.4 的 fail-safe 代码支撑该论断。
 
 ## 3. 关键实现
 
@@ -494,6 +503,37 @@ public class PromptController {
 }
 ```
 
+#### 3.1.1 本节测试与验证（prompt-service 版本化与审批）
+
+**前置条件**：prompt-service 已按 §3.1 手写并启动（端口以其 application.yml 为准）。
+
+**材料——Prompt 治理探针**（端点来自 §3.1 PromptController）：
+
+```bash
+# 提交草稿
+curl -X POST http://localhost:8100/prompts/cs-main-system/draft \
+  -H "Content-Type: application/json" \
+  -d '{"content":"你是客服助手，处理咨询与工单。","createdBy":"op-alice","changeReason":"初始版本"}'
+# 提交审批 / 发布 / 回滚（versionId 取上一步返回）
+curl -X POST http://localhost:8100/prompts/versions/{versionId}/review  -H "Content-Type: application/json" -d '{"actor":"op-alice"}'
+curl -X POST http://localhost:8100/prompts/versions/{versionId}/publish -H "Content-Type: application/json" -d '{"actor":"op-bob"}'
+curl -X POST http://localhost:8100/prompts/versions/{versionId}/rollback -H "Content-Type: application/json" -d '{"actor":"op-bob"}'
+# 查询已发布版本
+curl http://localhost:8100/prompts/published
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 提交草稿 | 返回 PromptVersion，status=draft，version_no 递增 |
+| 2 | draft 未审批直接 publish | 被状态机拒绝（draft→published 无转移，见状态机图） |
+| 3 | review→publish | status=published；PROMPT 表 current_version 指向新版本 |
+| 4 | 发布后再提交新草稿并发布，然后 rollback 旧版本 | 回滚为"移动指针"：秒级生效、旧版本数据仍在（不删） |
+| 5 | 全流程后查 PROMPT_CHANGE 审计 | submit/approve/publish/rollback 各有 actor+diff+时间记录 |
+
+**失败排查**：步骤 2 竟成功 → 状态机校验缺失；步骤 4 回滚要重启 → current_version 指针未生效（数据面仍缓存，见 §3.2 定时拉取）。
+
 ### 3.2 数据面接入：agent-platform 的 Prompt 解析改造
 
 **`platform/chat/internal/PromptResolver.java`**——从"类路径文件"改为"控制面拉取+本地缓存"：
@@ -585,6 +625,21 @@ public class PromptResolver {
 ```
 
 > 需要在 `AgentPlatformApplication` 上加 `@EnableScheduling`（见 3.4）。控制面不可用 → 本地缓存续命；缓存也空 → 出厂文件；两者都没有 → 拒绝启动。
+
+#### 3.2.1 本节测试与验证（数据面 Prompt 拉取与降级）
+
+**前置条件**：§3.1.1 已发布 cs-main-system 的版本；agent-platform 按 §3.2/§3.5 加 `@EnableScheduling` 并启动。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 启动 agent-platform | 日志显示启动时从 prompt-service 拉全量，System Prompt 为 published 版本内容 |
+| 2 | 在 prompt-service 发布新版本（§3.1.1 材料） | ≤30s+拉取耗时后，业务侧新一轮对话使用新提示词（无需重启） |
+| 3 | kill prompt-service 后重启 agent-platform | 走降级三层（ADR-009）：控制面不可达→用出厂文件兜底启动，不拒绝启动 |
+| 4 | 回滚版本（§3.1.1 材料） | <1 分钟内业务侧回到旧提示词 |
+
+**失败排查**：步骤 2 不生效 → 定时拉取未开（§3.5 `@EnableScheduling`）或版本号比对逻辑错；步骤 3 直接启动失败 → 降级顺序写反（把"拒绝启动"放在了文件兜底之前）。
 
 ### 3.3 policy-service 与网关的 Push 通道
 
@@ -834,6 +889,32 @@ sequenceDiagram
     Note over GW: 策略替换是原子引用切换<br/>（AtomicReference.updateAndGet）<br/>进行中的请求用旧表跑完，新请求用新表
 ```
 
+#### 3.3.1 本节测试与验证（策略 Push 通道与乱序防护）
+
+**前置条件**：policy-service 与 llm-gateway 均启动；网关的 PolicyClient 已连上 `/policy/stream`。
+
+**材料——策略探针**（端点来自 §3.3 PolicyController）：
+
+```bash
+# 订阅推送流（另一终端观察）
+curl -N "http://localhost:8102/policy/stream?fromVersion=0"
+# 修改路由策略（触发 Push）
+curl -X PUT http://localhost:8102/policy/routes \
+  -H "Content-Type: application/json" \
+  -d '{"businessLine":"da","supplier":"vllm","modelName":"internal-chat-2","endpoint":"http://llm-internal:8000/v1","keyEnvVar":"VLLM_API_KEY"}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料：订阅 + 修改路由 | 订阅端秒级收到 `PolicyUpdate(version=N)`；网关日志打印 ACK |
+| 2 | 修改后立刻经网关发一次 da 线请求 | `gateway.llm.requests` 的 `model` 标签已是 internal-chat-2（原子替换生效） |
+| 3 | 用 `fromVersion` 重放旧版本事件（或等网关重连重推） | 旧版本被版本单调校验拒收（ADR-010），网关不回退路由表 |
+| 4 | 断开网关与 policy-service 的连接 30s 再恢复 | 重连 + 心跳对账补齐错过的版本，最终路由表与控制面一致 |
+
+**失败排查**：步骤 1 收不到推送 → SSE 长连接被代理/防火墙缓冲（需 `X-Accel-Buffering: no` 类处理）；步骤 3 路由表被旧版本覆盖 → 版本单调校验漏写在 applyRoutes 之前。
+
 ### 3.4 config-service：Pull + 版本号
 
 **`web/ConfigController.java`**（config-service，端口 8101）：
@@ -899,6 +980,29 @@ public class AgentPlatformApplication {
 }
 ```
 
+#### 3.4.1 本节测试与验证（config-service Pull 通道，含 §3.5）
+
+**前置条件**：config-service 启动于 8101；数据面按"与 PromptResolver 相同的 Pull 协议"接入。
+
+**材料——配置探针**（来自 §3.4 ConfigController）：
+
+```bash
+curl -X PUT http://localhost:8101/config/da.tools.enabled \
+  -H "Content-Type: application/json" -d '["sql.query"]'
+curl http://localhost:8101/config/da.tools.enabled
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料：PUT 后 GET | 返回 `ConfigValue{version=1}`；再次 PUT 同 key → version=2（版本号单调递增） |
+| 2 | 数据面侧观察 | ≤35s 内拉到新值（30s 轮询 + 拉取耗时） |
+| 3 | kill config-service | 数据面用本地缓存继续运行，业务请求不受影响 |
+| 4 | GET 不存在的 key | 返回空（404/Mono 空），数据面走 fail-safe 默认值 |
+
+**失败排查**：版本不递增 → put 分支未读旧 version；步骤 3 业务报错 → Pull 客户端把"控制面不可达"当失败抛出而非用缓存。
+
 ## 4. 验收标准
 
 | # | 验收项 | 标准 |
@@ -910,34 +1014,17 @@ public class AgentPlatformApplication {
 | 5 | 推送乱序防护 | 模拟旧版本延迟到达，被正确拒收 |
 | 6 | 审计 | 所有配置/策略/Prompt 变更可查 actor/action/diff/时间 |
 
-### 验证包（手工测试与验证）
+### 4.1 全篇回归验证（控制面整体）
 
-**前置条件**：上一迭代已验收通过；本迭代全部组件部署完成；测试租户/业务线账号就绪。
+> 探针材料已按主题上移：Prompt 治理→§3.1.1、数据面拉取→§3.2.1、Push 通道→§3.3.1、配置 Pull→§3.4.1。本节只做跨组件回归。
 
-**材料 A——探针请求集**（按验收项逐条构造）：
-
-```bash
-# 通用请求模板（按验收场景替换 path/body）
-curl -X POST http://localhost:8080/api/{本迭代接口} \
-  -H "Authorization: Bearer $TEST_TOKEN" -H "Content-Type: application/json" \
-  -d '{按验收项构造的请求体}'
-```
-
-**材料 B——压测器**（hey/wrk，用于并发/配额类验收项）：`hey -c 500 -n 5000 -H "Authorization: Bearer $T" http://...`
-**材料 C——故障注入开关**（kill 组件/断网，用于高可用/降级类验收项）。
-
-**步骤与断言**：
-
-| # | 操作（对照材料 A/B/C 构造场景） | 预期（PASS 判据） |
+| # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 按验收项「Prompt 治理」构造场景执行 | 修改→审批→发布全流程留痕；回滚 < 1 分钟生效（无需重启） |
-| 2 | 按验收项「下发时效」构造场景执行 | 策略 Push 秒级生效；配置 Pull ≤ 35s 生效 |
-| 3 | 按验收项「版本一致性」构造场景执行 | 任意时刻查询"每台网关/业务实例当前生效版本"，心跳对账无漂移 |
-| 4 | 按验收项「控制面容错」构造场景执行 | 重启 config-service，业务无感（本地缓存续命）；整体停机 1 小时，数据面按最后配置继续服务 |
-| 5 | 按验收项「推送乱序防护」构造场景执行 | 模拟旧版本延迟到达，被正确拒收 |
-| 6 | 按验收项「审计」构造场景执行 | 所有配置/策略/Prompt 变更可查 actor/action/diff/时间 |
+| 1 | 同时改动 Prompt（发布新版）+ 策略（改路由）+ 配置（改开关），观察三个数据面组件 | 三通道各自按时效生效（Prompt ≤30s、策略秒级、配置 ≤35s），互不干扰 |
+| 2 | 控制面三服务全部停机 1 小时 | 数据面按最后已知配置持续服务（验收项 4）；恢复后心跳对账补齐版本 |
+| 3 | 多实例网关下改策略 | 每台实例的生效版本一致（心跳对账无漂移，验收项 3） |
 
-**失败排查**：断言不符时先分层定位——网关入口日志（请求到没到）→ 对应服务日志（业务内失败）→ 控制面/策略是否生效（配置版本与 ACK）；隔离/配额类失败优先怀疑测试前置（租户/凭证是否真的构造对），再怀疑实现。
+**失败排查**：三通道互相拖慢 → 共用了同一个拉取线程池/连接池；停机期间业务失败 → 某组件未实现本地缓存 fail-safe。
 
 ## 5. 本迭代的 ADR
 
@@ -946,6 +1033,10 @@ curl -X POST http://localhost:8080/api/{本迭代接口} \
 | ADR-008 | 控制面拆三个服务而非一个"大一统"控制面 | 变更频率与故障域不同（Prompt 高频/策略低频）；一统则任一模块发布影响全部 |
 | ADR-009 | Prompt 降级三层（控制面→出厂文件→拒绝启动） | 控制面 SLA 低于数据面是被允许的，前提是数据面有底线 |
 | ADR-010 | 推送协议强制版本单调 + 断线重连 + 心跳对账 | 网络重排与推送丢失是必然事件，不是异常事件 |
+
+### 5.1 本节核对（ADR）
+
+- 三条 ADR 可回指正文落点：ADR-008→§2 三服务拆分、ADR-009→§3.2 降级三层、ADR-010→§3.3 PolicyClient 版本单调 + §3.3.1 步骤 3。
 
 ## 6. v3 的痛点（驱动下一迭代）
 
@@ -956,3 +1047,8 @@ curl -X POST http://localhost:8080/api/{本迭代接口} \
 3. **工具无法独立扩缩容**：重 IO 的 SQL 工具和轻量的 FAQ 工具挤在同一进程
 
 → [04-工具服务化与注册中心.md](04-工具服务化与注册中心.md)
+
+### 6.1 本节核对（v3 痛点衔接）
+
+- 三条痛点与本篇实现一致：工具确在各业务模块内重复（01 篇 §3.11）、工具集确在 Controller 常量写死、工具与业务确同进程。
+- 三条痛点均由 04 篇工具服务化 + 注册中心解答。
