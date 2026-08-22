@@ -22,6 +22,11 @@
 | 单 Agent 调查视角单一 | 三 Agent 分工会签（图谱/行为/情报） |
 | "给团伙定罪"动作风险极高 | 定性必须人工；名单标记走 v3 审批闸门 |
 
+### 1.1 本节核对（四问）
+
+- [ ] 四条 v9 痛点与四项新增能力一一对应
+- [ ] "个案低风险、关联成网"的团伙欺诈特征能举例（同设备/资金闭环/联系人重叠）
+
 ## 2. 图关联分析：实体关系建模
 
 反欺诈图的核心不是点多，是**边的语义**：共用设备、资金流转、联系人重叠、申请时间聚集。先建图模型（本页用 Mermaid ER 图表达，落地为关系表）：
@@ -154,6 +159,32 @@ public class GraphQueryService {
 }
 ```
 
+### 2.4 本节测试与验证（递归 CTE 与假名一致性）
+
+**前置条件**：`graph_edge` DDL 已执行并插入测试拓扑。
+
+**材料——已知拓扑数据与断言**（从原 §6.1/§6.5 上移）：
+
+```sql
+-- 构造拓扑：A-B-C-D 链 + E 孤立点（SUBJECT 用假名 PSEUDO-A 等）
+INSERT INTO graph_edge (src_type, src_id, dst_type, dst_id, rel_type, occurred_at) VALUES
+  ('SUBJECT','PSEUDO-A','DEVICE','DEV-1','USES_DEVICE',NOW()),
+  ('SUBJECT','PSEUDO-B','DEVICE','DEV-1','USES_DEVICE',NOW()),   -- A、B 共用设备
+  ('SUBJECT','PSEUDO-C','DEVICE','DEV-2','USES_DEVICE',NOW()),
+  ('SUBJECT','PSEUDO-D','DEVICE','DEV-2','USES_DEVICE',NOW());   -- E 不插入
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `expandSubgraph("PSEUDO-A")` | 三跳内返回 B/C/D 关联节点，不返回 E |
+| 2 | 环路图（A→B→A 两条边） | 不死循环（`lvl < 3` 截断生效） |
+| 3 | 假名核对 | 图节点标识与 v6 PseudonymVault 产物同形（PSEUDO-N）；节点/边结果中无明文 PII |
+| 4 | 编译核对 | H2 `MODE=PostgreSQL` 下 `WITH RECURSIVE` 执行成功；GraphQueryService 无写 SQL（只读） |
+
+**失败排查**：①E 混入→CTE 的 JOIN 条件漏了双向匹配；②死循环→lvl 条件放错了分支；③出现明文→上游写边时未过脱敏管道。
+
 ## 3. 团伙识别：统计预筛 + LLM 归因
 
 社区检测的标准算法（Louvain、Label Propagation）在 Neo4j GDS 库中提供（**第三方插件，本项目未引入，概念参考 [附录 11-知识图谱工程/00-Neo4j落地GraphRAG]**）。本项目落地的简化版：**连通分量 + 密度阈值**——把图按共享设备/联系人边聚成连通分量，分量内主体数与边密度超过阈值即为候选团伙。这是"快通道"（确定性统计）；候选团伙再交 LLM 做**归因**（"慢通道"）：把子图序列化成结构化特征，让 LLM 输出团伙假说与证据评估。
@@ -225,6 +256,26 @@ public class GangAttributionService {
     }
 }
 ```
+### 3.2 本节测试与验证（LLM 归因结构化输出）
+
+**前置条件**：`DEEPSEEK_API_KEY` 在位；§2.4 的子图可查。
+
+**材料——归因探针**（手写集成测试或临时端点）：
+
+```java
+// 用 §2.4 的四主体共设备子图调用 GangAttributionService.attribute(subGraph)
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 attribute | 返回 GangHypothesis（entity 反序列化成功），gangType 为设备农场/资金闭环/材料造假互助之一 |
+| 2 | 证据引用核对 | 每条 evidence 能对应子图中的具体节点/边；构造稀疏子图（仅 2 条边）时 plausible=false 且 missingEvidence 非空 |
+| 3 | API 核对 | `entity(GangHypothesis.class)` + boundedElastic 桥接（v1 同款，无臆造 API） |
+
+**失败排查**：①evidence 臆造→System Prompt 的引用规则被弱化；②entity 解析失败→GangHypothesis 字段名与 LLM 输出键不一致。
+
 ## 4. 多 Agent 协同调查：三路会签
 
 候选团伙开案后进入调查。单一 Agent 调查的问题与 v5 单模型预审相同：**视角单一，系统性盲点自证**。反欺诈调查的三个正交视角拆给三个 Agent（[教程 09-多Agent协作 §任务委派]）：
@@ -486,6 +537,29 @@ public class InvestigationOrchestrator {
 }
 ```
 
+### 4.4 本节测试与验证（会签聚合与工具权限）
+
+**前置条件**：三 Agent Bean 已注册；`InvestigationOrchestrator` 已手写。
+
+**材料——聚合语义单测**（从原 §6.2/§6.3 上移，直接构造 InvestigationReport，不起 LLM）：
+
+```java
+// ① 三报告 2 支持 1 反对（GRAPH/BEHAVIOR 支持、INTEL 反对）
+// ② 三报告全支持
+// ③ 直接调用 aggregate(a, b, c)（包内可见或提取静态方法）
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料① | `JointReport.allSupport=false`，divergences 含 INTEL 视角条目 |
+| 2 | 材料② | allSupport=true 且 divergences 为空 |
+| 3 | 工具权限核对（原 §6.3） | 图谱 Agent 的 ChatClient 只解析到 `expand_subgraph`；三个工具类均无写方法（代码审查：无 INSERT/UPDATE/DELETE SQL、无 setter） |
+| 4 | 并行核对 | investigate 用 `Mono.zip` 三路并行，各 run 均 boundedElastic（代码审查） |
+
+**失败排查**：①全支持仍出分歧→aggregate 的过滤条件写反；③工具串 Bean→`defaultTools` 参数名与三个 ToolCallbackProvider Bean 名不匹配。
+
 ## 5. HITL 升级：团伙定性
 
 定性是"给一群人贴欺诈标签"的动作，风险高于单笔终审——复用 v3 的架构强制模式：**名单标记动作工具化 + 危险工具过审批闸门**。
@@ -530,13 +604,39 @@ public class GangDesignationTools {
 
 审计事件：`INVESTIGATION`（会签报告入链）、`GANG_DESIGNATED`（名单标记动作入链）——EventType 再演进两个值。图数据的写入同样入链：每条 `graph_edge` 的来源事件（哪次申请/哪笔交易产生了这条边）可回溯，防止"图本身被污染"无据可查。
 
-## 6. 测试与验证
+### 5.1 本节测试与验证（定性闸门复用）
 
-1. **递归 CTE 正确性**：构造已知拓扑（A-B-C-D 链 + E 孤立点），断言 `expandSubgraph(A)` 三跳内返回 B/C/D 不返回 E；环路图（A-B-A）不死循环（lvl < 3 截断）。
-2. **会签聚合语义**：三报告构造 2 支持 1 反对，断言 `JointReport.allSupport=false` 且 divergences 含反对视角；三报告全支持时 divergences 为空。
-3. **工具权限**：图谱 Agent 的 ChatClient 只能解析到 `expand_subgraph`（工具面即权限面）；调查工具类无任何写方法（代码审查 + 反射断言无 setter/写 SQL）。
-4. **定性闸门**：绕过审批直接调用 `submit_gang_designation` 的路径不存在（复用 v3 验收方法）；`DANGEROUS_TOOLS` 集合包含两个危险工具名。
-5. **假名一致性**：图节点标识与 v6 `PseudonymVault` 产物一致；图库与子图查询结果中无明文 PII（抽检）。
+**前置条件**：v3 的 `HumanApprovalToolManager` 在位；`GangDesignationTools` 已手写。
+
+**材料——闸门核对**（从原 §6.4 上移）：
+
+```java
+// 代码级断言：HumanApprovalToolManager.DANGEROUS_TOOLS 集合的元素
+// ① 含 "submit_final_decision"（v3 原有）
+// ② 含 "submit_gang_designation"（本迭代追加）
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料①② | 两元素均在集合内 |
+| 2 | 闸门路径复验（复用 03 篇 §4.18 方法） | 绕过审批直接执行 `submit_gang_designation` 的路径不存在——NONE 状态触发即抛 ApprovalPendingException 挂起 |
+| 3 | 事件类型核对 | EventType 已新增 `INVESTIGATION` / `GANG_DESIGNATED`，老链事件反序列化不受影响 |
+
+**失败排查**：②名单标记被静默执行→工具未加入 DANGEROUS_TOOLS 或闸门 Bean 未生效；③老链断→枚举改名（只许新增）。
+
+## 6. 全篇回归验证
+
+**前置条件**：§2.4 / §3.2 / §4.4 / §5.1 均通过。
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean test` | 全部单测通过，`BUILD SUCCESS` |
+| 2 | 端到端：插边→预筛命中→归因成立→三路会签→人工定性→名单标记走闸门 | 全链贯通；`GET /api/audit/verify` intact，链上含 INVESTIGATION / GANG_DESIGNATED / APPROVAL_* 事件序列 |
+| 3 | 回归 v1-v9 | 预审/审批/审计/脱敏/流式链路不受多 Agent 新增 Bean 影响（ChatClient 多 Bean 按参数名注入无歧义） |
+
+**失败排查**：②某环节事件缺失→对应落链点漏写；③启动 Bean 歧义→参数名与 Bean 名不一致（对照 §4.2 命名）。
 
 ## 7. 验收对照
 
@@ -549,6 +649,8 @@ public class GangDesignationTools {
 | 5 | 审计闭环 | 会签报告/定性决定/名单标记 100% 入链；图边来源可回溯 |
 | 6 | 图数据合规 | 图实体全假名；还原仅授权角色且留痕（v6 复用） |
 
+> 与章节验证的映射：验收 1=§2.4 材料+§3.2 断言 1 的样本扩展（20 团伙）、验收 2=§4.4 断言 1/2、验收 3=§5.1 断言 2、验收 4=§4.4 断言 3、验收 5=§6 回归断言 2、验收 6=§2.4 断言 3（还原留痕复用 06 篇材料⑦）。本表不重复材料。
+
 ## 8. 本迭代的 ADR
 
 | # | 决策 | 理由 |
@@ -557,6 +659,11 @@ public class GangDesignationTools {
 | ADR-134 | 团伙定性必须三 Agent 会签 + 人工，禁止自动定罪 | 多数投票会被同源数据污染欺骗（ADR-116 同理）；定罪动作不可逆，定性权必须在人 |
 | ADR-135 | 调查类工具最小权限（全部只读） | 调查 Agent 被注入利用时的爆炸半径最小化；写动作统一走危险工具审批 |
 | ADR-136 | 图数据全假名 + 边来源入链 | 图是 PII 密集区（设备/联系人/资金），假名是 v6 分级的延续；图污染必须可追溯 |
+
+### 8.1 本节核对（ADR-133~136）
+
+- [ ] ADR-134"会签不投票"的理由（同源数据污染可欺骗多数投票）与 ADR-116 的关系能说出
+- [ ] ADR-135 与 §4.4 断言 3、ADR-136 与 §2.4 断言 3 分别对应
 
 ## 9. v10 的痛点
 
@@ -571,6 +678,8 @@ public class GangDesignationTools {
 | 多 Agent | 三视角独立 ChatClient + 只读工具 + Mono.zip 会签；会签不投票 |
 | HITL 升级 | 定性权在人；名单标记工具化进 DANGEROUS_TOOLS，复用 v3 闸门 |
 | 合规延续 | 图全假名、边来源入链、还原走授权（v6/v4 能力复用） |
+
+> §9 一句话核对：痛点（36 条 ADR 散落）指向 12 总账即 PASS；§10 总结五行与 ADR-133/§3 流程图/§4.3/§5/ADR-136 一一对应即 PASS。
 
 → [12-ADR架构决策记录.md](12-ADR架构决策记录.md)
 

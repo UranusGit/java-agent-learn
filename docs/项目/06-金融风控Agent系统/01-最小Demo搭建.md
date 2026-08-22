@@ -17,6 +17,11 @@
 
 **本迭代明确不做**：不做上传/解析（材料以纯文本传入）、不做审批（意见直接返回）、不做审计（v4 再来）、不做多模型（v5 再来）。
 
+### 1.1 本节核对（四问）
+
+- [ ] 能不看正文说出本迭代"明确不做"的四件事（上传解析/审批/审计/多模型）分别推迟到哪一篇
+- [ ] 四问中"上一版痛点=无"与 v0 起点一致，无引用不存在的版本
+
 ## 2. 结构化预审意见设计
 
 **为什么先设计输出再写代码**：结构化输出是整个系统的契约核心——审批工作台（v3）、审计回放（v4）、交叉验证比对（v5）全部消费这个结构。**输出 schema 是风控系统的 API**。
@@ -52,6 +57,22 @@ public record PreTrialOpinion(
     ) {}
 }
 ```
+
+### 2.2 本节测试与验证（输出契约 record）
+
+**前置条件**：00 篇工程骨架已编译通过。
+
+**材料——契约字段核对**：对照 §2.1 代码逐项检查。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 手写 `PreTrialOpinion.java` 后 `mvn clean compile` | `BUILD SUCCESS`；record 为合法 Java 21 语法（嵌套 enum 与 record 均编译通过） |
+| 2 | 字段核对 | 6 个组成部分齐全：applicationId / riskLevel / confidence / riskFactors / missingMaterials / summaryReason，无缺漏 |
+| 3 | 枚举核对 | `RiskLevel` 恰为 LOW / MEDIUM / HIGH / REJECT_SUGGEST 四值，与 v2 分级路由的档位一一对应 |
+
+**失败排查**：①嵌套 record 编译失败→漏了内部 `RiskFactor` 的定义或分号；②后续 v3/v4/v5 消费方字段取不到→擅自改动了字段名，破坏契约。
 
 ## 3. 核心实现
 
@@ -195,6 +216,28 @@ public class PreTrialController {
 | 2 | `entity(PreTrialOpinion.class, spec -> spec.maxAttempts(3))` | `maxAttempts()` 不是 `EntityParamSpec` 的真实方法，编译不过——自动重试框架不内置（[教程 13 §5]） | `entity(PreTrialOpinion.class)`，或真实重载 `entity(Class, spec -> spec.useProviderStructuredOutput().validateSchema())`（[附录 05-SpringAI2-API基准/02-Tool与Observation真实API §2]） |
 | 3 | 拿到 `entity()` 结果不校验直接用 | confidence 越界、HIGH 无 high 因子支撑仍被消费 | 业务层 `validate(...)` 兜底 |
 
+### 3.7 本节测试与验证（ChatClient / 预审服务 / WebFlux 入口）
+
+**前置条件**：§2.2 已通过；`DEEPSEEK_API_KEY` 已 export。
+
+**材料——单元断言（validate 语义校验）**：
+
+```java
+// OpinionValidationException 触发样本（写入 src/test/java，手写）：
+// ① opinion.confidence() = 1.5  → 期望抛 "confidence 越界"
+// ② riskLevel=HIGH 且 riskFactors 全为 medium → 期望抛 "HIGH 等级必须至少有一个 high 风险因子支撑"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 手写 3.1–3.4 四个类后 `mvn clean compile` | `BUILD SUCCESS` |
+| 2 | 材料① ② 的校验单测 `mvn test -Dtest=...` | 两个样本均按预期抛 `OpinionValidationException`，消息与 validate 中文案一致 |
+| 3 | 核对 §3.6 三个错误姿势 | 本项目代码均采用"正确姿势"列：boundedElastic 桥接 / 无 `maxAttempts()` / validate 兜底 |
+
+**失败排查**：①`maxAttempts()` 编译不过→用的是臆造 API，回查 §3.6 第 2 行；②单测不抛异常→validate 未被调用（entity 之后漏了 return validate(opinion)）；③启动报 ChatClient bean 冲突→00 篇未定义其他 ChatClient bean，检查是否重复定义。
+
 ## 4. 运行
 
 ```sh
@@ -205,6 +248,29 @@ mvn spring-boot:run
 #   -H "Content-Type: text/plain" -d "营业执照: 广州XX贸易有限公司，注册资本500万元，经营范围为纺织服装批发，成立满3年。流水: 公账月均回款 50 万元，年末 3 个月骤降至不足10万元。征信: 无逾期记录，负债率约45%，近期有1笔经营贷申请。"
 ```
 
+### 4.1 本节测试与验证（端到端预审请求）
+
+**前置条件**：应用已启动（`mvn spring-boot:run`，8080 端口）。
+
+**材料——curl 探针**：
+
+```bash
+curl -X POST "http://localhost:8080/api/pretrial?applicationId=SO-0001" \
+  -H "Content-Type: text/plain" \
+  -d "营业执照: 广州XX贸易有限公司，注册资本500万元，经营范围为纺织服装批发，成立满3年。流水: 公账月均回款 50 万元，年末 3 个月骤降至不足10万元。征信: 无逾期记录，负债率约45%，近期有1笔经营贷申请。"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 curl | HTTP 200；响应体为 JSON，含 §2.1 契约的 6 个字段 |
+| 2 | 字段语义 | `confidence` ∈ [0,1]；年末流水骤降被识别为风险因子且 `evidence` 引用材料原文 |
+| 3 | 无越权表述 | `summaryReason` / `riskLevel` 中无"批准/拒绝"的终审决定字样（只有建议等级） |
+| 4 | 再发一份只有营业执照、无流水无征信的材料 | 对应维度进 `missingMaterials`，不臆造 riskFactor |
+
+**失败排查**：①404→`@RequestMapping("/api/pretrial")` 或 `@PostMapping` 路径写错；②entity 解析异常→DeepSeek 返回非 JSON（System Prompt 约束被材料文本淹没，可重试）；③EventLoop 告警/线程卡死→漏了 `subscribeOn(Schedulers.boundedElastic())`。
+
 ## 5. 验收标准
 
 | # | 验收项 | 标准 |
@@ -214,7 +280,11 @@ mvn spring-boot:run
 | 3 | 缺失归位 | 材料缺失的维度进 missingMaterials，不臆造风险因子 |
 | 4 | 无终审越权 | 输出中无"批准/拒绝"最终决定表述（只有建议等级） |
 
+> 本节即 §4.1 验证在 100 份样本上的规模化执行：每条验收项都有 §4.1 对应断言可复现（结构化成功率=断言 1/2、证据回溯=断言 2、缺失归位=断言 4、无越权=断言 3），本表不再单列操作步骤。
+
 ## 6. v1 的痛点
+
+> 本节核对（一句话）：两个痛点分别指向 02（置信度分级）与 03（人工审批），与 00 篇演进路线 v2/v3 一致即 PASS。
 
 跑通一周后，两类问题浮现：
 
@@ -229,5 +299,19 @@ mvn spring-boot:run
 | 结构化输出 | `entity(Class)` 与 `entity(Class, spec -> ...)` 均真实重载（spec 仅 `useProviderStructuredOutput()`/`validateSchema()`，javap 实证） |
 | 阻塞桥接 | `Mono.fromCallable(...).subscribeOn(boundedElastic)`，绝不在 EventLoop 上 block |
 | 分层校验 | 框架管格式，业务管语义——两层都要 |
+
+> 本节核对（一句话）：四行总结与 §2/§3/§3.5/§3.6 的口径一一对应即 PASS。
+
+## 8. 全篇回归验证
+
+**前置条件**：§2.2 / §3.7 / §4.1 各节验证均通过。
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean test` | 全部单测（含 §3.7 校验样本）通过，`BUILD SUCCESS` |
+| 2 | §4.1 材料 curl 连发 3 次 | 三次均 200 且契约字段完整——最小闭环稳定（跨请求一致性） |
+| 3 | 缺失材料样本 + 完整材料样本混合发 | missingMaterials 归位与风险因子识别互不串扰（跨样本回归） |
+
+**失败排查**：①间歇性 JSON 解析失败→DeepSeek 偶发非 JSON 输出，属 §5 验收项 1 的成功率统计范围，必要时收紧 System Prompt；②连发后线程数异常增长→确认 boundedElastic 桥接未丢。
 
 → [02-置信度与风险分级.md](02-置信度与风险分级.md)

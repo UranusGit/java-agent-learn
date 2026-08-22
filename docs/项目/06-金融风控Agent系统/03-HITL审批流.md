@@ -20,6 +20,11 @@
 | "转人工"只是标签，无强制闸门 | 终审动作工具化 + 拦截层强制挂起 |
 | 挂起期间状态易丢失 | 审批挂起 Checkpoint 化，跨重启/跨天恢复 |
 
+### 1.1 本节核对（四问）
+
+- [ ] 两条 v2 痛点与本篇三个新增能力对应得上（工具化+拦截 / Checkpoint 化 / 留痕）
+- [ ] "转人工从标签升级为架构强制"这句话能对照 02 篇 §6 的痛点复述
+
 ## 2. 为什么拦截点是 ToolCallingManager 装饰器
 
 > 这是本项目最重要的架构决策（ADR-102），也是对早期方案的修正。
@@ -45,6 +50,11 @@ flowchart TB
 
 **真实接口（2.0.0 反编译核对）**：`ToolCallingManager` 在 `org.springframework.ai.model.tool` 包，只有两个抽象方法——`resolveToolDefinitions(ToolCallingChatOptions)` 与 `executeToolCalls(Prompt, ChatResponse)`。**注意：`executeToolCalls` 的第二个参数是 `ChatResponse` 而非工具清单**——工具调用意图要从 `ChatResponse.getResults()` 的 `Generation` 里取（`generation.getOutput().getToolCalls()`）。
 
+### 2.1 本节核对（拦截点决策）
+
+- [ ] 能不看正文说出 Advisor 拦不到的理由（环绕整个 ChatClient 调用边界，工具执行发生在 ChatModel 内部循环）
+- [ ] `ToolCallingManager` 两个抽象方法签名（`resolveToolDefinitions(ToolCallingChatOptions)` / `executeToolCalls(Prompt, ChatResponse)`）与 §4.11 代码一致
+
 ## 3. 审批状态机
 
 ```mermaid
@@ -59,6 +69,11 @@ stateDiagram-v2
 ```
 
 **超时升级**（[教程 28 §6 超时升级机制]）：PENDING 超 24h → 升级通知审批主管；超 72h → EXPIRED，流程退回信贷员重新发起（不自动通过、不自动拒绝——**挂起默认失败安全**）。
+
+### 3.1 本节核对（状态机）
+
+- [ ] 五个状态（NONE 不在图中、PENDING/APPROVED/REJECTED/EXPIRED 在图中）与 §4.2 枚举一一对应
+- [ ] 超时升级只出现在 24h（通知主管）与 72h（EXPIRED 退回）两档；EXPIRED 不自动通过也不自动拒绝（失败安全，ADR-110）
 
 ## 4. 完整代码（照抄即可）
 
@@ -810,6 +825,84 @@ CREATE TABLE IF NOT EXISTS approval_audit (
 );
 ```
 
+### 4.17 本节测试与验证（基础设施：依赖 / Store / DDL）
+
+**前置条件**：00 篇骨架可用；v1/v2 代码未破坏。
+
+**材料——编译与建表核对**：
+
+```bash
+mvn clean compile
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | pom 增量（spring-boot-starter-jdbc + h2）+ yml 数据源配置后编译 | `BUILD SUCCESS` |
+| 2 | 手写 4.2–4.8 各类（枚举/Checkpoint/异常/Store 接口与 JDBC 实现/Executor/Notifier）后编译 | `BUILD SUCCESS`（JdbcTemplate 为阻塞 API，仅在 boundedElastic 上调用，见 4.14） |
+| 3 | 启动应用，执行 §4.16 DDL（H2 控制台或 schema.sql） | `approval_checkpoint` / `approval_audit` 两表建成；`approval_checkpoint` 含 `prompt_version` 列（审计预留） |
+| 4 | Store 单测：save→findById→updateDecision→findById | 字段往返一致（含 decidedAt null→非 null 的转换） |
+
+**失败排查**：①H2 报表已存在→DDL 未加 `IF NOT EXISTS`；②`Timestamp.from` NPE→decidedAt 为 null 时未走三目分支；③JDBC 阻塞告警→Store 调用未包 `Mono.fromCallable(...).subscribeOn(boundedElastic)`。
+
+### 4.18 本节测试与验证（审批引擎与装饰器闸门）
+
+**前置条件**：§4.17 通过；4.9–4.15 已手写。
+
+**材料——闸门状态机断言样本**（单测，手写）：
+
+```java
+// HumanApprovalToolManagerTest（用 H2 + JdbcPendingApprovalStore 起真库）：
+// ① NONE 状态 + submit_final_decision 意图 → 期望抛 ApprovalPendingException，且 store 出现一条 PENDING 记录
+// ② PENDING 状态 → 期望抛 ApprovalPendingException（approvalId 为已存在那条）
+// ③ REJECTED 状态 → 不抛异常，返回的 ToolExecutionResult 的 conversationHistory 末尾为 ToolResponseMessage，
+//    内容含 "REJECTED_BY_HUMAN"，且 returnDirect=false
+// ④ APPROVED 状态 → 落到 delegate.executeToolCalls（放行）
+// ⑤ ApprovalService.decide(REJECT) → status 变 REJECTED，approver/remark 回填
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean test` | 材料①–⑤ 全部按注释预期通过 |
+| 2 | 启动应用 | 无 `BeanDefinitionOverrideException`——装饰器 Bean 用 `@Primary`+builder 重建 delegate，默认实现让位 |
+| 3 | 代码审查（闸门强制性） | `DANGEROUS_TOOLS` 命中且非 APPROVED 状态时没有任何 return 路径能绕过挂起/封死 |
+
+**失败排查**：①③无 Rejected 结果→switch 分支顺序错，REJECTED 必须在放行判断之前；②启动 bean 冲突→4.12 未用 builder 重建 delegate 而是注入了自身；④意外放行→statusFor 查错 applicationId（extractApplicationId 的 JSON path 不对）。
+
+### 4.19 本节测试与验证（端到端：挂起→批准/拒绝）
+
+**前置条件**：应用已启动；`DEEPSEEK_API_KEY` 已设。
+
+**材料——curl 剧本**：
+
+```bash
+# ① 诱导触发终审工具（挂起）
+curl -X POST "http://localhost:8080/api/pretrial/chat" -H "Content-Type: text/plain" \
+  -d "申请 SO-0001 材料齐全，请提交终审决定 APPROVE"
+# ② 查看待审批列表
+curl "http://localhost:8080/api/approvals"
+# ③ 批准（需核心信贷系统可达；本地可用 mock 或观察失败日志）
+curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=APPROVE&approver=zhangsan" \
+  -H "Content-Type: text/plain" -d "材料核实无误"
+# ④ 再造一单后拒绝
+curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=REJECT&approver=lisi" \
+  -H "Content-Type: text/plain" -d "流水异常未解释"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料① | 响应 `{"status":"PENDING_APPROVAL","approvalId":"..."}`（不是正常 RESPONSE） |
+| 2 | 材料② | 列表含刚才那条 PENDING 记录，toolName=submit_final_decision |
+| 3 | 材料③ | 200；该单 status 变 APPROVED；日志出现"终审已提交"（或核心系统不可达时报错但状态未误置 APPROVED 之外） |
+| 4 | 材料④ + 同一申请再次诱导提交终审 | status=REJECTED；再次提交时返回"人工否决…禁止再次提交"（通道封死，ADR-109） |
+
+**失败排查**：①返回正常文本→模型没触发工具（System Prompt 第 4 条措辞诱导不足）或装饰器未生效（核对 4.12 @Primary Bean）；③状态不更新→ApprovalExecutor 的 doOnSuccess 只在成功路径回写，核对 WebClient baseUrl；④仍能再挂起→statusFor 返回 NONE（store 的 findByApplicationId 排序/过滤有误）。
+
 ## 5. 挂起恢复（跨天、跨重启）
 
 审批员可能第二天才处理。Checkpoint 持久化包含**恢复所需全部状态**：`conversationJson`（完整对话上下文）、`toolCallArguments`（挂起的工具意图）、`promptVersion`（审计必需）。JdbcPendingApprovalStore 用 H2 **文件库**（`jdbc:h2:file:`），重启后数据仍在。
@@ -832,6 +925,31 @@ sequenceDiagram
     Note over AP: 拒绝 → 工具返回"人工否决"<br/>后续再提交 → 通道封死(REJECTED)
 ```
 
+### 5.1 本节测试与验证（跨重启恢复）
+
+**前置条件**：§4.19 材料① 已产生一条 PENDING 记录；H2 文件库（`jdbc:h2:file:./data/riskdb`）。
+
+**材料——重启剧本**：
+
+```bash
+# ① 挂起一单（§4.19 材料①），记下 approvalId
+# ② 杀进程后重启
+mvn spring-boot:run
+# ③ 重启后处理该单
+curl "http://localhost:8080/api/approvals"
+curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=REJECT&approver=wangwu" \
+  -H "Content-Type: text/plain" -d "隔夜复核不通过"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 重启后材料③第一步（列表） | 原 PENDING 记录仍在（H2 文件库未丢） |
+| 2 | 材料③决定 | 200，status 变 REJECTED，approver=王五、remark 回填——跨重启恢复闭环 |
+
+**失败排查**：①重启后库空→yml 误配了 `jdbc:h2:mem:`；②decide 400→`ApprovalDecision` 枚举参数只接受 APPROVE/REJECT。
+
 ## 6. 验收标准
 
 | # | 验收项 | 标准 |
@@ -842,6 +960,8 @@ sequenceDiagram
 | 4 | 审批留痕 | 每次批准/拒绝带审批员身份+备注，不可篡改（对接 v4 审计） |
 | 5 | 拒绝语义 | 人工否决后工具返回"人工否决"，Agent 不得重试提交（防绕过） |
 
+> 本节验收与本篇章节验证的映射：验收 1=§4.18 断言 3、验收 2=§5.1、验收 3=§3.1 核对的超时路径（升级逻辑落地于 02 篇式的定时扫描，本篇未展开代码，作为规模化执行项）、验收 4=§4.17 断言 3+4 与 v4 审计对接、验收 5=§4.18 材料③ 与 §4.19 断言 4。本表不重复各节材料。
+
 ## 7. 本迭代的 ADR
 
 | # | 决策 | 理由 |
@@ -850,6 +970,12 @@ sequenceDiagram
 | ADR-109 | 审批拒绝后禁止 Agent 自动重试 | 消除"反复提交直到碰巧被批"的绕过面 |
 | ADR-110 | 挂起默认失败安全（EXPIRED 退回重发起） | 绝不自动通过（合规红线）；自动拒绝对客户不公平 |
 | ADR-111 | Checkpoint 用 JDBC 文件库持久化 | 跨重启恢复是审批硬要求；H2 文件库本地可验证，生产换 PostgreSQL |
+
+### 7.1 本节核对（ADR-108~111）
+
+- [ ] ADR-108（受控异常中断）与 §4.4/§4.11 的 `ApprovalPendingException` 落点一致
+- [ ] ADR-109（拒绝封死）与 §4.11 的 REJECTED 分支、§4.19 断言 4 一致
+- [ ] ADR-110（EXPIRED 失败安全）与 §3 状态图"不自动通过/不自动拒绝"一致
 
 ## 8. v3 的痛点
 
@@ -864,3 +990,17 @@ sequenceDiagram
 | 挂起 | 受控异常终止生成流 + Checkpoint 持久化 + 事件驱动恢复 |
 | 拒绝 | 工具通道对该申请封死（REJECTED 状态，返回"人工否决"结果） |
 | 失败安全 | EXPIRED 不自动通过、不自动拒绝——退回重发起 |
+
+> §8 一句话核对：痛点（审批记录可被 DBA 篡改）指向 04 哈希链审计即 PASS；§9 总结五行与 §2/§4.11 标注/§4.4+§5/§4.11 REJECTED/§3 一一对应即 PASS。
+
+## 10. 全篇回归验证
+
+**前置条件**：§4.17 / §4.18 / §4.19 / §5.1 均通过。
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean test` | 全部单测通过，`BUILD SUCCESS` |
+| 2 | 完整剧本重跑：①挂起→②批准→③新单挂起→④拒绝→⑤拒绝后再提交 | 五步状态流转 PENDING→APPROVED / PENDING→REJECTED→封死，全链路无异常 |
+| 3 | 回归 v1/v2 | `/api/pretrial` 结构化预审与 `Calibrator`/`RoutingService` 单测不受本迭代影响（ChatClient Bean 仅增量注册工具） |
+
+**失败排查**：②挂起后再提交返回 RESPONSE 而非封死→检查 statusFor 的查询条件；③v2 单测挂→4.13 更新 ChatClient 时改动了 System Prompt 影响输出格式，核对规则 1-3 未被删。
