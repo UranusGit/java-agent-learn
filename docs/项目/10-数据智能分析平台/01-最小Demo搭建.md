@@ -15,6 +15,8 @@
 | **架构如何演进** | 单体单模块：Controller → TextToSqlService(ChatClient) → SqlExecutor(JdbcTemplate)；Schema 全量注入 prompt |
 | **上一版痛点是什么** | 无（v0 是起点，痛点是**将要暴露的**：SQL 裸奔、Schema 撑爆 token、黑盒不可信） |
 
+> **本节核对（四问一句话）**：第 3 行"架构演进"与 §3 代码三件套（Controller → TextToSqlService → SqlExecutor）一致，第 4 行三个"将要暴露的痛点"均出现在 §5。
+
 ## 2. 目标与量化验收
 
 | # | 验收项 | 标准 |
@@ -319,27 +321,54 @@ curl -X POST "http://localhost:8080/api/query?userId=u1" \
   -d "华东 6 月有多少笔支付成功的订单？"
 ```
 
-### 验证包（手工测试与验证）
+### 3.12 本节测试与验证（最小查数链路）
 
-**前置条件**：上一迭代已通过；本迭代组件与样例数据就绪。
+**前置条件**：[00 §5.1/§5.2] 基线工程已建好；`db/schema-v1.sql` 已在只读副本所在库执行（种子 4 单：east 2 paid、west 1 paid、west 1 refund）；`DEEPSEEK_API_KEY` 等三个环境变量已导出。
 
-**材料**：一个文本分析 Agent + 一份样例数据表 + curl/hey 压测器。
+**材料**：
 
-**步骤与断言（由验收表转断言清单）**：
+```sh
+# A. 主链路（对应 §3.10 种子数据，正确答案 rowCount=2、pay_amount 合计 798.00）
+curl -X POST "http://localhost:8080/api/query?userId=u1" \
+  -H "Content-Type: text/plain" \
+  -d "华东 6 月有多少笔支付成功的订单？"
+
+# B. 单表单条件（正确答案 1 笔，399.00）
+curl -X POST "http://localhost:8080/api/query?userId=u1" \
+  -H "Content-Type: text/plain" \
+  -d "统计 2026-06-03 的订单总支付金额"
+
+# C. 无关问题（Schema 里没有的实体）
+curl -X POST "http://localhost:8080/api/query?userId=u1" \
+  -H "Content-Type: text/plain" \
+  -d "查一下库存表里 SKU001 的剩余数量"
+```
+
+```sql
+-- D. Schema 注入核对：loadSchema() 应产出下列两张表的 DDL
+SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;
+```
+
+**步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 用材料构造「链路跑通」场景执行 | 自然语言 → SQL → 结果全链路 < 15s（P95） |
-| 2 | 用材料构造「基础准确」场景执行 | 100 条简单问题（单表/单条件）SQL 执行成功率 ≥ 90% |
-| 3 | 用材料构造「结果可追溯」场景执行 | 每次返回带生成的 SQL |
-| 4 | 用材料构造「只读约束」场景执行 | 生成的 SQL 100% 是 SELECT（v1 靠 prompt 约束，v2 起强制） |
-**失败排查**：断言不符先分层——入口日志（请求到没到）→ SQL 护栏/策略服务（为何拦/放）→ DB 层（只读强制是否在库层）；安全类失败优先验证"测试前置样本是否真的到达被测层"，再查实现。
+| 1 | 启动应用（§3.11 命令），跑材料 A | 返回 JSON 含 `sql`（SELECT orders 相关）+ `rowCount=2`；全链路 < 15s |
+| 2 | 材料 B | `rowCount=1`，日期条件落在 `order_date`，非 `created_at` |
+| 3 | 材料 C | `sql` 为空或 `missingFields` 含库存相关字段；不臆造表名 |
+| 4 | 材料 D | public schema 恰有 orders/customers（§3.10 的 DDL 已建） |
+| 5 | 返回体抽检 | 每次响应均带 `sql` 与 `durationMs` 字段（可追溯） |
+
+**失败排查**：①启动即 401/连接失败→API Key 或 DB 环境变量未导出；②材料 A 行数不对→种子数据未插入或 LLM 把 refund 计入 paid（口径在 §3.10 注释有约定，v1 不强制）；③材料 C 臆造表名→System Prompt 规则 3 未生效，属 v1 已知弱点（v3 语义层根治）；④抛 `Schedulers`/block 相关错误→`SqlExecutor`/`TextToSqlService` 未包 `subscribeOn(boundedElastic())`。
+
 ## 4. ADR 演进决策
 
 | # | 决策 | 理由 |
 |---|------|------|
 | ADR-500（最小 Demo） | 先跑通"问题→SQL→结果"链路 | 后续护栏/语义层/权限都在同一份链路上叠加 |
 | ADR-501（v1 内） | 结构化输出用 `entity(Class)`；需要时用 `entity(Class, spec)`（spec 仅 `useProviderStructuredOutput()`/`validateSchema()`） | 附录 05-02 §2 javap 实证：两种形态均为真实 API |
+
+> **本节核对（ADR 一句话）**：ADR-501 中的 `entity(Class)` / `entity(Class, spec)` 签名与 §3.8 代码实际调用一致，spec 两方法名与 [附录 05-02 §2] 实证一致。
 
 ## 5. v1 的痛点（驱动下一迭代）
 
@@ -350,3 +379,15 @@ curl -X POST "http://localhost:8080/api/query?userId=u1" \
 3. **"这是对的吗？"**——业务不敢信黑盒 SQL
 
 这三个痛点指向 **v2 SQL 安全护栏**。→ [02-SQL安全护栏.md](02-SQL安全护栏.md)
+
+## 6. 全篇回归验证
+
+**回归断言**（§3.12 本节验证通过后，按 §2 验收表整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 准备 ≥100 条单表/单条件问题（orders/customers 两表可组合出日期/区域/渠道/状态四类条件），逐条走 `/api/query` | SQL 执行成功率 ≥ 90%（执行报错或 rowCount 与手工核算不符算失败） |
+| 2 | 全部响应体抽检 | 100% 带 `sql` 字段且以 SELECT 开头（验收项 3/4） |
+| 3 | 用 `hey` 或 `ab` 以低并发重复材料 A 数十次 | P95 < 15s（验收项 1） |
+
+**失败排查**：成功率 < 90%→先分类失败样例：表选错（schema 过长，v2 裁剪）/ 列名臆造（v3 语义层）/ SQL 语法错（换更强调参的 system 规则）；出现非 SELECT→v1 已知缺口，直接进 [02-SQL安全护栏]。

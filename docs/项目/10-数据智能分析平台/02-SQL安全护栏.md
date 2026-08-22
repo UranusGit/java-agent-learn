@@ -23,6 +23,8 @@
 | Schema 全量注入 token 爆炸 | Schema 裁剪：按问题相关表检索（schema linking 起步） |
 | 黑盒不可信 | 带 SQL 溯源 + EXPLAIN 预检（执行前评估代价） |
 
+> **本节核对（四问一句话）**：护栏链五步 `validate → ensureLimit → explainCost → execute → audit` 与 §4.7 `guardedExecute` 的 ①~⑤ 注释一一对应；三条 v1 痛点均有对策行。
+
 ## 2. 目标与量化验收
 
 | # | 验收项 | 标准 |
@@ -51,6 +53,11 @@ flowchart TB
 ```
 
 **分层原则**：数据库层（只读角色/RLS/列权限）是**强制边界**（prompt 注入也绕不过）；查询层（单语句校验/EXPLAIN/超时/LIMIT）是**成本与风险控制**。
+
+### 3.1 本节核对（护栏分层）
+
+- [ ] G1/G2/G3 三道门与 §4.4/§4.7 的实现对应（G1=SqlGuardrail 单语句+只读；G3=EXPLAIN 预检；G2 白名单 v2 图上有、代码未实现——注意这是 v5 Data Catalog 的前置，验证时不得把 G2 当已存在断言）
+- [ ] 拒绝路径与放行路径都汇入审计（图中 REJECT 与 EXEC 均指向审计）
 
 ## 4. 完整代码（照抄即可，一行不省略）
 
@@ -424,24 +431,49 @@ public Mono<QueryResult> ask(String question, UserContext user) {
 }
 ```
 
-### 验证包（手工测试与验证）
+### 4.11 本节测试与验证（护栏链与 DB 层强制）
 
-**前置条件**：上一迭代已通过；本迭代组件与样例数据就绪。
+**前置条件**：[01 §3.12] 验证已通过；`db/schema-v2.sql` 已由 DBA 在库上执行（只读角色/RLS/审计表就绪）；pom 已加 jsqlparser 4.9；应用数据源账号已切到 `ai_analyst_readonly`。
 
-**材料**：多语句/非 SELECT 恶意样本；慢查询（无 LIMIT 大表）；绕应用直连 DB 的尝试；10s 超时触发脚本。
+**材料 A——恶意 SQL 样本（对 `SqlGuardrail.validate` 做单元断言）**：
 
-**步骤与断言（由验收表转断言清单）**：
+```java
+// SqlGuardrailTest.java（JUnit 5，放 src/test/java，属测试代码非项目源码生成范围，由你手写）
+SqlGuardrail g = new SqlGuardrail();
+assertFalse(g.validate("SELECT 1; DROP TABLE orders").allowed());   // 多语句注入
+assertFalse(g.validate("UPDATE orders SET status='paid'").allowed()); // 非 SELECT
+assertFalse(g.validate("SELECT pg_sleep(30)").allowed());           // 危险函数
+assertFalse(g.validate("SELECT * FROM orders WHERE 1=1 AND COPY t TO '/tmp/x'").allowed());
+assertTrue(g.validate("SELECT count(*) FROM orders WHERE region='east'").allowed());
+```
+
+**材料 B——DB 层强制（psql 直连，绕过应用）**：
+
+```sh
+PGPASSWORD=$DB_READONLY_PASSWORD psql -h replica.internal -U ai_analyst_readonly -d data_warehouse \
+  -c "INSERT INTO orders(user_id,region,channel,status,pay_amount,order_date) VALUES (9,'east','app','paid',1.00,DATE '2026-06-01')"
+```
+
+**材料 C——审计核对 SQL**：
+
+```sql
+SELECT user_id, left(sql_text,60) AS sql, row_count, rejection_reason, occurred_at
+FROM query_audit ORDER BY occurred_at DESC LIMIT 10;
+```
+
+**步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 用材料构造「注入阻断」场景执行 | `SELECT 1; DROP TABLE` 类多语句 100% 拒绝；非 SELECT 100% 拒绝 |
-| 2 | 用材料构造「全表扫描」场景执行 | 无 LIMIT 查询自动加 LIMIT；EXPLAIN 代价超限拒绝 |
-| 3 | 用材料构造「强制只读」场景执行 | DB 层验证：AI 账号无法 INSERT/UPDATE/DELETE（绕过应用也失败） |
-| 4 | 用材料构造「超时兜底」场景执行 | 慢查询 10s 超时终止，不占资源 |
-| 5 | 用材料构造「审计完整」场景执行 | 所有查询（含拒绝）入审计库，可追溯 |
-| 6 | 用材料构造「延迟影响」场景执行 | 护栏新增 P99 延迟 < 100ms（解析+EXPLAIN 代价可控） |
-**失败排查**：断言不符先分层——入口日志（请求到没到）→ SQL 护栏/策略服务（为何拦/放）→ DB 层（只读强制是否在库层）；安全类失败优先验证"测试前置样本是否真的到达被测层"，再查实现。
-### 3.5 SQL 生成与执行过程可见（这步为何拦/放）
+| 1 | 跑材料 A 单测 5 条 | 恶意 4 条全部 reject 且 reason 可读；合法 1 条 allow |
+| 2 | 材料 B 直连写 | 报 `permission denied`（DB 层强制，绕过应用也失败） |
+| 3 | 经 `/api/query` 提问"所有订单明细"（诱导无 LIMIT 全表查询） | 返回的 `sql` 末尾被追加 `LIMIT 1000`（§4.7 ensureLimit） |
+| 4 | 正常查一次 + 构造一次拒绝（如在问题中诱导多语句），材料 C 核对 | 两条审计记录均在，拒绝记录 `rejection_reason` 非空 |
+| 5 | EXPLAIN 预检 | 种子 4 行小表 `estimatedRows ≤ 1000`、`estimatedCost ≤ 1_000_000`，放行不误杀 |
+
+**失败排查**：①材料 B 写入成功→`schema-v2.sql` 的 GRANT/REVOKE 未执行或连的还是主库超管；②LIMIT 未追加→`HAS_LIMIT` 正则误判（sql 尾部已有 limit）或 `guardedExecute` 未接入（§4.9 改造漏做）；③审计空表→`AuditStore` 用的 JdbcClient 连的库没建 `query_audit`；④正常查询被"代价超限"误杀→`MAX_COST` 阈值对小表环境偏低，按实际 EXPLAIN 值调。
+
+### 4.12 SQL 生成与执行过程可见（这步为何拦/放）
 
 > 过程可见性是工业级标配。数据 Agent 回答"给我 GMV 报表"要看得见过程——模型生成哪条 SQL、护栏为何判定（拦截/只读/超时）、查了几行。执行 emit 数据事件：`{q, 生成SQL, 护栏判定, 命中行数, 结果}`。用户看到"生成SQL→命中'全表扫描'风险→自动加LIMIT→返回前100行"。
 
@@ -456,6 +488,21 @@ public Mono<QueryResult> ask(String question, UserContext user) {
 | ADR-507 | 语法级校验（JSqlParser `parseStatements`）而非正则 | 正则黑名单可被编码绕过；语法级能识别多语句注入 |
 | ADR-508 | 强制 LIMIT + EXPLAIN 预检 + 超时 | 多层边界：防注入、防全表扫描、防慢查询 |
 
+> **本节核对（ADR 一句话）**：ADR-506/507/508 分别对应 §4.8 / §4.4 / §4.7 的实现，无"图有码无"的决策。
+
 ## 6. v2 的痛点（驱动下一迭代）
 
 护栏把查询"锁住了"，但业务反馈：**"问'这个月 GMV 多少'，10 个分析师可能给出 10 种 SQL"**——口径不一（含税/不含税/退款后）导致结果不可比。而且每次都要描述完整口径很累。**需要一个"指标语义层"统一口径**。→ [03-语义层与指标中台.md](03-语义层与指标中台.md)
+
+## 7. 全篇回归验证
+
+**回归断言**（§4.11 本节验证通过后，按 §2 验收表整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 准备 ≥20 条恶意样本（多语句/非 SELECT/危险函数各若干）循环送 `validate` | 100% 拒绝（验收 1） |
+| 2 | 构造慢查询（如笛卡尔积大表）走 `/api/query` | 10s 超时终止，连接不积压（验收 4） |
+| 3 | 对比 v1 直连与 v2 网关各跑材料 A 合法查询 50 次 | 网关新增延迟 P99 < 100ms（验收 6） |
+| 4 | 抽查 `query_audit` | 成功与拒绝记录齐全可追溯（验收 5） |
+
+**失败排查**：P99 超标→EXPLAIN 预检在小表上本应 <10ms，检查是否把审计 INSERT 也计入了热路径（可异步化）；超时不生效→`timeout(TIMEOUT)` 需在 subscribeOn 之后仍生效，确认没有在内层吞掉 `TimeoutException`。

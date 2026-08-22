@@ -25,6 +25,8 @@
 | 护栏一刀切 | 角色档位（INTERACTIVE/EXPLORATORY/BATCH）+ 行/列/代价三深化 |
 | 答案叙事质量无人评估 | 官方 `RelevancyEvaluator`（LLM-as-Judge 只管叙事层，数值仍确定性） |
 
+> **本节核对（四问一句话）**：三条 v10 痛点均有对策行；架构演进"评测从回归门禁一个数字→归因闭环""护栏全局常量→角色档位策略对象"分别对应 §4.4 `Text2SqlEvalService` 与 §4.5 `GuardrailPolicy`。
+
 ## 2. 目标与量化验收
 
 | # | 验收项 | 标准 |
@@ -35,6 +37,8 @@
 | 4 | 护栏分级 | 业务角色 P99 被误卡率 < 1%；分析师探索档代价上限为业务档 10 倍 |
 | 5 | 列级拦截 | `SELECT *` 与含敏感列的 ad hoc SQL 100% 被拦截或脱敏 |
 | 6 | 叙事质量 | 报表叙事层 Relevancy 通过率 ≥ 90%（抽检 100 条） |
+
+> **本节核对（验收口径一句话）**：验收 1/2/3 对应 §4.1（`golden_triplets`）+ §4.3（`ResultComparator` 双口径）+ §4.4（归因）；验收 4/5 对应 §4.5（档位）+ §4.6（行/列 fail-closed）；验收 6 对应 §4.7（官方 Evaluator）。
 
 ## 3. 为什么需要两把尺子：执行准确率 vs 结果准确率
 
@@ -68,6 +72,12 @@ flowchart TB
 ```
 
 **归因驱动的优化闭环**：语义错 → 回流 v10 术语字典（补同义词/补指标）；语法错 → 修 schema 裁剪与注入（v2 §Schema 白名单）；数据错 → 转指标对账与数据质量监控（v8 与 [13-数据血缘与治理](13-数据血缘与治理.md)）。每类归因都有确定的去处——这是"评测"与"评估"的区别：**评测要能指导修**。
+
+### 3.1 本节核对（双口径与归因三分类）
+
+- [ ] 双口径差异四种组合（EX 高 RA 高 / EX 高 RA 低 / EX 低 RA 高 / EX 低 RA 低）与诊断分支对应 §4.3 `ResultComparator` + §4.4 `judge` 的判定逻辑
+- [ ] 归因三分类（语义/语法/数据）各自绑定确定优化动作，且动作去向与 `FailureType` 的 `action()` 字段一致（§4.2）
+- [ ] "评测要能指导修"成立：SEMANTIC/SYNTAX/DATA 都有回流路径（v10 术语 / v2 schema / v8 对账）
 
 ## 4. 完整代码（照抄即可，一行不省略）
 
@@ -131,6 +141,12 @@ public enum FailureType {
     }
 }
 ```
+
+### 4.8 本节核对（三元组与归因枚举）
+
+- [ ] `golden_triplets` 表字段与 `GoldenTriplet` record 对应（question/gold_sql/expected_result/path_type/gold_metric_id/tags/last_verified_at），`path_type` 覆盖 semantic/adhoc 双路径
+- [ ] `FailureType` 四枚举（SEMANTIC/SYNTAX/DATA/NONE）与 §3 归因三分类一致，每类 `action()` 给出去向
+- [ ] `eval_runs` 表含 `execution_acc`/`result_acc` 与三归因计数列，支撑 §4.4 报告落库
 
 ### 4.3 `ResultComparator.java`（确定性结果比对——四个陷阱）
 
@@ -204,6 +220,21 @@ public class ResultComparator {
     }
 }
 ```
+
+### 4.9 本节测试与验证（确定性结果比对——四个陷阱）
+
+**材料**（直接复用 §7 `ResultComparatorTest` 的三条用例数据）：无序行集、浮点 ε 、NULL 语义。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `matches` 两行序不同但集合相同的 JSON | `true`（① 无序按集合比，`unorderedRowsMatchAsSet`） |
+| 2 | 浮点 `0.3333333` vs `0.3333334` | `false`（第 7 位差异超出 1e-6 精度，`floatEpsilonTolerated`——边界按业务调 ε） |
+| 3 | 两个 `{"note":null}` 行 | `true`（③ SQL 语义 NULL=NULL，`nullEqualsNull`） |
+| 4 | 列序不同（列名不同顺序）的同一行 | `true`（④ 按列名取值比，不按下标——非 ORDER BY 无关） |
+
+**失败排查**：①实际判对而断言 `false`→`render` 对 number 分支的 `BigDecimal` 舍入与 ε 不符；②NULL 判不等→`render` 对 `isNull()` 分支返回了 `"null"` 字符串而非常量 `"NULL"`；③列序搅浑→`normalize` 用了下标取列而未按 `fieldNames` 排序。
 
 ### 4.4 `Text2SqlEvalService.java`（三元组跑批 + 双口径 + 归因）
 
@@ -331,6 +362,21 @@ public class Text2SqlEvalService {
 
 > **归因精确化提示**：`judge` 中"意图是否选对指标"的粗判留给 TODO——正式做法是让 `SemanticLayerService.answer()` 返回带 `MetricIntent` 的信封（v10 归一化结果一并带回），归因直接比对 `intent.metricId()` 与 `goldMetricId`，不再从 SQL 反推。这是把评测从"黑盒打分"变"白盒归因"的关键一步，请按此改写。
 
+### 4.10 本节测试与验证（三元组跑批与双口径归因）
+
+**前置条件**：`db/schema-v11.sql` 已执行；`golden_triplets` 已灌入一条 `path_type=semantic`、`gold_metric_id=gmv` 的样本；gold SQL 同库可执行。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `runGoldenSet("manual")` 对含 1 条正确三元组跑批 | `eval_runs` 落一条记录：`execution_acc=1`、`result_acc=1`，三归因列全 0（正确样本 NONE） |
+| 2 | 构造一条生成 SQL 与 gold 结果一致、但 `expected_result` 人工标注偏离的样本 | `execution_acc=1`、`result_acc=0`（双口径差异暴露"标注过期/碰巧对"，验收 2 双口径分开报告） |
+| 3 | 让生成路径异常（gold SQL 抛错） | 归因 `SYNTAX`（`evaluateOne` 的 `onErrorResume` + gold SQL 执行失败分支） |
+| 4 | 抽验 `judge` 的 `answer.sql()` 为空路径 | 归因 `SYNTAX`("未产出 SQL")，不误归到 `DATA` |
+
+**失败排查**：①双口径差异不出现→`judge` 里 `resultAcc` 误用 `goldResultJson` 而非 `expectedResultJson`（比对对象张冠李戴）；②归因全落 `SYNTAX`→`evaluateOne` 的 `onErrorResume` 吞了 `DATA/SEMANTIC` 的异常，需先看错误消息；③gold SQL 缓存旧结果→`last_verified_at` 超期未重跑，双口径双盲。
+
 ### 4.5 护栏升级一：角色档位 `GuardrailPolicy.java`
 
 ```java
@@ -357,6 +403,10 @@ public record GuardrailPolicy(String tier, int maxRows, long maxCost, Duration t
     }
 }
 ```
+
+> **本节核对（角色档位）**：
+> - [ ] 三档边界按角色映射正确：viewer=INTERACTIVE(1000 行/50 万/5s)、analyst=EXPLORATORY(1 万/500 万/30s)、system=BATCH(5 万/2000 万/2min)，探索档代价恰为业务档 10 倍（验收 4）
+> - [ ] `forRole` 对未知角色回退到最严档 `viewer`（fail-closed），不对未知角色放行
 
 ### 4.6 护栏升级二：列级深化 + 行级 fail-closed（接入 `QueryGuardService`）
 
@@ -425,6 +475,21 @@ private PlanCost explainCost(String sql) {
 }
 ```
 
+### 4.11 本节测试与验证（列级拦截与行级 fail-closed）
+
+**前置条件**：`TieredQueryGuardService` 已注入（`void validateColumns`/`doGuarded` 补全）；Reactor Context 可注入 `tenant` 键。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 送 `SELECT * FROM orders` 到 `validateColumns` | 拒绝 `SELECT *`（"显式列名必填"），ad hoc 路径触发（验收 5 列级拦截） |
+| 2 | 送 `SELECT phone FROM customers`（viewer 角色） | `phone ∈ SENSITIVE_COLUMNS` 且非 admin → 拒绝或改写掩码列（验收 5） |
+| 3 | 无 `tenant` Context 调 `guardedExecute` | 抛 `SqlRejectedException`("租户上下文缺失")，且审计落"拒绝"（fail-closed，验收 4/§7 `guardrailFailClosedWithoutTenant`） |
+| 4 | analyst 角色跑大数据量探索查询 | 放行阈值按 `policy`（1 万/500 万/30s）而非 v2 全局常量；代价超限按 `policy.maxCost` 拒绝 |
+
+**失败排查**：①`SELECT *` 放行→`validateColumns` 未解析所有列或 `SelectExpressionItem` 分支漏了 `AllColumns`；②敏感列未拦→`SENSITIVE_COLUMNS` 没包含该列名或角色判断方向写反；③无 Context 没拒→`guardedExecute` 忘用 `Mono.deferContextual` 取 `tenant`，或 `ctx.hasKey` 检查未加。
+
 ### 4.7 答案质量层：官方 Evaluator（叙事文本，非数值）
 
 ```java
@@ -464,6 +529,20 @@ public class AnswerQualityEvaluator {
 ```
 
 > **分层纪律（为什么数值不用 Evaluator）**：LLM-as-Judge 判"9,832,110.50 与 983 万是否一致"会漂（格式/近似/幻觉都会误判）。数值层用 `ResultComparator` 确定性比对（ADR-525），叙事层用官方 `RelevancyEvaluator`（[教程 37-自我反思与Agent评估 §评估分层]）——**每层用对尺子**。
+
+### 4.12 本节测试与验证（官方 Evaluator 叙事层）
+
+**前置条件**：pom 已引 `RelevancyEvaluator` 所在模块（`org.springframework.ai.chat.evaluation`）与 `EvaluationRequest/Response`（`org.springframework.ai.evaluation`）；注入 `ChatClient.Builder` 可用。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `evaluateNarrative(问题, 一段不答所问的叙事)` | `EvaluationResponse.isPass()=false`，`getFeedback()` 有偏离说明（验收 6 叙事跑题被抓住） |
+| 2 | `evaluateNarrative(问题, 正确回应的问题)` | `isPass()=true`（叙事相关） |
+| 3 | 抽检 100 条报表叙事 | Relevancy 通过率 ≥ 90%（验收 6，CI 统计口径） |
+
+**失败排查**：①`RelevancyEvaluator.builder()` 编译不过→确认 2.0.0 真实签名是 `.chatClientBuilder(ChatClient.Builder)`（javap 实证，与 1.x 不同）；②返回结构不对→`EvaluationResponse` 取 `getScore()/getFeedback()/getMetadata()`（javap 实证接口，非虚构方法）；③通过率虚高→评估用的是漏掉 `golden` 对照的裸问题，需固定评测集。
 
 ## 5. 归因驱动的优化闭环全景
 
@@ -516,7 +595,11 @@ flowchart LR
 | ADR-536 | 数值正确性用确定性比对，叙事层才用官方 Evaluator | LLM-as-Judge 判数值会漂；ResultComparator 处理无序/浮点/NULL/列序四陷阱 |
 | ADR-537 | 护栏按角色分档，未知角色按最严档（fail-closed） | 一刀切卡死探索或放水高频；权限上下文缺失不允许默认放行 |
 
-## 7. 测试与验证
+> **本节核对（ADR 一句话）**：ADR-534→§4.1 `golden_triplets`+§4.3 双口径；ADR-535→§4.2 `FailureType`（归因绑定动作）；ADR-536→§4.3 `ResultComparator` 四陷阱 + §4.7 官方 Evaluator（分层用尺）；ADR-537→§4.5 `GuardrailPolicy` + §4.6 fail-closed。四条均有代码落点。
+
+## 7. 全篇回归验证
+
+> 各代码章节已内嵌本节验证：§4.9（`ResultComparator` 四陷阱）、§4.10（三元组双口径归因）、§4.11（列级/行级 fail-closed）、§4.12（官方 Evaluator 叙事）。下方 `ResultComparatorTest` 为确定性比对与 fail-closed 的合并单元测试（四用例逐一对应本节各验证），可整体跑一遍。
 
 ```java
 package com.group.dataplat.eval;
@@ -562,6 +645,18 @@ class ResultComparatorTest {
 
 CI 接入：`runGoldenSet("ci")` 挂进发布流水线（v8 的阻断阈值不变，报告新增归因三列）；抽检 100 条报表叙事跑 `evaluateNarrative` 出通过率。
 
+**回归断言**（§4.9/§4.10/§4.11/§4.12 均通过后，按 §2 验收表整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 用 ≥300 三元组（semantic/adhoc 双路径）跑 `runGoldenSet("ci")` | 双路径覆盖；`execution_acc` 与 `result_acc` 分开落 `eval_runs`（验收 1/2） |
+| 2 | 逐一核对失败样本归因 | 每条给出 SEMANTIC/SYNTAX/DATA 之一并能追踪到优化动作（验收 3） |
+| 3 | 用 viewer/analyst/system 三角色跑相同查询 | 档位阈值逐个按角色生效；未知角色按最严档；无租户 Context 即拒绝（验收 4） |
+| 4 | 送 `SELECT *` 与含敏感列样本 | 100% 拦截或掩码（验收 5） |
+| 5 | 抽检 100 条报表叙事 | Relevancy 通过率 ≥ 90%（验收 6） |
+
+**失败排查**：①双口径差异样本未复核→验收 2 要求差异 100% 人工复核，先捞 `execution_acc≠result_acc` 的三元组；②护栏误卡率高→检查 `GuardrailPolicy` 档位阈值对小库 EXPLAIN 是否偏严，按实测调整；③叙事通过率 <90%→`RelevancyEvaluator` 评的是否固定评测集、`evaluateNarrative` 是否注入 builder。
+
 ## 8. 验收对照
 
 | 验收项 | 达标标准 | 本迭代 |
@@ -573,6 +668,10 @@ CI 接入：`runGoldenSet("ci")` 挂进发布流水线（v8 的阻断阈值不�
 | 列级拦截 | SELECT * / 敏感列 100% 处置 | ✅ §4.6 ① |
 | 叙事质量 | Relevancy 通过率 ≥ 90% | ✅ 官方 Evaluator（§4.7） |
 
+> **本节核对（验收对照）**：验收表 6 行与其落点章节一一对应（评测集→§4.1、双口径→§4.3/§4.4、归因→§4.2、护栏分级→§4.5/§4.6、列级→§4.6、叙事→§4.7），无"验收写了但没实现"行。
+
 ## 9. v11 的痛点（驱动下一迭代）
 
 评测闭环告诉我们"哪里错、错多少"，但**改数仓的人不知道"我改这列会砸谁的报表"**：上周分析师改了 `orders.pay_amount` 的口径注释、上上周 DBA 把 `dim_channel.name` 改名，两次都导致下游报表连环报错，事后两天才定位到。**查询是消费端，变更在生产端——缺数据血缘与变更影响评估**。→ [13-数据血缘与治理.md](13-数据血缘与治理.md)
+
+> **本节核对（痛点一句话）**：本痛点"查询是消费端、变更是生产端"指向 13 篇主题（血缘+变更影响评估），且归因闭环中"数据错→转 v8 对账/血缘"（§3）已预先埋下 13 篇入口。

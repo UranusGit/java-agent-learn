@@ -23,6 +23,8 @@
 | 跨库关联 LLM 现场猜 | 预定义 join 图（跨库关联唯一路径） |
 | 路由决策不可追溯 | 决策 trace：记录每次路由选择 |
 
+> **本节核对（四问一句话）**：四个新增模块与 §4 对应（4.3 Catalog / 4.4 Tools / 4.8 Router / 4.9 融合）；三条 v4 痛点均有对策。
+
 ## 2. 目标与量化验收
 
 | # | 验收项 | 标准 |
@@ -53,6 +55,11 @@ flowchart TB
 ```
 
 **多源是最难的问题**：难点不是 LLM 质量，是 schema 冲突（Salesforce account_id vs ERP client_no vs 数仓 dim_customer_key）、上下文碎片化、join 顺序失败、指标口径漂移。**Data Catalog 是路由中枢**——路由决策必须 grounded in governed metadata。
+
+### 3.1 本节核对（多源路由架构）
+
+- [ ] 图中三分支（订单/用户/跨库分解）与 §4.8 Router 输出的 `sources/decomposition/joinPaths` 字段对应
+- [ ] "决策 trace"边指向审计，与 §4.7 `RoutingAuditStore` 对应——路由决策留痕不是可选项
 
 ## 4. 完整代码（照抄即可，一行不省略）
 
@@ -429,22 +436,52 @@ public class CrossSourceJoinService {
 
 **为什么先查元数据**：Agent 若跳过 catalog 直接猜表名，跨库必然猜错。查元数据是"grounded in governed metadata"——识别最小充分数据源集，99% 避开劣质表。
 
-### 验证包（手工测试与验证）
+### 4.10 本节测试与验证（Catalog 路由与跨库融合）
 
-**前置条件**：上一迭代已通过；本迭代组件与样例数据就绪。
+**前置条件**：[04 §4.7] 已通过；`db/schema-v5.sql` 已执行（data_catalog 种子含 stale 的 payments、join_graph 含 orders↔customers）。
 
-**材料**：多数据源（数仓/文档/API）+ 混合检索探针问题；AgenticRAG 多跳问题集。
+**材料——Catalog 服务单元断言（`DataCatalogServiceTest`，JUnit 5，由你手写）**：
 
-**步骤与断言（由验收表转断言清单）**：
+```java
+// A. 概念检索 + trust 排序：payments(stale) 应排在 trusted 之后
+var hits = catalogService.search("支付");
+assertTrue(hits.stream().allMatch(e -> e.table().equals("payments")));
+assertEquals("stale", hits.get(0).trust());
+// B. join 图命中（双向均可）
+var p = catalogService.joinPath("customers", "orders");   // 反向也命中同一条
+assertEquals("user_id", p.leftColumn());
+// C. 图外组合必须抛异常（无预定义路径）
+assertThrows(IllegalArgumentException.class, () -> catalogService.joinPath("orders", "payments"));
+```
+
+**材料——路由端到端问句与审计核对 SQL**：
+
+```sh
+# D. 单源问题（应路由到 order_dw/orders，不碰 payments）
+curl -X POST "http://localhost:8080/api/query?userId=u1" -H "Content-Type: text/plain" \
+  -d "2026 年 6 月华东的 GMV"
+# E. 跨库问题（decomposition=true，join orders↔customers）
+curl -X POST "http://localhost:8080/api/query?userId=u1" -H "Content-Type: text/plain" \
+  -d "华东客户的订单明细（含客户姓名）"
+```
+
+```sql
+-- F. 决策 trace 核对
+SELECT question, sources, decomposition, join_paths FROM routing_audit ORDER BY occurred_at DESC LIMIT 5;
+```
+
+**步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 用材料构造「路由准确」场景执行 | 单源问题路由到正确库 ≥ 95%（100 问对照） |
-| 2 | 用材料构造「跨库正确」场景执行 | 跨库关联结果与人工 SQL 对照一致率 ≥ 90%（join 图路径） |
-| 3 | 用材料构造「决策可追溯」场景执行 | 每次查询的 routing plan 入审计（查了哪个库/哪个 join） |
-| 4 | 用材料构造「防劣质表」场景执行 | 路由避开 catalog 标记为"untrusted/过期"的表 |
-| 5 | 用材料构造「无 join 幻觉」场景执行 | 跨库关联 100% 走预定义 join 图（LLM 不现场生成 join） |
-**失败排查**：断言不符先分层——入口日志（请求到没到）→ SQL 护栏/策略服务（为何拦/放）→ DB 层（只读强制是否在库层）；安全类失败优先验证"测试前置样本是否真的到达被测层"，再查实现。
+| 1 | 材料单测 A/B/C | 三组断言全绿（trust 排序/双向 join 图/图外异常） |
+| 2 | 材料 D | `RoutingPlan.sources` 含 `order_dw`，不含 `payments`（stale 被避开） |
+| 3 | 材料 E | `decomposition=true`；融合结果行含订单列 + 客户 `name` 列（`putIfAbsent` 对齐未覆盖左侧） |
+| 4 | 材料 F | D/E 两次查询各有 trace 记录，sources/join_paths 与实际一致 |
+| 5 | 融合 SQL 抽查 | join 子句只来自 join_graph 种子（`LEFT JOIN ... ON orders.user_id = customers.customer_id` 的内存等价融合），无 LLM 现场造的 join |
+
+**失败排查**：①D 路由到 payments→Router 的 System Prompt 规则"只选 trust=trusted"未生效或 catalog 检索 ILIKE 未命中概念词；②E 融合行数膨胀→`fuse` 的 join key 取错列（leftColumn/rightColumn 写反）；③trace 空→`doOnNext` 里 record 抛异常被吞或 routing_audit 表未建；④`@Tool` 未被调用→§4.5 的 `ToolCallbackProvider` Bean 没注册（@Tool 不会自动注册）。
+
 ## 5. ADR 演进决策
 
 | # | 决策 | 理由 |
@@ -453,6 +490,20 @@ public class CrossSourceJoinService {
 | ADR-516 | 跨库关联用预定义 join 图 | 现场 join 是 fan-out/笛卡尔积重灾区 |
 | ADR-517 | 决策 trace 审计 | 多源查询的"为什么查这个库"要可追溯 |
 
+> **本节核对（ADR 一句话）**：ADR-515/516/517 分别对应 §4.3+§4.8 / §4.3 joinPath+§4.9 fuse / §4.7 的实现。
+
 ## 6. v5 的痛点（驱动下一迭代）
 
 数据能查了，但**业务要的是"答案"不是"表格"**——"给我看华东 6 月的销售趋势"应该直接出图表，不是甩一堆行。**需要报表/可视化生成**。→ [06-报表与可视化生成.md](06-报表与可视化生成.md)
+
+## 7. 全篇回归验证
+
+**回归断言**（§4.10 本节验证通过后，按 §2 验收表整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 100 个单源问题（订单/客户/支付概念各若干）走路由 | 路由到正确库 ≥ 95%，支付类问题不落到 stale 的 payments（验收 1/4） |
+| 2 | 20 个跨库问题，结果与人工写好的对照 SQL 结果比对 | 一致率 ≥ 90%，且所有 join 均为 join_graph 预定义路径（验收 2/5） |
+| 3 | 抽查 routing_audit | 每次查询均有 trace（验收 3） |
+
+**失败排查**：路由准确率低→多为概念词与 catalog `concept` 不匹配（补同义词种子或改进检索）；跨库不一致→先核对人工 SQL 与 fuse 语义差异（LEFT join 下右侧缺行是否保留左侧行）。
