@@ -200,8 +200,31 @@ mvn spring-boot:run
 # curl -X POST "http://localhost:8080/api/chat/stream" -H "Content-Type: text/plain" -d "你好"  # 流式
 ```
 
-## 3. 验证包（手工测试与验证）
-**前置条件**：`demo` 启动成功（8080 端口）；`DEEPSEEK_API_KEY` 已配置。
+### 2.7 本节测试与验证（工程骨架与依赖）
+
+**前置条件**：JDK 21、Maven 已安装；终端可访问 Maven 中央仓库。
+
+**材料——依赖树与配置核对命令**：
+
+```bash
+mvn dependency:tree -Dincludes=org.springframework.ai
+mvn help:evaluate -Dexpression=spring-boot.version -q -DforceStdout
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean compile` | BUILD SUCCESS，无编译错误（材料 2.1-2.5 全部类可编译） |
+| 2 | 材料第一条 | 输出含 `org.springframework.ai:spring-ai-bom:jar:pom:2.0.0 (import)` 与 `spring-ai-starter-model-openai:jar:2.0.0` |
+| 3 | 材料第二条 | 输出 `4.1.0` |
+| 4 | 检查 `application.yml` | `api-key` 为 `${DEEPSEEK_API_KEY}` 占位符，非明文（铁律 9） |
+
+**失败排查**：①BOM 未生效→`<dependencyManagement>` 位置/版本号笔误；②找不到 starter→本地仓库未同步，`mvn -U` 强制刷新；③`invalid target release`→JDK 非 21，`java -version` 核对。
+
+### 2.8 本节测试与验证（对话与 SSE 流式）
+
+**前置条件**：`DEEPSEEK_API_KEY` 已 export；`mvn spring-boot:run` 启动成功（8080）。
 
 **材料 A——curl 命令**：
 
@@ -214,11 +237,22 @@ curl -N -X POST "http://localhost:8080/api/chat/stream" -H "Content-Type: text/p
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 材料A 第一条 | 200 返回完整中文回答（JSON/text 均可，内容非空非报错） |
+| 1 | 材料A 第一条 | 200 返回完整中文回答（内容非空非报错） |
 | 2 | 材料A 第二条（-N 关缓冲） | SSE 流式收到多个增量 data: 块（≥3 块），非一次性整段 |
 | 3 | 发送空字符串 | 明确 4xx/提示，不 500 |
 
-**失败排查**：①401→Key 未注入环境；②一次性整段→Flux 被某层聚合（检查是否误用 block/call().content()）；③500→WebClient 超时（模型服务不可达）。
+**失败排查**：①401→Key 未注入环境；②一次性整段→Flux 被某层聚合（检查是否误用 block/call().content()）；③500→WebClient 超时（模型服务不可达）；④`/chat` 报阻塞告警→确认已用 `Mono.fromCallable(...).subscribeOn(boundedElastic)`。
+
+## 3. 全篇回归验证
+
+**回归断言**（本篇全部小节验证通过后，最终整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 重启应用，先 `/api/chat` 再 `/api/chat/stream` 各一次 | 两种模式均正常，且流式仍为增量输出 |
+| 2 | 连续 3 次 `/api/chat/stream` | 每次均成功，无端口占用/连接泄漏报错 |
+
+**失败排查**：重启失败→8080 被占用（`lsof -i:8080` 找残留进程）；流式退化→回查 §2.8 排查项。
 
 
 > **定位回顾**：本篇搭建基座。下一站 [02-工具集成]——给客服加查 FAQ、查订单、查物流三个工具。

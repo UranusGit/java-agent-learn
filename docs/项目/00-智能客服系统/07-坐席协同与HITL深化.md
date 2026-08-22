@@ -88,6 +88,27 @@ sequenceDiagram
 
 ---
 
+### 2.5 本节测试与验证（置信度评估与转人工）
+
+**前置条件**：06 已通过；双信号置信度评估已接入路由。
+
+**材料——curl 探针**：
+
+```bash
+# ① 问一个知识库没有的问题，触发转人工
+curl -N -X POST "http://localhost:8080/api/chat/stream?s=t1" \
+  -H "Content-Type: text/plain" -d "帮我改一下收货地址顺便把发票抬头改成公司"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料① | SSE 出现 `event: TRANSFER` |
+| 2 | `ConfidenceAssessmentTest`（10 条「知识库无答案」问题） | `hasAnswer=false` 时触发转人工路径 |
+
+**失败排查**：①该转不转→置信度阈值过高或自评 Prompt 太宽松；②误转率超标→可答样本被判低置信（补金标样本校准阈值）。
+
 ## 3. 危险工具人工审批（HITL 落点）
 
 ### 3.1 落点铁律
@@ -184,6 +205,34 @@ stateDiagram-v2
 
 ---
 
+### 3.6 本节测试与验证（审批闸门与挂起恢复）
+
+**前置条件**：§2.5 已通过；`createExchange` 已被审批 ToolCallback 包装；槽位链路（06）可用。
+
+**材料——审批剧本**：
+
+```bash
+# ② 槽位齐全后 AI 调 createExchange → 触发审批
+curl -N -X POST "http://localhost:8080/api/chat/stream?s=t2" \
+  -H "Content-Type: text/plain" -d "订单 DD20240810 换 XL 码"
+# 预期：SSE 出现 event: APPROVAL_REQUIRED + 审批单号；回复说已提交审批
+# 坐席批准后：
+curl -X POST "http://localhost:8080/api/approval/{id}/decision" \
+  -H "Content-Type: application/json" -d '{"approve": true}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料② 首条 | SSE 出现 `event: APPROVAL_REQUIRED` + 审批单号，未真正执行工具 |
+| 2 | 材料② 批准后问「换货办好了吗」 | ≤3 秒内回复含工单号（凭证放行执行） |
+| 3 | `ApprovalToolCallbackTest` | 无凭证调用返回占位文本（不含工单号）；批准后才真正执行 delegate；拒绝后不放行 |
+| 4 | `ApprovalTimeoutTest`（模拟 30 分钟超时） | 审批单自动置为拒绝，用户收到说明 |
+| 5 | 挂起期间 `jstack` | 无 BLOCKED on approval（挂起不占线程） |
+
+**失败排查**：①未审批就执行→包装层未生效（确认 delegate 在凭证校验之后才调用）；②批准后不恢复→恢复事件未订阅或凭证传递断链；③挂起占线程→误用同步 wait，应事件驱动恢复。
+
 ## 4. 坐席辅助：实时话术建议
 
 转人工之后 AI 不是下线，而是**换到副驾位**。坐席工作台打开会话时，旁路链为每条用户消息生成话术建议：
@@ -229,6 +278,20 @@ graph TB
 3. **推送通道**：坐席端与用户端是两条独立 SSE 连接（[教程 24-多页面流式响应与会话管理]），靠会话 ID 关联。
 
 ---
+
+### 4.4 本节测试与验证（旁路话术与采纳回执）
+
+**前置条件**：转人工链路可用；坐席端 SSE 已接入。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 触发转人工后观察坐席端 | 收到旁路话术建议（独立 SSE 通道，用户端不可见） |
+| 2 | 坐席点「采纳」 | 话术进入会话记录并打标 `source=ai_assist` |
+| 3 | 恢复 AI 对话后检查 ChatMemory | 无坐席-AI 建议污染（旁路链未挂记忆 Advisor） |
+
+**失败排查**：①建议写进了用户会话记忆→旁路 ChatClient 误挂 MessageChatMemoryAdvisor；②采纳无回执→打标逻辑未落库（08 归因会缺数据）。
 
 ## 5. 会话质检：满意度与合规抽检
 
@@ -285,38 +348,28 @@ public class ComplianceEvaluator implements Evaluator {
 
 ---
 
-## 6. 测试与验证
+### 5.3 本节测试与验证（质检评估器）
 
-### 6.1 单元测试
+**前置条件**：质检流水线已接入；Micrometer 依赖已加（actuator）。
 
-| 测试类 | 用例 | 断言 |
-|--------|------|------|
-| `ConfidenceAssessmentTest` | 10 条「知识库无答案」问题 | `hasAnswer=false` 时触发转人工路径 |
-| `ApprovalToolCallbackTest` | 无凭证调用 / 有凭证调用 / 拒绝后调用 | 未审批返回占位文本（不含工单号）；批准后才真正执行 delegate |
-| `ApprovalTimeoutTest` | 模拟 30 分钟超时 | 审批单自动置为拒绝，用户收到说明 |
-| `ComplianceEvaluatorTest` | 5 条红线话术 + 5 条正常话术 | 红线 100% 命中、正常 0 误报（金标样本） |
+**步骤与断言**：
 
-### 6.2 curl 验证
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `ComplianceEvaluatorTest`（5 条红线 + 5 条正常金标样本） | 红线 100% 命中、正常 0 误报 |
+| 2 | 差评会话产生后观察质检池 | 触发式 100% 抽样将其纳入（非仅随机 5%） |
+| 3 | 看板/Micrometer 计数 | 质检报告指标可查（Relevancy/Compliance/Satisfaction 分计数） |
 
-```sh
-# ① 触发转人工：问一个知识库没有的问题
-curl -N -X POST "http://localhost:8080/api/chat/stream?s=t1" \
-  -H "Content-Type: text/plain" -d "帮我改一下收货地址顺便把发票抬头改成公司"
-# 预期：SSE 出现 event: TRANSFER
+**失败排查**：①红线漏检→评审 Prompt 红线清单不全或 `EvaluationResponse` 评分阈值过松；②正常话术误报→金标样本太少，扩充后校准。
 
-# ② 触发审批：槽位齐全后 AI 调 createExchange
-curl -N -X POST "http://localhost:8080/api/chat/stream?s=t2" \
-  -H "Content-Type: text/plain" -d "订单 DD20240810 换 XL 码"
-# 预期：SSE 出现 event: APPROVAL_REQUIRED + 审批单号；回复说已提交审批
-# 坐席批准后：
-curl -X POST "http://localhost:8080/api/approval/{id}/decision" \
-  -H "Content-Type: application/json" -d '{"approve": true}'
-# 再问「换货办好了吗」→ 回复含工单号（凭证放行执行）
-```
+## 6. 全篇回归验证（端到端）
 
-### 6.3 端到端
+**回归断言**（§2.5 / §3.6 / §4.4 / §5.3 均通过后，最终整体验收）：
 
-三人剧本：用户触发转人工 → 坐席接单看到摘要面板 → 旁路话术建议被采纳（回执打标）→ 坐席批准换货审批 → 工单创建成功 → 会话进入质检池被抽中并产出报告。
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 三人剧本：用户触发转人工 → 坐席接单看到摘要面板 → 旁路话术被采纳（回执打标）→ 坐席批准换货审批 → 工单创建成功 → 会话进质检池被抽中并产出报告 | 全链路无断点，各环节产物（TRANSFER 事件/审批单/ai_assist 标/工单号/质检报告）齐全 |
+| 2 | `mvn clean test` | 全部测试类（Confidence/ApprovalToolCallback/ApprovalTimeout/Compliance）通过 |
 
 ---
 

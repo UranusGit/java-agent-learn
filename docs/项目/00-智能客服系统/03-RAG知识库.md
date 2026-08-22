@@ -149,6 +149,28 @@ public class KnowledgeBaseLoader implements CommandLineRunner {
 
 > `TokenTextSplitter` 需要作为 Bean 提供——已在上文 §2.3 的 `VectorStoreConfig` 中定义（见 [§2.3](#23-vectorstoreconfigjava-重要不要手写-vectorstore-bean)）。
 
+#### 2.4.1 本节测试与验证（ETL 入库）
+
+**前置条件**：PGVector 依赖与 `application.yml` 已就绪；PG 实例可连（5432）；`manual/产品手册.md` 在 classpath。
+
+**材料——入库核对 SQL**：
+
+```sql
+SELECT COUNT(*) FROM vector_store;
+SELECT LEFT(content, 50), metadata FROM vector_store LIMIT 3;
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 启动应用 | 日志无 `BeanDefinitionOverrideException`（未手写同名 vectorStore）；KnowledgeBaseLoader 正常执行 |
+| 2 | 材料 COUNT | 行数 ≥1（demo01 手册约 940 字节、chunkSize=800 → 1–2 块） |
+| 3 | 材料 LIMIT 抽查 | content 为手册正文片段，`embedding` 列非空 |
+| 4 | 维度核对 | `dimensions` 与 embedding 模型真实输出一致（本机 bge-large-zh 为 1024，见 §4 运行备注） |
+
+**失败排查**：①启动即 `expected 1536 dimensions, not 1024`→配置维度与模型不符（改 dimensions 或核模型）；②表不存在→`initialize-schema` 未开或自动配置被排除；③入库 0 行→手册路径/名称不对，`ClassPathResource` 读空。
+
 ### 2.5 `ChatClientConfig` 更新（加 RAG Advisor）
 
 ```java
@@ -212,9 +234,9 @@ public class ChatClientConfig {
 
 **三项自查**（对照 §3 失败排查）：① import 必须为 `…advisor.vectorstore.QuestionAnswerAdvisor`（包名易写错）；② pom 已引 `spring-ai-vector-store-advisor` 模块；③ Advisor 挂了多半是库空（`KnowledgeBaseLoader` 没跑成）或 threshold 高到检不出东西。
 
-## 3. 验证包（手工测试与验证）
+### 2.8 本节测试与验证（RAG 问答与工具协同）
 
-> **前置**：产品手册已 ETL 入库（本 demo01 手册约 940 字节，`TokenTextSplitter` chunkSize=800 下切 1–2 块，入库即可）。以下问题按「手册正文真实内容」和仓库真实数据（FAQ 3 条、订单 2 单）逐一设计，可直接复制到 `/demo01/chat` 逐个提问。
+> **前置**：§2.4.1 入库验证已通过（§2.5 Advisor 已挂载）。以下问题按「手册正文真实内容」和仓库真实数据（FAQ 3 条、订单 2 单）逐一设计，可直接复制到 `/demo01/chat` 逐个提问。
 
 ### 材料 A——手册内可答（RAG 应命中 → 基于手册作答）
 
@@ -279,6 +301,17 @@ FAQ 工具（`FaqTool`）只有「退换货/以旧换新/发货时效」3 条。
 - B 强召回 → `similarityThreshold` 过低或未生效（确认 QuestionAnswerAdvisor 真的挂了）
 - T5 捏造物流 → `OrderTool` 返回 null 但 System Prompt 没约束"查不到就明说"
 - 全部无依据 → 检索块没注入 Prompt（RAG Advisor 未挂 or 向量库为空）
+
+## 3. 全篇回归验证
+
+**回归断言**（§2.4.1 与 §2.8 本节验证均通过后，最终整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 重启应用（重新触发 ETL），重跑材料 A 七问 | 入库幂等不报错（重复运行），七问 PASS 率不降 |
+| 2 | 混合问一轮：A1 + T3 + X1 各一次 | 三类链路（RAG/工具/拒答）在同一个会话进程内均正常 |
+
+**失败排查**：重启后重复入库导致块翻倍→ETL 加"先按 metadata.source 删旧再写"；混合轮异常→RAG 与工具 Advisor 顺序问题，回查 §2.8 排查项。
 
 ## 4. 运行备注（本项目/本机实测，跟随项目迁移）
 
