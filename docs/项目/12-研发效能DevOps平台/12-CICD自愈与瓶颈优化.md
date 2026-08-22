@@ -19,6 +19,14 @@
 
 > **本迭代验收**（详见 §5 验收对照）：① flaky 自动重试恢复率 ≥ 80% ② 自愈类 MTTR 从 20 分钟 → ≤ 3 分钟 ③ 高风险动作 100% HITL ④ 熔断生效（连败停手）⑤ 瓶颈建议落地后 P50 -20%。
 
+### 1.1 本节核对（四问口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四问齐全 | 新增需求/影响模块/架构演进/上一版痛点四行均有；痛点（flaky 也人点、夜间挂 8h、P50 涨无归因）承接 v10 末尾 |
+| 2 | 新增模块落点 | healing 包（SignatureStats/HealingPolicy/SelfHealingService）+ perf 包（BottleneckAnalyzer）在 §3 均有完整类 |
+| 3 | 架构演进可落地 | "诊断只读 → 签名统计+策略引擎+熔断"与 §3.2-SignatureStats / §3.3-HealingPolicy / §3.4-SelfHealingService 对应 |
+
 ## 2. 从"只读诊断"到"分级自愈"
 
 ### 2.1 ADR-713 的修订：不是推翻，是分层
@@ -131,6 +139,14 @@ flowchart LR
 ```
 
 **纪律**：数字全部来自测量（Micrometer 直方图），LLM 只负责把"分片方案"表述成可执行建议——**确定性优先、LLM 收尾**在性能域的同一套打法（ADR-702）。
+
+### 2.5 本节核对（自愈分级 / 熔断 / 根因三源 / 瓶颈关键路径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 动作分级清晰 | 2.1 表四动作（RETRY_FLAKY/SWAP_RUNNER 自动；ROLLBACK/APPLY_FIX HITL）与 §3.3 `HealingPolicy.Action` 枚举、§3.4 switch 分支对应 |
+| 2 | 熔断/预算纪律可读 | 2.2「单 build ≤3 次、连败 3 次熔断」（防自愈风暴）与 §3.4 `MAX_HEALS_PER_BUILD`/`CIRCUIT_BREAK_THRESHOLD` 一致 |
+| 3 | 根因三源与瓶颈关键路径清楚 | 2.3 日志+Trace+代码三源关联对应 §3.5 TraceCorrelator；2.4 只对关键路径提建议对应 §3.6 BottleneckAnalyzer |
 
 ## 3. 完整代码（照抄即可）
 
@@ -475,22 +491,54 @@ public class BottleneckAnalyzer {
 
 > `pipeline_step_timing` 表（step/start/end）由 CI webhook 完成事件写入，DDL 与 `ci_log` 同模式，此处从简。
 
-## 4. 测试与验证
+### 3.7 本节测试与验证（flaky 自愈 / 预算熔断 / 高风险 HITL / 瓶颈测量）
 
-```bash
-# ① flaky 自愈测试：注入 10 个历史 flaky 率 ≥ 70% 的签名 → 失败重放
-#    预期：≥ 8 个自动 RETRY_FLAKY 成功转绿（恢复率 ≥ 80%），全程无人工介入
-# ② 预算测试：单 build 注入 5 个可自愈失败 → 第 4 个起 ESCALATED（预算 3 耗尽）
-# ③ 熔断测试：同签名预置 3 条 FAILED 历史 → 新失败直接 CIRCUIT_BROKEN，零自动动作
+**前置条件**：PG（devops 库）可连且已执行 §3.1 DDL（`healing_policy` + `healing_log` + 索引）；v4 的 `ci_log` 表与 `DrainTemplateMiner`、v7 `spring-boot-starter-actuator`（MeterRegistry）就绪；CI 失败事件可注入。
+
+**材料 A——自愈决策流核对（正文 §3.2-SignatureStats / §3.3-HealingPolicy / §3.4-SelfHealingService 同款）**：
+
+```sh
+# ① flaky 自愈：注入 10 个历史 flaky 率 ≥ 70% 的签名 → 失败重放触发 onBuildFailure
+# ② 预算：单 build 注入 5 个可自愈失败 → 观察第 4 个起的返回
+# ③ 熔断：同签名预置 3 条 FAILED 历史 → 新失败直接观察返回
+# ④ 高风险：healing_policy 配 ROLLBACK 的签名失败 → 观察自愈动作
 ```
 
-```java
-// ④ 高风险闸门测试：healing_policy 配 ROLLBACK 的签名失败
-//    预期：不执行任何回滚调用，只产生审批任务（CiFixApprovalManager 通道）——100% HITL
-// ⑤ 瓶颈归因测试：42m 单测 + 18m 集成测试的 build
-//    预期：建议针对单测分片（关键路径），收益预估引用 42m 数字
-// ⑥ 指标验证：Grafana ci_selfheal_outcome 计数与 healing_log 行数一致
+**材料 B——指标与瓶颈对账**：
+
+```sh
+# ⑤ 瓶颈归因：对"42m 单测 + 18m 集成测试"的 build 跑 §3.6 BottleneckAnalyzer.analyze
+# ⑥ 指标验证：Grafana ci_selfheal_outcome 计数与 healing_log 行数对账
 ```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 A① flaky 自愈 | ≥ 8/10 自动 `RETRY_FLAKY` 转绿（恢复率 ≥ 80%），全程无人工介入；`healing_log` 记 `HEALED` |
+| 2 | 材料 A② 预算 | 前 3 个走自动动作，第 4 个起返回 `ESCALATED`（预算 3 耗尽，`MAX_HEALS_PER_BUILD` 生效） |
+| 3 | 材料 A③ 熔断 | 同签名连败 3 次 → 新失败直接返回 `CIRCUIT_BROKEN`，零自动动作（`CIRCUIT_BREAK_THRESHOLD` 生效） |
+| 4 | 材料 A④ 高风险闸门 | ROLLBACK 签名失败 → 返回 `ESCALATED`，不执行任何回滚调用，只产生审批任务（100% HITL，走 v4 `CiFixApprovalManager` 通道） |
+| 5 | 材料 B⑤ 瓶颈归因 | 建议针对**单测**（42m，关键路径最慢 step）分片，收益预估引用 42m 数字，不虚构工具名 |
+| 6 | 材料 B⑥ 指标对账 | `ci_selfheal_outcome` 各 outcome 计数与 `healing_log` 行数一致 |
+
+**失败排查**：①flaky 全转人工→`SignatureStats.of` flaky 率计算不对（`healed`/`occurrences` 口径）；②预算不生效→`buildBudget` 未按 build_id 隔离或 `MAX_HEALS_PER_BUILD` 常量被改；③熔断不触发→`consecutiveFailures` 查询的最近 3 条窗口错（`created_at DESC`）；④ROLLBACK 被执行→§3.4 switch 分支 `case ROLLBACK` 漏判为执行，回滚调用未走 `ESCALATED`；⑤瓶颈建议给到非关键 step→`analyze` 排序按 `minutes` 而非 DAG 关键路径（简化模型的已知边界）。
+
+## 4. 全篇回归验证
+
+**回归断言**（§3.7 本节验证均通过后整体验收，对账 §5 验收对照）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | flaky 集合重放 | 历史 flaky 率 ≥70% 失败自动恢复 ≥ 80%（验收 1） |
+| 2 | 自愈类 MTTR 抽样 | 从 20 分钟 → ≤ 3 分钟；夜间失败不再挂 8 小时（验收 2） |
+| 3 | 高风险动作复核 | ROLLBACK/APPLY_FIX 100% HITL，零例外（验收 3） |
+| 4 | 预算熔断回归 | 单 build ≤3 次、连败 3 次熔断，测试 ②③ 复跑通过（验收 4） |
+| 5 | 审计完整 | 每次自愈决策/执行/结果 100% 落 `healing_log`（验收 5） |
+| 6 | 瓶颈量化复盘 | 建议 100% 基于测量数字；落地后 P50 -20%（验收 6） |
+| 7 | 演进边界复核 | 未做 ADR 汇编（13）、未做前沿演进（14）（验收 7） |
+
+**失败排查**：①MTTR 未降→自动动作执行路径（CI API 调用）慢或审批流程依赖人工；②P50 未降→优化落在非关键路径，回查 `BottleneckAnalyzer` 排序；③审计缺失→`executeAuto`/`audit` 未在所有出口调用（含熔断/预算分支）。
 
 ## 5. 验收对照
 
@@ -504,6 +552,13 @@ public class BottleneckAnalyzer {
 | 瓶颈量化 | 建议 100% 基于测量数字；落地后 P50 -20% | ✅ |
 | 未提前引入后续能力 | 未做 ADR 汇编（13）、未做前沿演进（14） | ✅ |
 
+### 5.1 本节核对（验收口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 验收项可度量 | 七项均含数值或可判定标准（≥80%、≤3 分钟、100% HITL、≤3 次/连败 3 次、100% 审计、P50 -20%、未引入），非空话 |
+| 2 | 每项有代码落点 | 恢复率→§3.4 executeAuto+stats；MTTR→§3.4 自动动作；分级→§3.3 HealingPolicy；预算熔断→§3.4 常量；审计→§3.4 audit；瓶颈→§3.6 BottleneckAnalyzer |
+
 ## 6. 本迭代的 ADR
 
 | # | 决策 | 理由 |
@@ -512,14 +567,26 @@ public class BottleneckAnalyzer {
 | ADR-733 | 自愈预算（单 build ≤3）+ 熔断（同签名连败 3 次停手） | 防自愈风暴：自动动作烧资源 + 掩盖真 bug 的双风险 |
 | ADR-734 | 瓶颈分析基于测量（关键路径计算），LLM 只做建议表述 | 优化非关键路径零收益；数字来自直方图不来自模型 |
 
+### 6.1 本节核对（ADR 732-734 一致性）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 每条 ADR 有代码落点 | 732→§3.3 HealingPolicy 分级+§3.4 switch；733→§3.4 预算熔断常量；734→§3.6 BottleneckAnalyzer（测量优先） |
+| 2 | 与 13-ADR 总账衔接 | ADR-732/733/734 在 [13-ADR架构决策记录] §3.6（732 修订 713）与 §3.8 等存在 |
+| 3 | 修订轨迹可追溯 | ADR-732 显式"修订 ADR-713"并写明新证据（签名库+历史统计），非静默推翻，与 §2.1 一致 |
+
 ## 7. v11 的痛点（驱动下一迭代）
 
 三个进阶迭代（v9 图谱、v10 辩论、v11 自愈）走完，平台能力成型，但**决策资产散落在 11 个迭代篇里**：ADR-700 到 734 共 35 条分散在各篇 §5 小表，没有统一上下文/备选/取舍结构；ADR-713 被修订这件事只在本文 §2.1 提了一句，三个月后的新人根本不知道"为什么当初一刀切、后来为什么分级"。**需要 ADR 体系化汇编**。→ [13-ADR架构决策记录.md](13-ADR架构决策记录.md)
+
+> 本节核对（一句话）：V11 痛点（ADR 散落、无备选/回滚结构、修订无轨迹）与下一迭代 [13]"ADR 体系化汇编"方案一一对应，痛点不被搁置即 PASS。
 
 ---
 
 ## 8. 总结
 
 v11 把 CI 侧从"看得见"推进到"治得了、快得起"：`SignatureStats` 建跨构建签名统计（flaky 率/连败计数做证据层）、`HealingPolicy` 落地动作分级（无代码变更类自动、永久变更类 100% HITL——ADR-732 对 ADR-713 的显式修订而非静默推翻）、`SelfHealingService` 用预算 + 熔断把自动关进笼子、`TraceCorrelator` 消费 v4 就存了的 `trace_id` 做日志/Trace/代码三源根因关联、`BottleneckAnalyzer` 用关键路径测量驱动优化建议（LLM 只表述不发明数字）。**Micrometer `Counter`/`MeterRegistry` 为 v7 已实证依赖，无新增坐标**；全部 API 对齐 [附录 05-SpringAI2-API基准]。
+
+> 本节核对（一句话）：总结中五组件（SignatureStats、HealingPolicy、SelfHealingService、TraceCorrelator、BottleneckAnalyzer）分别对应正文 §3.2、§3.3、§3.4、§3.5、§3.6；"ADR-732 显式修订 713"与 §2.1/§6 ADR 一致，与正文口径一致即 PASS。
 
 **下一篇**：13-ADR架构决策记录——35 条决策的体系化汇编（上下文/备选/取舍/可回滚）。

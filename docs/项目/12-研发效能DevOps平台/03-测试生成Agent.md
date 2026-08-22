@@ -17,6 +17,14 @@
 | **架构如何演进** | 生成管线：Controller → TestGenAgent(LLM) → FilterPipeline(五重确定性过滤) → MutationGate → DraftPrService |
 | **上一版痛点是什么** | 行覆盖率 < 40%，无回归保护；行覆盖率可被刷分；生成测试不可信 |
 
+### 1.1 本节核对（四问口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四问齐全且痛点承接 | 新增需求/影响模块/架构演进/上一版痛点四行均有；痛点（行覆盖率<40%）与 [02] 末尾痛点一致 |
+| 2 | 架构链可落地 | `Controller → TestGenAgent → FilterPipeline(五重) → MutationGate → DraftPrService` 各环节在 §3 均有完整类 |
+| 3 | 复用关系明确 | codeIndex 复用 v1 索引增强生成信号，与 [01 §前言] 公共基础一致 |
+
 ## 2. 测试生成管线
 
 > **为什么变异测试**（[调研 研发效能 2026 §测试生成]）：LLM 生成测试 92% 可编译但只杀死 58-62% 注入变异（人类 78%）——**行覆盖率是"可被 AI 刷分"的指标**，变异测试（PIT/Stryker）升格为质量闸门。
@@ -34,6 +42,14 @@ flowchart LR
     style F5 fill:#ffebee
     style PR fill:#fff9c4
 ```
+
+### 2.1 本节核对（五重过滤与变异升格）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 五重过滤顺序正确 | 编译→执行→flakiness→覆盖率→变异，与 §3.8 FilterPipeline 依次调用顺序一致 |
+| 2 | 变异测试立意可复述 | 行覆盖率可被 AI 刷分（92% 编译只杀 58-62% 变异 vs 人类 78%），故变异升格为闸门 |
+| 3 | 任一失败即丢弃 | 图中 F1-F5 任一失败汇入 DROP，与 FilterPipeline 短路返回 TestVerdict.rejected 对应 |
 
 ## 3. 完整代码（照抄即可）
 
@@ -547,6 +563,42 @@ public class TestGenController {
 }
 ```
 
+### 3.11 本节测试与验证（生成、五重过滤与 draft PR 人工批准）
+
+**前置条件**：可在工程根运行 `mvn test` 与 PIT 插件（§3.1 已配 jacoco 0.8.12 / pitest 1.17.1）；`DEEPSEEK_API_KEY`、`GITLAB_TOKEN` 已设置，GitLab 可达；被测类（如 `com.rd.payment.PaymentService`）已由 v1 索引进 `code_chunk`。
+
+**材料 A——网关外核对命令（正文 §3.5-§3.7 同款）**：
+
+```sh
+mvn jacoco:report -q                       # 产出 target/jacoco.csv（CoverageService 读取）
+mvn org.pitest:pitest-maven:mutationCoverage \
+    -DtargetClasses=com.rd.payment.PaymentService -DoutputFormats=XML
+```
+
+**材料 B——生成与批准 HTTP**：
+
+```sh
+curl -s -X POST "http://localhost:8080/api/v1/testgen?qualifiedName=com.rd.payment.PaymentService"
+curl -s -X POST http://localhost:8080/api/v1/testgen/draft \
+  -H "Content-Type: application/json" \
+  -d '{"targetRepo":"core","feature":"payment-tests","description":"LLM 生成单测，需人工批准"}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 B 生成 | 返回 `VerdictOutcome[]` JSON：每条含 testClassName 与 verdict（五重过滤裁决） |
+| 2 | 过滤 1 编译 | `compiles` 编译成功（CompilerService），过滤失败则 verdict != accepted("编译失败") |
+| 3 | 过滤 2/3 执行+flakiness | 测试连跑 5 次全过，无 flaky 判定；`isFlaky(...,5)` 返回 false |
+| 4 | 过滤 4 覆盖率 | 材料 A 的 jacoco.csv 行覆盖率 ≥ 50%（MIN_COVERAGE），否则 rejected("覆盖率不足") |
+| 5 | 过滤 5 变异 | PIT mutations.xml killRate ≥ 阈值（payment/security 85%、default 65%），MutationGate.passes 返回 true |
+| 6 | provenance | 通过的 GeneratedTest 带 provenance（模型+时间戳+prompt 指纹），随类持久可审计 |
+| 7 | 材料 B draft | 调用 GitLab API 开 draft PR（draft=true），无 auto-merge 动作 |
+| 8 | WebFlux 一致 | DraftPrService 返回 Mono<Void> 走响应式链；过滤在 boundedElastic 上执行，EventLoop 无 block 警告 |
+
+**失败排查**：①`javac: invalid target release`→`java.class.path` 不含正确 JDK，CompilerService 需 `-source/-target 21`；②jacoco.csv 读取失败（数组越界）→列错位，核对 CSV 第 3/4 列为 INSTRUCTION_MISSED/COVERED；③PIT 返回 0 分→target 类无测试可杀变异或未生成 mutations.xml，先确认有通过的测试；④draft POST 5xx→`gitlab.base-url` 或 `GITLAB_TOKEN` 配错，核对 branch 前缀 `pr-testgen-`；⑤五重全过但 draft 未开→DraftPrService `draft=true` 布尔字段未传，核对 CreateMrRequest JSON 属性。
+
 ## 4. 验收标准（量化）
 
 | # | 验收项 | 标准 |
@@ -557,6 +609,13 @@ public class TestGenController {
 | 4 | 无 contract drift | 生成测试不改变被测类行为契约（差异检测） |
 | 5 | 人工批准 | 生成的测试 100% 走 draft PR 人工批准 |
 
+### 4.1 本节核对（验收口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 验收项可度量 | 五项均含数值或可判定标准（变异≥65%/85%、编译≥90%、无假绿、无 drift、100% 人工批准），非空话 |
+| 2 | 每项有代码落点 | 变异→§3.7 MutationGate；可编译→§3.5 CompilerService；无假绿→变异闸门验证真抓bug；无 drift→§3.3 provenance；人工批准→§3.9 DraftPrService |
+
 ## 5. 本迭代的 ADR
 
 | # | 决策 | 理由 |
@@ -565,12 +624,23 @@ public class TestGenController {
 | ADR-710 | 五重过滤管线 + provenance tag | Meta TestGen 范式；三态（自动通过/隔离/阻断） |
 | ADR-711 | draft PR 人工批准 | 无 AI 测试无门槛进 CI 的行业共识 |
 
+### 5.1 本节核对（ADR 709-711 一致性）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 每条 ADR 有代码落点 | 709→§3.7 MutationGate 变异闸门；710→§3.8 FilterPipeline 五重+provenance；711→§3.9 DraftPrService |
+| 2 | 与 13-ADR 总账衔接 | ADR-709/710/711 在 [13-ADR架构决策记录] 存在，编号与 02 预录 708 衔接 |
+
 ## 6. v3 的痛点（驱动下一迭代）
 
 测试多了，但**CI 失败诊断慢暴露**：构建/测试失败靠人翻日志，平均 20 分钟定位。**需要 CI/CD 诊断 Agent**——日志聚类 + LLM 根因。→ [04-CICD诊断Agent.md](04-CICD诊断Agent.md)
+
+> 本节核对（一句话）：V3 痛点（诊断慢、翻日志 20 分钟）与下一迭代 [04]"日志聚类 + LLM 根因"方案一一对应，痛点不被搁置即 PASS。
 
 ---
 
 ## 7. 总结
 
 v3 把测试覆盖不足变成"生成 + 五重确定性过滤 + 变异闸门 + 人工批准"：`TestGenAgent` 用真实 `entity(ParameterizedTypeReference)` 生成带 provenance 的测试，`FilterPipeline` 依次跑编译（`JavaCompiler`）/执行（Surefire）/flakiness（连跑 5 次）/覆盖率（JaCoCo）/变异（PIT）五道闸门，`DraftPrService` 开 draft PR 交人工批准。**核心洞察落地：行覆盖率可刷分，变异测试不可刷**。
+
+> 本节核对（一句话）：总结中五道闸门（编译/执行/flakiness/覆盖率/变异）与 §3.8 FilterPipeline 顺序一致，DraftPrService 与 §3.9 对应，口径一致即 PASS。

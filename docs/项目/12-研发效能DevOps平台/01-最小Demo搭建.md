@@ -12,6 +12,13 @@
 
 代码审查、测试生成、CI 诊断都依赖**同一份代码索引**（AST 分块 + 符号 + 向量）。先让索引与问答跑通、验证检索质量，后续迭代复用。**v1 只做**：Java 仓库扫描 → JavaParser AST 分块 → 向量化入库 → 代码问答。
 
+### 1.1 本节核对（迭代范围）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | v1 边界清晰 | 只做索引+问答，刻意不做审查/测试/诊断，与定位段"刻意不做"一致 |
+| 2 | 与总览对接 | v1 映射到 00 §2 演进路线第 1 行（代码问答RAG），无跳跃 |
+
 ## 2. 四问
 
 | 问 | 答 |
@@ -20,6 +27,13 @@
 | **影响了哪些模块** | 全部（这是地基，无历史包袱） |
 | **架构如何演进** | 单体单模块：`IndexLoader` → `JavaChunkIndexer` → `VectorStore/FtsStore` → `CodeQaService` |
 | **上一版痛点是什么** | 无（v1 是起点，痛点是**将要暴露的**：索引只有检索没有符号图、检索只有两路） |
+
+### 2.1 本节核对（四问口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四问齐全 | 新增需求/影响模块/架构演进/上一版痛点四行均有，无空答 |
+| 2 | 架构演进链路可落地 | `IndexLoader → JavaChunkIndexer → VectorStore/FtsStore → CodeQaService` 四个类在 §3 均有完整实现 |
 
 ## 3. 完整代码（照抄即可，一行不省略）
 
@@ -564,6 +578,36 @@ mvn spring-boot:run
 # curl "http://localhost:8080/api/v1/qa?question=OrderService怎么鉴权&repo=core"
 ```
 
+### 3.13 本节测试与验证（AST分块、三路混合检索与代码问答）
+
+**前置条件**：PG（5432/devops 库）可连且已执行 §3.3 DDL；PG 已安装 `vector` 扩展；`DEEPSEEK_API_KEY`、`REPO_ROOT` 已设置；应用按 §3.1-§3.11 照抄并 `mvn spring-boot:run` 启动成功。
+
+**材料 A——建库与 DDL 核对**：
+
+```sh
+psql -h localhost -U postgres -d postgres -c "CREATE DATABASE devops;"
+psql -h localhost -U postgres -d devops -c "\d code_chunk"
+```
+
+**材料 B——问答请求**：
+
+```sh
+curl "http://localhost:8080/api/v1/qa?question=OrderService怎么鉴权&repo=core"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 建库并执行 §3.3 DDL 后 `\d code_chunk` | 表存在；HNSW 索引（`idx_code_chunk_hnsw`）与 FTS gin 索引（`idx_code_chunk_fts`）均建好 |
+| 2 | 启动日志 | `vectorStore.add` 完成后日志无异常（Embedding 正常入库）；无 `block()/blockFirst()` 报警 |
+| 3 | 材料 B curl | 返回 `CodeAnswer` JSON：含 `answer` 文本与 `references` 数组（file_path 引用） |
+| 4 | 分块正确性 | `code_chunk.qualified_name` 按 `包.类型#方法` 切分，无跨方法拼接（抽检 3 个方法） |
+| 5 | 混合检索召回 | 对已知方法名提问，"OrderService 怎么鉴权"能召回 `OrderService` 相关 chunk（FTS 符号路生效） |
+| 6 | 权限隔离 | `repo` 参数传 `core` 时可检索；`filterExpression("repo == 'core'")` 生效，无跨仓结果 |
+
+**失败排查**：①`relation "code_chunk" does not exist`→DDL 未执行或执行在错误库；②`extension "vector" is not available`→PG 未安装 pgvector 扩展，先 `CREATE EXTENSION`；③启动报 `BeanDefinitionOverrideException`→手写了 `vectorStore` bean（应交给 starter 自动配置）；④curl 返回 4xx/5xx→确认 §3.5 的 `spring-ai-vector-store-advisor` 依赖已加、`repo` 参数存在；⑤编译错 `cannot find symbol QuestionAnswerAdvisor`→`spring-ai-vector-store-advisor` 未引入或版本非 2.0.0。
+
 ## 4. 验收标准（量化）
 
 | # | 验收项 | 标准 |
@@ -574,18 +618,36 @@ mvn spring-boot:run
 | 4 | 引用溯源 | 问答 100% 带 file_path/file:line 引用 |
 | 5 | 权限隔离 | 检索按 repo 元数据 pre-filter（防跨仓泄漏） |
 
+### 4.1 本节核对（验收口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 验收项均可度量 | 五项均含数值或可判定标准（Recall@5≥85%、100% 溯源、按 repo pre-filter），非空话 |
+| 2 | 每项验收有对应代码实现落点 | 索引完整体→§3.10 IndexLoader；检索质量→§3.9 RRF；分块→§3.7；溯源→§3.11；隔离→§3.9 filterExpression |
+
 ## 5. 本迭代的 ADR
 
 | # | 决策 | 理由 |
 |---|------|------|
 | ADR-700（最小 Demo） | 代码索引用 AST 分块 + 混合检索（向量 + FTS，RRF 融合） | 代码 RAG 是"解析问题非检索问题"；索引质量决定审查/测试/诊断下游质量；v1 先建两路，v2 加符号图 |
 
+### 5.1 本节核对（ADR-700 一致性）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | ADR-700 在代码有落点 | §3.7 AST 分块 + §3.9 RRF 融合双实现吻合"AST+混合检索"决策 |
+| 2 | 与 13-ADR 总账衔接 | ADR-700 在 [13-ADR架构决策记录] 存在，编号段与 00 预录 701+ 衔接 |
+
 ## 6. v1 的痛点（驱动下一迭代）
 
 代码问答跑通了，但**代码审查暴露短板**：PR 审查靠人肉，漏掉安全/性能问题；而直接用 LLM 审 PR 误报率高（Copilot ~33% 误报）。**需要"静态层先行 + LLM 语义层"的两级审查流水线**。→ [02-代码审查Agent.md](02-代码审查Agent.md)
+
+> 本节核对（一句话）：V1 的痛点（审查靠人肉 + LLM 误报 High）与下一迭代 [02] 的"静态层先行"方案一一对应，痛点不被搁置即 PASS。
 
 ---
 
 ## 7. 总结
 
 v1 用完整可手写代码立住了代码库 RAG 地基：`JavaChunkIndexer` 做 AST 感知分块（胜负手）、`FtsStore` 补关键词精确路、`CodeSearchService` 用 RRF 融合两路、`CodeQaService` 注入上下文生成带引用溯源的答案。**所有 API 均按 [附录 05-SpringAI2-API基准] 书写**（`QuestionAnswerAdvisor` 真实包路径、`SearchRequest.builder()`、`Document.builder()`、`entity(Class)`）。
+
+> 本节核对（一句话）：四行总结分别对应 §3.7（分块）、§3.8（FTS）、§3.9（RRF）、§3.11（问答溯源），与正文口径一致即 PASS。

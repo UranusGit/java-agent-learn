@@ -17,6 +17,14 @@
 | **架构如何演进** | 诊断管线：Controller → LogIndexer(入库) → ClusterService(聚类) → CiDiagnosisService(LLM 根因) → CiFixApprovalManager(HITL 动作闸门) |
 | **上一版痛点是什么** | CI 失败靠人翻日志（20 分钟）；40MB 日志 LLM 无法硬灌；修复自动执行风险 |
 
+### 1.1 本节核对（四问口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四问齐全且痛点承接 | 四行均有；痛点（翻日志20分钟、硬灌必败、自动修复风险）对应对 [03 痛点 §6] |
+| 2 | 架构链可落地 | `Controller → LogIndexer → ClusterService → CiDiagnosisService → CiFixApprovalManager` 各环节在 §3 均有完整类 |
+| 3 | 复用关系明确 | 复用 v1 代码索引做根因定位，与 [01 §前言] 公共基础一致 |
+
 ## 2. 诊断管线
 
 ```mermaid
@@ -34,6 +42,13 @@ flowchart LR
 ```
 
 **无结构化索引 LLM 硬灌必败**（[调研 研发效能 2026 §CI 诊断]）：失败日志入库即解析为 `template_signature + parameters[]` + provenance（commit sha / OTel trace_id）。
+
+### 2.1 本节核对（诊断管线与只读红线）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 管线各阶段有类落点 | 入库→§3.4 LogIndexer；信号提取→§3.3 DrainTemplateMiner；聚类→§3.5 ClusterService；根因→§3.6；审批→§3.7 |
+| 2 | 只读红线可读 | 诊断链路（入库/聚类/根因）无副作用；FIX 仅在 HUMAN 批准后触发，与 §4 验收 4 一致 |
 
 ## 3. 完整代码（照抄即可）
 
@@ -435,6 +450,44 @@ public class CiDiagnosisController {
 }
 ```
 
+### 3.9 本节测试与验证（日志结构化、聚类与根因 + 修复 HITL 审批）
+
+**前置条件**：PG（5432/devops 库）可连且已执行 §3.2 DDL（ci_log 表）；`DEEPSEEK_API_KEY` 已设置；服务按 §3.1-§3.8 照抄并启动；CI 侧能发 webhook 到 `/api/v1/ci/diagnose`。
+
+**材料 A——DDL 核对 SQL**：
+
+```sql
+\d ci_log
+SELECT step_type, template_signature, count(*) FROM ci_log GROUP BY 1,2;
+```
+
+**材料 B——诊断请求（两条同模板、参数不同的编译错误日志）**：
+
+```sh
+curl -s -X POST http://localhost:8080/api/v1/ci/diagnose \
+  -H "Content-Type: application/json" \
+  -d '{"buildId":9001,"stepType":"COMPILE","commitSha":"abc123","traceId":"tr-1",
+       "rawLogs":[
+         "error: cannot find symbol method queryOrder(long) in OrderService:9001",
+         "error: cannot find symbol method queryOrder(long) in OrderService:9002"
+       ]}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 A 第一条 | 表结构含 `ci_log` 全部列（build_id/template_signature/parameters/step_type/commit_sha/trace_id）与两个索引 |
+| 2 | 材料 B POST | 返回 `DiagnosisResult` JSON：`clusterCount` = 1（两条日志同 template_signature → 聚一簇），`hypotheses` 非空 |
+| 3 | 模板挖掘 | template_signature 中数字被占位符替换（"[...queryOrder({digits})"），原值 `9001/9002` 落入 parameters |
+| 4 | 聚类收敛 | 大量日志经 `cluster(entries, 150)` 每簇 ≤ 150 行代表性片段（从 8000 行收敛） |
+| 5 | LLM 根因只读 | hypotheses 含 step/hypothesis/evidence/confidence；诊断端无 executeToolCalls，零副作用 |
+| 6 | HITL 审批拦截 | 模型返回含 `retryBuild`/`applyFix` 工具意图，但未先 approve → 抛 `ApprovalRequiredException`（"工具需要人工审批"） |
+| 7 | 批准后放行 | `FixApprovalStore.approve(callId)` 后同意图能通过 `CiFixApprovalManager` 委托执行 |
+| 8 | 阻断工具集 | `ACTION_TOOLS` 命中 applyFix/retryBuild/openPr，其余只读工具不被拦（不漏拦正常调用） |
+
+**失败排查**：①`ApprovalRequiredException` 总抛且无法批准→approvalStore 与 manager 为不同实例或 ToolCall 的 id 不匹配，核对 approve 传入的是 `call.id()`；②`CiFixApprovalManager` 未生效→`ToolCallingManager` Bean 装饰链未装配（2.0.0 用 `ToolCallingManager`，已实证）；③聚合结果 clusterCount=0→rawLogs 空或 JSON 字段名（buildId/stepType/rawLogs）与 record 不一致；④模板未占位→DrainTemplateMiner 三个 Pattern 未匹配目标 token 类型，补正则；⑤诊断请求 5xx→ci_log 表未建或字段类型不符。
+
 ## 4. 验收标准（量化）
 
 | # | 验收项 | 标准 |
@@ -445,6 +498,13 @@ public class CiDiagnosisController {
 | 4 | 诊断只读 | 诊断不触发任何执行动作（无副作用） |
 | 5 | 修复审批 | 修复/重试/开 PR 100% 走人工审批闸门 |
 
+### 4.1 本节核对（验收口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 验收项可度量 | 五项均含数值/可判定标准（≤2分钟、根因≥80%、100% 结构化、只读无副作用、100% 审批），非空话 |
+| 2 | 每项有代码落点 | 时效→§3.5 聚类收敛；根因→§3.6；结构化→§3.3/§3.4；只读→§3.6 无 executeToolCalls；审批→§3.7 CiFixApprovalManager |
+
 ## 5. 本迭代的 ADR
 
 | # | 决策 | 理由 |
@@ -453,12 +513,23 @@ public class CiDiagnosisController {
 | ADR-713 | 诊断只读，修复 HITL 审批 | AI 不做生产部署是行业底线 |
 | ADR-714 | 聚类键含 stepType | 勿混 Java 编译错与部署超时 |
 
+### 5.1 本节核对（ADR 712-714 一致性）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 每条 ADR 有代码落点 | 712→§3.4 入库+§3.3 模板；713→§3.7 审批闸门；714→§3.5 聚类键 `stepType+template_signature` |
+| 2 | 与 13-ADR 总账衔接 | ADR-712/713/714 在 [13-ADR架构决策记录] 存在，编号与 03 预录 711 衔接 |
+
 ## 6. v4 的痛点（驱动下一迭代）
 
 CI 诊断能定位单类失败，但**评审还是单 Agent 视角**：一个 PR 既涉及安全（越权）、又涉及性能（N+1 查询）、又涉及架构——单 Agent 审查顾此失彼。**需要多 Agent 评审流水线**。→ [05-多Agent评审流水线.md](05-多Agent评审流水线.md)
+
+> 本节核对（一句话）：V4 痛点（单 Agent 视角顾此失彼）与下一迭代 [05]"并行专业 Sub-Agent + 强聚合"方案一一对应，痛点不被搁置即 PASS。
 
 ---
 
 ## 7. 总结
 
 v4 把 CI 失败诊断从人翻日志变成"结构化 + 聚类 + LLM 根因"：`DrainTemplateMiner` 把日志抽成 template_signature + 参数（无结构化索引 LLM 硬灌必败）、`ClusterService` 把 8000 行聚成 ≤150 行/簇、`CiDiagnosisService` 用真实 `entity(ParameterizedTypeReference)` 每簇产出根因假设。**关键落点**：诊断只读，`CiFixApprovalManager` 作为 `ToolCallingManager` 装饰器拦截 applyFix/retryBuild/openPr 动作——这正是 [教程 28-Human-in-the-Loop与审批流] 的 HITL 落点实现。
+
+> 本节核对（一句话）：总结中五个组件（DrainTemplateMiner、ClusterService、CiDiagnosisService、CiFixApprovalManager、ToolCallingManager 装饰器）与正文 §3.3/§3.5/§3.6/§3.7 对应，口径一致即 PASS。

@@ -17,6 +17,14 @@
 | **架构如何演进** | 单 Agent → 并行专家 Sub-Agent（fan-out）+ 强聚合层；专家 = 独立 ChatClient Bean + 专属工具 |
 | **上一版痛点是什么** | 单 Agent 审查顾此失彼；评论重复/矛盾；聚合 Agent 重新审查降低 precision |
 
+### 1.1 本节核对（四问口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四问齐全且痛点承接 | 四行均有；痛点（单Agent顾此失彼、评论重复矛盾）对应对 [04 痛点 §6] |
+| 2 | 架构链可落地 | `静态层→fan-out 四专家→强聚合层→报告/争议上抛` 各环节在 §3 均有完整类 |
+| 3 | 复用关系明确 | 复用 v2 静态层+误报库、v3 CodeIndexService，与 [02]/[03] 公共组件一致 |
+
 ## 2. 多 Agent 评审架构
 
 ```mermaid
@@ -36,6 +44,13 @@ flowchart TB
 ```
 
 **专家角色 = 可配置 Sub-Agent 模板**（[调研 研发效能 2026 §多 Agent]）：独立 ChatClient Bean + 专属 System Prompt + 专属工具集（安全 Agent 挂 SAST、合规 Agent 挂策略 RAG）。
+
+### 2.1 本节核对（fan-out 架构与聚合红线）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四专家与工具集对应 | 安全↔SastTools、性能↔CodeIndexTools、合规↔CompliancePolicyRetriever、架构无工具，与 §3.2 Bean 一致 |
+| 2 | 聚合红线可读 | 一致→报告、争议→人工；聚合层禁止重审，与 §3.6"只融合"一致 |
 
 ## 3. 完整代码（照抄即可）
 
@@ -460,6 +475,37 @@ public class MultiReviewController {
 }
 ```
 
+### 3.8 本节测试与验证（四专家并行 fan-out + 强聚合）
+
+**前置条件**：复用 v2（静态层/误报库）与 v3（CodeIndexService）代码存在；`DEEPSEEK_API_KEY` 已设置；Git 本地工作副本 `REPO_ROOT/core-repo` 有 `pr-N` 分支相对 main 有 Java 改动；合规策略已向量化入库（`retrievePolicy` 依赖 pgvector）；服务按 §3.1-§3.7 照抄并启动。
+
+**材料 A——并行评审请求**：
+
+```sh
+curl -s -X POST http://localhost:8080/api/v1/multi-review/core/101
+```
+
+**材料 B——幻觉过滤核对（正文 §3.3 validLocation 同款判据）**：
+
+```sh
+# 取改动文件真实行数，判断评论 file:line 是否落在有效区间
+wc -l $REPO_ROOT/core-repo/src/main/java/.../SignInService.java
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 A POST | 返回 `ReviewReport` JSON：含 comments（合并后）、consensus（file#line→命中 Agent 数）、disputes |
+| 2 | fan-out 并行 | 四个专家由 `Mono.zip` 并行，总耗时接近单 Agent（不线性累加）；日志无 `block()` 报警 |
+| 3 | 工具集隔离 | 安全 Agent 可调 `sastScan`、性能 Agent 可调 `callers`/`source`、合规 Agent 可调 `retrievePolicy`；架构 Agent 无工具也不报错 |
+| 4 | 语义去重 | 同一 file:line+category 评论被合并（`semanticDedup`）→ 重复评论合并率符合验收 3 |
+| 5 | 幻觉过滤 | 评论 file:line 超出文件实际行数（材料 B 比对）被 `validLocation` 丢弃，不出现无代码依据评论 |
+| 6 | 争议上抛 | 若某 hunk 的 critical 评论被其他 Agent 非 critical 矛盾 → 进入 disputes，报告 hasDisputes()=true（不静默采纳） |
+| 7 | 聚合不重审 | 聚合层零 LLM 调用（只做去重/打分/过滤/争议判定），无再次 review 的日志 |
+
+**失败排查**：①评审 5xx→`pr-N` 分支不存在或 `repo.local-root` 配错；②四路结果缺失→四个 `ChatClient` Bean（security/performance/architecture/compliance）未全装配，核对 §3.2；③`retrievePolicy` 返回空→合规策略未入库或 pgvector 未装；④`validLocation` 全 false 导致评论被剔光→`repo.local-root` 与实际工作副本 root 不一致，或改动文件是新增（物理文件尚不存在）；⑤dedup 过度合并→key（file#line#category）过粗，多 Agent 意图不同的评论被合并。
+
 ## 4. 验收标准（量化）
 
 | # | 验收项 | 标准 |
@@ -470,6 +516,13 @@ public class MultiReviewController {
 | 4 | 争议上抛 | 冲突评论 100% 上抛人工（不静默采纳任一方） |
 | 5 | 聚合不重审 | 聚合层零重新审查（只融合） |
 
+### 4.1 本节核对（验收口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 验收项可度量 | 五项均含数值/可判定标准（≥2倍、<5%、≥90%、100% 上抛、零重审），非空话 |
+| 2 | 每项有代码落点 | 覆盖→§3.5 四专家 fan-out；误报→静态层+§3.6 validLocation；去重→semanticDedup；争议→findDisputes；不重审→aggregate 零 LLM |
+
 ## 5. 本迭代的 ADR
 
 | # | 决策 | 理由 |
@@ -478,12 +531,23 @@ public class MultiReviewController {
 | ADR-716 | 聚合层去重/共识/幻觉过滤/争议上抛 | 聚合是成败核心（CodeRabbit/阿里 OCR 模式） |
 | ADR-717 | 静态层前置压误报 | 专家 Agent 专注语义，确定性检查先行 |
 
+### 5.1 本节核对（ADR 715-717 一致性）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 每条 ADR 有代码落点 | 715→§3.5 fan-out+§3.6 强聚合；716→§3.6 四职能；717→§3.0 静态层前置 |
+| 2 | 与 13-ADR 总账衔接 | ADR-715/716/717 在 [13-ADR架构决策记录] 存在，编号与 04 预录 714 衔接 |
+
 ## 6. v5 的痛点（驱动下一迭代）
 
 多 Agent 评审跑通了，但**流程是硬编码**：安全评审先于合规、性能评审可并行——当前的 Java 代码里流程写死，改顺序要改代码。**需要工作流编排**（DAG + 状态机）。→ [06-工作流编排.md](06-工作流编排.md)
+
+> 本节核对（一句话）：V5 痛点（流程硬编码、改顺序要改代码）与下一迭代 [06]"DAG + 状态机"方案一一对应，痛点不被搁置即 PASS。
 
 ---
 
 ## 7. 总结
 
 v5 把单 Agent 审查升级为"并行专家 + 强聚合"：`ReviewAgentConfig` 用独立 ChatClient Bean 表达四个专家（安全挂 `SastTools`、性能挂 `CodeIndexTools`、合规挂 `CompliancePolicyRetriever` 策略 RAG），`ReviewOrchestrator` 用 `Mono.zip` 并行 fan-out（真实 `ParameterizedTypeReference` 泛型容器），`ReviewAggregator` 只做去重/共识/幻觉过滤/争议上抛、**禁止重新评审**。工具集用真实 `@Tool` + `@ToolParam` 注解（无 `@ToolMethod`）。
+
+> 本节核对（一句话）：总结中六个组件（ReviewAgentConfig、SastTools、CodeIndexTools、CompliancePolicyRetriever、ReviewOrchestrator、ReviewAggregator）与正文 §3.2/§3.1/§3.5/§3.6 对应，口径一致即 PASS。

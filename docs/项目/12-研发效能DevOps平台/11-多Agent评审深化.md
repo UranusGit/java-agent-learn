@@ -19,6 +19,14 @@
 
 > **本迭代验收**（详见 §5 验收对照）：① 分歧解决率 ≥ 70%（辩论+仲裁消化，剩余才上抛）② 低置信评论 0 条直达开发者 ③ 辩论轮上限 2 生效（无死循环）④ 误报率仍 < 5%。
 
+### 1.1 本节核对（四问口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四问齐全 | 新增需求/影响模块/架构演进/上一版痛点四行均有；痛点（专家互不可见、分歧 100% 上抛、裸 confidence）承接 v9 末尾 |
+| 2 | 新增模块落点 | debate 包五类（ExpertDefinition/ReviewPosition/DebateOrchestrator/ArbiterAgent/ConfidenceScorer）在 §3 均有完整类 |
+| 3 | 架构演进可落地 | "星型一次聚合 → 星型+按需辩论环"与 §3.3 DebateOrchestrator 分歧检测→辩论→仲裁流程对应 |
+
 ## 2. 从"并列评审"到"角色分工 + 辩论共识"
 
 ### 2.1 为什么并列 fan-out 不够
@@ -113,6 +121,14 @@ stateDiagram-v2
 ```
 
 **为什么低置信要隐藏**：误报率是生死线（ADR-723，<5%）。单专家、无确定性证据的评论历史误报率 ~18%——与其推给开发者然后被驳回（污染信任），不如留在隐藏区等反馈回流（v2 `FalsePositiveLibrary` 的正向通道）。
+
+### 2.5 本节核对（分工 / 辩论 / 置信度三机制）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四专家边界不重叠 | 安全/性能/风格/测试各管一段（2.2 表），且测试专家独有 "影响分析缺口" 信号是新增价值点 |
+| 2 | 辩论纪律可读 | 「辩论轮上限 2（Token 预算）」「仲裁只裁决不重审（ADR-704 红线）」在 2.1/2.3 出现，且 §3.3 `maxDebateRounds`、§3.4 `ArbiterAgent`（禁新发现）是落地 |
+| 3 | 置信度分级与动作联动清楚 | 2.4 状态机（高/中/低 → OUTPUT/OUTPUT_WITH_NOTE/HIDE）与 §3.5 `ConfidenceScorer.Action` 枚举对应 |
 
 ## 3. 完整代码（照抄即可）
 
@@ -471,24 +487,58 @@ public class DebateReviewController {
 }
 ```
 
-## 4. 测试与验证
+### 3.7 本节测试与验证（辩论收敛 / 轮数上限 / 仲裁纪律 / 置信度分级）
 
-```bash
-# ① 辩论收敛测试：构造 10 组已知分歧 PR（安全 critical vs 测试 minor）
-#    预期：≥ 7 组在辩论/仲裁内收敛（修订 severity 或裁决），≤ 3 组上抛
-# ② 轮数上限测试：max-debate-rounds=2 时，构造永不收敛的对立 System Prompt
-#    预期：恰好 2 轮辩论后转仲裁，总 LLM 调用数 = 4（2 专家 × 2 轮），无死循环
-# ③ 仲裁纪律测试：仲裁 prompt 注入"你发现了一个新问题"的诱导
-#    预期：裁决输出不含新论据（System Prompt 红线生效，抽检 20 次）
+**前置条件**：`review.expert-panel.max-debate-rounds=2` 生效（`@ConfigurationPropertiesScan` 或 `@EnableConfigurationProperties(ExpertPanelConfig.class)` 已加，否则 `maxDebateRounds` 不生效）；v5 的 `ReviewComment/PrContext/SastTools/CodeIndexTools` 可复用；`DEEPSEEK_API_KEY` 已设置。
+
+**材料 A——辩论收敛与轮数上限（正文 §3.3 DebateOrchestrator / §3.1 配置同款）**：
+
+```sh
+# ① 辩论收敛：构造 10 组已知分歧 PR（安全 critical vs 测试 minor），POST /api/v1/debate-review/{repo}/{pr}
+# ② 轮数上限：max-debate-rounds=2 时，用永不收敛的对立 System Prompt 跑一组
+# ③ 仲裁纪律：仲裁 prompt 注入"你发现了一个新问题"的诱导语句跑 20 次
 ```
 
-```java
-// ④ 置信度联动测试：
-// 单专家无 SAST 命中 → Action.HIDE（不输出）
-// 2 专家共识 → OUTPUT_WITH_NOTE
-// 3 专家或 SAST 交叉确认 → OUTPUT
-// ⑤ 误报率回归：v7 golden 集每日回归，误报率应保持 < 5%（低置信隐藏后预期降至 ~3%）
+**材料 B——置信度分级（正文 §3.5 ConfScience/@PostMapping /score 同款）**：
+
+```sh
+# 单专家无 SAST 命中 → 预期 Action.HIDE
+curl -s -X POST "http://localhost:8080/api/v1/debate-review/score?agentHits=1&sastConfirmed=false" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"c1","file":"OrderService.java","line":12,"severity":"minor","category":"可维护性","message":"可读性","confidence":0.4}'
+# 2 专家共识 → 预期 OUTPUT_WITH_NOTE
+# 3 专家或 SAST 交叉确认 → 预期 OUTPUT
 ```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 配置生效 | `panelConfig.getMaxDebateRounds()==2`；`experts` 默认四专家（security/performance/style/test） |
+| 2 | 材料 A① 辩论收敛 | ≥ 7/10 组在辩论或仲裁内收敛（修订 severity 或裁决），≤ 3 组上抛（分歧解决率 ≥ 70%） |
+| 3 | 材料 A② 轮数上限 | 恰好 2 轮辩论后转仲裁，总 LLM 调用数 = 2 专家 × 2 轮 = 4，无死循环 |
+| 4 | 材料 A③ 仲裁纪律 | 20 次裁决输出均不含诱导产生的新论据（`ArbiterAgent` System Prompt "只依据现有论据"红线生效） |
+| 5 | 材料 B 单专家无 SAST | 返回 grade=LOW、`Action.HIDE`（低置信不打扰开发者） |
+| 6 | 材料 B 2 专家 | 返回 grade=MEDIUM、`Action.OUTPUT_WITH_NOTE` |
+| 7 | 材料 B 3 专家/SAST | 返回 grade=HIGH、`Action.OUTPUT` |
+| 8 | 误报率回归 | v7 golden 集每日回归，误报率 < 5%（低置信隐藏后预期降至 ~3%） |
+
+**失败排查**：①`maxDebateRounds` 恒为默认值→`@ConfigurationProperties` 未被扫描/`@EnableConfigurationProperties` 未加；②辩论死循环→轮上限未读取（同上）或 `findDisputes` 冲突分组逻辑死锁；③仲裁带出新问题→`ArbiterAgent` System Prompt 未写"禁止新发现"或提示词被绕过；④/score 返回不符→`ConfScience.score` 分支阈值（agentHits/sastConfirmed）与用例不符；⑤误报率未降→低置信评论未真正 HIDE（仍进输出）。
+
+## 4. 全篇回归验证
+
+**回归断言**（§3.7 本节验证均通过后整体验收，对账 §5 验收对照）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 面板增删专家 | 改 `review.expert-panel.experts` 配置即增删专家，无关代码（验收 1，面板配置化） |
+| 2 | 10 组分歧重跑 | 辩论+仲裁消化 ≥ 70%，剩余 HITL（验收 2） |
+| 3 | 轮上限 + 调 LLM 数 | 轮上限 2 生效、无死循环、调用数可预测（验收 3） |
+| 4 | 仲裁纪律抽检 20 次 | 仲裁零新发现（验收 4） |
+| 5 | 低置信分布 | 低置信评论 0 条直达开发者；误报率仍 < 5%（验收 5） |
+| 6 | 演进边界复核 | 未做 CI 自愈（12）（验收 6） |
+
+**失败排查**：①增删专家后仍看到旧专家→配置未 hot-reload（重启生效）或 Bean 缓存；②上抛率仍高→辩论收敛率不足，检查 `revise` 单专家修订提示词是否充分喂了反方论据；③误报率上升→隐藏区阈值过松或 `FalsePositiveLibrary` 正样本回流未接。
 
 ## 5. 验收对照
 
@@ -501,6 +551,13 @@ public class DebateReviewController {
 | 置信度联动 | 低置信评论 0 条直达开发者；误报率 < 5% | ✅ |
 | 未提前引入后续能力 | 未做 CI 自愈（12） | ✅ |
 
+### 5.1 本节核对（验收口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 验收项可度量 | 六项均含数值或可判定标准（配置化、≥70%、轮限 2、零新发现 20 次、0 条直达、未引入），非空话 |
+| 2 | 每项有代码落点 | 面板配置化→§3.1 ExpertPanelConfig；分歧解决→§3.3 resolve；轮限→§3.1 maxDebateRounds；仲裁→§3.4 ArbiterAgent；置信度→§3.5 ConfidenceScorer |
+
 ## 6. 本迭代的 ADR
 
 | # | 决策 | 理由 |
@@ -509,14 +566,26 @@ public class DebateReviewController {
 | ADR-730 | 分歧走"辩论轮（≤2）+ 仲裁"，仲裁禁止新发现 | 消化 ≥70% 分歧降 HITL 负担；重审降低 precision（ADR-704 红线不变） |
 | ADR-731 | 置信度分级联动动作（低置信隐藏 + 反馈回流升级） | 单专家无证据评论历史误报 ~18%；生死线 <5% 需要分级手段 |
 
+### 6.1 本节核对（ADR 729-731 一致性）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 每条 ADR 有代码落点 | 729→§3.1 ExpertPanelConfig；730→§3.3 辩论轮+§3.4 仲裁禁新发现；731→§3.5 ConfidenceScorer 分级 |
+| 2 | 与 13-ADR 总账衔接 | ADR-729/730/731 在 [13-ADR架构决策记录] §3.3 存在，编号与 ADR-728 衔接 |
+| 3 | 既有红线延伸 | 730 呼应 ADR-704（仲裁不重审）、731 呼应 ADR-723（误报率生死线），文中已显式标注 |
+
 ## 7. v10 的痛点（驱动下一迭代）
 
 评审深化把"看得准"解决了，但 CI 侧还是"看得见、治不了"：v4 诊断只读 + 全部动作人工审批——flaky 测试也要人点重试（占审批量 60%），夜间失败没人响应平均挂 8 小时；流水线越来越慢（P50 从 25 分钟涨到 41 分钟）也没人知道慢在哪。**需要 CI 自愈分级 + 瓶颈分析**。→ [12-CICD自愈与瓶颈优化.md](12-CICD自愈与瓶颈优化.md)
+
+> 本节核对（一句话）：V10 痛点（flaky 也要人点、夜间挂 8h、P50 涨无归因）与下一迭代 [12]"自愈分级+瓶颈分析"方案一一对应，痛点不被搁置即 PASS。
 
 ---
 
 ## 8. 总结
 
 v10 把评审从"并列 fan-out"深化为"角色分工 + 辩论共识"：`ExpertPanelConfig` 让专家面板配置化（默认安全/性能/风格/测试四专家，测试专家直接消费 v9 影响分析）、`DebateOrchestrator` 做分歧检测 → 辩论轮（上限 2，预算闸门）→ 仲裁调度、`ArbiterAgent` 只裁决不重审（INSUFFICIENT 才上抛）、`ConfidenceScorer` 让 `confidence` 字段第一次真正联动动作（高置信输出/中置信标注/低置信隐藏待反馈回流）。**仲裁禁新发现与低置信隐藏是对 ADR-704/723 两条既有红线的工程化延伸**。API 全部对齐 [附录 05-SpringAI2-API基准]（`entity(Class)`/`entity(ParameterizedTypeReference)` 双真实重载、`ChatClient.Builder`、boundedElastic 阻塞隔离）。
+
+> 本节核对（一句话）：总结中四组件（ExpertPanelConfig、DebateOrchestrator、ArbiterAgent、ConfidenceScorer）分别对应正文 §3.1、§3.3、§3.4、§3.5；"红线延伸"对应 ADR-704/723，与正文口径一致即 PASS。
 
 **下一篇**：12-CICD自愈与瓶颈优化——错误签名分组、根因自动定位、分级自愈动作、关键路径瓶颈分析。

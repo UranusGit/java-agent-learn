@@ -17,6 +17,14 @@
 | **架构如何演进** | 单 Agent 审查：Controller → L1 静态层 → L2 LLM 语义层 → 误报学习库 |
 | **上一版痛点是什么** | 人肉审查漏检；纯 LLM 误报率高（~33%）；评论不可采纳（file 级泛泛） |
 
+### 1.1 本节核对（四问口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四问齐全且痛点承接 | 新增需求/影响模块/架构演进/上一版痛点四行均有；痛点（人肉漏检、LLM 误报33%）与 v1 末尾痛点一致 |
+| 2 | 架构链可落地 | `Controller → L1 静态Agent → L2 LLM 语义Agent → 误报学习库` 五个环节在 §3 均有完整类 |
+| 3 | 复用关系明确 | SymbolGraph 复用 v1 代码索引，与 [01 §前言] "代码索引是公共基础"一致 |
+
 ## 2. 两级审查流水线
 
 ```mermaid
@@ -32,6 +40,13 @@ flowchart LR
 ```
 
 **SAST + LLM 结合**（[调研 研发效能 2026 §代码审查]）：混合框架 F1 0.91-0.95 vs 纯 SAST 0.10-0.55 vs 纯 LLM 0.61-0.68。**关键红线：禁止 LLM 自动 suppression 真阳性**——LLM 过滤 SAST 误报时会系统性误杀真漏洞（CWE-327 弱密码学漏判率 77%）。L1 命中的处置由 SAST 规则判定，不交给 LLM。
+
+### 2.1 本节核对（流水线分工与红线）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | L1/L2 分工清晰 | L1 确定性 Semgrep 硬门禁（零 LLM）→ L2 LLM 语义（hunk 级建议态），图中分支与 §3.6/§3.8 类对应 |
+| 2 | 红线可读 | "禁止 LLM suppression 真阳性"在 §3.6 StaticFinding、§3.7 编排均有体现（L1 命中由 SAST 判定，不喂 LLM） |
 
 ## 3. 完整代码（照抄即可）
 
@@ -497,6 +512,42 @@ public class ReviewController {
 
 > 过程可见性是工业级标配。代码审查 Agent 的信任来自"每次审查看得见"——审了哪些文件、命中什么规则、误报剔除过程。审查 emit 审查事件：`{reviewId, file, 问题[规则,严重度,行号], 判真/剔除}`。开发者看到"XX.java 命中 2 条高危规则→自动修复→复评通过"的完整轨迹，而非只给一个"有问题"。
 
+### 3.12 本节测试与验证（L1 静态门禁 + L2 语义审查 + 误报回流）
+
+**前置条件**：Semgrep 已装（`semgrep --version` 可执行）；Git 本地工作副本在 `REPO_ROOT` 下且有 `pr-N` 分支相对 `main` 有 Java 改动；`DEEPSEEK_API_KEY`、`GITLAB_TOKEN` 已设置；服务按 §3.1-§3.10 照抄并启动。
+
+**材料 A——网关外核对命令（正文 §3.4/§3.6 同款）**：
+
+```sh
+# 在 REPO_ROOT/core-repo 下验证 LocalGitApi 期望的分支差异可被 git 取出
+git -C $REPO_ROOT/core-repo merge-base main refs/heads/pr-101
+git -C $REPO_ROOT/core-repo diff --name-only origin/main refs/heads/pr-101
+# L1 静态层等价命令（SemgrepRunner 内部即该 CLI）
+semgrep --config=auto --json src/ChangeMe.java
+```
+
+**材料 B——HTTP 审查与反馈**：
+
+```sh
+curl -s -X POST http://localhost:8080/api/v1/review/core/101
+curl -s -X POST http://localhost:8080/api/v1/review/feedback \
+  -H "Content-Type: application/json" \
+  -d '{"commentId":"<L2返回的comment_id>","accepted":false,"reason":"该模式是既有约定回调，非误用"}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 A 三行 | merge-base/diff 均正常返回，能取出 pr-101 相对 main 的 Java diff；semgrep 输出合法 JSON（`results` 数组） |
+| 2 | 材料 B 审查 POST | 返回 `ReviewResult` JSON：含 `staticFindings`（L1 命中规则/severity/行号）与 `comments`（hunk 级，含 file/line/severity/category/confidence） |
+| 3 | L1 零 LLM | staticFindings 来自 Semgrep CLI 解析，无 LLM 调用日志（L1 确定性硬门禁） |
+| 4 | hunk 级定位 | comments 每条均有 file + line（非 file 级泛泛），满足验收 3 |
+| 5 | 建议态 | 无任何 auto-merge 动作，评论为纯建议 |
+| 6 | 误报回流 | 材料 B feedback（accepted=false + reason）→ FalsePositiveLibrary 记录；下次同场景审查 Prompt 注入负样例 |
+| 7 | 拉取隔离 | 改动方法抽取只取 hunk+符号（`changedMethods`），未整仓喂 LLM |
+
+**失败排查**：①`CommandNotFoundException: semgrep`→未安装或不在 PATH；②审查返回 5xx→`LocalGitApi` merge-base 失败（分支不存在或 `repo.local-root` 配错）；③`staticFindings` 空但 semgrep 命令行有输出→`--config=auto` 网络拉取规则失败，改本地规则文件；④comments 数组反序列化失败→`ParameterizedTypeReference<List<ReviewComment>>` 字段名与 LLM 输出 JSON 不一致，核对 `toPrompt` 内 schema 字段名；⑤feedback 400→comment_id 为空，先取 L2 返回的 id。
 
 ## 4. 验收标准（量化）
 
@@ -508,6 +559,13 @@ public class ReviewController {
 | 4 | 建议态 | 无 auto-merge；评论是建议非决策 |
 | 5 | 学习闭环 | 驳回评论 100% 回流负样例 |
 
+### 4.1 本节核对（验收口径）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 验收项可度量 | 五项均含数值或可判定标准（误报率<5%、真阳性100%、hunk 100%、无 auto-merge、100% 回流），非空话 |
+| 2 | 每项有代码落点 | 误报率→§3.8 ReviewAgent systemPrompt；真阳性保留→§3.6/§3.7 静态层；hunk→ReviewComment(file/line)；建议态→Controller 无 auto-merge；学习闭环→§3.9 误报学习库 |
+
 ## 5. 本迭代的 ADR
 
 | # | 决策 | 理由 |
@@ -516,12 +574,23 @@ public class ReviewController {
 | ADR-707 | 禁止 LLM 自动 suppression 真阳性 | LLM 过滤 SAST 误报会误杀真漏洞（CWE-327 漏 77%） |
 | ADR-708 | hunk 级评论 + 误报学习库 | hunk 级采纳率高 5 倍；驳回回流压误报 |
 
+### 5.1 本节核对（ADR 706-708 一致性）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 每条 ADR 有代码落点 | 706→§3.7/§3.8 两段流水线；707→§3.6"由 SAST 规则判定"；708→§3.8 hunk 级 + §3.9 误报库 |
+| 2 | 与 13-ADR 总账衔接 | ADR-706/707/708 在 [13-ADR架构决策记录] 存在，编号与 00 预录 705 衔接 |
+
 ## 6. v2 的痛点（驱动下一迭代）
 
 审查能定位问题，但**测试覆盖不足暴露**：核心模块行覆盖率 < 40%，审查指出的问题没有回归测试保护。**需要测试生成 Agent**——自动生成单测 + 变异测试闸门。→ [03-测试生成Agent.md](03-测试生成Agent.md)
+
+> 本节核对（一句话）：V2 痛点（行覆盖率<40%、无回归保护）与下一迭代 [03]"测试生成 + 变异闸门"方案一一对应，痛点不被搁置即 PASS。
 
 ---
 
 ## 7. 总结
 
 v2 把 PR 审查升级为两级流水线：`LocalGitApi` 定向拉取增量 diff + `SymbolGraph` 提取改动方法（上下文策略），`SemgrepRunner` 做 L1 确定性硬门禁（零 LLM、禁止 suppression 真阳性），`ReviewAgent` 用 `entity(ParameterizedTypeReference)` 输出 hunk 级建议评论，`FalsePositiveLibrary` 把人工驳回回流为负样例压误报。**修正了 v1 体系中"概念骨架"与虚构形态**：`entity(TypeReference)` → 真实 `ParameterizedTypeReference`；`recordFeedback` 落为完整类。
+
+> 本节核对（一句话）：总结中六个组件（LocalGitApi、SymbolGraph、SemgrepRunner、ReviewAgent、FalsePositiveLibrary、entity 修正）分别对应正文 §3.4、§3.5、§3.6、§3.8、§3.9 与 API 校正，与正文一致即 PASS。
