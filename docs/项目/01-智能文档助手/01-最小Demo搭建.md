@@ -17,6 +17,8 @@
 | **架构如何演进** | 单体单模块：Controller → DocumentService（同步 ETL）→ VectorStore；QaService → ChatClient.entity() 结构化输出 |
 | **上一版痛点是什么** | 无（v0 是起点，痛点是**将要暴露的**：只支持 Markdown、同步阻塞、固定分块、纯向量检索） |
 
+> **本节核对（四问完整性）**：① 四问每问非空且互相自洽（新增需求是"最小可运行 RAG"，演进答案是"单体单模块"）；② "上一版痛点"栏能说出 v0 将要暴露的四个短板（仅 Markdown/同步阻塞/固定分块/纯向量）——两条通过即本节达标。
+
 ## 2. Demo 目标
 
 ### 2.1 要实现什么
@@ -50,6 +52,13 @@ graph LR
 | 5 | SSE 流式输出 | 是 | curl -N 看到逐 token 输出 |
 | 6 | PDF / Word 解析 | 否 | 迭代一实现 |
 | 7 | 混合检索 / 重排 | 否 | 迭代二实现 |
+
+### 2.3 本节核对（范围与验收对齐）
+
+| # | 核对项 | 通过判据 |
+|---|--------|---------|
+| 1 | 验收表 5 个"是"的能力，各自能说出对应验收手段 | 上传 200+READY / chunkCount>0 / 检索命中 / answer+sources+confident / curl -N 逐 token |
+| 2 | 2 个"否"的能力能指到落点迭代 | PDF/Word→迭代一；混合检索重排→迭代二 |
 
 ---
 
@@ -283,6 +292,33 @@ public class AiConfig {
 - **约束信息来源**：强制 LLM 只基于检索到的文档回答，不要"自由发挥"。这是降低幻觉风险的第一道防线。
 - **处理无答案情况**：当检索结果与问题不相关时，让 LLM 明确说"无法回答"，而不是硬编一个。
 - **要求标注来源**：为后续的引用来源标注功能做铺垫。
+
+### 3.6 本节测试与验证（工程骨架、配置与数据库）
+
+**前置条件**：JDK 21、Maven 已装；PostgreSQL 16 实例可连；终端可访问 Maven 中央仓库。
+
+**材料——依赖与配置核对命令**：
+
+```bash
+mvn dependency:tree -Dincludes=org.springframework.ai
+psql -U docassistant -d docassistant -c "\dx"        # 已装扩展
+psql -U docassistant -d docassistant -c "\d vector_store"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 按材料 3.1 建 pom，`mvn clean compile` | BUILD SUCCESS；含 `spring-ai-bom:2.0.0 (import)`、`spring-ai-starter-model-openai:2.0.0`、`spring-ai-starter-vector-store-pgvector:2.0.0` |
+| 2 | 执行材料 3.3 的 DDL | `CREATE EXTENSION` 成功；`\dx` 列出 `vector`；`\d vector_store` 显示 `embedding vector(1536)` 与 HNSW 索引（或留给 initialize-schema 自动建，启动后核对同项） |
+| 3 | 检查 application.yml | `api-key` 为 `${OPENAI_API_KEY}` 占位符非明文；`dimensions: 1536` 与 DDL 一致；`max-in-memory-size: 20MB` 存在 |
+| 4 | `AiConfig`/`DocAssistantApplication` 手写后编译通过 | 无符号缺失；系统提示词含"只使用参考文档"约束 |
+
+**失败排查**：
+- 依赖解析失败 → 本地仓库未同步，`mvn -U` 刷新；JPA starter 本地未下载时以引入后 javap 为准（材料 3.1 内注释）
+- `CREATE EXTENSION vector` 报错 → 需先安装 pgvector 扩展包（`pg_config` 所在机器）
+- 启动报 vector_store 表不存在 → `initialize-schema: true` 未生效（检查 pgvector starter 是否在依赖树）
+- 维度不匹配报错 → `dimensions` 与 embedding 模型（text-embedding-3-small=1536）或 DDL 中 `vector(1536)` 三处不一致
 
 ---
 
@@ -625,6 +661,40 @@ public class GlobalExceptionHandler {
 }
 ```
 
+### 4.5 本节测试与验证（上传与同步 ETL）
+
+**前置条件**：§3.6 全部 PASS；`mvn spring-boot:run` 启动成功（8080）。
+
+**材料——上传与状态查询 curl**：
+
+```bash
+# 准备一篇含"请假审批""出差报销"内容的 Markdown
+curl -X POST http://localhost:8080/api/documents/upload -F "file=@employee-handbook.md"
+
+curl http://localhost:8080/api/documents/{documentId}/status
+
+psql -U docassistant -d docassistant \
+  -c "SELECT id, status, chunk_count FROM documents ORDER BY uploaded_at DESC LIMIT 1;"
+psql -U docassistant -d docassistant -c "SELECT count(*) FROM vector_store;"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 curl 上传（Docs 4.1-4.4 手写完毕） | 200；返回 `status=READY`、`chunkCount > 0` |
+| 2 | 状态查询接口 | 返回 `documentId/status/chunkCount` 三字段 |
+| 3 | SQL 两连查 | documents 最新行 status=READY；vector_store 行数 ≈ chunkCount（同一文档的块全部落库） |
+| 4 | 上传 `.pdf` 文件 | 按字节当 UTF-8 读，内容乱码或处理异常——Demo 已知局限（§7），不要求 READY |
+| 5 | 检查 `data/uploads/` | 出现 `{docId}_employee-handbook.md` 原始文件 |
+
+**失败排查**：
+- 上传 413 → `spring.codec.max-in-memory-size` 不足
+- status=FAILED → 看 documents.errorMessage；常见为 Embedding API Key 未注入或 DB 连接失败
+- vector_store 为 0 但 status=READY → `vectorStore.add()` 静默失败，核对 pgvector starter 与 dimensions
+- EventLoop 阻塞告警 → `upload()` 链上漏了 `subscribeOn(Schedulers.boundedElastic())`
+- 处理异常返回 500 而非 500+DOCUMENT_ERROR → GlobalExceptionHandler 未被扫描（包路径不在启动类子包）
+
 ---
 
 ## 5. 问答 API
@@ -913,110 +983,60 @@ sequenceDiagram
     C-->>U: SSE 连接关闭
 ```
 
----
+### 5.4 本节测试与验证（问答与 SSE 流式）
 
-## 6. 端到端验证
+**前置条件**：§4.5 已有 status=READY 的文档（含"年假审批""出差报销"语料）；应用运行中。
 
-### 6.1 启动
-
-```bash
-# 环境变量（不落明文到仓库）
-export OPENAI_API_KEY=sk-xxx
-export DB_USER=docassistant
-export DB_PASSWORD=docassistant
-
-# 启动（PostgreSQL 需已创建 docassistant 数据库并启用 vector 扩展）
-mvn spring-boot:run
-```
-
-### 6.2 上传文档
+**材料——问答 curl（可直接复制）**：
 
 ```bash
-# 上传 Markdown 文档
-curl -X POST http://localhost:8080/api/documents/upload \
-  -F "file=@employee-handbook.md"
-
-# 响应示例
-{
-  "documentId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-  "title": "employee-handbook.md",
-  "status": "READY",
-  "chunkCount": 12
-}
-```
-
-### 6.3 提问
-
-```bash
-# 同步问答
+# 同步结构化问答
 curl -X POST http://localhost:8080/api/qa \
   -H "Content-Type: application/json" \
   -d '{"question": "年假超过多少天需要总监审批？"}'
 
-# 响应示例
-{
-  "answer": "根据员工手册，年假超过5天需要部门总监审批；5天及以内由直属主管即可审批，请提前3个工作日提出申请。",
-  "sources": [
-    {
-      "documentTitle": "employee-handbook.md",
-      "relevantText": "请假审批权限：3天以内直属主管审批，3-5天经理审批，超过5天需总监审批，且须提前3个工作日提交请假单。",
-      "similarity": 0.87
-    }
-  ],
-  "confident": true
-}
-```
-
-```bash
-# SSE 流式问答
-curl -N http://localhost:8080/api/qa/stream \
+# SSE 流式问答（-N 关缓冲）
+curl -N -X POST http://localhost:8080/api/qa/stream \
   -H "Content-Type: application/json" \
   -d '{"question": "出差报销流程是什么？"}'
 
-# 响应（逐 token 推送）
-data: 根据
-data: 员工
-data: 手册
-data: ，
-data: 出差
-data: 报销
-data: 需
-data: 先
-data: 填写
-data: 报销单
-data: ，
-data: 附
-data: 发票
-data: ，
-data: 经
-data: 直属
-data: 主管
-data: 审批
-data: 后
-data: 交
-data: 财务
-data: 打款
-data: 。
-data: [DONE]
+# 无关问题（拒答链路）
+curl -X POST http://localhost:8080/api/qa \
+  -H "Content-Type: application/json" \
+  -d '{"question": "明天上海天气怎么样？"}'
 ```
 
-### 6.4 Demo 验证清单
+**步骤与断言**：
 
-```mermaid
-graph TB
-    subgraph 验证清单["Demo 端到端验证清单"]
-        V1["✅ Markdown 文档成功上传"]
-        V2["✅ 文档被正确分块（检查 chunkCount）"]
-        V3["✅ 向量成功写入 PgVector"]
-        V4["✅ 向量检索返回相关文档块"]
-        V5["✅ LLM 基于文档内容回答"]
-        V6["✅ 回答包含引用来源"]
-        V7["✅ 无关问题返回'无法回答'"]
-        V8["✅ SSE 流式逐字输出正常"]
-    end
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料第 1 条（同步） | 200；JSON 含 `answer` + `sources` + `confident` 三字段；sources[].documentTitle 为上传文档标题，answer 基于手册（如"超过5天需总监审批"） |
+| 2 | 材料第 2 条（流式，-N） | 收到多个 `data:` 增量块（≥3 块），非一次性整段 |
+| 3 | 材料第 3 条（无关问题） | 返回"根据现有文档，我无法回答这个问题"且 `confident=false`/sources 为空，不编造 |
+| 4 | 请求体加 `{"topK":1,"similarityThreshold":0.9}` | sources 数量 ≤1，验证检索参数透传生效 |
 
-    style 验证清单 fill:#c8e6c9
-```
+**失败排查**：
+- 同步返回 sources 为空但 answer 正常 → `enrichWithSources` 的 metadata key（title/distance）与检索返回不匹配
+- 流式一次性整段 → 链上被聚合（误用 call().content() 或 block）
+- 无关问题硬编答案 → 系统提示词未生效（AiConfig defaultSystem 被覆盖）
+- 全部 500 → boundedElastic 上的 LLM 调用失败（Key/base-url 核对）
+- `entity(QaResponse.class)` 报 JSON 解析错 → record 结构被改且字段与 Schema 不一致
+
+---
+
+## 6. 全篇回归验证
+
+> 前置环境变量（不落明文到仓库）：`export OPENAI_API_KEY=sk-xxx`、`export DB_USER=docassistant`、`export DB_PASSWORD=docassistant`，然后 `mvn spring-boot:run`。单节验证材料已上移至 §3.6 / §4.5 / §5.4，此处只做跨章节回归。
+
+**回归断言**（本篇全部小节验证通过后，最终整体验收，对应 §2.2 验收表 5 个"是"项）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 重启应用，重复上传同一篇手册再提问 | 二次上传不报错；提问仍命中（块数翻倍属 Demo 已知局限，迭代一治理） |
+| 2 | 同一进程内依次：上传新 Markdown → 同步问答 → 流式问答 → 无关问题 | 四条链路全部 PASS，无状态串扰 |
+| 3 | 对照 §2.2 验收表逐行打勾 | 5 个"是"项全部满足（上传 READY / chunkCount>0 / 检索命中 / 结构化三字段 / SSE 逐 token）；2 个"否"项确未实现 |
+
+**失败排查**：重启失败→8080 被占用（`lsof -i:8080`）；重复入库导致检索重复→回查 §4.5 排查项，治理方案见迭代一；混合链路异常→分别回查 §4.5 / §5.4 排查项。
 
 ---
 
@@ -1032,6 +1052,13 @@ graph TB
 | 纯向量检索 | 专有名词召回率低 | 混合检索（向量 + 关键词） | 迭代二 |
 | 无重排 | Top-K 中最相关的不在前面 | Reranker 重排 | 迭代二 |
 | 无引用标注 | sources 是后补的，非 LLM 生成 | LLM 原生生成引用 | 迭代二 |
+
+### 7.1 本节核对（局限与改进映射）
+
+| # | 核对项 | 通过判据 |
+|---|--------|---------|
+| 1 | 六条局限每条能指到对应迭代（一/二）与本文可观察到的症状 | 仅 Markdown / 粗分块 / 同步 → 迭代一；纯向量 / 无重排 / 后补 sources → 迭代二 |
+| 2 | §4.5 步骤 4 的 PDF 上传异常即"只支持 Markdown"的实证 | 症状对得上 |
 
 ---
 
@@ -1049,6 +1076,14 @@ graph TB
 - **决策**：`chatClient.prompt()...call().entity(QaResponse.class)`；`entity(Class, Consumer<EntityParamSpec>)` 带 lambda 的变体也是真实重载（`useProviderStructuredOutput()` / `validateSchema()`，javap 实证），需要「使用供应商原生结构化输出 / 校验 Schema」时用它（[附录 05-02 §2]）
 - **取舍理由**：两种形态都真实存在（`entity(Class)` / `entity(Class, spec)` 等 6 种重载）；本项目迭代零用最简形态，无校验需求，后续迭代可升级到 `spec -> spec.validateSchema()`
 
+### 8.1 本节核对（决策与代码一致性）
+
+| # | 核对项 | 通过判据 |
+|---|--------|---------|
+| 1 | ADR 001-01 的三个"换接口"在正文中确有其位 | `DocumentService.upload` / `TokenTextSplitter` / `VectorStore.similaritySearch` 三处收敛点可在 §4/§5 代码中指出 |
+| 2 | ADR 001-02 与 §4.2 代码一致 | `FilePart` + `DataBufferUtils.join` + `boundedElastic` 三要素齐 |
+| 3 | ADR 001-03 的 `entity(Class)` 用法与 §5.2 代码一致 | QaService 第 4 步调用形态吻合 |
+
 ---
 
 ## 9. 总结
@@ -1064,3 +1099,5 @@ graph TB
 4. **端到端验证**：上传、问答、流式输出三条链路全部跑通。
 
 Demo 的核心价值在于**验证了 Spring AI RAG 管线的可行性**——从文档到向量到回答，全链路用 Spring AI 内置组件完成，代码量极少。但 Demo 只处理 Markdown 且分块策略粗糙，下一篇 [02-文档解析与向量化](02-文档解析与向量化.md) 将引入 PDF/Word 多格式解析和智能分块策略，让系统真正能处理企业级文档。
+
+> **本节核对（总结一致性）**：总结四点分别对应 §3.6 / §4.5 / §5.4 / §6 的验证结论，全部 PASS 即本文学习闭环。

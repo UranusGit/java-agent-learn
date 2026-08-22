@@ -11,11 +11,6 @@ public class ChatController {
     @Autowired
     private ChatService service;
 
-    @GetMapping("/chat")
-    public String chat(@RequestParam String prompt, @RequestHeader String sessionId) {
-        return service.chat(prompt, sessionId);
-    }
-
     @GetMapping("/stream")
     public Flux<String> stream(@RequestParam String prompt, @RequestHeader String sessionId) {
         return service.stream(prompt, sessionId);

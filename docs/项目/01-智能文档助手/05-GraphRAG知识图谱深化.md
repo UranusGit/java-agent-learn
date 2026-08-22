@@ -19,6 +19,8 @@
 | **架构如何演进** | ETL 从"单管线（解析→分块→向量化）"演进为"双分支（向量分支 + 图谱分支）"；检索从"固定双路召回"演进为"查询路由：LLM 判定问题类型 → 语义走向量、多跳走图遍历、全局走社区摘要" |
 | **上一版痛点是什么** | ① 多跳问题：Top-5 里没有一块同时包含"总监→部门→权限"完整链条 ② 实体别名导致召回割裂 ③ 全局性问题向量检索结构性无解 ④ 文档更新只能全量重建检索库，成本高 |
 
+> **本节核对（四问完整性）**：① 新增需求四项与 §3-§6 四个主题一一对应；② "上一版痛点"四条均能在 §2 的失败案例/能力对照表中找到病根——两条通过即本节达标。
+
 ## 2. 为什么向量检索答不了多跳问题
 
 ### 2.1 一个真实失败案例
@@ -64,6 +66,13 @@ graph LR
 | 精确编号/专有名词 | ⚠️ 迭代二已用关键词补 | ✅ 实体节点精确匹配 | 三路并存，路由决定 |
 
 **决策原则**：图谱不是替代向量检索，而是补位——80% 的日常问题仍是单跳语义问题，继续走向量；20% 的多跳/全局问题路由到图。这也是 [附录 11-知识图谱工程/00-Neo4j落地GraphRAG](../../附录/11-知识图谱工程/00-Neo4j落地GraphRAG.md) 反复强调的定位：**为多跳问题付钱，不为单跳问题付钱**（图谱构建有 LLM 抽取成本）。
+
+### 2.3 本节核对（能力边界理解）
+
+| # | 核对项 | 通过判据 |
+|---|--------|---------|
+| 1 | 能复述 §2.1 失败案例的答案链条与向量检索两块残缺结果 | 总监→审批→预算→覆盖部门，跨 3 文档 |
+| 2 | 能说出"为多跳问题付钱，不为单跳问题付钱"对应的量化账 | 抽取成本约为向量化 3-5 倍、80/18/2 路由占比 |
 
 ## 3. 实体与关系抽取：LLM 结构化输出
 
@@ -186,6 +195,34 @@ public class EntityExtractionService {
 | 单篇更新 | 30 | 30 | 增量更新只抽取变更块（§6） |
 
 抽取用低温度、固定系统提示词，输出 token 远小于输入（只出 JSON），成本约为向量化的 3-5 倍——**这就是"为多跳问题付钱"的账**，也是查询路由（§5）必须做对的原因：单跳问题绝不触发图谱路径。
+
+### 3.4 本节测试与验证（三元组抽取）
+
+**前置条件**：应用可调用 LLM；§3.2 代码手写完成（`entity(Class, spec)` 重载需 Spring AI 2.0.0，已 javap 实证）。
+
+**材料——抽取探针文本**：
+
+```java
+// 直接调 EntityExtractionService.extract，用含明确实体的块做探针
+Document chunk = Document.builder()
+        .text("安全合规总监隶属于执行委员会，负责审批安全预算，预算覆盖研发部与运维部。")
+        .metadata(Map.of()).build();
+ExtractedTriples t = extractionService.extract(chunk);
+
+// 对照组：无实体文本（"今天天气不错。"）→ 应返回空 triples
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean compile` | 编译通过（`entity(ExtractedTriples.class, spec -> spec.validateSchema())` 签名真实） |
+| 2 | 材料探针 | triples ≥2 条；subject/object 均为规范全称；predicate 为短动词（隶属于/审批/覆盖） |
+| 3 | 抽查 evidence | 每条 evidence 是输入文本的真实子串（可溯源） |
+| 4 | 对照组（空文本） | 返回空数组，不编造 |
+| 5 | `extractBatch` 混入 1 个坏块（超长乱码） | failedChunks=1、其余块正常返回，整批不中断（验收 1 的失败隔离） |
+
+**失败排查**：编译报 spec 重载不存在→Spring AI 版本非 2.0.0，回查附录 05；evidence 编造→EXTRACTION_PROMPT 第 3 条规则未生效（核对提示词模板）；单块失败拖垮整批→extractBatch 的 try-catch 缺失。
 
 ## 4. 知识图谱构建与消歧（Neo4j）
 
@@ -356,6 +393,36 @@ graph TB
 ```
 
 > **实体消歧的工程细节（边界情况、社区检测算法对比）** → [附录 11-知识图谱工程/00-Neo4j落地GraphRAG](../../附录/11-知识图谱工程/00-Neo4j落地GraphRAG.md)：附录展开了消歧的误合并风险（不同实体高相似怎么办）、社区摘要生成的两种策略（本地采样 vs 全局映射）。
+
+### 4.5 本节测试与验证（图谱构建与消歧）
+
+**前置条件**：§3.4 PASS；Neo4j 已启动（bolt://localhost:7687）且 `spring.neo4j.*` 配置就绪；准备三份关联文档。
+
+**材料——上传与 Cypher 核对**：
+
+```bash
+curl -X POST http://localhost:8080/api/documents/upload -F "file=@org-structure.pdf"
+curl -X POST http://localhost:8080/api/documents/upload -F "file=@security-policy.pdf"
+curl -X POST http://localhost:8080/api/documents/upload -F "file=@budget-matrix.pdf"
+```
+
+```cypher
+MATCH (e:Entity) RETURN e.type, count(*) ORDER BY count(*) DESC;
+MATCH (a:Entity)-[:KNOWN_AS]-(c) WHERE a.name = '法务合规部' RETURN a.name, c.name;
+MATCH (d:Document)-[:MENTIONS]->(e) WHERE e.name = '安全合规总监' RETURN d.id;
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn dependency:tree -Dincludes=org.springframework.boot:spring-boot-starter-data-neo4j` 后 `mvn clean compile` | 依赖在树中且编译通过（Driver API 以引入版本为准） |
+| 2 | 三份文档 READY 后跑 Cypher 1 | 实体按 PERSON/ROLE/DEPARTMENT/… 分布，总数与文档规模相当 |
+| 3 | Cypher 2（消歧） | "合规部"作为 KNOWN_AS 别名挂在"法务合规部"下，无重复节点（MERGE 幂等） |
+| 4 | Cypher 3 | 三份文档均 MENTIONS "安全合规总监"（跨文档同实体汇聚，docCount≥3） |
+| 5 | 重复上传同一份 PDF 再跑 Cypher 1 | 实体数不变（MERGE 幂等验证） |
+
+**失败排查**：连接拒绝→Neo4j 未启动/uri 或 `${NEO4J_PASSWORD}` 未注入；实体重复→MERGE 的 name 键被改或消歧词典没覆盖；别名未挂→规则层词典缺条目且语义层阈值过严；MENTIONS 缺失→ingestChunks 第二个 session 块被删。
 
 ## 5. 查询路由：图 vs 向量
 
@@ -543,6 +610,36 @@ graph TB
 
 **为什么 MULTI_HOP 仍然保留混合检索**：图遍历给出的是关系链条（"A 审批 B 覆盖 C"），但用户往往还需要锚点实体的定义与背景（"安全合规总监是谁任命的"）——向量结果补齐这些描述性信息，两者合并后一起进 Prompt。这也让迭代二的全部投资（双路召回、重排、引用标注）在图谱时代继续产生价值。
 
+### 5.4 本节测试与验证（路由分类与多跳检索）
+
+**前置条件**：§4.5 图谱已建好；`RetrievalService.routedSearch` 已接线（HybridRagAdvisor 改调）。
+
+**材料——路由三分类探针 + 多跳/单跳问答**：
+
+```java
+// QueryRouter 单测（不查库，只测分类）
+assertEquals(Route.SEMANTIC, router.route("年假超过多少天需要总监审批？").route());
+assertEquals(Route.MULTI_HOP, router.route("安全合规总监审批权限覆盖哪些部门的预算？").route());
+assertEquals(Route.GLOBAL, router.route("这批制度文档主要覆盖哪些主题？").route());
+```
+
+```bash
+curl -X POST http://localhost:8080/api/qa -H "Content-Type: application/json" \
+  -d '{"question": "安全合规总监审批权限覆盖哪些部门的预算？"}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 Java 探针各跑 3 次 | 三类分类均正确且稳定（≥2/3 一致，LLM 分类有抖动） |
+| 2 | MULTI_HOP 探针的 anchorEntities | 含"安全合规总监"（规范全称） |
+| 3 | 材料 curl 多跳问答 | answer 含"研发部、运维部"两个终点；正文/引用含关系链条；citations 指向真实 chunkId |
+| 4 | 单跳问题（"年假…"） | 走 SEMANTIC 路径，行为与迭代二一致（日志无图遍历调用，验收 8 的零图谱成本） |
+| 5 | 断点/日志核对 `routedSearch` | SEMANTIC→仅 hybridSearch；MULTI_HOP→hybridSearch+multiHopSearch 双结果合并 |
+
+**失败排查**：路由抖动→按 §5.1 缓解手段（轻量模型/缓存/关键词短路）；多跳答案缺终点→MULTI_HOP_QUERY 跳数/别名归一失效（回查 Cypher 2）；单跳误走图→ROUTING_PROMPT 分类定义不清；图路径空→anchorEntities 名称与图中 name 不一致（消歧未归一到规范名）。
+
 ## 6. 增量更新：文档变更 → 图谱局部重建
 
 ### 6.1 问题：全量重建不可接受
@@ -645,43 +742,38 @@ sequenceDiagram
 | 抽取模型换版 | 实体粒度漂移（ROLE vs PERSON） | 换版后触发一次全量重建（运维开关），增量只适用于同模型小改 |
 | GDS 社区重算 | 增量写入不自动触发 Leiden | 定时任务低峰重算（每日一次足够，社区用于全局问题，非实时） |
 
-## 7. 测试与验证
+### 6.4 本节测试与验证（增量更新）
 
-### 7.1 图谱构建验证
+**前置条件**：§4.5 图谱已建好（含《预算权限矩阵》V1）；准备 V2 版本（新增"覆盖市场部"）。
 
-```bash
-# 1. 上传 3 份关联文档（组织架构 / 安全管理制度 / 预算权限矩阵）
-curl -X POST http://localhost:8080/api/documents/upload -F "file=@org-structure.pdf"
-curl -X POST http://localhost:8080/api/documents/upload -F "file=@security-policy.pdf"
-curl -X POST http://localhost:8080/api/documents/upload -F "file=@budget-matrix.pdf"
-
-# 2. 轮询直到 READY 后，检查图谱（Neo4j Cypher）
-# 实体数量与类型分布
-MATCH (e:Entity) RETURN e.type, count(*) ORDER BY count(*) DESC;
-# 验证消歧：'合规部' 应作为别名挂在 '法务合规部' 下
-MATCH (a:Entity)-[:KNOWN_AS]-(c) WHERE a.name = '法务合规部' RETURN a.name, c.name;
-```
-
-### 7.2 多跳问答验证
+**材料——换版上传与核对**：
 
 ```bash
-# 多跳问题（应走图路径并给出完整链条）
-curl -X POST http://localhost:8080/api/qa \
-  -H "Content-Type: application/json" \
-  -d '{"question": "安全合规总监审批权限覆盖哪些部门的预算？"}'
-
-# 期望响应：answer 给出"研发部、运维部"，citations 含三个来源分块，
-# 且答案正文含关系链条（总监 -[审批]-> 安全预算 -[覆盖]-> 研发部/运维部）
-
-# 单跳问题（不应走图路径，回归迭代二行为）
-curl -X POST http://localhost:8080/api/qa \
-  -H "Content-Type: application/json" \
-  -d '{"question": "年假超过多少天需要总监审批？"}'
+curl -X POST http://localhost:8080/api/documents/upload -F "file=@budget-matrix-v2.pdf"
 ```
 
-### 7.3 多跳评估集（30 题）
+```cypher
+MATCH (e:Entity) WHERE e.name = '安全合规总监' RETURN e.docCount;  -- 共享实体存活
+MATCH (e:Entity {name:'市场部'}) RETURN e;                          -- 新实体已建
+```
 
-沿用迭代二 `RetrievalEvaluation` 的思路，另建多跳评估集：每题标注标准答案链条（实体序列）与证据分块 ID。判定标准升级为**链条完整率**——答案包含链条全部终点实体才算命中：
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料上传 V2，观察抽取调用次数 | ≈ 变更块数（远小于 30 全量；验收 7 的耗时 < 全量 40%） |
+| 2 | 换版后多跳问题重问 | 答案含"市场部"；旧独占信息不再出现 |
+| 3 | Cypher 核对 docCount | "安全合规总监"节点仍在且 docCount 正确（未被误删） |
+| 4 | 无变更重新上传同内容文档 | changedChunks 为空，图谱不动（日志跳过） |
+| 5 | 删除一份文档（DELETE /api/documents/{id}） | 仅其独占实体被回收，共享实体保留（§6.3 边界表第 1 行） |
+
+**失败排查**：抽取次数=全量→块级 hash 比对未生效或块边界漂移（§6.2 重叠窗口对齐）；共享实体被删→DETACH_DOC_SUBGRAPH 的 docCount 判零逻辑被改；新实体缺失→变更块未进 changedChunks。
+
+## 7. 全篇回归验证
+
+> 单节材料已上移至 §3.4 / §4.5 / §5.4 / §6.4，此处做跨章节回归与验收对照（§8）。
+
+**多跳评估集（30 题）**：沿用迭代二 `RetrievalEvaluation` 思路，每题标注标准答案链条（实体序列）与证据分块 ID，判定标准为**链条完整率**（答案含全部终点实体才算命中）：
 
 | 指标 | 纯向量（迭代二） | 图+向量路由（本迭代） |
 |------|----------------|---------------------|
@@ -689,15 +781,16 @@ curl -X POST http://localhost:8080/api/qa \
 | 单跳题 Recall@5（回归保护） | 89% | 89%（不劣化） |
 | 全局题（如无 GDS） | 不评估 | 可选层，装插件后评估 |
 
-### 7.4 增量更新验证
+**回归断言**：
 
-```bash
-# 更新《预算权限矩阵》为 V2（新增"覆盖市场部"）
-curl -X POST http://localhost:8080/api/documents/upload -F "file=@budget-matrix-v2.pdf"
-# 验证：抽取调用数 ≈ 变更块数（远小于 30 全量）
-# 验证：旧版本覆盖部门不再出现在答案，'市场部' 出现
-# 验证：共享实体（'安全合规总监'）未被删除——其他文档仍可检索到
-```
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 30 题多跳评估集 | 链条完整率 ≥ 85%（对照 §8 验收 4） |
+| 2 | 迭代二单跳评估集重跑 | Recall@5 不劣化（验收 5） |
+| 3 | 单跳/多跳/无关问题各一轮同进程混合 | 三类路径均正常，citations 均可回溯 chunkId |
+| 4 | `app.graph.enabled=false` 重启 | 系统回退纯向量行为（ADR-05-01 可回滚验证） |
+
+**失败排查**：单跳劣化→路由误判或 MULTI_HOP 联合结果污染 Prompt；完整率低→回查 §5.4 排查项。
 
 ## 8. 验收对照
 
@@ -711,6 +804,13 @@ curl -X POST http://localhost:8080/api/documents/upload -F "file=@budget-matrix-
 | 6 | 引用溯源 | 图路径答案 citations 指向真实 chunkId（evidence 回指） | ✅ |
 | 7 | 增量更新 | 单文档换版图谱更新耗时 < 全量重建的 40% | ✅ |
 | 8 | 成本约束 | 单跳问题零图谱调用（路由短路 + 抽取仅在 ETL） | ✅ |
+
+### 8.1 本节核对（验收与验证映射）
+
+| # | 核对项 | 通过判据 |
+|---|--------|---------|
+| 1 | 验收表 8 项每项能指到对应小节验证步骤 | 抽取成功率→§3.4 步骤 5；消歧→§4.5 步骤 3；路由→§5.4；多跳→§7；增量→§6.4；成本→§5.4 步骤 4 |
+| 2 | 无"验收项无验证手段"的孤儿条目 | 逐行核对 |
 
 ## 9. ADR 演进决策
 
@@ -726,6 +826,13 @@ curl -X POST http://localhost:8080/api/documents/upload -F "file=@budget-matrix-
 - **取舍理由**：实时更新无法处理"删除语义"（旧关系何时失效）；批量重建成本与变更面积成正比、边界清晰、失败可整文档重跑。抽取成本从全量 30 次降到变更块数（实测平均 6 次）
 - **可回滚**：增量逻辑入口唯一（`update` 方法），出问题退化为全量重建（运维开关）
 
+### 9.1 本节核对（决策与代码一致性）
+
+| # | 核对项 | 通过判据 |
+|---|--------|---------|
+| 1 | ADR-05-01 与 §4.3 一致 | GraphIngestService 挂在 EtlService 双分支，非独立服务；`app.graph.enabled` 开关存在 |
+| 2 | ADR-05-02 与 §6.2 一致 | 文档级拆除 + docCount 引用计数 + 变更块重抽取三要素齐（对照 §6.4 步骤 1/3） |
+
 ## 10. 总结
 
 迭代三让文档助手获得了"跨文档推理"的能力：
@@ -736,3 +843,5 @@ curl -X POST http://localhost:8080/api/documents/upload -F "file=@budget-matrix-
 4. **增量更新**：文档级子图拆除 + 实体引用计数回收 + 变更块重抽取，更新成本与变更面积成正比。
 
 图谱解决了"关系推理"，但企业文档还有另一类难题：**超长文档的层级理解与多文档冲突**——300 页的技术规范怎么答全局问题？新旧两版报销制度打架时听谁的？下一篇 [06-长文档理解与上下文工程](06-长文档理解与上下文工程.md) 引入语义分块、层级摘要树与冲突消解。
+
+> **本节核对（总结一致性）**：总结四点分别对应 §3.4 / §4.5 / §5.4 / §6.4 的验证结论，§7 回归全 PASS 即本文学习闭环。
