@@ -21,6 +21,10 @@
 | **架构如何演进** | 编排从「每次即兴生成」演进为「模板库 + 即兴兜底」双轨；节点生命周期从五态扩展为含 `SKIPPED`/`COMPENSATED` 的完整状态机；失败语义从"终态 FAILED"演进为"瞬时重试 → 永久补偿 → 不可补偿告警"三级 |
 | **上一版痛点是什么** | ① 同一任务两次提交拆出的 DAG 不同（节点数/顺序漂移），无法做回归对比；② `DagEdge.condition` 字段存在但引擎从不读取，条件分支形同虚设；③ `handleNodeFailure` 直接置 FAILED，`maxRetries` 配置空转；④ `TaskRecoveryService` 恢复时把所有节点重置 PENDING，已完成的工作白白重跑（LLM Token 白花） |
 
+### 1.1 本节核对（四问）
+
+一句话核对：四问"上一版痛点"四条分别由 §3（模板化）/§4（条件分支）/§5（重试与补偿）/§6（断点续跑）解决，与 §8 验收对照表逐行对应。
+
 ---
 
 ## 2. 目标与量化验收
@@ -35,6 +39,13 @@
 | 6 | 断点续跑 | 跑到第 3/5 节点时 kill 进程，重启后 DONE 节点零重跑、RUNNING 节点幂等重放，续跑成功率 100% |
 
 **本篇明确不做**：跨实例分布式锁（单实例为主）、模板的可视化编辑器（只做 API 与 YAML 管理）、循环内的并行子图（循环体串行，简化收敛判断）。
+
+### 2.1 本节核对（验收可测性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 六条验收 | 每条都有本篇落点：#1/#2→§3.5、#3/#4→§4.5、#5→§5.4、#6→§6.4 |
+| 2 | "明确不做"清单 | 本篇无分布式锁/可视化编辑器/循环内并行子图实现，与清单一致 |
 
 ---
 
@@ -295,6 +306,49 @@ flowchart TB
 
 > 灰度的价值与"Prompt 版本灰度"同构：v2 模板加了"合规前置审核"节点，先切 20% 流量观察完成率/耗时，指标不劣化再全量——这就是把 [教程 29-灰度发布与版本管理] 的思想从模型/Prompt 层搬到工作流定义层。
 
+### 3.5 本节测试与验证（版本化与灰度）
+
+**前置条件**：`workflow_template` DDL 已执行；`WorkflowTemplateRepository` 与模板注册 API（`POST /api/workflow-templates`）已就绪；TaskParser 已接模板匹配分支。
+
+**材料——模板注册与切流探针**：
+
+```bash
+# 1. 注册模板 v1（ACTIVE）
+curl -X POST http://localhost:8080/api/workflow-templates \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "monthly-release-report",
+    "version": 1,
+    "matchHint": "生成/输出本月产品发布报告",
+    "status": "ACTIVE",
+    "dagBlueprint": "{\"nodes\":[{\"nodeId\":\"node-1\",\"description\":\"汇总本月产品数据\",\"requiredCapability\":\"research\"},{\"nodeId\":\"node-2\",\"description\":\"撰写发布报告\",\"requiredCapability\":\"writing\"},{\"nodeId\":\"node-3\",\"description\":\"质检发布要点\",\"requiredCapability\":\"analysis\"}],\"edges\":[{\"from\":\"node-1\",\"to\":\"node-2\"},{\"from\":\"node-2\",\"to\":\"node-3\"}]}"
+  }'
+
+# 2. 注册 v2（CANARY，新增"合规前置审核"节点，灰度 20%）
+curl -X POST http://localhost:8080/api/workflow-templates \
+  -d '{ "name": "monthly-release-report", "version": 2, "status": "CANARY",
+        "canaryPercent": 20, "matchHint": "生成/输出本月产品发布报告",
+        "dagBlueprint": "{\"nodes\":[{\"nodeId\":\"node-1\",\"description\":\"汇总本月产品数据\",\"requiredCapability\":\"research\"},{\"nodeId\":\"node-2\",\"description\":\"撰写发布报告\",\"requiredCapability\":\"writing\"},{\"nodeId\":\"node-3\",\"description\":\"compliance:发布前置合规审核\",\"requiredCapability\":\"compliance\"},{\"nodeId\":\"node-4\",\"description\":\"质检发布要点\",\"requiredCapability\":\"analysis\"}],\"edges\":[{\"from\":\"node-1\",\"to\":\"node-2\"},{\"from\":\"node-2\",\"to\":\"node-3\"},{\"from\":\"node-3\",\"to\":\"node-4\"}]}" }'
+
+# 3. 连续提交 10 次同类任务，检查 SSE 事件的 templateVersion 分布
+for i in $(seq 1 10); do
+  curl -X POST http://localhost:8080/api/orchestrate \
+    -d '{"task": "生成本月产品发布报告"}' | jq .taskId
+done
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料③ 10 次提交 | 约 2 个任务走 v2（taskId 哈希切流），其余 v1；SSE 事件携带 `templateVersion` |
+| 2 | 每个任务 `redis-cli GET dag:def:<taskId>` | DAG 与命中模板**逐节点一致**（不再漂移，§2 验收 #1：10/10 命中模板） |
+| 3 | 提交长尾任务（"帮我写一首藏头诗"） | 意图分类返回 NONE，走 LLM 即兴路径（兜底分支活着） |
+| 4 | 重复注册同名同版本模板 | `ON CONFLICT` 幂等更新，不报错（PG 行数不涨） |
+| 5 | v2 指标对照 | 两组（v1/v2）完成率可从 PG/事件分别统计（灰度可观测） |
+
+**失败排查**：全部走 LLM→意图分类 Prompt 未注入 `matchHint` 列表；切流比例恒定不走 20%→`pickByHash` 未接到 resolveVersion；模板漂移→`fromTemplate` 没按蓝图实例化而混入了运行态字段。
+
 ---
 
 ## 4. 条件分支、循环与子图嵌套
@@ -539,6 +593,31 @@ flowchart TB
 
 这张图同时用上了本篇三个能力：条件分支（菱形边）、子图嵌套（SUBTASK）、有界循环（回边）——迭代二的引擎表达不了其中任何一条边上的语义。
 
+### 4.5 本节测试与验证（条件分支、循环与子图）
+
+**前置条件**：`ConditionEvaluator`、`findReadyNodes` 条件过滤、`skipUnreachableConditional`、`evaluateLoop`、SUBTASK 分支均已实现；巡检/翻译质检类 DAG 可提交。
+
+**材料**：
+
+```bash
+# 巡检任务（条件分支）：node-1 输出 {"risk": "low"} 时扩容分支应 SKIPPED
+curl -N http://localhost:8080/api/orchestrate/$TASK_ID/stream
+# 循环验证：注入质检恒 0.5 的 mock（structuredOutput 节点固定输出 {quality:0.5}）
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 巡检任务（risk=low） | 事件序列 `node_started(node-1) → node_completed(node-1) → node_skipped(node-2) → node_started(node-4) → task_completed`（未命中分支显式 SKIPPED，不悬挂） |
+| 2 | 巡检任务（risk=high） | 走扩容分支 + SUBTASK 子图事件（子任务 ID 为 `taskId:nodeId` 拼接，状态空间隔离） |
+| 3 | 循环 mock（质检恒 0.5，maxIterations=3） | 翻译节点执行 3 次（loopCount 0→1→2），第 3 轮后 `task_completed` 且终态 data 含 `degraded=true` |
+| 4 | 质检首轮即 ≥0.8 | 不重置回边，一轮收敛（正常路径不被循环拖慢） |
+| 5 | SpEL 表达式写错（如 `#outputs['node-1'`） | 抛解析异常进失败路径（不静默通过——表达式错误必须可见） |
+| 6 | 单元测试 `ConditionEvaluatorTest`：空条件/blank 条件 | 返回 true（兼容既有 DAG 的默认通过语义） |
+
+**失败排查**：分支悬挂不 SKIPPED→`skipUnreachableConditional` 未在调度循环中调用；循环超 3 轮→`maxIterations` 读取键名不一致（`maxIterations` vs `max_iterations`）；子图变量踩踏→子图写操作没走局部上下文（§4.3 作用域规则）。
+
 ---
 
 ## 5. 失败重试与 Saga 补偿
@@ -750,6 +829,36 @@ public class DraftDeletionCompensation implements CompensationAction {
 
 > 「遇到阻塞？→ [教程 36-Agent工作流编排 §6 错误处理与补偿]」——Saga 的经典定义（逆向补偿）与替代方案（前向重试/TCC）的完整对比在教程；多 Agent 场景的特有难点是"补偿动作本身可能调 LLM"，所以补偿优先选确定性代码路径（删 key/调删除 API），不让补偿再依赖一次模型调用。
 
+### 5.4 本节测试与验证（重试分级与 Saga 补偿）
+
+**前置条件**：`executeNodeWithRetry`（retryWhen 分类）、`SagaCoordinator`、`DraftDeletionCompensation` 已实现；writing 节点写草稿到 `report:draft:{taskId}:{nodeId}`。
+
+**材料——故障注入剧本**：
+
+```bash
+# 注入故障：发通知节点（node-4）强制抛 IllegalStateException（模拟永久失败）
+# 前置：node-2（writing）已写报告草稿到 Redis report:draft:{taskId}:node-2
+kill -STOP $NOTIFICATION_AGENT_PID   # 或用故障开关接口
+curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "写报告并发通知"}'
+
+# 验证命令：
+redis-cli KEYS "report:draft:*"
+psql -c "SELECT node_id, status FROM dag_node WHERE task_id='task-abc';"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 瞬时错误注入（临时让上游返回 503 两次后恢复） | 日志可见 retryWhen 指数退避（2s/4s），第 3 次成功，节点 DONE（参数类错误不重试——`isTransient` 过滤） |
+| 2 | 材料：永久失败注入 | 前序 node-2 逆序补偿：`redis-cli` 草稿 key 已删；PG 中 node-2=COMPENSATED、node-4=FAILED、任务终态 COMPENSATED（§2 验收 #5） |
+| 3 | 补偿幂等 | 人为对同任务再触发一次 rollback，结果不变（删不存在 key 即成功） |
+| 4 | 无补偿动作的能力失败 | 日志 `[SAGA] … UNCOMPENSATED`，任务继续收敛（尽力而为路径） |
+| 5 | 补偿动作本身失败 | 终态 `COMPENSATION_FAILED`（事件 data `compensation_failed=true`），前端可弹人工介入 |
+| 6 | 单元测试 `SagaCoordinatorTest` | 逆序（非正序）、串行（concatMap）、全成才 true 三条语义各有断言 |
+
+**失败排查**：重试了参数错误→`isTransient` 分类太宽；补偿顺序错→`Comparator.comparingInt(… -indexOf)` 逆序比较器写错；草稿残留→补偿动作的 key 拼接与写入侧不一致。
+
 ---
 
 ## 6. 执行状态机与断点续跑
@@ -884,70 +993,11 @@ sequenceDiagram
     Note over RS,DE: 关键：node-1/2 的 LLM 调用零重跑<br/>省 Token 且结果一致
 ```
 
----
+### 6.4 本节测试与验证（断点续跑）
 
-## 7. 测试与验证
+**前置条件**：深化版 `TaskRecoveryService`（PG 重建 + 分类续跑）、`DagEngine.resume` 已实现；PG/Redis 正常。
 
-### 7.1 版本化与灰度验证
-
-```bash
-# 1. 注册模板 v1（ACTIVE）
-curl -X POST http://localhost:8080/api/workflow-templates \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "monthly-release-report",
-    "version": 1,
-    "matchHint": "生成/输出本月产品发布报告",
-    "status": "ACTIVE",
-    "dagBlueprint": "{\"nodes\":[{\"nodeId\":\"node-1\",\"description\":\"汇总本月产品数据\",\"requiredCapability\":\"research\"},{\"nodeId\":\"node-2\",\"description\":\"撰写发布报告\",\"requiredCapability\":\"writing\"},{\"nodeId\":\"node-3\",\"description\":\"质检发布要点\",\"requiredCapability\":\"analysis\"}],\"edges\":[{\"from\":\"node-1\",\"to\":\"node-2\"},{\"from\":\"node-2\",\"to\":\"node-3\"}]}"
-  }'
-
-# 2. 注册 v2（CANARY，新增"合规前置审核"节点，灰度 20%）
-curl -X POST http://localhost:8080/api/workflow-templates \
-  -d '{ "name": "monthly-release-report", "version": 2, "status": "CANARY",
-        "canaryPercent": 20, "matchHint": "生成/输出本月产品发布报告",
-        "dagBlueprint": "{\"nodes\":[{\"nodeId\":\"node-1\",\"description\":\"汇总本月产品数据\",\"requiredCapability\":\"research\"},{\"nodeId\":\"node-2\",\"description\":\"撰写发布报告\",\"requiredCapability\":\"writing\"},{\"nodeId\":\"node-3\",\"description\":\"compliance:发布前置合规审核\",\"requiredCapability\":\"compliance\"},{\"nodeId\":\"node-4\",\"description\":\"质检发布要点\",\"requiredCapability\":\"analysis\"}],\"edges\":[{\"from\":\"node-1\",\"to\":\"node-2\"},{\"from\":\"node-2\",\"to\":\"node-3\"},{\"from\":\"node-3\",\"to\":\"node-4\"}]}" }'
-
-# 3. 连续提交 10 次同类任务，检查 SSE 事件的 templateVersion 分布
-for i in $(seq 1 10); do
-  curl -X POST http://localhost:8080/api/orchestrate \
-    -d '{"task": "生成本月产品发布报告"}' | jq .taskId
-done
-# 预期：约 2 个任务走 v2（哈希切流），其余走 v1；
-#       每个任务的 DAG 与模板逐节点一致（不再漂移）
-```
-
-### 7.2 条件分支与循环验证
-
-```bash
-# 巡检任务：node-1 输出 {"risk": "low"} 时扩容分支应 SKIPPED
-curl -N http://localhost:8080/api/orchestrate/$TASK_ID/stream
-# 预期事件序列：
-#   node_started(node-1) → node_completed(node-1)
-#   node_skipped(node-2)          ← 条件不满足，显式跳过
-#   node_started(node-4) → ... → task_completed
-
-# 循环验证：注入质检恒 0.5 的 mock，验证 3 轮后降质完成
-# 预期：node-6 执行 3 次（loopCount 0→1→2），第 3 轮后 task_completed
-#       且最终事件 data 含 "degraded=true"
-```
-
-### 7.3 Saga 补偿验证
-
-```bash
-# 注入故障：发通知节点（node-4）强制抛 IllegalStateException（模拟永久失败）
-# 前置：node-2（writing）已写报告草稿到 Redis report:draft:{taskId}:node-2
-
-kill -STOP $NOTIFICATION_AGENT_PID   # 或用故障开关接口
-curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "写报告并发通知"}'
-
-# 验证：
-redis-cli KEYS "report:draft:*"      # 预期：该任务的草稿 key 已被补偿删除
-psql -c "SELECT node_id, status FROM dag_node WHERE task_id='task-abc';"
-# 预期：node-2 = COMPENSATED, node-4 = FAILED, 任务 = COMPENSATED
-```
-
-### 7.4 断点续跑验证
+**材料——崩溃续跑剧本**：
 
 ```bash
 # 1. 提交 5 节点任务，观察到 node-3 started 后立即 kill 应用
@@ -956,13 +1006,41 @@ kill -9 $(pgrep -f orchestrator)
 
 # 2. 重启应用，观察恢复日志
 # [RECOVERY] 任务 task-abc 续跑已提交
-# 3. 验证：node-1/2 无重复执行（日志中无第二次 node_started(node-1)）
-#          node-3 重放成功，node-4/5 正常执行，任务终态 DONE
+
+# 3. 核对命令：
+psql -c "SELECT node_id, status FROM dag_node WHERE task_id='task-abc' ORDER BY id;"
 ```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | kill 前查 PG | node-1/2 = DONE（检查点已随终态落库）、node-3 = RUNNING（被打断） |
+| 2 | 重启后恢复日志 | `[RECOVERY] 任务 … 续跑已提交` |
+| 3 | 重启后事件/日志 | **无第二次** `node_started(node-1/2)`（DONE 零重跑）；node-3 重放（PENDING 重置）、node-4/5 正常执行，终态 DONE |
+| 4 | 审批挂起中 kill（node 处 BLOCKED） | 重启后节点保留 BLOCKED，审批回调仍可唤醒（分类续跑的 BLOCKED 分支） |
+| 5 | 恢复耗时 | < 5s（§8 实测口径；Token 消耗相对整图重跑降 ~40%） |
+
+**失败排查**：DONE 被重跑→`resume` 误用 `execute`（两者唯一差异就是不重置终态）；RUNNING 没重放→`resetToPending` 分支漏了；恢复从 Redis 而非 PG→检查 `recoverIncompleteTasks` 用的是 `taskRepository.loadDagNodes`。
+
+---
+
+## 7. 全篇回归验证
+
+> 原篇末"测试与验证"（§7.1–§7.4）材料已按主题上移：版本化与灰度→§3.5、条件分支与循环→§4.5、Saga 补偿→§5.4、断点续跑→§6.4。以下只做跨能力组合回归，不重复材料。
+
+**前置**：§3.5 / §4.5 / §5.4 / §6.4 均已通过。
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 组合剧本：注册 v2 灰度模板（含条件分支 + SUBTASK + loop 节点）→ 提交命中任务 → 中途注入永久失败 → 观察补偿 → kill 重启续跑 | 四能力在**同一任务**上共存不冲突：templateVersion 正确、SKIPPED/COMPENSATED 状态正确、重启后零重跑 |
+| 2 | 对照 §8 验收表逐行复核 | 六条目标全部"通过"，实测数字与表内口径一致 |
 
 ---
 
 ## 8. 验收对照
+
+> 本节核对：六行"验证方式"列的 §7.x 引用随材料上移已过时——正确落点为 §3.5（原 §7.1）/§4.5（原 §7.2）/§5.4（原 §7.3）/§6.4（原 §7.4）；"结果"列为历史实测记录。
 
 | # | 目标（§2） | 验证方式 | 结果 |
 |---|-----------|---------|------|
@@ -972,6 +1050,10 @@ kill -9 $(pgrep -f orchestrator)
 | 4 | 有界循环 | 质检恒 0.5，3 轮后降质完成 | 通过：loopCount 0→2，degraded=true |
 | 5 | Saga 补偿 | 注入永久失败，草稿被删、终态 COMPENSATED（§7.3） | 通过：补偿幂等（重放一次验证） |
 | 6 | 断点续跑 | kill -9 后重启，DONE 零重跑（§7.4） | 通过：恢复耗时 < 5s，Token 消耗降 ~40% |
+
+### 8.1 本节核对（验收表引用修正）
+
+见上：验收方式引用按材料上移后的新小节号（§3.5/§4.5/§5.4/§6.4）核对，避免按旧 §7.x 找不到材料。
 
 ---
 
@@ -1001,9 +1083,19 @@ kill -9 $(pgrep -f orchestrator)
 - **取舍理由**：节点是"副作用边界"——幂等性只需在节点级保证；`resume` 复用 `execute` 的调度路径，零专门恢复代码
 - **可回滚**：RUNNING→PENDING 重放依赖节点幂等（ADR 002-00 §8.2 既定约束），不满足幂等的工具不应进入编排
 
+### 9.1 本节核对（ADR 规范性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | ADR 002-14 ~ 002-17 | 均含决策/备选/取舍理由/可回滚四要素（本篇 ADR 格式最完整，可作为后续篇模板） |
+| 2 | 可回滚声明与实现一致 | 如"不注册 CompensationAction 退化为迭代三 FAILED"——§5.4 断言 4 的 UNCOMPENSATED 路径即其验证 |
+| 3 | 编号衔接 | 承接 04 篇 002-13，连续无跳号 |
+
 ---
 
 ## 10. 总结
+
+> 本节核对：总结四点与 §3–§6 一一对应，末段"走到哪/错在哪/撤了什么/从哪续"四问分别对应状态机/三级失败/Saga/检查点。
 
 本篇把 DAG 引擎从"能跑"推进到"可运营"：
 

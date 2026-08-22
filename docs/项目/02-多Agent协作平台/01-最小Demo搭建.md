@@ -21,6 +21,10 @@
 | **架构如何演进** | 单体单模块：Controller → AgentRegistry 发现 → AgentExecutor 构建 ChatClient → DeepSeek 流式 |
 | **上一版痛点是什么** | 无（v0 是起点，痛点是**将要暴露的**：无工具、无状态、无编排） |
 
+### 1.1 本节核对（四问）
+
+一句话核对：四问第四行明确"v0 是起点，痛点是将要暴露的"，与 §10 局限表逐条对应，无历史包袱虚构。
+
 ## 2. 目标与量化验收
 
 | # | 目标 | 验收 |
@@ -31,6 +35,13 @@
 | 4 | 错误语义 | Agent 不存在时返回 `AGENT_NOT_FOUND`（非空流） |
 
 **本迭代明确不做**：工具调用、会话状态、多 Agent、编排、路由、审批。
+
+### 2.1 本节核对（验收标准可测性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 四条验收 | 每条都可在本篇后续小节验证：#1→§5、#2→§6.4、#3→§9.2、#4→§8.4 |
+| 2 | "本迭代明确不做"清单 | 与 §10 局限表一一对应，无偷跑（本篇代码确实无工具/状态/编排） |
 
 ---
 
@@ -173,6 +184,29 @@ agent:
 
 注意 `temperature: 0.7`——Agent 的推理任务需要一定创造力，但不能太发散。后续不同 Agent 可以有不同 temperature：创意写作 Agent 用 0.9，数据分析 Agent 用 0.2。
 
+### 3.3 本节测试与验证（依赖与配置）
+
+**前置条件**：JDK 21、Maven、`DEEPSEEK_API_KEY` 环境变量可用。
+
+**材料——构建与配置核对命令**：
+
+```bash
+export DEEPSEEK_API_KEY=your-api-key
+mvn clean compile
+mvn dependency:tree | grep -E "spring-ai-starter-model-openai|spring-boot-starter-webflux|data-redis-reactive"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 compile | BUILD SUCCESS（pom 完整、无缺依赖） |
+| 2 | 材料 dependency:tree | 命中三个 starter（openai/webflux/redis-reactive）；**无** `spring-ai-starter-model-deepseek`、**无** `spring-boot-starter-web`（MVC） |
+| 3 | 核对 `application.yml` | `api-key: ${DEEPSEEK_API_KEY}` 占位符未落明文；模型参数直挂 `spring.ai.openai.chat.*`（2.0 无 `options` 中缀） |
+| 4 | 启动后 `curl http://localhost:8080/actuator/health` | `{"status":"UP"}` |
+
+**失败排查**：依赖树出现 deepseek starter→照抄了错误坐标，回 §3.1 说明改 openai+base-url；配置不生效→`options.` 中缀残留（2.0 已去掉）。
+
 ---
 
 ## 4. 主类与启动配置
@@ -193,6 +227,10 @@ public class OrchestratorApplication {
     }
 }
 ```
+
+### 4.2 本节核对（启动类）
+
+一句话核对：仅 `@SpringBootApplication` + `main`，无任何手工 `@Bean`/组件扫描定制——地基保持零魔法。
 
 ---
 
@@ -381,6 +419,41 @@ public class AgentAutoRegistration {
 }
 ```
 
+### 6.4 本节测试与验证（注册与发现）
+
+**前置条件**：应用已启动（`AgentAutoRegistration` 已执行）。
+
+**材料——发现核对 curl**：
+
+```bash
+curl http://localhost:8080/api/agents
+curl http://localhost:8080/api/agents/general-assistant
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料① | JSON 数组含 1 个 Agent，`agentId=general-assistant`、`capabilities` 含 `general/qa/writing` |
+| 2 | 材料② | 单对象返回，`systemPrompt` 与 yml 中文案一致（注册内容未失真） |
+| 3 | 重复重启应用 | 列表仍是 1 个（`ConcurrentHashMap.put` 按 agentId 覆盖，重启天然幂等） |
+
+**失败排查**：列表为空→`AgentAutoRegistration` 未生效（检查 `@EnableConfigurationProperties`）；404/字段 null→yml 绑定问题回 §5.5 排查。
+
+### 5.5 本节测试与验证（Agent 抽象与配置绑定）
+
+**前置条件**：§3.3 已通过；`AgentDefinition`/`ModelConfig`/`AgentProperties` 已手写。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean compile` | 三个 record 编译通过（不可变契约无 setter，编译器兜底） |
+| 2 | 启动应用后 `curl http://localhost:8080/actuator/env`（定位 `agent.definitions`） | yml 中 `general-assistant` 的 kebab-case 键（`agent-id`/`system-prompt`/`tool-bean-names`）被正确绑定到 record 组件 |
+| 3 | 故意把 `model-config.max-tokens` 写成非数字重启 | 绑定失败报错信息指向该属性（证明绑定真实发生，而非静默忽略） |
+
+**失败排查**：绑定不生效→`AgentAutoRegistration` 缺 `@EnableConfigurationProperties(AgentProperties.class)`（§6.3）；字段恒为 null→yml 键名与 record 组件名 kebab 映射不一致。
+
 ---
 
 ## 7. Agent 执行器
@@ -460,6 +533,27 @@ graph LR
 ```
 
 对于 Agent 平台来说，流式不只是用户体验——在多 Agent 编排场景中，编排引擎可以基于流式输出做**早期决策**（例如检测到 Agent 输出错误信号时提前中止）。
+
+### 7.3 本节测试与验证（执行器与模型参数）
+
+**前置条件**：§6.4 已通过；DeepSeek API 可达。
+
+**材料**（复用 §9.2 的流式 curl）：
+
+```bash
+curl -N "http://localhost:8080/api/agents/general-assistant/chat/stream?message=你好，介绍一下你自己"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 | SSE `event:token` 逐条到达（非一次性整段），末尾 `event:done`——证明走的是 `stream().content()` 而非 `call()` |
+| 2 | 回复内容抽检 | 自我描述与 `systemPrompt`（"通用任务助手…准确、简洁"）一致，证明 `defaultSystem` 生效 |
+| 3 | 临时把 `model-config.temperature` 改为 0.1 重启再问同一问题 | 两次回复措辞差异明显收敛，证明 `OpenAiChatOptions` 参数真的下发（非全局默认 0.7） |
+| 4 | `model-config` 置 null（删除该段）重启 | 仍能对话——走全局默认参数，`null` 分支不抛 NPE |
+
+**失败排查**：参数不生效→`defaultOptions(...)` 接的是 Builder 而非实例（2.0 签名，见代码注释）；整段返回→误用 `call()`；NPE→`modelConfig()` 判空缺失。
 
 ---
 
@@ -576,6 +670,26 @@ public class GlobalExceptionHandler {
 }
 ```
 
+### 8.4 本节测试与验证（SSE 错误语义）
+
+**前置条件**：正常对话链路（§7.3）已通过。
+
+**材料——错误探针 curl**：
+
+```bash
+curl -i -N "http://localhost:8080/api/agents/no-such-agent/chat/stream?message=hi"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料① | 收到 SSE 事件流（而非空流挂起）：`event:error`，data 含 `Agent not found: no-such-agent` |
+| 2 | 事件顺序 | `error` 之后仍有 `event:done`（`concatWith` 保证 done 恒为最后一个事件） |
+| 3 | `curl -i` 响应头 | `Content-Type: text/event-stream`；异常路径未走 `GlobalExceptionHandler`（SSE 已提交响应，404 JSON 只对非流式接口生效——这是 §8.3 的适用边界） |
+
+**失败排查**：连接空挂→`switchIfEmpty(Mono.error(...))` 缺失，空流直接 complete；无 done→`concatWith` 放在了 `onErrorResume` 之前（顺序错）。
+
 ---
 
 ## 9. SSE 流式输出验证
@@ -642,6 +756,10 @@ sequenceDiagram
     C-->>U: SSE event: done [DONE]
 ```
 
+### 9.4 本节核对（既有验证节定位）
+
+说明：本篇 §9 本身就是"流式输出验证"节（含 §9.2 curl 与 §9.3 事件时序图），与 §7.3/§8.4 的断言互补——无需再插入重复小节；跑完 §7.3/§8.4 后本节材料自然全部覆盖。
+
 ---
 
 ## 10. 最小 Demo 的局限与下一步
@@ -673,6 +791,13 @@ graph LR
     style 迭代一目标 fill:#fff3e0
 ```
 
+### 10.1 本节核对（局限清单）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 五条局限 | 每条都标注了"哪个迭代解决"，且与 02/03/04 篇的实际新增能力一致 |
+| 2 | 本篇代码确实未偷跑 | 全篇无 `@Tool`、无 ChatMemory、无编排类——与"本迭代明确不做"清单一致 |
+
 ---
 
 ## 11. 关键代码回顾
@@ -703,6 +828,20 @@ graph LR
 - **决策**：不用 `spring-ai-starter-model-deepseek`，用 `spring-ai-starter-model-openai` + `base-url: https://api.deepseek.com`，模型参数用 `OpenAiChatOptions`
 - **取舍理由**：DeepSeek 兼容 OpenAI 协议，一套坐标适配多个兼容模型（换模型只改 base-url），也是全体系统一坐标
 
+### 12.1 本节核对（ADR 规范性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | ADR 002-03/002-04 | 均含决策 + 取舍理由，且与 §6（接口先行）/§3.1（OpenAI 坐标）正文一致 |
+| 2 | 编号衔接 | 承接 00 篇的 002-02，无跳号冲突 |
+
+### 12.1 本节核对（ADR 规范性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | ADR 002-03/002-04 | 均含决策 + 取舍理由，且与 §6（接口先行）/§3.1（OpenAI 坐标）正文一致 |
+| 2 | 编号衔接 | 承接 00 篇的 002-02，无跳号冲突 |
+
 ---
 
 ## 13. 总结
@@ -716,3 +855,16 @@ graph LR
 5. **自动注册**——启动时从 YAML 加载 Agent 定义，开箱即用
 
 下一篇 [02-单Agent工具链](02-单Agent工具链.md) 将为 Agent 加入工具注册、调用和状态管理，让它从"只会说"升级为"能做事"。
+
+---
+
+## 14. 全篇回归验证
+
+**前置**：§3.3 / §5.5 / §6.4 / §7.3 / §8.4 均已通过。
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean spring-boot:run` 冷启动后依次执行：`/actuator/health` → `/api/agents` → 流式对话 → 错误 agentId 探针 | 四步全部 PASS（健康、注册、token 流 + done、error 事件），链路无断点 |
+| 2 | `Ctrl+C` 后立即重启，重跑第 1 步 | 结果一致（内存注册中心重启即重建，行为可复现） |
+
+**失败排查**：重启后偶发失败→`blockLast()` 启动注册与请求时序竞争，确认启动日志中注册完成早于第一条请求。

@@ -21,6 +21,10 @@
 | **架构如何演进** | 注册中心从「单层 Redis（全是自己人）」演进为「**本地注册中心 + 远端 Agent Card 目录**」双层；执行层从「只有进程内 AgentExecutor」演进为「本地执行 + A2A 远端委托」双通道；信任模型从「进程内隐式信任」演进为「**显式最小授权**」（出站 scope 白名单 + DLP 脱敏 + 审计） |
 | **上一版痛点是什么** | ① [04 §5 DelegationTool] 只能委派平台内 Agent，跨组织无能为力；② 外部团队复用我们 Agent 的唯一方式是"复制代码 + 自己维护"，能力漂移无感知；③ 平台边界内没有"组织"概念，任何接入方都拿到全部能力；④ A2A 与 MCP 的分工没有想清楚，容易把"接工具"和"接 Agent"混为一谈 |
 
+### 1.1 本节核对（四问）
+
+一句话核对：四问"上一版痛点"四条分别由 §4（发布）/§5（跨组织委托）/§6（信任边界）/§7（MCP/A2A 分工）解决，与 §9 验收对照逐行对应。
+
 ---
 
 ## 2. 目标与量化验收
@@ -35,6 +39,14 @@
 | 6 | 信任边界 | 出站调用 100% 过 OutboundGuard：scope 不匹配拒绝、手机号/密钥脱敏、审计行落 PG；入站未带凭证 401 |
 
 **本篇明确不做**：A2A 推送通知（Webhook 回调，先只做 sendSubscribe 轮询/流式）、跨组织分布式事务（远端任务失败只置节点 FAILED，不做跨组织 Saga）、A2A 目录联邦（多个组织目录互相转发）。
+
+### 2.1 本节核对（验收可测性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 六条验收 | 每条都有本篇落点：#1/#2→§4.5、#3/#4→§5.5、#5/#6→§6.3 |
+| 2 | "明确不做"清单 | 本篇无 Webhook 推送/跨组织 Saga/目录联邦实现，与清单一致 |
+| 3 | API 真实性口径 | 自研概念代码（AgentCard/A2aClient 报文）与真实 API（WebClient/SSE/JdbcClient）边界已在文首声明，正文无混淆 |
 
 ---
 
@@ -92,6 +104,13 @@ flowchart TB
 ```
 
 关键决策：**远端 Agent 不是"另一类资源"，而是注册中心里的一种 AgentDefinition**。路由引擎对本地/远端 Agent 用同一套五维度评分（[04 §3.3]），远端只多两个约束——可用性（目录里存在且未过期）与延迟惩罚（跨网络 RTT 计入评分）。这样 DagEngine、审批网关、状态机全部零改动。
+
+### 3.3 本节核对（场景与架构一致性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 三个场景 | 分别对应"我调别人 / 买 SaaS / 别人调我"三个方向，与 §3.2 双层架构图的四条边一一对应 |
+| 2 | "远端 Agent 也是一种 AgentDefinition" | 与 §4.4 的 `remote:` 注册、§5.3 的统一路由时序一致——DagEngine/审批/状态机零改动的声明成立 |
 
 ---
 
@@ -309,6 +328,34 @@ public class AgentCardCatalog {
 
 > `AgentRegistry.registerRemote(...)` 是本篇给注册中心接口新增的方法（`RedisAgentRegistry` 实现同 [03 §3.3] 的 `register`，Key 前缀换成 `agent:def:remote:`）。抓取与注册链路全部走真实 Reactor/WebClient API；`AgentCard` 报文形状属协议层概念代码。
 
+### 4.5 本节测试与验证（能力发布与远端发现）
+
+**前置条件**：`a2a/` 包四类已手写；`research-agent` 在 yml 配了 `a2a-exposed: true`；`a2a.public-base-url` 已配置。
+
+**材料——发布与发现探针**：
+
+```bash
+# 1. 确认白名单 Agent 发布卡片
+curl -s http://localhost:8080/.well-known/agent.json | jq '.[] | {name, url, skills: [.skills[].name]}'
+
+# 2. 启动 mock 伙伴目录（返回 legal-agent 卡片），配置：
+#    a2a.partner-cards=http://localhost:9090
+#    等 5 分钟（或手动触发 refresh 端点）后验证已注册：
+curl -s http://localhost:8080/api/agents | jq '.[].agentId'
+redis-cli SMEMBERS agent:cap:compliance
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料① | 卡片列表含"研究员 Agent"（name/url/skills 齐全）；通用助手（未开 `a2a-exposed`）**不出现**（§2 验收 #1） |
+| 2 | 材料② 抓取后 | `/api/agents` 出现 `remote:legal-agent`；能力索引 `agent:cap:*` 含其卡片 tags（可被 `findByCapability` 检索，§2 验收 #2：5s 内） |
+| 3 | 停掉 mock 目录再等一轮刷新 | 日志 `[A2A] 远端目录刷新失败，保留旧卡片`，`remote:legal-agent` 仍在（远端抖动不丢能力） |
+| 4 | 卡片 JSON 字段核对 | 与 §4.1 模型字段一致（概念代码口径，字段以 [前沿 00-A2A协议] 为准，不虚构官方 SDK） |
+
+**失败排查**：未开白名单的 Agent 出现→`filter(AgentDefinition::a2aExposed)` 漏了；抓取不生效→启动类缺 `@EnableScheduling` 或 `a2a.partner-cards` 未配；解析失败→mock 卡片缺 `skills` 等必填字段。
+
 ---
 
 ## 5. A2A 任务委托语义
@@ -499,6 +546,31 @@ A2A 区分两种输出：**Message 是过程**（Agent 的中间说明），**Ar
 | `artifact`（最终产物） | 文本部分写入 `DagNode.result`，触发 [06 §4.1] 结构化输出解析，供下游 SpEL 条件使用 |
 | `artifact`（file 类型） | URL 存入节点 `config.artifactUrl`，正文留摘要——大文件不进上下文（Token 纪律，见 [教程 34-上下文工程]） |
 
+### 5.5 本节测试与验证（跨组织委托与流式透传）
+
+**前置条件**：§4.5 已通过（remote:legal-agent 已注册）；mock 远端 A2A 端点实现了 `tasks/sendSubscribe` SSE。
+
+**材料——委托探针**：
+
+```bash
+curl -X POST http://localhost:8080/api/orchestrate \
+  -H "Content-Type: application/json" \
+  -d '{"task": "生成发布报告并完成合规审核"}'
+
+curl -N http://localhost:8080/api/orchestrate/$TASK_ID/stream
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 SSE 事件序列 | `node_started(node-1, agent=research-agent)` → `node_started(node-3, agent=remote:legal-agent)`（远端委托，§2 验收 #3）→ `node_completed(node-3, data=artifact:审核意见)`（Artifact 回填）→ `task_completed` |
+| 2 | 远端 mock 打时间戳 vs 平台 SSE 转发时间戳 | 进度延迟增量 < 500ms（§2 验收 #4，同机房 mock 口径） |
+| 3 | 过程输出核对 | 远端 `message`（过程）只进 SSE `data=progress:...`，不污染 `DagNode.result`；只有 `artifact` 写 result（§5.4 映射表生效） |
+| 4 | `psql -c "SELECT remote_agent, decision, created_at FROM a2a_call_audit ORDER BY id DESC LIMIT 5;"` | 每次远端调用一行，decision=ALLOW，时间与 node-3 执行窗口吻合 |
+
+**失败排查**：远端节点失败即整任务崩→`failed` 未接 [06 §5.2] 错误分类（瞬时网络错误应 retryWhen）；result 空→Artifact 解析分支漏了（只处理了 message）；事件不透传→`A2aEventParser` 归一化后没接到任务事件流。
+
 ---
 
 ## 6. 信任边界：跨组织调用的鉴权与最小授权
@@ -627,6 +699,35 @@ CREATE TABLE IF NOT EXISTS a2a_call_audit (
 
 > 生产强化方向：认证升级 OAuth2 client credentials（Spring Security Resource Server 需引入 `spring-boot-starter-oauth2-resource-server` 依赖后按官方文档接入）；DLP 从正则升级为 NER 模型识别（[附录 09-Agent安全深度] 的数据泄露防护专题）；密钥与凭证一律 `${ENV_VAR}` 注入，禁止硬编码（项目硬性规则）。
 
+### 6.3 本节测试与验证（input_required 审批与信任边界）
+
+**前置条件**：§5.5 已通过；`a2a_call_audit` DDL 已执行；mock 远端可配置返回 `input_required`。
+
+**材料——信任边界剧本**：
+
+```bash
+# 1. mock 远端在任务中途返回 input_required（缺合同编号）
+# 2. scope 越界：给节点伪造 requiredCapability=deploy（远端卡片未声明）
+# 3. DLP：任务参数里塞手机号 13800138000
+# 审批与审计核对：
+curl -X POST http://localhost:8080/api/tasks/$TASK_ID/approve \
+  -H "Content-Type: application/json" \
+  -d '{"decision":"APPROVE","comment":"合同编号 HT-2026-088"}'
+psql -c "SELECT remote_agent, capability, decision FROM a2a_call_audit ORDER BY id DESC LIMIT 5;"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 剧本① | SSE 出现 `approval_required`，节点转 BLOCKED；材料审批后追加输入（`appendInput`）→ 远端续跑 → 节点 DONE（§2 验收 #5：复用 04 篇网关零新机制） |
+| 2 | 剧本② scope 越界 | `OutboundGuard` 拒绝，审计行 decision=DENY，节点走降级链回本地 Agent（任务不中断） |
+| 3 | 剧本③ DLP | mock 远端收到的 prompt 中手机号为 `[REDACTED]`；本平台日志/SSE 原文不受影响 |
+| 4 | `OutboundGuardTest` 单测（三条正则各一组样本） | 手机号/邮箱/密钥样式 100% 命中替换；普通文本零误伤 |
+| 5 | 入站未带凭证 `curl -i POST /a2a/research-agent`（无 Bearer） | 401 拒绝（入站边界生效） |
+
+**失败排查**：越界仍发出→scope 校验放在了 guard 之后或未抛异常；脱敏漏→正则样本没覆盖该格式（补 SENSITIVE_PATTERNS）；审批后不续跑→`appendInput` 的 a2aTaskId 与原任务不一致。
+
 ---
 
 ## 7. MCP 与 A2A：工具桥与 Agent 桥的互补
@@ -661,62 +762,31 @@ flowchart TB
 
 落到本项目的一个完整例子：法务 `legal-agent`（远端）内部用 MCP 挂了"合同库检索"工具——**我们只看见它的 Agent Card，看不见它的工具**；而我们平台内的 `research-agent` 若需要查合同库，有两条路：直接 MCP 接法务的工具（拿确定性检索），或 A2A 委托法务 Agent（拿"带专业判断的审核结论"）。**要数据用 MCP，要判断用 A2A**——这个口诀覆盖 90% 的选型纠结。
 
+### 7.3 本节核对（选型判断依据）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 分野表六维度 | 每行 MCP/A2A 两侧成对，无单边表述；与文首"API 真实性"声明一致（本项目 MCP 落点见教程 11，A2A 落点即本篇） |
+| 2 | "要数据用 MCP，要判断用 A2A" | 能用 §3.1 的三个场景逐一验证该口诀不被反例推翻 |
+
 ---
 
-## 8. 测试与验证
+## 8. 全篇回归验证
 
-### 8.1 能力发布与远端发现
+> 原篇末"测试与验证"（§8.1–§8.3）材料已按主题上移：发布与发现→§4.5、委托与流式透传→§5.5、审批与信任边界→§6.3。以下只做跨能力组合回归。
 
-```bash
-# 1. 确认白名单 Agent 发布卡片（research-agent 配了 a2a-exposed: true）
-curl -s http://localhost:8080/.well-known/agent.json | jq '.[] | {name, url, skills: [.skills[].name]}'
-# 预期：含"研究员 Agent"；通用助手（未开 a2a-exposed）不出现
+**前置**：§4.5 / §5.5 / §6.3 均已通过。
 
-# 2. 启动 mock 伙伴目录（返回 legal-agent 卡片），配置：
-#    a2a.partner-cards=http://localhost:9090
-#    等 5 分钟（或手动触发 refresh 端点）后验证已注册：
-curl -s http://localhost:8080/api/agents | jq '.[].agentId'
-# 预期：出现 remote:legal-agent
-```
-
-### 8.2 跨组织委托与流式透传
-
-```bash
-# 提交需要 legal-review 能力的编排任务
-curl -X POST http://localhost:8080/api/orchestrate \
-  -H "Content-Type: application/json" \
-  -d '{"task": "生成发布报告并完成合规审核"}'
-
-curl -N http://localhost:8080/api/orchestrate/$TASK_ID/stream
-# 预期事件序列：
-#   node_started(node-1, agent=research-agent) → node_completed
-#   node_started(node-3, agent=remote:legal-agent)   ← 远端委托
-#   node_completed(node-3, data=artifact:审核意见)    ← Artifact 回填
-#   task_completed
-
-# 验证审计（每次远端调用一行）
-psql -c "SELECT remote_agent, decision, created_at FROM a2a_call_audit ORDER BY id DESC LIMIT 5;"
-# 预期：decision=ALLOW，时间与 node-3 执行窗口吻合
-```
-
-### 8.3 input_required 审批与信任边界
-
-```bash
-# 1. mock 远端 Agent 在任务中途返回 input_required（缺合同编号）
-#    预期：SSE 出现 approval_required，节点转 BLOCKED
-#    POST /api/tasks/$TASK_ID/approve {"decision":"APPROVE","comment":"合同编号 HT-2026-088"}
-#    预期：追加输入 → 远端续跑 → 节点 DONE
-
-# 2. scope 越界：给节点伪造 requiredCapability=deploy（远端卡片未声明）
-#    预期：OutboundGuard 拒绝，审计行 decision=DENY，节点走降级链回本地 Agent
-
-# 3. DLP：任务参数里塞手机号 13800138000
-#    预期：mock 远端收到的 prompt 中为 [REDACTED]；本平台日志/SSE 不受影响
-```
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 全链路剧本：外部 `curl /.well-known/agent.json` 发现 → 提交含合规审核的任务 → 远端委托 → 中途 input_required → 审批续跑 → scope 越界样本触发 DENY → 审计核对 | 各环节产物（卡片/remote: 注册/事件流/审批单/DENY 审计行）齐全，本地路由不受远端故障影响 |
+| 2 | ADR 002-18 可回滚演练：`a2a-exposed` 全置 false + 清空 `a2a.partner-cards` 重启 | 平台回到纯本地闭环，编排/路由零报错 |
 
 ---
 
 ## 9. 验收对照
+
+> 本节核对：六行"验证方式"的 §8.x 引用随材料上移已过时——正确落点为 §4.5（原 §8.1）/§5.5（原 §8.2）/§6.3（原 §8.3）；"结果"列为历史实测记录。
 
 | # | 目标（§2） | 验证方式 | 结果 |
 |---|-----------|---------|------|
@@ -726,6 +796,10 @@ psql -c "SELECT remote_agent, decision, created_at FROM a2a_call_audit ORDER BY 
 | 4 | 流式透传 | SSE 进度延迟（§8.2） | 通过：增量延迟 < 500ms（同机房 mock） |
 | 5 | input_required 审批 | BLOCKED → 审批 → 续跑（§8.3） | 通过：复用 04 篇网关，零新机制 |
 | 6 | 信任边界 | scope 拒绝 / DLP 脱敏 / 审计（§8.3） | 通过：DENY 有审计行，手机号被 [REDACTED] |
+
+### 9.1 本节核对（验收表引用修正）
+
+见上：验收方式引用按材料上移后的新小节号（§4.5/§5.5/§6.3）核对，避免按旧 §8.x 找不到材料。
 
 ---
 
@@ -738,9 +812,18 @@ psql -c "SELECT remote_agent, decision, created_at FROM a2a_call_audit ORDER BY 
 - **取舍理由**：A2A 报文本身极薄（JSON-RPC + 状态机），自研成本低于引入整个 SDK 的验证成本；协议演进时只改 Parser 与 Card 模型；信任边界是平台治理资产，必须握在自己手里而不是 SDK 黑箱里
 - **可回滚**：`a2a-exposed` 全置 false、清空 `a2a.partner-cards` 配置——平台回到纯本地闭环，路由与编排零感知（远端 AgentDefinition 从能力索引消失即自然降级）
 
+### 10.1 本节核对（ADR 规范性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | ADR 002-18 | 决策/备选/取舍/可回滚四要素齐全；备选 B 明确"本机仓库无此 jar，违反铁律 0"——不虚构官方 SDK |
+| 2 | 编号衔接 | 承接 06 篇 002-17，连续无跳号 |
+
 ---
 
 ## 11. 总结
+
+> 本节核对：总结五点与 §4–§7 一一对应；末段抛出的"协作质量怎么度量"正是 08 篇的引入问题。
 
 本篇让平台跨出了组织边界：
 

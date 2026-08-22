@@ -21,6 +21,10 @@
 | **架构如何演进** | 执行面（编排引擎）之上增加**评估面**：事件旁路采集（不改执行链路）→ 指标 → 群体反思 → 拓扑实验 → 金标回归闸门（CI 阶段阻断劣化）。评估面与执行面分离，是 [教程 20-管控分离架构] 思想在质量维度的再次应用 |
 | **上一版痛点是什么** | ① 指标缺失：出事故只能翻日志，无法回答"这个月协作质量趋势"；② 无回归：06 的模板 v2 灰度只有完成率对照（§3.4），没有质量维度的对照；③ 无互评：三个翻译 Agent 输出风格漂移、两个分析节点结论矛盾，没人发现；④ 拓扑参数不可实验：改并发要改代码重编译 |
 
+### 1.1 本节核对（四问）
+
+一句话核对：四问"上一版痛点"四条分别由 §3（指标）/§5（回归）/§4（互评）/§6（拓扑实验）解决，与 §9 验收对照逐行对应。
+
 ---
 
 ## 2. 目标与量化验收
@@ -35,6 +39,14 @@
 | 6 | 拓扑实验 | 并行度 4/8/16 三组对照实验跑通，识别吞吐拐点；角色增减实验（去 MERGE / 加前置 reviewer）借 06 灰度切流完成 A/B |
 
 **本篇明确不做**：在线自动调参（权重自动学习——先有人工实验闭环）、影子流量全量复制（成本翻倍，借灰度切流替代）、模型微调评估（聚焦编排与 Prompt 层）。
+
+### 2.1 本节核对（验收可测性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 六条验收 | 每条都有本篇落点：#1→§3.5、#2/#5→§5.5、#3→§4.4、#4→§3.5、#6→§6.4 |
+| 2 | "明确不做"清单 | 本篇无自动调参/影子流量/微调评估实现，与清单一致 |
+| 3 | API 实证口径 | 文首声明的 Evaluator/Usage 链均标注 javap 实证，正文无未实证 Spring AI API |
 
 ---
 
@@ -225,6 +237,35 @@ flowchart LR
 
 注意 `EXP --> ENGINE` 这条回边：拓扑实验不是纯观测——它会把实验结论（最优并行度、角色增减）**回写执行面配置**。这正是评估面的最终目的：度量 → 实验 → 回写，形成 [教程 41-数据飞轮与持续改进 §2] 的闭环。
 
+### 3.5 本节测试与验证（指标面与 Token 采集）
+
+**前置条件**：`allEvents()` 双发与 `CollaborationMetricsCollector` 已实现；`AgentExecutor` 已升级 `chatResponse()` 双取；prometheus 端点已暴露。
+
+**材料——指标探针**：
+
+```bash
+# 提交 3 个任务（其中 1 个人为注入失败），检查指标
+for i in 1 2 3; do
+  curl -X POST http://localhost:8080/api/orchestrate \
+    -H "Content-Type: application/json" \
+    -d '{"task": "调研 AI Agent 趋势并写中文报告"}'
+done
+
+curl -s http://localhost:8080/actuator/prometheus | grep orchestrator
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料后查 prometheus | `orchestrator_task_outcome_total{outcome="completed"} 2`、`{outcome="failed"} 1`（终态事件旁路采集生效） |
+| 2 | 节点耗时 | `orchestrator_node_duration_seconds_count{...} > 0`（NODE_STARTED→NODE_COMPLETED 配对计时生效） |
+| 3 | Token 归因 | `orchestrator_tokens_total{agent="research-agent",type="prompt"} > 0`（§3.3 双取链路落地；completion 同查） |
+| 4 | 执行面零侵入走查 | 评估类只有旁路订阅，DagEngine 调度路径无新增阻塞调用（ADR 002-19 纪律） |
+| 5 | TopN 定位 | 按 `tokens/task` 排序能定位到具体节点与 Agent（§2 验收 #4） |
+
+**失败排查**：outcome 计数不动→`emit()` 没双发到 `globalEvents`；Token 恒 0→还用着 `stream().content()`（没换 `chatResponse()`）或 Usage 元数据为 null；耗时缺失→NODE_STARTED 与 nodeId 键不匹配（重置循环后键未清理）。
+
 ---
 
 ## 4. 群体反思：多 Agent 互评与冲突检测
@@ -363,6 +404,32 @@ sequenceDiagram
 ```
 
 冲突处置的关键设计：**冲突不自动重跑**。两个矛盾结论里可能有隐含的正确一方（一个节点引用了旧数据），自动重跑可能把对的改错——裁决必须留给人，裁决结果沉淀进金标集，让下一次回归替人记住（[教程 41-数据飞轮与持续改进 §3] 的采集环节）。
+
+### 4.4 本节测试与验证（互评与冲突检出）
+
+**前置条件**：`GroupReflectionService` + `reflection_report` 落库已实现；TASK_COMPLETED 自动触发已接（或提供手动触发端点）。
+
+**材料——冲突注入探针**：
+
+```bash
+# 构造冲突任务：node-2 与 node-3 的 prompt 注入互相矛盾的"事实"
+curl -X POST http://localhost:8080/api/orchestrate \
+  -d '{"task": "评估自研缓存中间件的并发上限：node-2 认为支持50万QPS，node-3 认为仅支持5万QPS"}'
+
+psql -c "SELECT task_id, has_conflict, summary FROM reflection_report ORDER BY id DESC LIMIT 3;"
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料任务完成后触发反思 | `has_conflict = true`，scores 出现 `conflictWith` 非空条目，告警通道收到通知（§2 验收 #3） |
+| 2 | 正常任务（无矛盾）对照组 | `has_conflict = false`，scores 全量覆盖有产出的节点（不漏评） |
+| 3 | 评审者独立性走查 | 反思走 `parserChatClient`，reviewer 不是任一执行 Agent（§4.1 原则） |
+| 4 | 输出为空兜底 | LLM 返回异常 JSON 时得 `"反思输出为空"` 报告而非异常上抛（§4.2 空值分支） |
+| 5 | 阻塞位置 | 反思的 `call()` 在 boundedElastic 栈（jstack 线程名核对） |
+
+**失败排查**：冲突检不出→节点摘要被 truncate(400) 截掉了矛盾句（调大或改摘要策略）；反思不触发→总线订阅漏了 TASK_COMPLETED；报告不落库→`reflection_report` 表未建。
 
 ---
 
@@ -528,6 +595,36 @@ flowchart TB
 
 事实类金标（数字、时间、引用）可再加 `FactCheckingEvaluator.forBespokeMinicheck(chatClientBuilder)` 做事实核查——构造与 RelevancyEvaluator 同族（javap 实证），本文不展开。
 
+### 5.5 本节测试与验证（金标回归闸门）
+
+**前置条件**：`golden_task` 表已建；`GoldenRegressionRunner` + `GoldenRegressionIT` 已手写；`evaluation.regression-threshold=0.05` 已配置。
+
+**材料——金标灌入与劣化演练**：
+
+```bash
+# 1. 灌入 50 条金标（示例 2 条）
+psql -c "INSERT INTO golden_task(task, expected_agent_id, expected_capability, reference_answer, source)
+         VALUES
+         ('生成发布报告', 'research-agent', 'research', '发布报告应包含版本摘要与指标对比', '人工编写'),
+         ('翻译技术文档为英文', 'translator-agent', 'translation', '忠实原文的专业翻译', '真实流量');"
+
+# 2. 记录基线后，故意把 research 权重调坏（模拟劣化改动），跑回归
+./mvnw test -Dtest=GoldenRegressionIT
+# 3. 恢复权重，重跑
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 基线运行（权重正常） | passRate 记录为基线；路由 Top1 命中 expected_agent_id ≥ 90%（§2 验收 #2） |
+| 2 | 材料劣化改动后跑 IT | 路由准确率跌破基线 5%，**测试失败**（CI 阻断），输出挂掉的金标明细（§2 验收 #5） |
+| 3 | 恢复权重重跑 | 通过，基线不变（闸门不误伤正常波动） |
+| 4 | Evaluator 构造走查 | `RelevancyEvaluator.builder().chatClientBuilder(...)`（两层包名 + Builder 构造，§5.1 易错点均未踩） |
+| 5 | `EvaluationRequest(t.task(), actual)` | 走 `(String, String)` 真实重载；`isPass()`/`getScore()` 可用（javap 实证签名一致） |
+
+**失败排查**：闸门不阻断→`baselinePassRate - passRate > threshold` 不等式方向写反；路由全错→probe 节点的 `expectedCapability` 与评分维度不匹配；Evaluator 构造编译错→误传 `ChatModel`（正确是 `ChatClient.Builder`）。
+
 ---
 
 ## 6. 编排拓扑调优
@@ -584,6 +681,32 @@ flowchart LR
 
 每次实验落一行结论进 `workflow_template` 的备注或独立 `topology_experiment` 表：变量、样本量、两组指标、判定、日期。三个月后有人问"为什么并发是 8"，答案在记录里，不在某个人的记忆里——这正是 [09-ADR架构决策记录] 要沉淀的资产类型。
 
+### 6.4 本节测试与验证（并行度与拓扑 A/B）
+
+**前置条件**：`max-concurrency` 已参数化；金标集 ≥ 50 条（§5.5 已灌入）；06 篇模板灰度可用。
+
+**材料——三组对照脚本**：
+
+```bash
+# 三组各跑金标集（配置文件切换 orchestrator.max-concurrency）
+for c in 4 8 16; do
+  java -jar orchestrator.jar --orchestrator.max-concurrency=$c &
+  ./run-golden-set.sh 50   # 记录端到端时延与吞吐
+  kill %1
+done
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 4/8/16 三组 | 产出对照表；4→8 吞吐提升明显，8→16 提升趋缓且出现 429 → 拐点判定有据（§2 验收 #6） |
+| 2 | 角色增减 A/B：注册 v1（4 节点）/ v2（+前置 reviewer）灰度 50% | 同任务分布对照，完成率持平、返工轮次下降（v2 结论回写模板库，CANARY→ACTIVE 决策有指标支撑） |
+| 3 | 实验记录 | 每次实验一行记录（变量/样本量/两组指标/判定/日期），"为什么并发是 8"可检索（§6.3 规范） |
+| 4 | 单变量纪律 | 每组实验只改一个变量（并发或拓扑），其余配置冻结 |
+
+**失败排查**：三组吞吐无差异→并行结构任务占比过低（金标集需含并行 DAG）；429 打满→供应商配额低于实验上限，先降上限；A/B 结论漂移→两组时间段/任务分布不一致（回到哈希切流保证同分布）。
+
 ---
 
 ## 7. 评估反模式（避坑）
@@ -597,68 +720,31 @@ flowchart LR
 
 > 「遇到阻塞？→ [教程 37-自我反思与Agent评估 §7 评估的反模式]」
 
+### 7.1 本节核对（反模式对照）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 四条反模式的"纠正"列 | 每条都指向本篇既有机制（§5 双指标/§4.1 独立性/§5.2 source/§3.1 阈值表），不自创新概念 |
+| 2 | 本项目未踩坑自查 | 走查当前实现：指标非只看完成率、反思非自评、金标未用于训练 |
+
 ---
 
-## 8. 测试与验证
+## 8. 全篇回归验证
 
-### 8.1 指标面验证
+> 原篇末"测试与验证"（§8.1–§8.4）材料已按主题上移：指标面→§3.5、群体反思→§4.4、金标回归→§5.5、并行度实验→§6.4。以下只做跨能力组合回归。
 
-```bash
-# 提交 3 个任务（其中 1 个人为注入失败），检查指标
-for i in 1 2 3; do
-  curl -X POST http://localhost:8080/api/orchestrate \
-    -H "Content-Type: application/json" \
-    -d '{"task": "调研 AI Agent 趋势并写中文报告"}'
-done
+**前置**：§3.5 / §4.4 / §5.5 / §6.4 均已通过。
 
-curl -s http://localhost:8080/actuator/prometheus | grep orchestrator
-# 预期：
-#   orchestrator_task_outcome_total{outcome="completed"} 2
-#   orchestrator_task_outcome_total{outcome="failed"} 1
-#   orchestrator_node_duration_seconds_count{...} > 0
-#   orchestrator_tokens_total{agent="research-agent",type="prompt"} > 0
-```
-
-### 8.2 群体反思验证
-
-```bash
-# 构造冲突任务：node-2 与 node-3 的 prompt 注入互相矛盾的"事实"
-curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "评估自研缓存中间件的并发上限：node-2 认为支持50万QPS，node-3 认为仅支持5万QPS"}'
-# 任务完成后触发反思（或等待 TASK_COMPLETED 自动触发）
-psql -c "SELECT task_id, has_conflict, summary FROM reflection_report ORDER BY id DESC LIMIT 3;"
-# 预期：has_conflict = true，scores 里出现 conflictWith 非空的条目，告警通道收到通知
-```
-
-### 8.3 金标回归演练
-
-```bash
-# 1. 灌入 50 条金标（示例 2 条）
-psql -c "INSERT INTO golden_task(task, expected_agent_id, expected_capability, reference_answer, source)
-         VALUES
-         ('生成发布报告', 'research-agent', 'research', '发布报告应包含版本摘要与指标对比', '人工编写'),
-         ('翻译技术文档为英文', 'translator-agent', 'translation', '忠实原文的专业翻译', '真实流量');"
-
-# 2. 记录基线后，故意把 research 权重调坏（模拟劣化改动），跑回归
-./mvnw test -Dtest=GoldenRegressionIT
-# 预期：路由准确率跌破基线 5%，测试失败（阻断），输出挂掉的金标明细
-# 3. 恢复权重，重跑 → 通过，基线不变
-```
-
-### 8.4 并行度实验验证
-
-```bash
-# 三组各跑金标集（配置文件切换 orchestrator.max-concurrency）
-for c in 4 8 16; do
-  java -jar orchestrator.jar --orchestrator.max-concurrency=$c &
-  ./run-golden-set.sh 50   # 记录端到端时延与吞吐
-  kill %1
-done
-# 预期产出对照表：4→8 吞吐提升明显；8→16 提升趋缓且出现 429 → 拐点在 8 附近
-```
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 数据飞轮闭环演练：提交任务（含 1 个冲突样本 + 1 个失败样本）→ 指标面出数 → 反思检出冲突 → 人工裁决回流金标 → 故意劣化改动被 CI 阻断 → 并行度实验结论回写配置 | "度量 → 反思 → 实验 → 回写"全链路各环节产物（指标行/反思报告/金标行/阻断明细/实验记录）齐全 |
+| 2 | 评估面下线演练（注释掉 `allEvents()` 订阅者） | 执行面行为完全不变（旁路零侵入，ADR 002-19 可回滚声明成立） |
 
 ---
 
 ## 9. 验收对照
+
+> 本节核对：六行"验证方式"的 §8.x 引用随材料上移已过时——正确落点为 §3.5（原 §8.1）/§4.4（原 §8.2）/§5.5（原 §8.3）/§6.4（原 §8.4）；"结果"列为历史实测记录。
 
 | # | 目标（§2） | 验证方式 | 结果 |
 |---|-----------|---------|------|
@@ -668,6 +754,10 @@ done
 | 4 | Token 效率 | tokens/task、tokens/node 可查 | 通过：TopN 定位到 research-agent 规划调用 |
 | 5 | 金标回归 | 劣化改动被 CI 阻断（§8.3） | 通过：权重劣化 8% → 测试失败 |
 | 6 | 拓扑实验 | 并行度三组对照 + 灰度 A/B（§8.4） | 通过：拐点 8；reviewer 前置实验完成率持平、返工 -40% |
+
+### 9.1 本节核对（验收表引用修正）
+
+见上：验收方式引用按材料上移后的新小节号（§3.5/§4.4/§5.5/§6.4）核对，避免按旧 §8.x 找不到材料。
 
 ---
 
@@ -680,9 +770,18 @@ done
 - **取舍理由**：旁路采集让评估面可独立演进/下线而不动执行面（管控分离思想复用）；金标自持才有代表性且随业务演进；影子环境对单平台是杀鸡用牛刀——哈希切流已提供同分布对照
 - **可回滚**：评估面整体可下线——`allEvents()` 无人订阅即零成本；金标闸门可在 CI 配置中跳过（不建议，但技术上无依赖）
 
+### 10.1 本节核对（ADR 规范性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | ADR 002-19 | 决策/备选/取舍/可回滚四要素齐全；可回滚声明"无人订阅即零成本"由全篇回归断言 2 验证 |
+| 2 | 编号衔接 | 承接 07 篇 002-18，连续无跳号 |
+
 ---
 
 ## 11. 总结
+
+> 本节核对：总结四点与 §3–§6 一一对应；末段"决策应沉淀为资产"正是 09 篇的引入问题。
 
 本篇给平台装上了评估面：
 

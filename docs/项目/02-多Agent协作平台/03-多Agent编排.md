@@ -21,6 +21,10 @@
 | **架构如何演进** | 从「单 Agent 对话」演进为「编排层（Parser/DagEngine） + Agent 执行层 + 数据层」：任务 → 解析为 DAG → 并行调度 → 状态持久化 |
 | **上一版痛点是什么** | ① 单 Agent 提示词膨胀、工具过多、选择准确率下降 ② 无法并行 ③ 无法动态发现 Agent |
 
+### 1.1 本节核对（四问）
+
+一句话核对：四问"上一版痛点"三条与 02 篇 §10 局限表后三条一一对应，无虚构痛点。
+
 ## 2. 目标与量化验收
 
 | # | 目标 | 验收 |
@@ -32,6 +36,13 @@
 | 5 | 事件流 | SSE 实时推送 node_started → node_completed → task_completed |
 
 **本迭代明确不做**：智能路由（能力匹配即路由）、审批网关（迭代三）。
+
+### 2.1 本节核对（验收可测性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 五条验收 | 每条都有本篇落点：#1→§3.4、#2→§8.4、#3→§7.4、#4→§6.6、#5→§9.3 |
+| 2 | "明确不做"清单 | 本篇无评分路由（§7.1 仅取 first）与审批实现，与清单一致 |
 
 ---
 
@@ -214,6 +225,30 @@ public class RedisAgentRegistry implements AgentRegistry {
 ```
 
 关键设计：**能力索引**。每个能力标签对应一个 Redis Set，包含所有具备该能力的 Agent ID——路由引擎用 O(1) 查到候选 Agent。
+
+### 3.4 本节测试与验证（Redis 注册与能力索引）
+
+**前置条件**：Redis 运行中；`RedisAgentRegistry` 已替换内存实现（`@Primary` 生效，内存类已删或加 `@Profile("!redis")`）。
+
+**材料——注册核对命令**：
+
+```bash
+curl http://localhost:8080/api/agents
+redis-cli KEYS 'agent:def:*'
+redis-cli SMEMBERS agent:cap:research
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 启动应用后材料 KEYS | 3 个 key：`agent:def:general-assistant` / `research-agent` / `translator-agent` |
+| 2 | 材料 SMEMBERS | research 索引含 `research-agent`（能力索引与本体一致） |
+| 3 | 材料① | JSON 含 3 个 Agent；各自 temperature 与 yml 一致（0.7/0.3/0.2，注册内容无失真） |
+| 4 | 重启应用 | key 数不变（注册幂等，Set 去重） |
+| 5 | 临时删除 `agent:def:translator-agent` 后 `curl /api/agents` | 列表只剩 2 个——证明发现真的走 Redis 而非内存残留 |
+
+**失败排查**：Bean 冲突启动失败→内存实现未删/未排除（两个 `AgentRegistry` 实现并存且无 `@Primary`）；索引为空→`register` 的 `indexCaps` 链被 `then()` 吞掉；KEYS 慢→生产换 SCAN（代码注释已标注）。
 
 ---
 
@@ -450,6 +485,30 @@ sequenceDiagram
     Note over OE: 检查 DAG 后续节点
 ```
 
+### 4.5 本节测试与验证（消息总线收发与请求-响应）
+
+**前置条件**：`MessageBus`/`AgentMessage`/`MessageType` 已手写；Redis 正常。
+
+**材料——总线核对测试类**（`MessageBusRoundTripTest`，示例骨架，断言真实可跑）：
+
+```java
+// 手写测试：点对点 + 广播 + 请求-响应超时 三类 round-trip
+// ① subscribe("research-agent") 后 send(TASK_ASSIGN → research-agent)，断言收到且 type/taskId 完整
+// ② broadcast(target="*")，断言任一已订阅 Agent 收到
+// ③ requestResponse(msg, Duration.ofMillis(200)) 无人应答，断言 TimeoutException（超时路径）
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 测试① | 收到消息 `messageId`/`sourceAgentId`/`payload` 与发送一致（JSON round-trip 无损） |
+| 2 | 测试② | 广播频道 `agent:msg:broadcast` 的消息被 `dispatchToSink("*", …)` 分发 |
+| 3 | 测试③ | 200ms 内抛 `TimeoutException`，且 `pendingResponses` 中 correlationId 被 `doFinally` 清理（无泄漏） |
+| 4 | `redis-cli PSUBSCRIBE 'agent:msg:*'`（另开终端）+ 触发① | 频道名与 `CHANNEL_PREFIX + targetAgentId` 一致（跨实例路径可见） |
+
+**失败排查**：收不到→`@PostConstruct` 订阅早于 Agent 注册（见 §4.3 启动顺序注释），目标 Agent 是动态注册的需补订阅；请求-响应永远挂起→响应方没回发相同 `messageId`（correlationId 约定破坏）。
+
 ---
 
 ## 5. DAG 数据模型
@@ -584,6 +643,14 @@ public enum EventType {
     TASK_FAILED
 }
 ```
+
+### 5.2 本节核对（DAG 模型契约）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 九个模型文件 `mvn clean compile` | 编译通过；与 00 篇 §5.2 设计签名一致（迭代补充 `NodeType.CONDITIONAL` 等有正文依据） |
+| 2 | 枚举完整性 | `NodeStatus` 五值含 `BLOCKED`（迭代三预留）、`EventType` 六值与 00 篇一致（无虚构值） |
+| 3 | 依赖方向 | model 包零依赖 engine/store（纯 record/enum，被下方各层引用而非反向） |
 
 ---
 
@@ -924,6 +991,29 @@ public class TaskRecoveryService {
 }
 ```
 
+### 6.6 本节测试与验证（双层持久化与断点恢复）
+
+**前置条件**：§6.1 依赖已加、`schema-v2.sql` 已在 PG 执行、Redis/PG 均可连。
+
+**材料——持久化核对 SQL 与命令**：
+
+```bash
+psql -U postgres -d multi_agent -c "SELECT task_id, dag_id, status FROM orchestration_task ORDER BY created_at DESC LIMIT 3;"
+psql -U postgres -d multi_agent -c "SELECT node_id, status, assigned_agent FROM dag_node ORDER BY id DESC LIMIT 5;"
+redis-cli GET dag:def:<taskId>
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 跑完一个编排任务（§9.3 材料）后材料 SQL | `orchestration_task` 有该 task 行；`dag_node` 每节点一行，`assigned_agent` 非空、终态 status 与执行一致 |
+| 2 | 材料 redis-cli GET | Redis 快照 JSON 的节点状态与 PG 行一致（双层不漂移） |
+| 3 | 重复触发同 taskId 保存 | `ON CONFLICT` 更新而非报错（幂等，行数不涨） |
+| 4 | 任务运行中 `kill -9` 进程后重启 | 启动日志出现恢复动作，未完成任务被 `TaskRecoveryService` 重新调度（`findIncompleteTasks` → Redis 快照 → `dagEngine.execute`） |
+
+**失败排查**：PG 无行→`spring-boot-starter-jdbc`/驱动没加或 datasource 未配；表不存在→schema 未执行；恢复后重复执行节点→`claimed` 是进程内存，重启后清零——依赖节点 PENDING 状态判断，确认快照里 DONE 节点未被重置（`execute` 只重置 PENDING 节点这一行为是预期的，但要知晓）。
+
 ---
 
 ## 7. DAG 编排引擎
@@ -1154,6 +1244,24 @@ graph TB
 
 > 「遇到阻塞？→ [教程 36-Agent工作流编排](../../教程/36-Agent工作流编排.md)」
 
+### 7.4 本节测试与验证（并行调度与防重）
+
+**前置条件**：§3.4/§6.6 已通过；至少两个无依赖节点可触发（拆解结果含并行分支）。
+
+**材料**：复用 §11.1 的编排 curl（选一个易拆出并行分支的任务，如"把这份摘要分别翻译成英文和日文"），核对命令 `redis-cli GET dag:def:<taskId>`。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料提交后查看两个无依赖节点的 `startedAt` | 时间差在秒级内（同时启动，`flatMap` 并行生效，串行则差一个节点时长） |
+| 2 | 总耗时 vs 各节点耗时 | 任务总时长 ≈ 最长路径，加速比 ≥ 2x（§2 验收 #3） |
+| 3 | SSE 事件（§9.3）中并行节点 | `node_started` 两条先后紧邻、`node_completed` 交错到达 |
+| 4 | 多次重复同构任务 | 每个节点恰好执行一次（`claimed` 防重；汇合节点不被并行分支双触发） |
+| 5 | 人为让某节点 Agent 报错（改 systemPrompt 致调用失败） | 收到 `NODE_FAILED` 事件，最终 `TASK_FAILED`（ABORT 收敛，无悬挂） |
+
+**失败排查**：节点串行→`MAX_CONCURRENCY` 被改小或依赖边画多了；汇合节点执行两次→`tryClaim` 未包在 `flatMap` 里；失败后无终态→`schedule` 的 `anyFailed` 分支未覆盖（检查 §7.2 收敛逻辑）。
+
 ---
 
 ## 8. 任务拆解器（TaskParser）
@@ -1335,6 +1443,29 @@ graph LR
     style N3 fill:#fce4ec
 ```
 
+### 8.4 本节测试与验证（LLM 任务拆解质量）
+
+**前置条件**：`TaskParser` + `parserChatClient` Bean 已就绪；`/api/orchestrate` 可提交。
+
+**材料**（直接对应 §8.3 示例与 §2 验收 #2）：
+
+```bash
+curl -X POST http://localhost:8080/api/orchestrate \
+  -H "Content-Type: application/json" \
+  -d '{"task":"帮我调研 AI Agent 框架的发展趋势，写一份中英文双语报告。","params":{},"requireApproval":false}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料（§8.3 原任务） | 拆出 3 节点 2 边链式 DAG：research → writing → translation（能力标签全部在已注册能力集合内） |
+| 2 | `redis-cli GET dag:def:<taskId>` | `nodes` 2–6 个、`requiredCapability` 均能被 `findByCapability` 命中（无幻觉能力标签）、`edges.from/to` 均指向存在节点 |
+| 3 | 换一个可并行任务（"分别翻译成英文和日文"） | 拆出两个无依赖节点（无多余边，规则 2 生效） |
+| 4 | 连续拆解 3 次 | 结构稳定（同任务拆解方差小；`enrichDag` 补齐 dagId/默认状态无 NPE） |
+
+**失败排查**：能力标签幻觉（如 `researching`）→Prompt 的可用能力列表没注入（`{availableCapabilities}` 替换失败）；`entity()` 反序列化失败→LLM 输出不是合法 JSON（检查 PARSE_PROMPT 完整照抄）；节点超 6 个→Prompt 规则被忽略，调 temperature。
+
 ---
 
 ## 9. 编排接口
@@ -1466,6 +1597,32 @@ sequenceDiagram
     C-->>U: node_started → node_completed → task_completed
 ```
 
+### 9.3 本节测试与验证（编排 API 与 SSE 事件流）
+
+**前置条件**：§7.4/§8.4 已通过。
+
+**材料——编排接口探针**（§11.1 同源）：
+
+```bash
+# 先开 SSE 再提交（事件不丢）：
+curl -N http://localhost:8080/api/orchestrate/<taskId>/stream &
+curl -X POST http://localhost:8080/api/orchestrate \
+  -H "Content-Type: application/json" \
+  -d '{"task":"调研 AI Agent 框架的发展趋势，写一份中文报告然后翻译成英文","params":{},"requireApproval":false}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | POST 响应 | `{"taskId":…,"dagId":…,"status":"ACCEPTED"}`（UUID 形态 taskId） |
+| 2 | SSE 事件序列 | `dag_created` → `node_started`/`node_completed` 成对（每节点）→ `task_completed`，事件名为枚举小写（§9.1 `toLowerCase()`） |
+| 3 | `node_started` data | 含 nodeId 与 assignedAgent，且 Agent 与节点能力匹配（translator-agent 不去做 research） |
+| 4 | POST 阻塞时长 | 到任务终态才返回（`takeUntil` 生效），非秒回假 ACCEPTED |
+| 5 | 事件全部结束后再连 SSE | 无历史事件回放（Sinks 是进程内热流——知晓该边界，跨实例/重连场景见 00 篇设计缺口） |
+
+**失败排查**：SSE 无事件→先开连接再提交（Sink 是订阅后才接收）；POST 立即返回→`takeUntil` 条件写错；事件名大写→漏了 `toLowerCase()`。
+
 ---
 
 ## 10. 并行 vs 串行性能对比
@@ -1497,6 +1654,10 @@ graph LR
 
 ---
 
+### 10.1 本节核对（性能对比口径）
+
+一句话核对：对比图的"加速比取决于 DAG 结构"结论与 §7.4 断言 2 的实测口径一致（纯链式无加速已在正文明确）。
+
 ## 10.5 编排任务过程可见（多Agent跑在哪、谁在干活）
 
 > 过程可见性是工业级标配。**多 Agent 协作最需要过程可见**——一个任务分给 N 个 Agent，用户要实时看到"哪个 Agent 在干活、干到哪、谁失败回退"。
@@ -1511,6 +1672,14 @@ graph LR
 | 失败 | NodeFailed{node,retry,fallback}` | "检索节点失败→重试→走兜底" |
 
 **四条纪律**：① 每节点开始/结束成对，失败(含重试)可见——用户知道"这个子任务在重试"而非卡死；② 产出只发 preview，完整结果按需拼接；③ DAG 进度让"哪步阻塞"可定位（对照 DAG 编排的拓扑结构）；④ 多 Agent 并行时按并行组展示，用户看到"哪些在并行跑"。
+
+### 10.5.1 本节核对（过程可见四纪律）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 四维度事件（进度/归属/产出/失败） | 均可由现有 `DagEvent`（nodeId/type/data）承载或映射，不需要虚构新 API |
+| 2 | "开始/结束成对、失败可见" | §9.3 SSE 断言 2/5 已覆盖（node_started/node_completed 成对、NODE_FAILED 可见） |
+| 3 | "产出只发 preview" | 当前实现发全量 result（node_completed 的 data）——知晓与纪律②的差距，作为后续演进点而非虚构已实现 |
 
 ## 11. 多 Agent 测试
 
@@ -1567,6 +1736,10 @@ event:task_completed
 data:{"dagId":"dag-xyz","totalTime":"23s"}
 ```
 
+### 11.3 本节核对（既有验证节定位）
+
+说明：本篇 §11 本身就是"多 Agent 测试"节（§11.1 提交与追踪 curl + §11.2 事件流示例），其材料已作为 §7.4/§8.4/§9.3 的探针复用——无需插入重复小节。跑完 §3.4/§4.5/§6.6/§7.4/§8.4/§9.3 后，§11 的示例输出应逐条对上。
+
 ---
 
 ## 12. 迭代二代码回顾
@@ -1606,6 +1779,10 @@ graph TB
     style 支撑 fill:#fff3e0
 ```
 
+### 12.1 本节核对（代码回顾表）
+
+一句话核对：表中 12 个文件与 §3–§9 出现的代码一一对应（升级 1、新增 11），无表里有正文无的文件。
+
 ---
 
 ## 13. ADR 演进决策
@@ -1626,9 +1803,18 @@ graph TB
 - **决策**：`TaskStateStore`（Redis）存实时 DAG 快照与事件流；`TaskRepository`（PostgreSQL）存任务与节点行用于审计与重启恢复
 - **取舍理由**：Redis 快读写（编排热路径）、PostgreSQL 可靠（审计合规），各取所长；恢复路径先 Redis 快照，全量可靠重建见 [教程 40-长任务持久化与中断恢复]
 
+### 13.1 本节核对（ADR 规范性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | ADR 002-07 ~ 002-10 | 均含决策 + 取舍理由，且与 §3.3（能力索引）/§4.3（两层总线）/§7.2（响应式引擎）/§6.3–6.4（双层持久化）正文一致 |
+| 2 | 编号衔接 | 承接 02 篇 002-06，连续无跳号 |
+
 ---
 
 ## 14. 总结
+
+> 本节核对：总结六点与 §3–§10 一一对应；"实测加速比 2-5 倍"的实测口径见 §7.4 断言 2。
 
 本篇完成了从单 Agent 到多 Agent 协作的跨越：
 
@@ -1640,3 +1826,17 @@ graph TB
 6. **并行加速**——无依赖节点自动并行执行，实测加速比 2-5 倍
 
 下一篇 [04-任务委派与路由](04-任务委派与路由.md) 将加入智能路由（根据任务匹配最优 Agent）和 Human-in-the-Loop 审批网关。
+
+---
+
+## 15. 全篇回归验证
+
+**前置**：§3.4 / §4.5 / §6.6 / §7.4 / §8.4 / §9.3 均已通过。
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 冷启动后依次执行：`/api/agents`（3 Agent）→ 提交 §8.3 拆解任务 → SSE 追踪全程 → psql + redis-cli 双层核对 | 四步全 PASS，各环节产物（taskId/DAG 快照/事件序列/PG 行）齐全 |
+| 2 | 任务运行中 `kill -9` 后重启 | 恢复日志 + 未完成任务继续推进，节点不重复执行、不丢终态 |
+| 3 | 同一任务连跑 3 次 | 3 次均 `task_completed`，PG 中 3 行（幂等不翻倍） |
+
+**失败排查**：回归 2 恢复异常→回 §6.6 排查项（claimed 清零 + 快照状态）；回归 3 行数翻倍→`ON CONFLICT` 键写错。

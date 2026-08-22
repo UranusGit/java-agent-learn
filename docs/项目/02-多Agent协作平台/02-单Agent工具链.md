@@ -21,6 +21,10 @@
 | **架构如何演进** | 从「纯对话」演进为「工具注入 + Redis 会话」：Controller → 会话读写 → Executor 注入历史+工具 → ChatClient 流式 |
 | **上一版痛点是什么** | ① Agent 无工具，只能靠 LLM 内置知识 ② 无状态，多轮对话断片 |
 
+### 1.1 本节核对（四问）
+
+一句话核对：四问"上一版痛点"两条与 01 篇 §10 局限表前两条一一对应，无虚构痛点。
+
 ## 2. 目标与量化验收
 
 | # | 目标 | 验收 |
@@ -32,6 +36,13 @@
 | 5 | WebFlux 一致 | 全链路无 ThreadLocal、无 EventLoop 阻塞；Redis 用 `ReactiveRedisTemplate` |
 
 **本迭代明确不做**：多 Agent 编排、DAG、路由、审批。
+
+### 2.1 本节核对（验收可测性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | 五条验收 | 每条都有本篇落点：#1→§4.4、#2→§6.3、#3→§7.3、#4→§10.5、#5→代码走查（全篇无 ThreadLocal/block） |
+| 2 | "明确不做"清单 | 本篇代码无编排/DAG/路由/审批内容，与清单一致 |
 
 ---
 
@@ -75,6 +86,10 @@ sequenceDiagram
 3. **第二轮**：将工具结果喂给 LLM，LLM 基于结果生成自然语言回复
 
 > 「遇到阻塞？→ [教程 03-工具调用](../../教程/03-工具调用.md)」
+
+### 3.1 本节核对（机制理解）
+
+一句话核对：能说清"两轮 LLM 交互 + 一段工具执行"的三段结构，且知道拦截点只有 `ToolCallingManager`——这是 §10 可观测实现的前提。
 
 ---
 
@@ -222,6 +237,39 @@ agent:
         temperature: 0.7
         max-tokens: 2048
 ```
+
+### 4.4 本节测试与验证（工具定义与触发）
+
+**前置条件**：§4.3 的 yml 已配置 `tool-bean-names: [generalAgentTools]`；应用可启动。
+
+**材料——工具探针 curl**：
+
+```bash
+# 工具一：时间（无参数）
+curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"tool-t1","message":"现在几点了？"}'
+# 工具二：天气（单参数）
+curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"tool-t2","message":"北京今天天气怎么样？"}'
+# 工具三：知识库（双参数，含默认值）
+curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"tool-t3","message":"帮我搜一下虚拟线程相关的文档"}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料第一条 | 回复含 `yyyy-MM-dd HH:mm:ss` 格式时间（`getCurrentTime` 被调用，非模型编造） |
+| 2 | 材料第二条 | 回复含 28 度/晴/防晒（mock 数据特征值，证明 `queryWeather("北京")` 真执行） |
+| 3 | 材料第三条 | 回复含"虚拟线程 相关文档"字样（mock 拼接特征）；`limit` 未传时走默认 5（不抛 NPE） |
+| 4 | 问一个无关问题（"写一首诗"） | 不触发任何工具（无 `[TOOL_CALL]` 日志，见 §10.2） |
+| 5 | `mvn clean compile` | `@Tool`/`@ToolParam` 编译通过；全篇无 `@ToolMethod`、`@ToolParam` 无 `value=` 用法 |
+
+**失败排查**：工具从不触发→`description` 太弱或 yml 未绑 `tool-bean-names`；触发但参数错→`@ToolParam` 描述不清；`NoSuchBeanDefinition`→Bean 名与 yml 不一致（默认 Bean 名为 `generalAgentTools`）。
 
 ---
 
@@ -380,6 +428,28 @@ public class SessionStateStore {
 | `getOrCreate` 模式 | 调用方不需要关心是新建还是恢复 |
 | 追加消息用 `flatMap` | 先读后写，保证响应式链路不断 |
 
+### 5.4 本节测试与验证（Redis 会话存取）
+
+**前置条件**：Redis 已运行（6379）；`SessionStateStore` 已手写。
+
+**材料——会话核对命令**：
+
+```bash
+redis-cli GET agent:session:sess-001
+redis-cli TTL agent:session:sess-001
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 发起一次对话（用 sessionId=sess-001）后执行材料 GET | 返回 JSON：`messages` 数组含 user 与 assistant 两条，`agentId`/`context` 字段齐全 |
+| 2 | 材料 TTL | 值 ≤ 86400 且 > 0（24h TTL 已设置） |
+| 3 | `redis-cli DEL agent:session:sess-001` 后同 sessionId 再问 | 等同新会话（`getOrCreate` 空值分支走通，无反序列化异常） |
+| 4 | 写一个含中文/引号的长消息 | JSON 转义正确，读回内容无损（round-trip） |
+
+**失败排查**：GET 为空→`appendMessage` 链路断（检查 Controller 是否真的调用）；反序列化失败→`AgentSession` record 被改后旧数据不兼容（DEL 旧 key 重试）；TTL=-1→`save` 没带 TTL 参数。
+
 ---
 
 ## 6. 升级 AgentExecutor（工具 + 历史注入）
@@ -492,6 +562,31 @@ graph TB
     style C5 fill:#fff3e0
 ```
 
+### 6.3 本节测试与验证（历史注入与多轮上下文）
+
+**前置条件**：§5.4 已通过；`AgentExecutor` 已升级为三参 `execute`。
+
+**材料——多轮探针 curl**：
+
+```bash
+curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"sess-001","message":"北京今天天气怎么样？"}'
+curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"sess-001","message":"那上海呢？"}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料第二条（第二轮） | 回复是**上海**的天气（含 mock 值"上海/28.0/晴"），证明历史被注入——"那…呢"的指代被解析为天气 |
+| 2 | 换新 sessionId 问"那上海呢？" | 回复追问/不按天气答（无历史对照，阴性样本） |
+| 3 | `redis-cli GET agent:session:sess-001` | 第二轮后 `messages` 共 4 条（user/assistant × 2），顺序正确 |
+
+**失败排查**：第二轮仍答北京→`messages(history)` 未注入（检查 §6.1 的 history 非空分支）；历史错序→`appendMessage` 时间戳/顺序问题；assistant 回复缺失→Controller 持久化步骤（§7）未生效。
+
 ---
 
 ## 7. Controller 集成状态管理
@@ -600,6 +695,23 @@ graph LR
 
 注意：为了保存 Agent 完整回复到会话历史，这里用 `collectList()` 先收集所有 token 再持久化。前端看到的仍然是流式输出（因为最后的 `flatMapMany(Flux::fromIterable)` 重新展开为流）。
 
+### 7.3 本节测试与验证（会话三步链路与持久化）
+
+**前置条件**：§6.3 已通过；升级版 Controller 已部署。
+
+**材料**：复用 §6.3 的两轮 curl；核对命令 `redis-cli GET agent:session:sess-001`。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料任一轮，观察 SSE 输出 | 前端仍是逐 token `event:token` 流（`collectList` 收集后 `flatMapMany` 重新展开，流式体验不回退） |
+| 2 | 流结束后立即材料核对命令 | assistant 完整回复已入 Redis（持久化发生在流结束前，不是丢掉） |
+| 3 | 对话中途 `Ctrl+C` 断开客户端 | user 消息已写、assistant 按流完成情况落库；服务端无未捕获异常日志 |
+| 4 | 对话进行中 `jstack <pid> | grep -c BLOCKED` | 0（`collectList` 等待不占额外线程、无 EventLoop block） |
+
+**失败排查**：流式变整段→`flatMapMany(Flux::fromIterable)` 被漏写；回复不落库→`thenReturn(tokens)` 链断；序列化失败日志→`SessionMessage` 含不可序列化字段。
+
 ---
 
 ## 8. 工具调用测试
@@ -649,6 +761,10 @@ curl -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
 ```
 
 Agent 应该理解"那上海呢？"是在问上海的天气——因为会话历史中有"北京天气"的上下文。
+
+### 8.3 本节核对（既有验证节定位）
+
+说明：本篇 §8 本身就是"工具调用测试"节（§8.1 天气探针 + §8.2 多轮探针），与 §4.4/§6.3 的断言互补——无需插入重复小节；§8.1/§8.2 的 curl 已分别作为 §4.4 与 §6.3 的材料复用。
 
 ---
 
@@ -710,6 +826,32 @@ public final class ContextWindow {
 | 重要消息保留 | 始终保留第一条系统消息 | 角色一致性 |
 
 > 「遇到阻塞？→ [教程 34-上下文工程](../../教程/34-上下文工程.md)」
+
+### 9.3 本节测试与验证（滑动窗口裁剪）
+
+**前置条件**：`ContextWindow.apply` 已接入（保存前或注入前裁剪）。
+
+**材料——窗口核对脚本**（示例：maxMessages=6，即最近 3 轮）：
+
+```bash
+# 循环发 5 轮对话后查看会话
+for i in 1 2 3 4 5; do
+  curl -s -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+    -H "Content-Type: application/json" \
+    -d "{\"sessionId\":\"win-001\",\"message\":\"第${i}轮：记住数字${i}\"}" > /dev/null
+done
+redis-cli GET agent:session:win-001
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料脚本（窗口=6） | GET 结果 `messages` ≤ 裁剪上限（若裁剪在保存侧）或 Redis 保留全量但注入侧裁剪（按接入位置断言，二者取一并与代码一致） |
+| 2 | 问"我刚才说的第一个数字是多少" | 答不出第 1 轮数字（窗口外被裁）——阴性样本证明裁剪真的发生 |
+| 3 | 消息数 ≤ maxMessages 时 | `apply` 原样返回（subList 不触发，无越界） |
+
+**失败排查**：窗口不生效→`ContextWindow.apply` 忘了接到 `appendMessage`/Controller 注入处；IndexOutOfBounds→`subList` 参数算错（应为 `size()-maxMessages` 起）。
 
 ---
 
@@ -877,6 +1019,29 @@ public class ToolAuditObservationHandler implements ObservationHandler<ToolCalli
 
 > 「遇到阻塞？→ [教程 23-工具执行可观测与审计](../../教程/23-工具执行可观测与审计.md)」
 
+### 10.5 本节测试与验证（工具观测三通道）
+
+**前置条件**：`LoggingToolCallingManager` + `ToolCallingConfig` + `ToolAuditObservationHandler` 已手写并启用；actuator 已暴露 metrics。
+
+**材料——观测核对命令**：
+
+```bash
+# 触发一次天气工具后：
+curl http://localhost:8080/actuator/metrics/agent.tool.call
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 问"北京天气"，看应用日志 | 出现 `[TOOL_CALL] name=queryWeather args=...` 与 `[TOOL_RESULT] name=queryWeather ok` |
+| 2 | 材料 metrics | `agent.tool.call` 有计数，tag `status=success` |
+| 3 | 控制台输出 | `[TOOL_OBS] name=queryWeather callId=... durationMs=...`（ObservationHandler 生效） |
+| 4 | 临时把 `queryWeather` 改为抛 RuntimeException 再问 | 日志 `[TOOL_ERROR]`，metric tag `status=error`，Agent 回复如实报错不崩（原验证包第 3 条） |
+| 5 | 走查 `ToolCallingConfig` | 无任何 AOP 拦 `@Tool` 代码（ADR 002-05 红线） |
+
+**失败排查**：日志/指标全无→`@Primary` Bean 未替换成功（确认 `ToolCallingConfig` 被扫描）；只有日志无指标→MeterRegistry 未注入；`[TOOL_OBS]` 不出现→`supportsContext` 返回 false 或 Handler 未加 `@Component`。
+
 ---
 
 ## 11. 迭代一代码回顾
@@ -911,6 +1076,10 @@ graph TB
     style 升级 fill:#fff3e0
 ```
 
+### 11.1 本节核对（代码回顾表）
+
+一句话核对：表中"新增/升级"列与 §4–§10 实际出现的代码一致（新增 6、升级 3），无表里有正文无的文件。
+
 ---
 
 ## 12. ADR 演进决策
@@ -923,11 +1092,20 @@ graph TB
 - **决策**：`AgentSession`/`SessionMessage` 自定义 record，Redis String 存 JSON，TTL 24h，ReactiveRedisTemplate 全响应式
 - **取舍理由**：官方 `ChatMemoryRepository` 仅 InMemory/JDBC（Redis 需自研）；本项目需要会话上下文（`Map<String,Object> context`）与 Redis 复用，自定义模型更直接。若后续要跨服务共享记忆，可基于 `ChatMemoryRepository` 接口自研 Redis 实现（附录 05 §2.2）
 
+### 12.1 本节核对（ADR 规范性）
+
+| # | 核对项 | PASS 判据 |
+|---|--------|----------|
+| 1 | ADR 002-05/002-06 | 均含决策 + 取舍理由，且与 §10.1（AOP 无效实证）/§5.3（自研会话）正文一致 |
+| 2 | ADR 002-06 的退路 | 明确"可基于 ChatMemoryRepository 接口自研 Redis 实现"，与 [附录 05 §2.2] 口径一致，无虚构官方 Redis 仓库 |
+
 ---
 
-## 12.5 验证包（手工测试与验证）
+## 12.5 全篇回归验证
 
-**前置条件**：01 已通过；搜索/计算/文件三个工具已注册；Observation 已开（`spring.ai.tools.observations.include-content`）。
+> 原篇末"验证包"材料已按主题上移：工具触发→§4.4、会话存取→§5.4、多轮上下文→§6.3、流式与持久化→§7.3、观测与异常→§10.5。以下保留跨节组合回归。
+
+**前置条件**：01 已通过；本篇各节验证（§4.4/§5.4/§6.3/§7.3/§9.3/§10.5）均已通过。
 
 **材料 A——探针任务**：`搜索 2026 年 Java 虚拟线程的进展并总结三点`（串行双工具）/ `同时查北京和上海的天气`（并行双工具）。
 
@@ -942,6 +1120,10 @@ graph TB
 | 5 | 同任务重放 | 重试预算生效（maxRetries 内收敛，不无限循环） |
 
 **失败排查**：①不并行→parallel 声明未生效（工具未标可并行或编排层串行）；③会话崩→异常直接上抛（应失败回填）；④无 Span→Observation 依赖未引/配置未开；⑤死循环→无重试上限。
+
+### 12.6 本节核对（总结）
+
+一句话核对：总结六点与 §4–§10 一一对应，无引入正文未出现的新结论。
 
 ## 13. 总结
 
