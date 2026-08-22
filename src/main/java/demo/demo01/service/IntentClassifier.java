@@ -2,12 +2,9 @@ package demo.demo01.service;
 
 import demo.demo01.dto.IntentResult;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
-
-import java.util.UUID;
 
 @Component
 public class IntentClassifier {
@@ -20,7 +17,7 @@ public class IntentClassifier {
             """;
 
     @Autowired
-    @Qualifier("chatClient")
+    @Qualifier("assistantChatClient")
     private ChatClient client;
 
     // validateSchema 让结构化输出前，先使用 schema 校验
@@ -28,7 +25,6 @@ public class IntentClassifier {
         return client.prompt()
                 .system(INTENT_PROMPT)
                 .user(message)
-                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, UUID.randomUUID()))
                 .call()
                 .entity(IntentResult.class, ChatClient.EntityParamSpec::validateSchema);
     }

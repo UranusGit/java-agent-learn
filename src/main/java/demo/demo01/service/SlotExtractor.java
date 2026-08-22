@@ -2,12 +2,9 @@ package demo.demo01.service;
 
 import demo.demo01.dto.ExchangeSlotState;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
-
-import java.util.UUID;
 
 @Component
 public class SlotExtractor {
@@ -19,14 +16,13 @@ public class SlotExtractor {
             """;
 
     @Autowired
-    @Qualifier("liteChatClient")
+    @Qualifier("assistantChatClient")
     public ChatClient liteChatClient;
 
     public ExchangeSlotState applyTo(String userMessage, ExchangeSlotState current) {
         SlotValues extracted = liteChatClient.prompt()
                 .system(EXTRACT_PROMPT)
                 .user(userMessage)
-                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, UUID.randomUUID()))
                 .call()
                 .entity(SlotValues.class, ChatClient.EntityParamSpec::validateSchema);
 

@@ -6,7 +6,6 @@ import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -21,7 +20,6 @@ public class SummarizingChatMemory implements ChatMemory {
     private ChatMemoryRepository repository;
 
     @Autowired
-    @Lazy
     private SummaryService summaryService;
 
     @Override

@@ -1,20 +1,18 @@
 package demo.demo01.service;
 
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
 public class SummaryService {
     @Autowired
-    @Qualifier("liteChatClient")
+    @Qualifier("assistantChatClient")
     private ChatClient client;
 
     private static final String SUMMARY_PROMPT = """
@@ -34,7 +32,6 @@ public class SummaryService {
         return client.prompt()
                 .system(SUMMARY_PROMPT)
                 .user(historyText)
-                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, UUID.randomUUID()))
                 .call()
                 .content();
     }
