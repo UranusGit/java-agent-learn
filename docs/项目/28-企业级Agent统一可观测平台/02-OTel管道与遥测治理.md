@@ -17,6 +17,11 @@
 
 **本迭代验收**：①敏感字段入存储前脱敏 100%（00 验收⑤）②错误 trace 全留、正常 5% 采样 ③所有 Span 带 tenant/bizLine ④三路导出（Prometheus/Trace/LLM 平台）。
 
+### 一.1 本节核对（四问与迭代验收）
+
+- [ ] 四问与"各服务直发 → 统一管道治理"的演进一致
+- [ ] 四条验收（脱敏 100% / 错误全留正常 5% / 全 Span 带 tenant·bizLine / 三路导出）能指出由 `## 二` 的哪个 processor/exporter 实现
+
 ## 二、管道配置（核心治理三件套）
 
 ```yaml
@@ -39,13 +44,38 @@ exporters:
   otlp/llm: { endpoint: "langfuse:4317" }          # LLM 专用
 ```
 
-## 三、验收
+### 二.1 本节测试与验证（管道治理三件套）
 
-| 测试 | 期望 |
-|------|------|
-| Prompt 含手机号 | 存储里已脱敏 |
-| 错误 trace | 100% 留存 |
-| 正常快调用 | ~5% 采样 |
-| Span 聚合 | 按租户切得动 |
+**前置条件**：Collector 已按上述三段（receivers/processors/exporters）上线；应用遥测统一走该管道。
+
+**材料——核对手段**：向管道发送含明文敏感字段（手机号/身份证/api_key）与正常/错误两条特征的 trace，再从三个后端存储侧抽查。
+
+```bash
+# 从 Prometheus 侧核对指标导出正常
+curl "http://prometheus:9090/api/v1/query?query=up"
+# 从 Trace 后端按 traceId 抽查采样与脱敏后字段
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 注入含手机号/身份证的 Prompt trace | 存储侧对应字段已脱敏（正则+词表 `phone/id_card/api_key` 命中），明文不落原始存储 |
+| 2 | 制造一个错误 trace（HTTP/状态 ERROR） | tail_sampling errors 策略 → 100% 留存 |
+| 3 | 制造一批正常快调用 | baseline probabilistic 5% → 存储量约 5% 留存 |
+| 4 | 带 `http.header.tenant` 的调用 | Span 上增补 `tenant.id/bizLine`，可按租户切片聚合 |
+| 5 | 抽查三路导出 | Prometheus 指标 / Tempo Trace / LLM 平台各有数据到达 |
+
+**失败排查**：①明文仍落库 → redaction rules 正则/词表未命中或 processor 顺序在导出前未生效；②错误 trace 丢 → tail_sampling 策略名/status_code 取值不匹配 status 来源；③正常调用留存量远大于 5% → probabilistic 采样未命中或分桶偏差，核对 sampling_percentage 与流量分布；④缺租户标 → attributes/tenant 的 from_attribute 字段名与请求头不一致。
+
+## 三、全篇回归验证
+
+**回归断言**（`## 二.1` 本节测试通过后整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 混合发一轮（敏感 + 错误 + 正常快调用各若干） | 脱敏 100%、错误 100% 留存、正常约 5%、全 Span 带租户标、三路均有数到达 |
+
+**失败排查**：任一项不达标 → 回到 `## 二.1` 对应行单独复核，避免多策略叠加掩盖单点。
 
 > **下一步**：管道通了，但**用户还是要在三个系统看**。03 迭代做**单一玻璃板三视图**——一块屏看全。
