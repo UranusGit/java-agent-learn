@@ -15,6 +15,13 @@
 | **架构如何演进** | 参考后端：Controller → `ChatClient.stream()` → SSE；前端：`services/sse.ts`（fetch+RS）→ `useChatStream`（useState）→ 组件 |
 | **上一版痛点是什么** | 无（v0 是起点，痛点是**将要暴露的**） |
 
+### 1.1 本节核对（四问）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 能说清 v1 的链路形态 | 输入 → POST /api/chat → SSE token 流 → 前端打字机输出 |
+| 2 | 能说清"刻意不做"清单 | 会话持久化 / 多会话 / 工具可视化 / 断线恢复 / 用量展示，五项均不在 v1 |
+
 ## 2. 目标与量化验收
 
 | # | 目标 | 验收 |
@@ -26,6 +33,13 @@
 | 5 | 无乱码 | 发送含长中文的问题，输出完整无乱码（`TextDecoder stream:true` 生效） |
 
 **本迭代明确不做**：会话持久化、多会话、工具可视化、断线恢复、用量展示。
+
+### 2.1 本节核对（目标与量化验收）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 五条验收口径可度量 | 每条都有可观察结果（curl 返回 / 编译无错 / 打字机逐帧 / 定格无横幅 / 无乱码） |
+| 2 | 验收只覆盖 v1 范围 | 五条均未涉及"明确不做"清单中的能力 |
 
 ---
 
@@ -71,6 +85,18 @@ agent-console-backend/src/main/java/com/agent/console/
 ├── config/AgentConfig.java
 └── web/ChatController.java
 ```
+
+### 3.1 本节测试与验证（工程初始化）
+
+> **前置**：本机已装 Node ≥ 18 与 JDK 21；Maven 可用。
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 执行 `npm create vite@latest agent-console -- --template react-ts` 后 `npm install` | 依赖安装无 error，`npm run dev` 能启动 |
+| 2 | 目录结构与本节两棵树对照 | 前端 src 下 components/hooks/services/types 四目录、后端 com/agent/console 三类文件就位（types/events.ts 此时尚未创建，属 §4 内容） |
+| 3 | `npm install react-router-dom zustand @tanstack/react-query` | package.json dependencies 出现三个包且版本号为正式版（无 ^ 脱失） |
+
+**失败排查**：npm create 卡住 → 网络/registry 问题，换镜像源；目录树对不上 → create vite 模板版本变化，以 `react-ts` 模板实际产物为准调整。
 
 ---
 
@@ -494,6 +520,21 @@ createRoot(document.getElementById('root')!).render(
 </html>
 ```
 
+### 4.8 本节测试与验证（v1 完整代码）
+
+> **前置**：§3 两套工程已创建；`AgentEvent`/`Token`/`RoundEnd`/`ErrorEvent`/`TokenUsage` 已按 [00 §6.5] 手写；后端 `application.yml` 与 `pom.xml` 已按 [00 §6.1-6.2] 配好。
+
+**材料**：`tsc --noEmit`（或 `npm run build`）做前端类型检查；后端 `mvn compile`；浏览器打开 `http://localhost:5173`。
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 前端执行 `npx tsc --noEmit` | 零类型错误（events.ts 三种事件、sse.ts、useChatStream.ts、四个组件全部通过） |
+| 2 | 后端执行 `mvn compile` | BUILD SUCCESS；ChatController 的 `Flux<ServerSentEvent<AgentEvent>>` 返回类型编译通过 |
+| 3 | 浏览器 Console | 无红色报错；页面渲染出输入框（MessageList 为空占位是正常的） |
+| 4 | 在输入框连按 Enter 空内容 | 不触发发送（submit 里 `!input.trim()` 守卫生效） |
+
+**失败排查**：tsc 报 AgentEvent 类型不匹配 → 前端 events.ts 与 00 §6.5 契约字段名/类型抄错；后端编译找不到 AgentEvent → 包路径不是 `com.agent.console.event`；页面空白 → main.tsx 的挂载 id 与 index.html 的 `#root` 不一致。
+
 ---
 
 ## 5. 运行与联调
@@ -516,6 +557,20 @@ curl -N -X POST "http://localhost:8080/api/chat" \
 
 `curl -N` 关闭缓冲，能直接看到 `data: {...}\n\n` 一帧帧吐出。
 
+### 5.1 本节测试与验证（运行与联调）
+
+> **前置**：§4 代码全部落盘；`DEEPSEEK_API_KEY` 已 export；后端 8080、前端 5173 端口空闲。
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 终端 1 `mvn spring-boot:run` | 启动日志无异常，Tomcat/Netty 监听 8080 |
+| 2 | 终端 2 `npm run dev` 后访问 `http://localhost:5173` | Vite 欢迎页被替换为 Agent 控制台（有输入框） |
+| 3 | 执行本节 curl 命令 | 终端逐帧输出 `id: N` + `data: {"id":N,...,"type":"token"...}`，最后一帧 `type":"round_end"` |
+| 4 | 页面发送"你好"（走 Vite 代理） | Network 面板 `/api/chat` 为 POST + fetch 流式响应（EventStream/fetch streaming），打字机逐组出现 |
+| 5 | 停掉后端再发消息 | 页面出现错误横幅 + 重试按钮（fetch 抛 HTTP 错误路径生效） |
+
+**失败排查**：curl 无输出 → API Key 未 export 或模型端点配错（看后端日志）；页面 404/跨域 → vite.config.ts 没按 00 §6.4 配 `/api` 代理；curl 有输出但页面空白 → 前端 fetch 路径不是 `/api/chat`（写成了绝对 8080 地址会绕过代理）。
+
 ## 6. ADR 演进决策
 
 ### ADR 04-01：v1 后端直接吐 AgentEvent JSON，而非裸文本 chunk
@@ -526,7 +581,16 @@ curl -N -X POST "http://localhost:8080/api/chat" \
 - **决策**：`abortRef` 存控制器；`onError` 里 `err.name === 'AbortError'` 直接 return
 - **取舍理由**：主动取消是正常操作路径，不是故障；进错误态会吓到用户（[教程 17 §2]）
 
-## 7. 验收与手动测试清单
+### 6.1 本节核对（ADR 演进决策）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 能解释 ADR 04-01 为何"契约先行" | v1 就按事件协议解析，迭代二加 thought/tool 事件前端 parseSSE 零改动 |
+| 2 | 能解释 ADR 04-02 的分流位置 | AbortError 在 `onError` 回调里静默 return，而不是在 catch 里 |
+
+## 7. 全篇回归验证
+
+> 章节级验证已前移至各节（§3.1 工程初始化 / §4.8 完整代码 / §5.1 运行与联调）。以下为整体验收，不重复章节断言。
 
 | # | 场景 | 期望 |
 |---|------|------|
@@ -546,6 +610,13 @@ curl -N -X POST "http://localhost:8080/api/chat" \
 
 这些痛点正是迭代一"多会话 + 三层状态"的需求来源。→ [02-流式对话界面.md](02-流式对话界面.md)
 
+### 8.1 本节核对（v1 痛点）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四个痛点均能在跑通的 v1 上复现感受 | 刷新失忆 / sessionId 写死 demo / useState 单 Hook 承载 / 消息列表无分页缓存 |
+| 2 | 痛点与迭代一需求一一对应 | 1↔会话持久化、2↔多会话、3↔reducer 状态机、4↔TanStack Query |
+
 ---
 
 ## 9. 总结
@@ -556,3 +627,10 @@ curl -N -X POST "http://localhost:8080/api/chat" \
 | 前端服务层 | `services/sse.ts` | fetch+RS、parseSSE + remainder 缓冲、AbortController 取消 |
 | 前端 Hook | `useChatStream.ts` | rAF 批量缓冲（每帧一次渲染）、AbortError 分流、卸载清理 |
 | 前端组件 | ChatInput / MessageList / LiveOutput / ErrorBanner / App | 受控输入 + 流式取消 + 错误重试 |
+
+### 9.1 本节核对（总结）
+
+| # | 核对项 | 判据 |
+|---|--------|------|
+| 1 | 四行交付物均能对应到 §4 的真实文件 | 后端 3 类 + sse.ts + useChatStream.ts + 5 个组件 |
+| 2 | 关键点列的三条机制均在 §7 回归中被验证过 | SSE id=事件 id、rAF 批量缓冲、AbortError 分流 |
