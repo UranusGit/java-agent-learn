@@ -1,4 +1,4 @@
-# 项目 09：智能运维 AIOps 平台 — 03-迭代二：根因分析 RCA
+# 项目 09：智能运维 AIOps 平台 — 03-根因分析 RCA
 
 > **定位**：把"简报的根因候选"变成"可实证的根因链"——trace_id 贯穿多数据源，多 Agent（Triage→Planner→并行 Worker→Supervisor）编排拉取 Trace/日志/指标，确定性计算先行、LLM 只读结论。教程 22 全链路可观测的运维侧落地。本文代码为**完整可手写**（含全部 import、无省略）。
 >
@@ -353,7 +353,7 @@ import java.util.List;
 /**
  * Runbook RAG 检索：从知识库召回相似历史故障，给处置建议提供 citation。
  * v3 用纯向量（runbook 文档由 v6 知识飞轮写入 pgvector）；
- * v6 升级为混合检索（FTS + 向量 + RRF + 重排，见 [06-迭代五-运维知识飞轮]）。
+ * v6 升级为混合检索（FTS + 向量 + RRF + 重排，见 [06-运维知识飞轮]）。
  */
 @Component
 public class RunbookRetriever {

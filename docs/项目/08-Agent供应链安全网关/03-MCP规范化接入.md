@@ -1,4 +1,4 @@
-# 项目 08：Agent 供应链安全网关 — 03-迭代二：MCP 规范化接入
+# 项目 08：Agent 供应链安全网关 — 03-MCP 规范化接入
 
 > **定位**：统一接入协议——网关全面升级到 MCP Streamable HTTP + OAuth 2.1 授权体系，堵住协议层的收口裂缝，同时引入 MCP 规范的 Sampling/Elicitation 安全管控。**完整可手写代码**：MCP 客户端连接管理（`McpSyncClient`）、网关代理工具（`implements ToolCallback`）、按 Agent 动态目录、OAuth 2.1 资源服务器、`application.yml`。
 >

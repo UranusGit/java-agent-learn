@@ -1,4 +1,4 @@
-# 项目 05：企业级 Agent 中台 — 03-迭代二：Control Plane 建设
+# 项目 05：企业级 Agent 中台 — 03-Control Plane 建设
 
 > **定位**：本项目的架构制高点——把散落在三处的配置/提示词/策略收进独立的控制面（config-service + policy-service + prompt-service），实现版本化、灰度化、集中治理。教程 20 的完整落地。**三个控制面服务与数据面接入代码完整可手写**。
 >

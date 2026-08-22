@@ -221,4 +221,4 @@ curl -N -X POST "http://localhost:8080/api/chat/stream" -H "Content-Type: text/p
 **失败排查**：①401→Key 未注入环境；②一次性整段→Flux 被某层聚合（检查是否误用 block/call().content()）；③500→WebClient 超时（模型服务不可达）。
 
 
-> **定位回顾**：本篇搭建基座。下一站 [02-迭代一-工具集成]——给客服加查 FAQ、查订单、查物流三个工具。
+> **定位回顾**：本篇搭建基座。下一站 [02-工具集成]——给客服加查 FAQ、查订单、查物流三个工具。
