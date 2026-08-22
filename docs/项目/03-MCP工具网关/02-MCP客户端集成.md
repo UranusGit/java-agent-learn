@@ -17,6 +17,8 @@
 | **架构如何演进** | 单 Client → Client 连接池；启动时一次性加载 → 定时轮询动态发现；无监控 → Micrometer Observation + Prometheus；无审计 → JPA 异步审计 |
 | **上一版痛点是什么** | ① 只支持单 Server（注入单个 `McpSyncClient` 多 Server 必失败）② 工具列表不刷新（Server 变更感知不到）③ 无监控无审计（调用参数/结果/耗时无从追溯）④ 无权限控制 |
 
+**一句话核对**：四问与 01 篇 §7 已知痛点 1–4 一一对应（痛点 4 留给迭代二）。
+
 ## 2. 目标与量化验收
 
 | # | 目标 | 验收 |
@@ -29,6 +31,12 @@
 | 6 | 性能不回退 | 多 Server 后 P99 工具调用 < 200ms（不含 Server 执行时间） |
 
 **本迭代明确不做**：不做权限认证（迭代二做）、不做容错熔断（迭代二做）、不自建 MCP 服务端（迭代二做）。
+
+### 2.1 本节核对（目标可验收性）
+
+- [ ] 六项目标的验收都可观察（health details / /tools 数量 / DEGRADED→DISCONNECTED 时间窗 / prometheus grep / audit 表行 / P99 口径）
+- [ ] "60s 内感知"、"30s 内 DEGRADED"、"连续 3 次隔离"与 §5 定时参数（discovery-interval / health-check-interval / FAILURE_THRESHOLD=3）一致
+- [ ] "明确不做"清单与 §11 已知痛点 1–3 对应
 
 ## 3. 多 MCP Server 配置
 
@@ -214,6 +222,29 @@ public class McpGatewayApplication {
     }
 }
 ```
+
+### 3.6 本节测试与验证（三 Server 配置与启动）
+
+**前置条件**：Node.js v20+；github Server 需环境变量 `GITHUB_TOKEN` 已设置；postgres Server 需本地 PG 实例与 `demo` 库可连；§3.2 新增依赖已加入 pom.xml。
+
+**材料——启动与工具清点**：
+
+```bash
+export GITHUB_TOKEN=${GITHUB_TOKEN}
+./mvnw spring-boot:run
+curl http://localhost:8080/tools | jq '. | length'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean compile` | 编译通过（GatewayProperties record + `@ConfigurationPropertiesScan` 生效，无绑定报错） |
+| 2 | 启动日志 | 出现三条 "Starting MCP client for server: ..."（filesystem / postgres / github） |
+| 3 | 材料 curl 工具总数 | ≥ 14（filesystem 4 + postgres 6 + github 若 token 有效再加；github 失联时也不影响启动） |
+| 4 | `curl /actuator/health` | status UP，components 含 mcpPool |
+
+**失败排查**：①github Server 启动即断→`GITHUB_TOKEN` 未设置（该 Server 走 env 注入）；②postgres Server 报连接拒绝→`demo` 库不存在或 5432 未监听；③`GatewayProperties` 绑定失败→启动类漏加 `@ConfigurationPropertiesScan`（§3.5）。
 
 ---
 
@@ -476,6 +507,33 @@ public class PoolInitializer {
     }
 }
 ```
+
+### 4.5 本节测试与验证（连接池注册与路由取连接）
+
+**前置条件**：§3.6 启动验证已通过（三 Server 在池内）。
+
+**材料——跨 Server 调用探针**：
+
+```bash
+curl -X POST http://localhost:8080/tools/call \
+  -H "Content-Type: application/json" \
+  -d '{"toolName": "postgres.query", "arguments": {"sql": "SELECT 1"}}'
+
+curl -X POST http://localhost:8080/tools/call \
+  -H "Content-Type: application/json" \
+  -d '{"toolName": "filesystem.read_file", "arguments": {"path": "/tmp/mcp-workspace/hello.txt"}}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 启动日志观察 `PoolInitializer` | 三条 register 日志，serverName 与 `mcp-servers.json` 键序一致（filesystem/postgres/github，非 server-0/1/2 兜底名） |
+| 2 | 材料 postgres.query | `success=true`，结果来自 postgres Server（跨池路由正确） |
+| 3 | 材料 filesystem.read_file | `success=true`（与 01 篇相同结果，证明多池未破坏旧链路） |
+| 4 | `PoolInitializerTest`（概念测试类）：模拟 `readServerNames` 读不到文件 | 返回空列表 → 连接退化为 `server-i` 命名，应用仍可启动 |
+
+**失败排查**：①serverName 全是 `server-i`→`mcp-servers.json` 不在 classpath 或 Jackson 解析失败（查 readServerNames catch 分支日志）；②`Unknown MCP server` → discovery 与 pool 的 serverName 不一致（核对键名拼写）；③单测注入 `List<McpSyncClient>` 为空→starter 未生效（核对 `spring.ai.mcp.client.stdio.servers-configuration`）。
 
 ---
 
@@ -774,6 +832,33 @@ public class ToolRouter {
 ```
 
 关键变化：不再是"工具名 → 单一 McpSyncClient"，而是"工具名 → 找到 ToolInfo → 从 ToolInfo 取出 serverName → 从连接池获取对应 Client → 执行调用"。
+
+### 5.4 本节测试与验证（动态发现与健康检查）
+
+**前置条件**：§4.5 已通过；`gateway.discovery-interval=60s`、`gateway.health-check-interval=30s` 生效。
+
+**材料——动态感知与故障注入剧本**：
+
+```bash
+# 等 60s 观察发现日志
+grep "provides" logs/gateway.log
+# 健康观察
+watch -n 5 'curl -s http://localhost:8080/actuator/health | jq ".components.mcpPool.details"'
+# 故障注入：直接 kill 掉 postgres Server 子进程
+pkill -f server-postgres
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 启动后首个发现周期 | 每个可用 Server 一条 "Server 'x' provides N tools" 日志 |
+| 2 | 在 `mcp-servers.json` 外手动新增文件到工作区并等 60s | `GET /tools` 数量随发现周期更新（动态生效，非启动一次性） |
+| 3 | 材料 pkill postgres 后每 30s 观察 | 1–2 次失败期 status=DEGRADED（仍可调用）；第 3 次失败后 DISCONNECTED |
+| 4 | DISCONNECTED 后调 `postgres.query` | 返回 `success=false`，`errorMessage` 含 "is not available"（隔离生效，其余 Server 不受影响） |
+| 5 | `HealthCheckerTest`（概念测试类）：mock ping 三次失败 | `consecutiveFailures=3` 时 status 翻转为 DISCONNECTED |
+
+**失败排查**：①发现不执行→启动类漏 `@EnableScheduling`（§3.5）；②DEGRADED 期调用被拒→`isAvailable()` 误把 DEGRADED 判为不可用（核 §4.2）；③kill 后仍 CONNECTED→ping 异常被吞（核 §5.2 try/catch）。
 
 ---
 
@@ -1111,6 +1196,35 @@ CREATE INDEX idx_tool_name ON audit_logs (tool_name);
 CREATE INDEX idx_status    ON audit_logs (status);
 ```
 
+### 6.5 本节测试与验证（指标与审计）
+
+**前置条件**：§5.4 已通过；actuator + prometheus 端点已暴露（§3.3 `include: health,info,prometheus`）。
+
+**材料——指标与审计核对命令**：
+
+```bash
+curl -s http://localhost:8080/actuator/prometheus | grep -E "^mcp_tool"
+# H2 控制台（开发库）：http://localhost:8080/h2-console，JDBC URL jdbc:h2:mem:gateway
+```
+
+```sql
+SELECT tool_name, status, duration_ms, called_at FROM audit_logs ORDER BY called_at DESC LIMIT 5;
+SELECT COUNT(*) FROM audit_logs;
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 调 `filesystem.read_file` 5 次后材料 grep | 出现 `mcp_tool_calls_total{result="success",server="filesystem",tool="read_file"} 5.0` 与 `mcp_tool_duration_seconds_*`（含 0.5/0.95/0.99 分位） |
+| 2 | 调一个不存在工具 | 指标出现 `result="failure"`、`server="unknown"` 计数 |
+| 3 | 材料 H2 SQL COUNT | 行数 = 调用总次数（成功 + 失败都入库） |
+| 4 | 材料 H2 SQL LIMIT 抽查 | `input_params` 为 JSON 字符串、超 4096 截断；`status`/`duration_ms` 非空 |
+| 5 | 调用响应耗时 vs audit 行的 durationMs | 主响应不被审计写库阻塞（@Async 生效，响应先回） |
+| 6 | 生产 DDL：在 PG 执行 §6.4 建表并切数据源 | `audit_logs` 表结构与 JPA 实体字段一一对应（列名驼峰转下划线） |
+
+**失败排查**：①指标名无 `mcp_tool` 前缀→Meter 命名点号被 Prometheus 规范化为下划线，grep 用 `^mcp_tool`；②指标基数异常→Tag 混入高基数值（核 §6.2 注释纪律）；③审计 0 行→`@Async` 未生效（漏 `@EnableAsync`）或 save 异常被 catch 吞（查 error 日志）；④`MeterRegistryCustomizer` 包名报错→按 §6.2 注释以 Boot 4.1.0 实证包路径为准。
+
 ---
 
 ## 7. 健康检查端点 `McpPoolHealthIndicator.java`
@@ -1193,6 +1307,20 @@ public class McpPoolHealthIndicator implements HealthIndicator {
 }
 ```
 
+### 7.1 本节测试与验证（健康端点）
+
+**前置条件**：网关已启动，三 Server 已注册进池。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `curl http://localhost:8080/actuator/health \| jq '.components.mcpPool.details'` | 每个 Server 一段 `{status, tools, failures}`，另有 totalServers=3 / availableServers 计数 |
+| 2 | 全部 CONNECTED 时 | 顶层 `status: UP`；`mcpPool` 组件 UP |
+| 3 | kill 一个 Server（复用 §5.4 剧本）等隔离完成 | 该 Server `status: DISCONNECTED`，整体 `mcpPool` 变 DOWN（`Health.down()` 分支） |
+
+**失败排查**：①health 无 mcpPool 组件→`McpPoolHealthIndicator` 未被扫描（包路径不在 `@SpringBootApplication` 子包）；②details 空→池在 health 首查时还没注册（`PoolInitializer` 走 `ApplicationReadyEvent`，等启动完成再查）。
+
 ---
 
 ## 8. 多 Server 调用流程
@@ -1238,40 +1366,28 @@ sequenceDiagram
     Ctrl-->>Agent: 文件内容
 ```
 
+### 8.1 本节核对（时序图与代码一致性）
+
+- [ ] 图中 `find → pool.get → callTool` 三步与 §5.3 `doCall` 的 1/2/3 分支一一对应（含 not found 与 not available 两个失败分支）
+- [ ] 每次调用后 `Audit: record` 在图与代码中均出现（成功/失败路径都审计）
+- [ ] 两次调用走不同 Client（postgres / filesystem），验证"按 serverName 路由"核心结论
+
 ---
 
-## 9. 迭代验证
+## 9. 全篇回归验证
 
-### 9.1 功能验证
+> 原「迭代验证」的材料已按主题上移：三 Server 工具清点 → §3.6；跨池路由调用 → §4.5；健康状态观察 → §7.1；指标 grep → §6.5。本节只做整体验收，不重复材料。
 
-```bash
-# 1. 查看所有工具（应该看到 filesystem + postgres + github 的工具）
-curl http://localhost:8080/tools | jq '. | length'
-# 期望：18（4 + 6 + 8）
+### 9.1 回归断言（§3.6 / §4.5 / §5.4 / §6.5 / §7.1 均通过后）
 
-# 2. 查看健康状态
-curl http://localhost:8080/actuator/health | jq '.components.mcpPool.details'
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 重启网关，重跑跨 Server 双调用（postgres.query + filesystem.read_file） | 两条链路均成功；重启后连接池重新注册、工具重新发现 |
+| 2 | 故障注入回归：kill postgres → 隔离 → 重启网关恢复 | postgres 恢复 CONNECTED，工具数回到原值 |
+| 3 | 连续 20 次混合调用后查审计 COUNT 与指标 | 审计行数 = 20；success/failure 计数与调用结果一致 |
+| 4 | 抽样 20 次调用的 durationMs | P99 < 200ms（不含 Server 执行时间的网关开销口径按 §2 目标 6 核对） |
 
-# 3. 调用 postgres 工具
-curl -X POST http://localhost:8080/tools/call \
-  -H "Content-Type: application/json" \
-  -d '{"toolName": "postgres.query", "arguments": {"sql": "SELECT 1"}}'
-
-# 4. 查看审计日志（H2 内存库，重启即失）
-curl http://localhost:8080/actuator/health | jq .
-```
-
-### 9.2 可观测性验证
-
-```bash
-# 查看指标（Prometheus 格式）
-curl http://localhost:8080/actuator/prometheus | grep mcp_tool
-
-# 期望输出：
-# mcp_tool_calls_total{result="success",server="filesystem",tool="read_file"} 5.0
-# mcp_tool_duration_seconds_count{quantile="0.5"} 5.0
-# mcp_tool_duration_seconds{quantile="0.95"} 0.045
-```
+**失败排查**：①重启后工具丢失→发现周期未到（等 60s 或手动触发）；②审计计数不齐→异步写库延迟（H2 下等 1–2s 再 COUNT）。
 
 ---
 
@@ -1290,6 +1406,12 @@ curl http://localhost:8080/actuator/prometheus | grep mcp_tool
 
 **四条纪律**：① 出入两个方向都发事件（网关是中转，双向可见）；② 结果 preview 截断且**不含凭证/鉴权头**（MCP 工具调用带 token 鉴权，事件绝不外泄）；③ 服务器维度展示，用户看到是哪个 MCP server 的哪个工具；④ 与 04 的凭证隔离衔接——事件可跟踪`callId`但查不到凭证。
 
+### 9.5.1 本节核对（过程可见事件）
+
+- [ ] 四类事件（OutboundToolStart/OutboundToolEnd/InboundToolCalled/McpToolError）均携带 `callId` 与 server 维度
+- [ ] 抽查一条 OutboundToolEnd 事件内容：结果 preview 已截断，且不含 `Authorization`/token 字段
+- [ ] 出入两方向各触发一次调用，均能收到对应事件（双向可见）
+
 ## 10. ADR 演进决策
 
 ### ADR 03-03：连接池用 `ConcurrentHashMap` 存连接，健康状态用 `volatile` + 渐进式失败计数
@@ -1304,6 +1426,11 @@ curl http://localhost:8080/actuator/prometheus | grep mcp_tool
 - **备选方案**：A. 虚构 `Map<String, McpClient>` 注入（不存在的注册机制，附录 05-01 §2.3 明确禁止）；B. 直接注入聚合 `ToolCallbackProvider`（丢失按 Server 路由能力）
 - **取舍理由**：附录 05-01 基准确认真实注入形态是 `List<McpSyncClient>`；按配置键序配对是唯一不依赖框架内部命名的可行方案
 
+### 10.1 本节核对（ADR 与代码现状）
+
+- [ ] ADR 03-03 的实现细节在 §4.2/§4.3 代码中逐条兑现（ConcurrentHashMap / volatile / 阈值 3）
+- [ ] ADR 03-04 的注入形态与 §4.4 构造器签名（`List<McpSyncClient>`）一致，未出现虚构 `Map<String, McpClient>`
+
 ---
 
 ## 11. 验收与已知痛点
@@ -1317,6 +1444,11 @@ curl http://localhost:8080/actuator/prometheus | grep mcp_tool
 4. 审计无关联身份——需要 Agent 认证后才能做按租户/Agent 的成本与安全归因
 
 > **定位回顾**：迭代一把网关升级为多 Server 生产级中间件。下一站 [03-自定义 MCP 服务端](03-自定义MCP服务端.md)——解决痛点 1（认证）、痛点 2（容错）、痛点 3（自建 Server）。
+
+### 11.1 本节核对（验收与痛点闭环）
+
+- [ ] 六项验收结论各有对应本节验证可回溯（§3.6 目标1 / §5.4 目标2、3 / §6.5 目标4、5 / §9.1 目标6）
+- [ ] 已知痛点 4 条与 §2 "明确不做"及 03 篇四问首行一致
 
 ---
 
@@ -1335,3 +1467,5 @@ curl http://localhost:8080/actuator/prometheus | grep mcp_tool
 5. **审计日志**：`AuditService` 使用 `@Async` + Java 21 虚拟线程异步写入 JPA 审计表，全量记录调用参数和结果，不阻塞主调用链。生产 PostgreSQL 建表 DDL 见 §6.4。
 
 迭代一完成后，网关具备了生产级的多 Server 管理和可观测能力。但还有一个缺口：网关目前只是工具消费者（Client），尚未将自己的业务能力暴露为 MCP Server。下一篇 [03-自定义 MCP 服务端](03-自定义MCP服务端.md) 将解决这个问题，并引入容错、安全和多模型策略。
+
+**一句话核对**：总结五点分别对应 §3.1/§4.2–4.3/§5.1/§6.2/§6.3–6.4，无新增结论。

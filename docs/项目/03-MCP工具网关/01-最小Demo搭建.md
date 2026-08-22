@@ -17,6 +17,8 @@
 | **架构如何演进** | 单体单模块：HTTP Controller → ToolRouter → ToolRegistry → `McpSyncClient` → filesystem Server |
 | **上一版痛点是什么** | 无（v0 是起点，痛点是**将要暴露的**：单 Server、无监控、无审计、无权限） |
 
+**一句话核对**：四问答案与 00 篇迭代规划中"迭代零"的交付物（单 Server 对接 + 基础查询 API）一致。
+
 ## 2. 目标与量化验收
 
 | # | 目标 | 验收 |
@@ -27,6 +29,12 @@
 | 4 | 延迟达标 | 本地 stdio 调用 P99 < 200ms（实测约 42ms） |
 
 **本迭代明确不做**：不做多 Server 管理、不做权限认证、不做审计日志、不做容错、不做动态发现。
+
+### 2.1 本节核对（目标可验收性）
+
+- [ ] 四项目标的验收方式都是可执行命令/可观察响应（health UP / /tools 返回 4 工具 / read_file 读回内容 / P99 < 200ms）
+- [ ] "明确不做"清单与 §7 已知痛点 1–4 一一对应
+- [ ] P99 口径为本地 stdio 调用（不混入网络型 Server 延迟）
 
 ## 3. 完整代码（照抄即可，一行不省略）
 
@@ -573,6 +581,22 @@ public class GatewayInitializer {
 
 选择 `ApplicationReadyEvent` 而非 `@PostConstruct` 的原因：`ApplicationReadyEvent` 在所有 Bean 初始化完成、Web 服务器启动后才触发，确保此时 MCP Client 已完成与 Server 的握手。
 
+### 3.10 本节测试与验证（代码可编译性）
+
+**前置条件**：§3.1–§3.9 全部代码已手写完成（含 `mcp-servers.json` 放入 `src/main/resources/`）。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean compile` | 编译通过，零 error |
+| 2 | 检查 import | `ToolRegistry`/`ToolRouter` 中客户端类型为 `io.modelcontextprotocol.client.McpSyncClient`；`CallToolRequest` 来自 `io.modelcontextprotocol.spec.McpSchema`（附录 05-01 §7 存疑写法按注释核对包路径） |
+| 3 | `mvn clean package -DskipTests=false` | `spring-boot-starter-test` 依赖可解析（无测试类时打包仍成功） |
+
+**失败排查**：①`McpSyncClient` 找不到→未引 `spring-ai-starter-mcp-client`；②`callTool(String, Map)` 编译报错→那是虚构签名，正确为 `callTool(new CallToolRequest(name, args))`；③`result.tools()` 无该方法→SDK 版本不符，核对附录 05-01 §2.2 解包基准。
+
+**运行时端到端验证见 §4。**
+
 ---
 
 ## 4. 运行与验证
@@ -693,6 +717,12 @@ sequenceDiagram
     Ctrl-->>Client: JSON 结果
 ```
 
+### 5.1 本节核对（链路图与代码一致性）
+
+- [ ] 时序图中每个调用（listAll/find/callTool）都能在 §3 对应类中找到同名方法
+- [ ] `find("read_file")` 短名解析路径与 `ToolRegistry.find` 的两级查找（精确 → 补前缀）一致
+- [ ] 图中 JSON-RPC 两步（initialize → tools/list）与 §3.3 启动时序图不矛盾
+
 ---
 
 ## 6. ADR 演进决策
@@ -709,11 +739,29 @@ sequenceDiagram
 - **备选方案**：A. 用 `Map<String, Object>`（需 Jackson 手动转换，且与 MCP SDK 真实类型不符）；B. 引入 SDK 的 `ToolInputSchema` 具体类型（与 SDK 版本强耦合）
 - **取舍理由**：网关只负责透传与展示工具定义，不解析 schema 内部结构；`Object` 编译期零风险、解耦 SDK 版本
 
+### 6.1 本节核对（ADR 与代码现状）
+
+- [ ] ADR 03-01 三个"换接口"（Registry→DiscoveryService / Router→ResilientToolRouter / 三 Record）在 02/03 篇确实被兑现
+- [ ] `inputSchema` 类型在 §3.5 Record 中确为 `Object`，与 ADR 03-02 一致
+
 ---
 
 ## 7. 验收与已知痛点
 
 **验收**：四项目标全部达成——骨架可启动、工具发现闭环、工具调用闭环、P99 < 200ms。
+
+### 7.1 全篇回归验证（v0 端到端）
+
+**回归断言**（§3.10 编译验证、§4 运行验证均通过后，最终整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 重启网关，重跑 §4.3 `GET /tools` + §4.4 `POST /tools/call` | 两条链路均正常（工具发现幂等，重启不丢工具） |
+| 2 | `GET /tools/search?keyword=file` | 过滤出 read_file/write_file 等含关键词工具 |
+| 3 | 调用不存在的工具 `{"toolName":"nope"}` | 返回 `success=false`，`errorMessage` 含 `Tool not found`（失败不抛异常到 HTTP 500） |
+| 4 | 抽查 5 次 `/tools/call` 的 `durationMs` | P99 < 200ms（本地 stdio 口径） |
+
+**失败排查**：①重启后 `/tools` 为空→`GatewayInitializer` 未触发或 npx 子进程启动失败（查 `node --version` 与 DEBUG 日志）；②HTTP 500→`ToolRouter` 的 catch 分支未兜住（核对 §3.7 异常封装）。
 
 **已知痛点（供迭代一决策）**：
 1. 只支持单 MCP Server——注入的是单个 `McpSyncClient`，多 Server 会注入失败
@@ -740,3 +788,5 @@ sequenceDiagram
 5. **API 真实性**：所有代码按 [附录 05-01 MCP真实API与坐标](../../附录/05-SpringAI2-API基准/01-MCP真实API与坐标.md) 基准书写——客户端类型是 MCP SDK 的 `McpSyncClient`，调用签名是 `callTool(new CallToolRequest(name, args))`、`listTools()` 返回 `ListToolsResult` 解包，无虚构的 `org.springframework.ai.mcp.McpClient`。
 
 当前版本的局限很明显：只支持单个 MCP Server、没有权限控制、没有审计日志、没有容错机制。下一篇 [02-MCP 客户端集成](02-MCP客户端集成.md) 将引入多 Server 管理、MCP Client 连接池、全链路可观测性和审计日志，把网关推向生产可用。
+
+**一句话核对**：总结五点分别对应 §3.1/§3.5/§3.6–3.8/§4/附录 05-01 基准，无新增结论。

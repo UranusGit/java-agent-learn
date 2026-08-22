@@ -17,6 +17,8 @@
 
 **本迭代验收**：① 全部下游连接走 Streamable HTTP 单端点 ② 无 token 请求被网关 401 ③ 下游收到的调用带 Bearer token 且含租户 claim ④ token 过期自动刷新不中断服务。
 
+**一句话核对**：四问与 03 篇遗留痛点衔接（传输/授权/身份断链），验收四条分别由 §2.4 / §3.4 覆盖。
+
 ---
 
 ## 二、传输升级：Streamable HTTP
@@ -65,6 +67,27 @@ spring:
 // org.springframework.ai.mcp.client.webflux.transport.WebClientStreamableHttpTransport
 //（mcp-spring-webflux jar，javap 实证存在；spring-ai-starter-mcp-client-httpclient 是 Servlet 栈默认）
 ```
+
+### 2.4 本节测试与验证（Streamable HTTP 连接生效）
+
+**前置条件**：两个下游 MCP Server（order-mcp:8201 / sql-mcp:8202）以 Streamable HTTP 单端点 `/mcp` 运行；`application.yml` 已按 §2.2 配置（注意键结构是 `streamable-http.connections.<name>.url`，非连写形式）。
+
+**材料——连接与发现核对**：
+
+```bash
+curl http://localhost:8080/v1/tools | jq '[.[].serverName] | unique'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 启动网关 | 每个 connection 各创建一个 `McpSyncClient`；日志无 HTTP+SSE / `sse.connections` 相关告警 |
+| 2 | 材料 curl | serverName 含 order-tools 与 sql-tools（两远程 Server 的工具均被发现） |
+| 3 | 抽查一次 order-tools 工具调用 | 请求打到单端点 `POST /mcp`（下游访问日志确认），无 `/messages` + `/sse` 双端点流量 |
+| 4 | 断开 sql-mcp 后恢复 | 会话头 `Mcp-Session-Id` 支持续连（重连后无需重建全部会话） |
+
+**失败排查**：①配置不生效→键写成 `streamable-http-connections`（附录 05-01 基准的正确结构见 §2.2 注）；②连不上→URL 未含 `/mcp` 路径或下游非 Streamable HTTP 实现；③找不到 WebClient 传输类→未引 `mcp-spring-webflux`（WebFlux 栈不用 httpclient starter）。
 
 ---
 
@@ -162,36 +185,48 @@ io.modelcontextprotocol.spec.McpSchema.CallToolResult result =
         connections.callWithAuth(serverName, toolId, args);   // 连接层内部先取 token 再调
 ```
 
----
+### 3.4 本节测试与验证（授权/透传/自动刷新）
 
-## 四、测试与验证
+**前置条件**：§2.4 已通过；授权服务器可发 client_credentials token（`AUTH_SERVER_URL` 与 `OAUTH_*_ID/_SECRET` 环境变量已设）；资源服务器代码已按 §3.1 引入 spring-security 后实证落地。
 
-### 4.1 传输验证
-
-```bash
-# 下游连接配置生效：启动后 tool-registry 发现 order-tools/sql-tools（Streamable HTTP 单端点）
-curl http://localhost:8080/v1/tools
-```
-
-### 4.2 授权验证
+**材料——授权探针**：
 
 ```bash
 # 无 token → 401
 curl http://localhost:8080/v1/tools/queryOrder -d '{}'
 # 带过期 token → 401；带有效 token → 200
+curl http://localhost:8080/v1/tools/queryOrder \
+  -H "Authorization: Bearer ${TOKEN}" -d '{"orderId": "ORD-001"}'
 ```
 
-### 4.3 透传验证
+**步骤与断言**：
 
-```java
-// 下游 Server 审计断言：收到的 token 含 tenant_id claim（token 交换生效）
-```
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 1 | 401（资源服务器拦截，无匿名放行） |
+| 2 | 材料 2 过期 token | 401；有效 token → 200 |
+| 3 | 下游 Server 审计检查收到的请求 | `Authorization: Bearer ...` 存在（网关客户端身份生效） |
+| 4 | 解码下游收到的 JWT | 含 `tenant_id` claim（token 交换透传生效，可追溯到租户） |
+| 5 | token 设 60s 过期，连续调用 5 分钟 | 无 401 中断（§3.2 过期前 30s 预刷新生效） |
+| 6 | `DownstreamTokenManagerTest`（概念测试类）：mock 授权服务器 | 未到期直接命中缓存（不发 HTTP）；剩 30s 内触发刷新并更新缓存 |
 
-### 4.4 刷新验证
+**失败排查**：①400/401 全被拒→audience/issuer 校验配置与授权服务器不一致；②下游收不到 Bearer→`callWithAuth` 未走 token 注入（核 §3.3）；③无 tenant_id claim→授权服务器未配 token exchange（RFC 8693）或未透传；④刷新抖动→预刷新窗口小于网络往返（调大 `plusSeconds(30)` 余量）。
 
-```java
-# token 设 60s 过期 → 连续调用 5 分钟无 401（过期前 30s 预刷新生效）
-```
+---
+
+## 四、全篇回归验证
+
+> 原「测试与验证」的材料已按主题上移：传输发现 curl → §2.4；无/过期/有效 token 探针 → §3.4；透传断言与 60s 过期刷新剧本 → §3.4。本节只做整体验收，不重复材料。
+
+### 4.1 回归断言（§2.4 / §3.4 均通过后）
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 重启网关，重跑授权探针三连（无/过期/有效） | 行为不变（token 缓存随重启重建，不残留旧凭证） |
+| 2 | 混合调用：order-tools（需 OAuth）与本地 stdio Server 各一次 | 两条传输路径并存无冲突（stdio + Streamable HTTP 混布） |
+| 3 | 授权服务器短暂不可用 30s 再恢复 | 调用降级不崩（缓存 token 可用），恢复后新 token 正常领取 |
+
+**失败排查**：①重启后 401→环境变量 `OAUTH_*` 未持久（会话级 export）；②stdio 与 streamable-http 混布失败→两配置块层级写错（分别位于 `client.stdio` 与 `client.streamable-http` 下）。
 
 ---
 
@@ -206,3 +241,8 @@ curl http://localhost:8080/v1/tools/queryOrder -d '{}'
 | 自动刷新 | 过期前预刷新无中断 | ✅ |
 
 **下一篇**：[06-工具市场与计费](06-工具市场与计费.md)——登记/评分/订阅计费与劣质工具治理。
+
+### 5.1 本节核对（验收可回溯）
+
+- [ ] 五项 ✅ 均能回溯到本节验证（Streamable HTTP→§2.4 / 资源服务器与客户端凭证→§3.4 断言 1–3 / 身份透传→§3.4 断言 4 / 自动刷新→§3.4 断言 5）
+- [ ] 标注「需引入依赖后实证」的 spring-security 代码在实证前不冒充已验证结论

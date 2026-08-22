@@ -17,6 +17,8 @@
 | **架构如何演进** | 纯 Client → Client + Server 双重身份；直调 → 熔断/重试/降级；匿名 → Agent 认证 + 白名单；单模型 → 策略化模型路由 |
 | **上一版痛点是什么** | ① 无权限认证（`agentId` 硬编码 anonymous）② 无容错（下游慢/挂直接失败）③ 网关只消费不产出（业务能力无法被外部 Agent 复用）④ 无法按 Agent 归因成本 |
 
+**一句话核对**：四问与 02 篇 §11 已知痛点 1–4 一一对应。
+
 ## 2. 目标与量化验收
 
 | # | 目标 | 验收 |
@@ -28,6 +30,12 @@
 | 5 | 可用性 | 单 Server 故障不影响其他 Server 的工具调用（隔离达标） |
 
 **本迭代明确不做**：不做 HITL 人工审批（落点在 `ToolCallingManager`，见 [教程 28-Human-in-the-Loop与审批流](../../教程/28-Human-in-the-Loop与审批流.md)）、不做 Redis 会话、不做网关多实例。
+
+### 2.1 本节核对（目标可验收性）
+
+- [ ] 五项目标验收均可操作（mcp-cli tools/list / degraded 标志 / 401 与 SecurityException / selectModel 返回值 / 隔离观察）
+- [ ] 目标 2 的熔断参数（50%/5s/30s）与 §4.2 代码一致；目标 3 的 5000 阈值与 §5.3 一致
+- [ ] "明确不做"三条与 §10 已知痛点 3 及后续演进方向一致
 
 ## 3. 完整代码（照抄即可，一行不省略）
 
@@ -390,6 +398,33 @@ public class McpServerConfig {
 
 Spring AI 自动将这些 `@Tool` 方法注册到内建 MCP Server。外部 MCP 客户端连接 `http://gateway:8080` 后，通过 `tools/list` 就能看到 `queryOrder`、`createTicket`、`queryTicket`、`submitApproval` 四个工具。
 
+### 3.6 本节测试与验证（自建 Server 工具暴露）
+
+**前置条件**：§3.1 新依赖已加入 pom.xml；§3.2 server 配置已追加；`ToolGatewayController` 与 `SecureToolGatewayController` 的 `/tools/call` 映射冲突已处理（见 §5.4 说明）。
+
+**材料——外部客户端发现与调用**：
+
+```bash
+# 需要安装 mcp-cli: npm install -g @anthropic/mcp-cli
+mcp-cli connect http://localhost:8080
+# 在 mcp-cli 中执行：
+# > tools/list
+# 期望输出：queryOrder, createTicket, queryTicket, submitApproval
+# > call_tool queryOrder {"orderId": "ORD-001"}
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean compile` | 编译通过（`MethodToolCallbackProvider`/`ToolCallbackProvider` 包路径为 §3.5 import 所示 Spring AI 2.0 真实包） |
+| 2 | 启动网关 | 无 `/tools/call` 映射冲突（旧 Controller 已停用）；server 名 `enterprise-business-tools` 生效 |
+| 3 | 材料 tools/list | 恰好四个工具：queryOrder / createTicket / queryTicket / submitApproval |
+| 4 | 材料 call_tool queryOrder ORD-001 | 返回 `amount=199.00, status=已发货, trackingNo=SF1234567890`（§3.3 预置数据） |
+| 5 | **反证**：注释掉 `McpServerConfig` 的 Provider Bean 再启动 | tools/list 中自建工具消失（证明"缺 Provider 不生效"的审计教训） |
+
+**失败排查**：①tools/list 看不到自建工具→漏了 §3.5 的 `ToolCallbackProvider` Bean（`@Component + @Tool` 不会自动注册）；②启动报 ambiguous mapping→旧 `ToolGatewayController` 未删（§5.4 说明）；③连接被拒→`transport` 不是 `streamable-http`（旧 HTTP+SSE 已废弃）。
+
 ---
 
 ## 4. 容错与弹性设计
@@ -645,6 +680,34 @@ sequenceDiagram
 ```
 
 > **容错策略选择决策树** → [教程 30-容错与弹性设计](../../教程/30-容错与弹性设计.md) 第 3 节提供了完整的容错策略选择决策树：瞬时故障用重试+超时，持续故障用熔断+降级。本项目的熔断器配置直接参考该教程的参数推荐。
+
+### 4.4 本节测试与验证（熔断/重试/降级）
+
+**前置条件**：§3.6 已通过；`ResilientToolRouter` 已替换直调路由（`SecureToolGatewayController` 第 4 步走本路由）。
+
+**材料——故障注入剧本**：
+
+```bash
+pkill -f server-postgres   # 停掉下游 postgres Server
+curl -X POST http://localhost:8080/tools/call \
+  -H "X-API-Key: key-admin-003" -H "Content-Type: application/json" \
+  -d '{"toolName": "postgres.query", "arguments": {"sql": "SELECT 1"}}'
+# 连续调用 ≥11 次（触发 50% 失败率 × 滑动窗口 20）
+curl http://localhost:8080/actuator/health | jq '.components.mcpPool.details'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 pkill 后首次调用 | 返回 200（非 5xx），`success=true` 但 content 含 `"degraded": true`（降级而非崩溃） |
+| 2 | 观察日志 | 出现 `[CircuitBreaker] postgres: CLOSED → OPEN`（失败率超 50%） |
+| 3 | OPEN 期间再调用 | 立即返回降级结果（`CallNotPermittedException` 被兜住，无重试等待） |
+| 4 | 等 30s 后调用 | 熔断器进入 HALF_OPEN（日志 `OPEN → HALF_OPEN`），放行探测请求 |
+| 5 | 熔断期间调 `filesystem.read_file` | 正常成功（按 Server 隔离，验收目标 5） |
+| 6 | `CircuitBreakerFactoryTest`（概念测试类） | 同名两次 `getOrCreate` 返回同一实例；不同 Server 实例独立 |
+
+**失败排查**：①降级不触发→`Decorators` 链漏 `.withFallback` 或 fallback 未覆盖 `CallNotPermittedException`；②熔断不打开→失败调用提前在 `pool.get` 被 isAvailable 拦截（未进入熔断统计），核对调用顺序；③其他 Server 被拖垮→熔断器未按 serverName 隔离（核 §4.2 `getOrCreate` 键）。
 
 ---
 
@@ -955,6 +1018,48 @@ public class SecureToolGatewayController {
 }
 ```
 
+### 5.5 本节测试与验证（认证/白名单/注入/高危阈值）
+
+**前置条件**：§3.6 已通过；`SecureToolGatewayController` 已接管 `/tools/call`（旧 Controller 已停用）。
+
+**材料——安全探针组**：
+
+```bash
+# 1. 无 API Key
+curl -X POST http://localhost:8080/tools/call \
+  -H "Content-Type: application/json" \
+  -d '{"toolName": "queryOrder", "arguments": {"orderId": "ORD-001"}}'
+
+# 2. 白名单外工具（客服 Agent 调 postgres）
+curl -X POST http://localhost:8080/tools/call \
+  -H "X-API-Key: key-customer-service-001" -H "Content-Type: application/json" \
+  -d '{"toolName": "postgres.query", "arguments": {"sql": "SELECT 1"}}'
+
+# 3. STANDARD 单笔超 5000
+curl -X POST http://localhost:8080/tools/call \
+  -H "X-API-Key: key-customer-service-001" -H "Content-Type: application/json" \
+  -d '{"toolName": "submitApproval", "arguments": {"applicantId": "U001", "type": "报销", "amount": 10000, "reason": "test"}}'
+
+# 4. SQL 注入探测（admin 越过白名单后由注入检测拦）
+curl -X POST http://localhost:8080/tools/call \
+  -H "X-API-Key: key-admin-003" -H "Content-Type: application/json" \
+  -d '{"toolName": "postgres.query", "arguments": {"sql": "SELECT 1; DROP TABLE orders"}}'
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 1 | 401 / `MissingRequestHeaderException`（无 `X-API-Key` 直接被拒） |
+| 2 | 材料 2 | `success=false`，`errorMessage` 含 `is not authorized to call tool 'postgres.query'` |
+| 3 | 材料 3 | `success=false`，`errorMessage` 含 `Amount 10000.00 exceeds STANDARD tier limit 5000.00` |
+| 4 | 材料 4 | 注入检测命中（`Potential SQL injection detected`），即使 ADMIN 也拦 |
+| 5 | 正向：客服 Key 调 `enterprise-business-tools.queryOrder` ORD-001 | 校验通过走到执行，返回订单详情 |
+| 6 | 错误 Key `key-nope` | `Invalid API key` SecurityException |
+| 7 | `SecurityValidatorTest`（概念测试类） | null arguments 拦截 / 注入样本 5 条全命中 / PREMIUM 阈值 50000 放行 10000 |
+
+**失败排查**：①400 而非 401→`@RequestHeader` 缺省 required，属预期行为但与验收口径要对齐（可加 `required=false` 自行返回 401）；②白名单不生效→`canCall` 用短名匹配（必须传 `tool.globalId()`）；③金额校验跳过→高危判断写成了 `tool.name()` 而非 `globalId()`（§5.3 修正注释）；④注入漏检→正则未覆盖该变形（简化版仅第一道防线，生产走参数化查询）。
+
 ---
 
 ## 6. 多模型协作与工具供应策略
@@ -1171,6 +1276,23 @@ flowchart TB
     EXECUTE --> AUDIT["审计记录"]
 ```
 
+### 6.6 本节测试与验证（策略选择）
+
+**前置条件**：§3–§5 已通过；`ToolInfo` 里有真实工具可传入策略。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `StrategySelector.selectModel("cost-first", queryOrder 工具, ctx)` | 返回 `deepseek-v3`（描述含"查询"→简单查询类） |
+| 2 | `selectModel("cost-first", createTicket 工具, ctx)` | 返回 `gpt-4o`（描述含"创建"→中等复杂度） |
+| 3 | `selectModel("quality-first", submitApproval 工具, ctx)` | 返回 `claude-opus-4`（审批类） |
+| 4 | `selectModel("quality-first", 任意工具, ctx{extra:{locale:"zh-CN"}})` | 返回 `qwen-max` |
+| 5 | `selectModel("不存在的策略", 任意工具, ctx)` | 回退 cost-first 不抛异常 |
+| 6 | `selectModel` 返回值逐项核对 | 与 §2 目标 4 的三分支（deepseek-v3/gpt-4o/claude-sonnet-4）一致 |
+
+**失败排查**：①策略没注册→实现类漏 `@Component`（StrategySelector 靠注入 `List<ToolSupplyStrategy>` 收集）；②同 name 冲突启动失败→两个策略 `name()` 重名（toMap 重复键抛异常）。
+
 ---
 
 ## 7. 完整调用流程
@@ -1205,54 +1327,28 @@ sequenceDiagram
     Router-->>Ext: ToolCallResult{success: true}
 ```
 
+### 7.1 本节核对（流程图与代码一致性）
+
+- [ ] 时序图中的 Auth→Sec→Router→CB 顺序与 `SecureToolGatewayController.callTool` 的 1–4 步一致（先认证再查工具再校验再执行）
+- [ ] 图中 STANDARD 金额检查（3000 < 5000 通过）对应 §5.3 `checkHighRiskTool` 的 tier 分支
+- [ ] 审计记录出现在执行之后（与 02 篇 §5.3 审计埋点位一致）
+
 ---
 
-## 8. 验证测试
+## 8. 全篇回归验证
 
-### 8.1 自建 Server 验证
+> 原「验证测试」的材料已按主题上移：mcp-cli tools/list → §3.6；安全探针组（无 Key/白名单外/金额超限）→ §5.5；故障注入与熔断观察 → §4.4。本节只做整体验收，不重复材料。
 
-```bash
-# 列出网关自建工具（从外部 MCP 客户端视角）
-# 需要安装 mcp-cli: npm install -g @anthropic/mcp-cli
-mcp-cli connect http://localhost:8080
+### 8.1 回归断言（§3.6 / §4.4 / §5.5 / §6.6 均通过后）
 
-# 在 mcp-cli 中执行：
-# > tools/list
-# 期望输出：queryOrder, createTicket, queryTicket, submitApproval
-```
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 外部 Agent 端到端：认证 → queryOrder → createTicket → queryTicket → submitApproval(3000) | 四工具链全通，审计表各落一行（与 02 篇审计链路衔接） |
+| 2 | 故障隔离回归：kill postgres 熔断期间走完整审批链 | 审批链（自建 Server）不受下游故障影响（Client/Server 双身份互不干扰） |
+| 3 | 重启网关重跑 §3.6 tools/list | 四工具仍在（Provider Bean 稳定暴露） |
+| 4 | 双策略对同一工具各选一次模型 | cost-first 与 quality-first 输出符合各自分支（§6.6 断言） |
 
-### 8.2 安全验证
-
-```bash
-# 1. 无 API Key → SecurityException
-curl -X POST http://localhost:8080/tools/call \
-  -H "Content-Type: application/json" \
-  -d '{"toolName": "queryOrder", "arguments": {"orderId": "ORD-001"}}'
-# 期望：Security check failed / 401
-
-# 2. 权限不足 → SecurityException
-curl -X POST http://localhost:8080/tools/call \
-  -H "X-API-Key: key-customer-service-001" \
-  -H "Content-Type: application/json" \
-  -d '{"toolName": "postgres.drop_table", "arguments": {"name": "orders"}}'
-# 期望：Security check failed
-
-# 3. 金额超限 → SecurityException
-curl -X POST http://localhost:8080/tools/call \
-  -H "X-API-Key: key-customer-service-001" \
-  -H "Content-Type: application/json" \
-  -d '{"toolName": "submitApproval", "arguments": {"applicantId": "U001", "type": "报销", "amount": 10000, "reason": "test"}}'
-# 期望：Amount 10000.00 exceeds STANDARD tier limit 5000.00
-```
-
-### 8.3 容错验证
-
-```bash
-# 手动停止某个 MCP Server 进程，观察熔断器行为
-# 健康检查会标记为 DISCONNECTED
-# 后续调用该 Server 的工具会返回降级结果
-curl http://localhost:8080/actuator/health | jq '.components.mcpPool.details'
-```
+**失败排查**：①端到端断在中间某环→按环节回查对应小节排查项；②重启后 Key 失效→`AgentAuthService` 内存实现重启即失（已知痛点 1，重新初始化预置 Key 即可）。
 
 ---
 
@@ -1276,6 +1372,12 @@ curl http://localhost:8080/actuator/health | jq '.components.mcpPool.details'
 - **备选方案**：A. 把审批放 Advisor（错误落点——[附录 05-00 §1] 明确 Advisor 管 Prompt 上下文）；B. 用 AOP 拦工具（附录 05-02 §1.3 不可行）
 - **取舍理由**：工具意图已定、执行未发生时的拦截点是 `ToolCallingManager` 装饰器（[教程 22] 正确落点），迭代三或项目 06 落地；本迭代先做调用前校验
 
+### 9.1 本节核对（ADR 与代码现状）
+
+- [ ] ADR 03-05 的 Provider Bean 在 §3.5 逐工具组声明（三个 Bean），且 §3.6 断言 5 做过反证
+- [ ] ADR 03-06 的按 Server 隔离在 §4.2 `getOrCreate(serverName)` 与 §4.4 断言 5 验证过
+- [ ] ADR 03-07 的"本迭代不做 HITL"与 §2 明确不做、§10 痛点 3 三处一致
+
 ---
 
 ## 10. 验收与已知痛点
@@ -1289,6 +1391,11 @@ curl http://localhost:8080/actuator/health | jq '.components.mcpPool.details'
 4. 多模型策略只出"推荐模型"，尚未真正路由到对应 LLM——需与 ChatClient 模型选择打通
 
 > **定位回顾**：迭代二让网关同时具备 Client 消费与 Server 产出双重能力，并叠加生产级容错与安全。下一站 [04-核心代码讲解](04-核心代码讲解.md)——对全项目关键代码做集中梳理和深度解析。
+
+### 10.1 本节核对（验收与痛点闭环）
+
+- [ ] 五项验收各有可回溯的本节验证（§3.6 目标1 / §4.4 目标2、5 / §5.5 目标3 / §6.6 目标4）
+- [ ] 已知痛点 4 条均在正文标注了生产替代方向（数据库/前缀匹配/HITL 落点/ChatClient 打通）
 
 ---
 
@@ -1305,3 +1412,5 @@ curl http://localhost:8080/actuator/health | jq '.components.mcpPool.details'
 4. **多模型供应策略**：设计了 `ToolSupplyStrategy` 接口，实现成本优先（简单工具用 DeepSeek、中等用 GPT-4o、复杂用 Claude）和质量优先（审批用 Claude Opus、中文用 Qwen-Max）两种策略，为多模型协作的深度集成预留了框架。
 
 至此，MCP 工具网关已具备完整的生产级能力：消费外部 MCP Server 工具 + 暴露自研业务工具 + 全链路可观测 + 审计 + 容错 + 安全 + 多模型策略。最后一篇 [04-核心代码讲解](04-核心代码讲解.md) 将对全项目关键代码做集中梳理和深度解析。
+
+**一句话核对**：总结四点分别对应 §3.5/§4.2–4.3/§5.2–5.4/§6.3–6.5，无新增结论。
