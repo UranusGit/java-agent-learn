@@ -17,6 +17,12 @@
 
 **本迭代验收**：① `curl` 问一句可得到流式回复；② 让 Agent 调用一个工具（如查订单）并正确引用结果；③ 有可复现的单元测试。
 
+### 1.1 本节核对（四问）
+
+- [ ] 本迭代是首个可运行版本（"上一版痛点=无"），且未引用不存在的版本号
+- [ ] "本迭代验收"三项（curl 流式 / 工具调用并引用结果 / 可复现单测）与下文 §五、§六的验证章节一一对应，即为本迭代的测试目标
+- [ ] "本迭代刻意不做多租户/管控分离/模型网关"与 §二"最小闭环"定位一致，未越界引入后续迭代能力
+
 ---
 
 ## 二、最小闭环长什么样
@@ -35,6 +41,11 @@ flowchart LR
 ```
 
 **关键点**：这一阶段没有多租户、没有管控分离、没有模型网关——就是"一个服务 + 一个 ChatClient + 几个工具"。先让它**能跑、能测**，再谈拆分。
+
+### 2.1 本节核对（最小闭环形态）
+
+- [ ] 能沿 §二 flowchart 说清数据单向流：用户→Controller→ChatClient→ChatModel(→@Tool)→流式回复，且确认本阶段不经过管控面任何服务
+- [ ] 闭环节点的技术载体（ChatClient / `@Tool` OrderQueryTool / SSE stream）能与 §四、§五正文对应到具体类与接口
 
 ---
 
@@ -86,6 +97,12 @@ spring:
 ```
 
 > **配置键实证**：`spring.ai.openai.base-url/api-key/chat.model`（javap 实证 `OpenAiChatProperties`，前缀 `spring.ai.openai.chat`）。密钥用 `${ENV_VAR}` 占位（CLAUDE.md 规则 9）。
+
+### 3.1 本节核对（技术栈与配置键）
+
+- [ ] pom 仅 webflux + openai starter（Boot 4.1.0 / Java 21 / Spring AI 2.0.0），未引入 pgvector 等后续迭代依赖——与"只加最小集"目标一致
+- [ ] 配置键 `spring.ai.openai.base-url/api-key/chat.model` 与 javap 实证的 `OpenAiChatProperties` 前缀一致，密钥用 ${ENV_VAR} 占位（无硬编码密钥）
+- [ ] 一个 `mvn compile` 能通过（依赖坐标真实），为 §四编译测试前置
 
 ---
 
@@ -174,6 +191,22 @@ public class ChatController {
 }
 ```
 
+### 4.4 本节测试与验证（核心代码：ChatClient / 工具 / Controller）
+
+**前置条件**：§3.1 依赖与配置键核对通过。
+
+**材料**：§4.1-§4.3 的 `AgentConfig` / `OrderQueryTool` / `ChatController` 三类代码。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 手写三份类后 `mvn clean compile` | `BUILD SUCCESS`；`ChatClient.Builder`、`@Tool`/`@ToolParam`、`CallResponseSpec.content()`/`StreamResponseSpec.content()` 均编译通过（真实 2.0.0 API） |
+| 2 | 工具语义核对 | `queryOrder("SO-1001")` 命中 "已发货…"、`queryOrder("SO-9999")` 返回 "未找到该订单"（与 §4.2 内存数据一致） |
+| 3 | Controller 双端点 | `/chat` 同步返回 `String`、`/chat/stream` 以 `text/event-stream` 返回 `Flux<String>`，与 §4.3 javap 实证签名一致 |
+
+**失败排查**：①编译不过→确认用了真实的 2.0.0 API（如 `defaultTools`、`@ToolParam`），对照 [附录 05-SpringAI2-API基准]；②工具调用不符合预期→`OrderQueryTool` 内存 `ORDERS` 数据与查询键不一致。
+
 ---
 
 ## 五、启动与手工验证（可测试性①）
@@ -205,6 +238,22 @@ sequenceDiagram
     CC-->>C: content()
     C-->>U: "订单 SO-1001 已发货…"
 ```
+
+### 5.1 本节测试与验证（启动与手工验证）
+
+**前置条件**：§4.4 编译通过；`OPENAI_API_KEY` 已 export。
+
+**材料**：§五 bash 中的两条 curl（同步 `/chat` + 流式 `/chat/stream`）。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn spring-boot:run` 启动 | 8080 端口就绪，无 EventLoop 阻塞告警 |
+| 2 | `curl "http://localhost:8080/chat?q=帮我查一下订单SO-1001"` | Agent 调用 `queryOrder` 工具后回答 "订单 SO-1001 已发货，预计明日送达"，正确引用工具结果 |
+| 3 | `curl -N "http://localhost:8080/chat/stream?q=订单SO-1002状态"` | 逐字 SSE 回流，最终内容含工具查询结果（SO-1002="待支付"） |
+
+**失败排查**：①200 但答非所问/编造→Step1 确认 `defaultTools` 挂上 `OrderQueryTool`；②无流式返回→确认 `/chat/stream` 用 `produces = "text/event-stream"`；③启动报模型/Key 错→`OPENAI_API_KEY` 未注入或 base-url 配置键拼错（对照 §3.1）。
 
 ---
 
@@ -245,6 +294,21 @@ class OrderQueryToolTest {
 
 **测试策略说明**：本阶段只单测纯逻辑工具（无 LLM、快、稳定）；ChatClient 与 LLM 的集成用上面的 `curl` 手工验证。到 [03-迭代二] 引入 `MockChatModel`/`FakeChatModel` 后再做 ChatClient 级测试。
 
+### 6.1 本节测试与验证（工具单元测试）
+
+**前置条件**：已在 pom 引入 §六顶部的 `spring-boot-starter-test`（scope=test，未 javap 实证标注）。
+
+**材料**：§六 `OrderQueryToolTest` 两个用例（命中/未找到）。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 手写 `OrderQueryToolTest` 后 `mvn test` | 两个用例全部通过（`BUILD SUCCESS`） |
+| 2 | 断言语义核对 | `queryOrder("SO-1001")` 用 `contains("已发货")`（命中）、`queryOrder("SO-9999")` 用 `isEqualTo("未找到该订单")`（未命中兜底），与 §4.2 工具实现口径一致 |
+
+**失败排查**：①`@Test`/`assertThat` 找不到→starter-test 未真正加入 classpath；②用例与实现不一致→工具返回值被改，回查 §4.2 的 `ORDERS` 兜底逻辑。
+
 ---
 
 ## 七、本迭代痛点（为什么下一步要拆分）
@@ -268,6 +332,11 @@ graph LR
 3. **会话无状态**：每次请求独立，没有会话记忆（`ChatMemory` 都没接）
 4. **不可独立扩缩**：对话（IO 密集）与工具（CPU 密集）互相拖累
 
+### 7.1 本节核对（本迭代痛点）
+
+- [ ] 四类痛点（模型写死/工具内联/会话无状态/不可扩缩）与 §七 flowchart 一一对应，且各自都能指到迭代一（02 微服务拆分）要解决的对应项
+- [ ] 痛点表述与 §八"未引入最终架构=刻意"定位不冲突（单体阶段发现隐患属预期，非缺陷）
+
 ---
 
 ## 八、验收对照
@@ -277,5 +346,10 @@ graph LR
 | 最小闭环可运行 | curl 提问 → 工具调用 → 流式回复 | ✅ |
 | 可测试 | 工具单测通过 + 手工验证步骤可复现 | ✅ |
 | 未引入最终架构 | 无多租户/管控分离/多服务 | ✅（刻意不引入） |
+
+### 8.1 本节核对（验收对照）
+
+- [ ] 三条验收项各自有前文对应验证章节支撑：最小闭环可运行→§5.1、可测试→§6.1、未引入最终架构→§2.1/§1.1 口径
+- [ ] "下一篇 02-微服务拆分"与 §七痛点"下一步要拆分"衔接到位，为迭代一的演进起点
 
 **下一篇**：02-微服务拆分——把 Agent 执行、LLM 调用、工具执行拆成三个独立服务，各自的职责边界与独立部署。

@@ -18,6 +18,12 @@
 
 **本迭代验收**：① 服务启动后自动注册、地址可动态获取；② 一条"限流策略"从管控面下发、数据面执行生效；③ 策略变更无需重启数据面。
 
+### 1.1 本节核对（四问）
+
+- [ ] "上一版痛点"（地址写死/无治理/编排埋业务代码）与 [02 §六] 痛点一一对应，是本次管控面建设的直接动因
+- [ ] 新增需求三项（注册发现/策略定义集中下发/数据面回调管控面）分别落在 §二架构与 §三落地方式的对应组件上
+- [ ] 验收三项（自动注册/策略下发生效/变更不重启）与 §五、§六验收口径一致
+
 ---
 
 ## 二、管控面架构（雏形）
@@ -58,6 +64,12 @@ graph TB
 | `policy-service` | 策略评估：限流/熔断/超时阈值 | 不做审批判定（07）、不做预算（09） |
 | 注册中心 | 服务注册/发现 | 用简化实现（内存 Map 或 Nacos），本迭代演示为主 |
 
+### 2.1 本节核对（管控面架构雏形）
+
+- [ ] 能对照 §二架构图，把三数据面服务与三管控面组件的"注册/拉取/回调"关系说清，并背出三组件"职责/不做什么"表
+- [ ] 三个管控面组件（center/策略/注册中心）边界与 00 篇架构、后续迭代（04 多租户、09 灰度）分工一致，未越权提前实现
+- [ ] 数据面通过"注册→拉取配置→回调策略"获取决策，符合"数据面不持有决策逻辑"不变式（§三）
+
 ---
 
 ## 三、决策与执行分离的落地方式
@@ -78,6 +90,12 @@ sequenceDiagram
 ```
 
 **核心不变式**：数据面**不持有决策逻辑**——"允不允许、限不限流、用什么超时"都由管控面回答。数据面只关心"怎么执行"。
+
+### 3.1 本节核对（决策与执行分离的落地方式）
+
+- [ ] 能沿 §三时序图走完一次调用：注册→拉取编排定义→调用前问策略（allow/rate_limit），并标出"决策在管控面、执行在数据面"
+- [ ] 结合 §4.1/§4.3 代码，说明"限流决策"由 policy-service 回答、model-gateway 持有 `PolicyClient` 回调——不持有决策逻辑
+- [ ] 核心不变式与 00 篇架构（§5 决策点/执行点切分）口径一致
 
 ---
 
@@ -210,58 +228,40 @@ public class PolicyClient {
 
 > **演进说明**：本迭代 `WebClient.block()`/地址占位仅演示回调用法；迭代四统一用 Reactor 链 + 注册中心动态解析。
 
+### 4.4 本节测试与验证（关键代码：策略 / 定义 / 回调）
+
+**前置条件**：§3.1 不变式核对通过；`spring-boot-starter-data-redis-reactive`、`spring-boot-starter-jdbc` 已按需引入（本地实证存在）。
+
+**材料**：§四 的 `PolicyController`、`DefinitionController`、`PolicyClient` 三类；§四 的 `agent_definition` 建表 SQL；`policy-service` 限流 curl。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 手写三份类与建表后分别 `mvn clean compile` | `BUILD SUCCESS`；`ReactiveStringRedisTemplate`/`JdbcTemplate`/`WebClient` 真实 API 编译通过 |
+| 2 | 限流 curl：`POST /v1/policy/check {"clientId":"tenantA","limit":3}` 连发 | 前 3 次 `action=allow`，第 4 次起 `action=rate_limit`（滑动窗口语义） |
+| 3 | 定义版本化：`POST /v1/definitions/agentA` 发布两次，`GET .../latest` | 第 2 次发布后 latest 的 `version` 递增（第 2 版生效） |
+| 4 | 数据面回调链路（§5.3 端到端） | 超限后 agent-executor 返回"稍后再试"且不再调模型网关 |
+
+**失败排查**：①限流计数不准→Redis `expire` 只对 `count==1` 设置，确认并发下窗口语义；②latest 版本不递增→`COALESCE(MAX(version),0)+1` 在并发发布下可能撞主键，本迭代演示为主；③回调未生效→`PolicyClient` 解析 `Decision.action` 字段名与 `rate_limit` 字符串一致。
+
 ---
 
-## 五、测试与验证
+## 五、全篇回归验证
 
-### 5.1 策略服务测试（Redis 可测）
+**前置条件**：§1.1-§4.4 各节核对/测试均通过；agent-executor/policy-service/model-gateway 已启动。
 
-```java
-// policy-service：滑动窗口限流逻辑测试
-// 第 1 次调用 → allow；超过 limit → rate_limit
-// （用 embedded redis 或 mock ReactiveStringRedisTemplate；本迭代先手工 curl 验证）
-curl -X POST http://localhost:8090/v1/policy/check -H 'Content-Type: application/json' \
-  -d '{"clientId":"tenantA","limit":3}'
-```
+**材料**：管控面 + 数据面串起的三类 curl（§4.4 已逐条验证）。
 
-### 5.2 管控中心测试（定义版本化）
+**步骤与断言**：
 
-```bash
-# 发布 v1 定义
-curl -X POST http://localhost:8085/v1/definitions/agentA -d '{"maxSteps":3,"allowTools":true}'
-# 再发布 v2，数据面拉取到 v2（版本号递增）
-curl http://localhost:8085/v1/definitions/agentA/latest
-```
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 限流策略 curl 连发 `POST /v1/policy/check {"clientId":"tenantA","limit":3}` | 前 3 次 `allow`、第 4 次起 `rate_limit`（滑动窗口稳定） |
+| 2 | 发布 v1 定义 → 再发 v2 → `GET /v1/definitions/agentA/latest` | latest `version` 递增为 v2，数据面拉到最新定义 |
+| 3 | 端到端：连续提问触发超限 | 超限后 agent-executor 直接返回"稍后再试"、不再调模型网关——策略生效在管控面、数据面未被超限流量打 |
 
-### 5.3 端到端：策略生效
-
-```mermaid
-sequenceDiagram
-    participant U as curl
-    participant AE as agent-executor
-    participant PS as policy-service
-    participant MG as model-gateway
-
-    U->>AE: 连续提问
-    AE->>PS: check(clientId, limit=3)
-    PS-->>AE: allow (前3次)
-    PS-->>AE: rate_limit (第4次起)
-    AE->>AE: 超限 → 直接返回"稍后再试"，不再调模型
-    Note over AE,MG: 策略在管控面，模型网关不再被超限流量打
-```
-
-### 断言速查（PASS 判据汇总）
-
-| # | 检验点 | PASS 判据 |
-|---|--------|----------|
-| 1 | 策略服务测试（Redis 可测） | 按本节代码/命令注释中的预期逐条核对 |
-| 2 | 管控中心测试（定义版本化） | 按本节代码/命令注释中的预期逐条核对 |
-| 3 | 端到端：策略生效 | 按本节代码/命令注释中的预期逐条核对 |
-### 失败排查
-
-- 先看审计事件流（每次工具/模型/检索调用都有事件）：失败发生在**入口闸**（未到业务）还是**执行层**（业务内）——入口闸失败查策略配置，执行层失败查服务日志；
-- 多服务场景先分层冒烟：model-gateway → 对应业务服务 → agent-executor 串行验证，定位坏在哪一跳；
-- 断言不符时优先核对**数据构造**（租户/版本/角色等测试前置是否真的生效），再怀疑实现——本项目 80% 的"测试失败"是前置数据没构造对。
+**失败排查**：①失败先定位"入口闸还是执行层"——入口闸查策略配置、执行层查服务日志；②多服务先分层冒烟（direct 打 policy → direct 打 model-gateway → 再走 agent-executor 编排）定位坏在哪一跳；③断言不符优先核对前置数据/契约（如 `clientId`、`limit` 是否真传入），再怀疑实现。
 
 ---
 
@@ -283,6 +283,11 @@ graph LR
 2. **模型网关仍单模型**：不能按租户/业务路由多个模型——迭代三做
 3. **注册发现未落地**：地址还占位——迭代三补
 
+### 6.1 本节核对（本迭代痛点）
+
+- [ ] 三类痛点（策略未绑租户/单模型/注册发现未落地）分别指向迭代三（04）要解决的租户隔离与模型路由，且 §四演进说明中已预留
+- [ ] 痛点源于"管控面雏形"，未提前实现多租户/模型路由，与演进纪律一致
+
 ---
 
 ## 七、验收对照
@@ -293,5 +298,10 @@ graph LR
 | 决策与执行分离 | 数据面不持有决策逻辑，回调管控面 | ✅ |
 | 版本化 | 编排定义版本递增、可回滚 | ✅ |
 | 未提前引入后续能力 | 无多租户隔离/模型路由/沙箱 | ✅（刻意不引入） |
+
+### 7.1 本节核对（验收对照）
+
+- [ ] 四条验收项各有前文支撑：管控面可下发→§4.4 步骤 3、决策与执行分离→§3.1/§4.4、版本化→§4.4 步骤 3、未提前引入→§1.1 口径
+- [ ] "下一篇 04-多租户与模型网关"与 §六痛点"下一步"衔接到位，为演进起点
 
 **下一篇**：04-多租户与模型网关——租户隔离落地 + 模型路由/降级/Key 池/配额。

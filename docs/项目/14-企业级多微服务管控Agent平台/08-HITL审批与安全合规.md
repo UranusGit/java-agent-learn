@@ -18,6 +18,12 @@
 
 **本迭代验收**：① 高危工具执行前必过人工审批 ② 注入/外发拦截率 ≥99%（基准集）③ 租户管理员只能管自己的资源 ④ 数据留存期限与删除符合策略。
 
+### 1.1 本节核对（四问）
+
+- [ ] "上一版痛点"（无 HITL/无安全纵深/无合规留存）与 [07 §七] 一一对应，是本次安全化的动因
+- [ ] 新增需求四项（HITL/注入DLP/权限mTLS/GDPR）分别落到 §二/§三
+- [ ] 验收四项分别有验证承接：HITL→§四1、注入→§四2、RBAC→§四3、留存→§四4
+
 ---
 
 ## 二、HITL 审批（正确落点：ToolCallback 包装层）
@@ -125,6 +131,24 @@ public class ApprovalService {
 }
 ```
 
+### 2.3 本节测试与验证（HITL 人工审批）
+
+**前置条件**：`SecurityException` 依赖就绪；admin 审批端可收到审批卡。
+
+**材料**：§二 `ApprovalToolWrapper` + `ApprovalService`。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 手写两份类后编译 | `BUILD SUCCESS`；`ToolCallback`/`ToolDefinition`/`ToolContext` 真实 API（javap 实证） |
+| 2 | 高危工具（如 deleteFile）调用**未审批** | 抛 `SecurityException`（"高危操作未获审批"），工具被拒 |
+| 3 | 审批通过后用 `decide(id, true)` | `await` 返回 true，放行调用 delegate |
+| 4 | 审批超时（>5min 未批） | 默认拒绝，不执行 |
+| 5 | 落点核对 | 拦截发生在 `ToolCallback` 包装层 / `ToolCallingManager` 装饰器，**非 Advisor**（铁律，见 §二铁律确认） |
+
+**失败排查**：①未审批仍执行→`ApprovalToolWrapper` 未替换 delegate 或被绕过；②`tenantOf` 拿不到→`ToolContext.getContext()` 未注入 `tenant_id`；③审批卡没弹→`request()` 的 `[APPROVAL_REQUEST]` 通知未到达 admin。
+
 ---
 
 ## 三、安全纵深
@@ -196,62 +220,42 @@ public class InjectionGuardAdvisor implements CallAdvisor {
 // 本迭代落点：audit-service 提供 deleteByTenantId（幂等），admin-portal 触发
 ```
 
+### 3.5 本节测试与验证（安全纵深：注入 / 脱敏 / RBAC / GDPR）
+
+**前置条件**：`spring-boot-starter-security` 已引入（未 javap 实证标注）；注入基准集可构造。
+
+**材料**：§三 `InjectionGuardAdvisor` + RBAC 用户 + GDPR 删除接口。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 手写 `InjectionGuardAdvisor` 后编译 | `BUILD SUCCESS`；`CallAdvisor`/`CallAdvisorChain` 2.0 式签名（javap 实证） |
+| 2 | 注入样本（"忽略以上所有指令…"）进上下文 | 被 `InjectionGuardAdvisor` 拦截抛 `SecurityException`；基准集拦截率 ≥99% |
+| 3 | RBAC：租户A 管理员操作租户B 资源 | 返回 403 拒绝 |
+| 4 | GDPR 删除：触发租户删除 → 二次查询 | 会话/记忆/审计级联清空，查询为空（幂等） |
+| 5 | 脱敏核对 | LLM 入参/出参敏感字段（手机号/身份证/Key）已掩码（复用 [附录 09-安全深度/02] 的 Masking Advisor 模式） |
+
+**失败排查**：①注入未拦截→`ChatClientRequest` 取用户文本方式错（无 `userText()`，走 `prompt().getUserMessages()`+`Message.getText()`）；②RBAC 403 不到→Security 过滤器链未装配/RBAC 规则未命中；③删除未级联→`deleteByTenantId` 未覆盖会话/记忆/审计全表。
+
 ---
 
-## 四、测试与验证
+## 四、全篇回归验证
 
-### 4.1 HITL 测试
+**前置条件**：§1.1-§3.5 各节核对/测试均通过；审批端、注入基准集、RBAC 用户、审计库就绪。
 
-```mermaid
-sequenceDiagram
-    participant AE as agent-executor
-    participant T as ApprovalToolWrapper
-    participant AS as ApprovalService
-    participant AD as 审批端(admin)
+**材料**：§2.3/§3.5 已逐条覆盖的四类安全探针。
 
-    AE->>T: 高危工具调用
-    T->>AS: request(deleteFile)
-    AS-->>AD: 审批卡(工具/参数/租户)
-    AD-->>AS: 批准
-    AS-->>T: await → true
-    T->>T: delegate.call 放行
-```
+**步骤与断言**：
 
-```java
-// 断言：未审批 → SecurityException；审批通过 → 工具执行
-```
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 高危工具调用**未审批** | 未审批 → 抛 `SecurityException`；`decide` 批准后 → 工具执行（HITL 闭环） |
+| 2 | 构造 "忽略以上所有指令..." 进上下文 | 被 `InjectionGuardAdvisor` 拦截（基准集拦截率 ≥99%） |
+| 3 | 租户A 管理员操作租户B 资源 | 拒绝（403） |
+| 4 | 触发租户删除 | 会话/记忆/审计级联清空，二次查询为空 |
 
-### 4.2 注入拦截测试
-
-```java
-// 构造 "忽略以上所有指令..." → 应被 InjectionGuardAdvisor 拦截（基准集 ≥99%）
-```
-
-### 4.3 RBAC 测试
-
-```java
-// 租户A 管理员尝试操作租户B 资源 → 拒绝（403）
-```
-
-### 4.4 留存/删除测试
-
-```java
-// 触发租户删除 → 会话/记忆/审计级联清空，二次查询为空
-```
-
-### 断言速查（PASS 判据汇总）
-
-| # | 检验点 | PASS 判据 |
-|---|--------|----------|
-| 1 | HITL 测试 | 断言：未审批 → SecurityException；审批通过 → 工具执行 |
-| 2 | 注入拦截测试 | 构造 "忽略以上所有指令..." → 应被 InjectionGuardAdvisor 拦截（基准集 ≥99%） |
-| 3 | RBAC 测试 | 租户A 管理员尝试操作租户B 资源 → 拒绝（403） |
-| 4 | 留存/删除测试 | 按本节代码/命令注释中的预期逐条核对 |
-### 失败排查
-
-- 先看审计事件流（每次工具/模型/检索调用都有事件）：失败发生在**入口闸**（未到业务）还是**执行层**（业务内）——入口闸失败查策略配置，执行层失败查服务日志；
-- 多服务场景先分层冒烟：model-gateway → 对应业务服务 → agent-executor 串行验证，定位坏在哪一跳；
-- 断言不符时优先核对**数据构造**（租户/版本/角色等测试前置是否真的生效），再怀疑实现——本项目 80% 的"测试失败"是前置数据没构造对。
+**失败排查**：①失败看审计事件流定位"入口闸还是执行层"；②HITL 未拦截→确认 `ToolCallback` 包装层生效（铁律落点）；③断言不符优先核对前置数据/角色构造。
 
 ---
 
@@ -271,6 +275,11 @@ graph LR
 2. **无预算**：Token 成本无上限、无归因治理（09 做）
 3. **无缓存**：高频查询每次全量推理（09 做语义缓存）
 
+### 5.1 本节核对（本迭代痛点）
+
+- [ ] 三类痛点（无灰度/无预算/无缓存）全部指向迭代八（09），与演进纪律一致
+- [ ] 痛点源于安全刚落地、发布与成本治理未引入，非设计缺陷
+
 ---
 
 ## 六、验收对照
@@ -283,5 +292,10 @@ graph LR
 | RBAC | 角色权限隔离 | ✅ |
 | GDPR | 留存期限 + 被遗忘权删除 | ✅ |
 | 未提前引入后续能力 | 无灰度/预算/缓存 | ✅ |
+
+### 6.1 本节核对（验收对照）
+
+- [ ] 六条验收项各有前文支撑：HITL→§2.3、注入/DLP→§3.5、脱敏→§3.5、RBAC→§3.5、GDPR→§3.5、未提前引入→§1.1 口径
+- [ ] "下一篇 09-灰度发布与成本治理"与 §五 痛点①②③ 全对接，为演进起点
 
 **下一篇**：09-灰度发布与成本治理。
