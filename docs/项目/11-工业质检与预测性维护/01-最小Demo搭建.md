@@ -15,6 +15,11 @@
 | **架构如何演进** | 零 LLM 的确定性数据管线：`MqttPahoMessageDrivenChannelAdapter` → `SensorIngestService` → `EwmaAnomalyDetector` → `Sinks.Many` 事件流 |
 | **上一版痛点是什么** | 无（v1 是起点）；痛点是**将要暴露的**——质检靠人眼、维护靠事后，后续迭代全部消费这份检测信号 |
 
+### 1.1 本节核对（四问）
+
+- [ ] 第 3 行"架构演进"与 §3 代码四件套（MqttPahoMessageDrivenChannelAdapter → SensorIngestService → EwmaAnomalyDetector → Sinks.Many 事件流）链路一一对应，无缺件
+- [ ] 第 4 行"将要暴露的痛点"三个（质检靠人眼 / CV+LLM 接力未建 / 信号无可读解释）分别指向 02 / 03 迭代，映射一致
+
 ## 2. 目标与量化验收
 
 | # | 目标 | 验收 |
@@ -26,6 +31,11 @@
 | 5 | 零成本 | 检测全程零 LLM Token（纯统计） |
 
 **本迭代明确不做**：LLM 解释（v3）、视觉质检（v2）、工单（v5）、边缘部署（v4）。
+
+### 2.1 本节核对（目标与量化验收）
+
+- [ ] 五项验收（接入 100% / 注入触发 ≥ 95% / 误触发 < 3% / 延迟 < 1s / 零 LLM Token）与本迭代明确不做的范围（LLM 解释/质检/工单/边缘）无冲突——v1 全程零 LLM
+- [ ] 验收项 2/3/4 都能在 §3.11 单元测试与 §3.13 本节测试与验证中找到对应断言口径
 
 ## 3. 完整代码（照抄即可，一行不省略）
 
@@ -446,6 +456,47 @@ mvn spring-boot:run
 # curl -N http://localhost:8080/api/anomalies/stream
 ```
 
+### 3.13 本节测试与验证（主迭代"时序检测"）
+
+**前置条件**：TDengine `iq_plant` 库已建（§3.3 DDL）；MQTT broker 可连（`mqtt-broker:1883`）；`DEEPSEEK_API_KEY` 环境变量已导出（占位符避免启动告警）。
+
+**材料——来自正文**：
+
+```sh
+# A. 模拟设备上报正常读数（mosquitto_pub；§3.12）
+mosquitto_pub -h mqtt-broker -t factory/sensors/pump-01/reading \
+  -m '{"deviceId":"pump-01","vibration":0.42,"temp":65.3}'
+
+# B. 模拟注入异常：振动突增 → 应触发统计显著事件（§3.12）
+mosquitto_pub -h mqtt-broker -t factory/sensors/pump-01/reading \
+  -m '{"deviceId":"pump-01","vibration":0.85,"temp":65.3}'
+
+# C. 订阅异常事件流（SSE，§3.12）
+curl -N http://localhost:8080/api/anomalies/stream
+```
+
+```bash
+# D. 单元测试（§3.11 EwmaAnomalyDetectorTest：正常 100 点无信号 / 突增触发）
+mvn test -Dtest=EwmaAnomalyDetectorTest
+```
+
+```sql
+-- E. 时序入库核对（TDengine）：pump-01 子表应有推送的读数行
+SELECT * FROM sensor_pump_01 ORDER BY ts DESC LIMIT 5;
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean test -Dtest=EwmaAnomalyDetectorTest` | 两个用例全绿：正常读数 `signal().isEmpty()`，振动 0.85 突增 `signal().isPresent()` |
+| 2 | 间隔若干次推送材料 A（正常 0.42） | 时序库 `sensor_pump_01` 落行、字段不丢（材料 E count ≥ 推送次数，vibration/temp 正确） |
+| 3 | SSE 订阅材料 C 后推送材料 B（0.85 突增） | 事件流秒级出现 `StatSignal`（deviceId=pump-01、zScore 显著），延迟 < 1s |
+| 4 | 连续推送 100 次正常读数 | 事件流无异常事件（误触发率 < 3%，对应验收项 3） |
+| 5 | 观察运行日志 / 事件流 | 全程无 LLM Token 消耗（零成本，对应验收项 5） |
+
+**失败排查**：①SSE 无事件→EWMA 基线未灌（第 1 步单测保底）或 z 阈值未超；②时序库无行→MQTT topic 与 §3.9 `topic-pattern` 不一致或 TDengine 子表命名（`sensor_` + 净化后 deviceId）对不上；③启动缺 `MqttPahoMessageDrivenChannelAdapter` 类→`spring-integration-mqtt` 未加入 pom。
+
 ## 4. 本迭代的 ADR
 
 ### ADR 011-00：v1 时序检测用统计（EWMA）而非 LLM
@@ -453,23 +504,25 @@ mvn spring-boot:run
 - **取舍理由**：检测是每点实时判定的地基，统计在 CPU 上持续跑零 Token；LLM 只对"统计显著事件"做叙事解释（v3 双轨制），Token 降 12 倍
 - **参考**：[调研 工业质检 2026 §PdM 双轨制]、[教程 30-容错与弹性设计 §异常检测]
 
-### 验证包（手工测试与验证）
+### 4.1 本节核对（本迭代 ADR）
 
-**前置条件**：上一迭代已通过；本迭代组件与样品数据就绪。
+- [ ] ADR-011-00 的"检测层用统计（EWMA）而非 LLM"与正文 §3.7 `EwmaAnomalyDetector` 实现、§1 四问第 3 行"零 LLM 的确定性数据管线"三处口径一致
+- [ ] 该 ADR 与 13-ADR架构决策记录 的 ADR-011-00 编号衔接、无重复
 
-**材料**：一份质检任务（含样品图像）+ 一个预测模型 mock + 上传/查询接口 + curl 压测器。
+## 5. 全篇回归验证
 
-**步骤与断言（由验收表转断言清单）**：
+**回归断言**（§3.13 本节测试与验证通过后，按 §2 验收表整体验收）：
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 用材料构造「数据接入」场景执行 | 设备 MQTT 数据 100% 入时序库（字段不丢） |
-| 2 | 用材料构造「检测有效」场景执行 | 注入已知异常（振动突增），EWMA 触发率 ≥ 95% |
-| 3 | 用材料构造「误报可控」场景执行 | 正常工况误触发率 < 3%（回测 7 天正常数据） |
-| 4 | 用材料构造「实时性」场景执行 | 检测延迟 < 1s（采集→信号事件） |
-| 5 | 用材料构造「零成本」场景执行 | 检测全程零 LLM Token（纯统计） |
-**失败排查**：断言不符先分层——感知/推理侧（图像/时序模型输出）→ 业务决策（工单/工艺/隔离逻辑）→ 边缘/网关（数据是否到正确位置）；质检类失败优先验证"测试样本图像是否真的到达模型输入"，再查阈值/后处理。
-## 5. 验收与已知痛点
+| 1 | 连续推送正常读数 ≥ 7 天回测样本 | 正常工况误触发率 < 3%（验收项 3） |
+| 2 | 回放历史故障时段，统计已知异常时刻 | 注入/历史异常 EWMA 触发率 ≥ 95%（验收项 2） |
+| 3 | 抽样比对时序库行数与推送数 + 事件流时间戳 | 字段 100% 不丢（验收项 1）；采集→信号延迟 < 1s（验收项 4） |
+| 4 | 检查日志与 token 观测 | 全程零 LLM Token（验收项 5） |
+
+**失败排查**：触发率 < 95%→`Z_THRESHOLD=3.0` 过严或 EWMA 平滑因子需调；误触发高→基线方差初始化（`0.01`）偏小放大了早期抖动；字段丢失→MQTT payload 与 §3.6 `SensorReading` 字段名（deviceId/vibration/temp）不一致。
+
+## 6. 验收与已知痛点
 
 **验收**：MQTT 数据 100% 入时序库、注入异常触发率 ≥ 95%、正常误触发 < 3%、检测延迟 < 1s、零 Token。
 
