@@ -1,4 +1,4 @@
-package demo.demo01.runner;
+package demo.demo01.service;
 
 import demo.demo01.dto.ExchangeSlotState;
 import org.springframework.ai.chat.client.ChatClient;
