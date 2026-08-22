@@ -17,9 +17,23 @@
 
 **与 LLM 网关的区别**（避免混淆）：LLM 网关代理的是 Agent→模型的推理流量；本项目代理的是 Agent→工具的执行流量。两跳分开是安全模型的要求（工具执行有副作用，风险等级完全不同）。
 
+### 1.1 本节核对（四问）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 四问答案与 §3 代码一一对应 | "影响了哪些模块"列出的三处（路由/身份过滤/审计）在 §3.2/§3.4/§3.6 都有对应类 |
+| 2 | "上一版痛点"与本篇遗留痛点（§总结）不混淆 | 痛点是 v1 之前（无网关），遗留痛点是 v1 之后（供 v2 决策） |
+
 ## 2. 最小 Demo 边界
 
 三件事：① 所有工具调用走网关代理；② 每个调用方有 Agent 身份（不是匿名流量）；③ 每次调用落审计日志。不做签名、不做检测、不做策略——先让"流量经过网关"这个物理事实成立。
+
+### 2.1 本节核对（最小 Demo 边界）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | §3 代码只实现"收口/身份/审计"三件事 | 全篇无签名校验、无检测、无策略代码（那些属于 02~06） |
+| 2 | 审计埋点四态齐全 | STARTED/COMPLETED/FAILED/CANCELLED 在 §3.5 代码路径中都有落点 |
 
 ## 3. 完整代码（照抄即可）
 
@@ -333,6 +347,48 @@ flowchart LR
 
 网络层 egress 策略：业务 Pod 只允许出网到网关；网关只允许出网到登记表内的工具端点。**绕过网关的路径在网络层不存在**——这是"收口"的物理含义。
 
+### 3.8 本节测试与验证（收口代理与审计埋点）
+
+**前置条件**：工程按 00-§5 建好、§3.1 SQL 已在 H2/R2DBC 执行；`gateway.p12` 与 Agent 客户端证书 `ops-agent@production` 已生成（keytool 自签即可）；`TOOL_WEATHER_APIKEY` 等环境变量已设置。
+
+**材料——调用与核对命令**：
+
+```bash
+# A. 带 mTLS 客户端证书的正常调用（登记表内工具 weather.query）
+curl -sk --cert ops-agent.pem --key ops-agent.key -H 'Content-Type: application/json' \
+  -d '{"sessionId":"s-001","toolId":"weather.query","args":{"city":"北京"}}' \
+  https://localhost:8443/api/v1/tool/invoke
+
+# B. 不带客户端证书的匿名调用
+curl -sk -H 'Content-Type: application/json' \
+  -d '{"sessionId":"s-002","toolId":"weather.query","args":{}}' \
+  https://localhost:8443/api/v1/tool/invoke
+
+# C. 未登记工具
+curl -sk --cert ops-agent.pem --key ops-agent.key -H 'Content-Type: application/json' \
+  -d '{"sessionId":"s-003","toolId":"no.such.tool","args":{}}' \
+  https://localhost:8443/api/v1/tool/invoke
+```
+
+```sql
+-- D. 审计核对 SQL
+SELECT outcome, COUNT(*) FROM audit_event GROUP BY outcome;
+SELECT trace_id, agent_id, tool_id, result_preview FROM audit_event ORDER BY ts DESC LIMIT 5;
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 A | HTTP 200，返回 `ToolResponse`（success=true、body 来自真实工具端点、durationMs>0） |
+| 2 | 材料 B | HTTP 403，body 为 `missing client certificate`（AgentIdentityFilter 生效，匿名流量 0） |
+| 3 | 材料 C | 返回 success=false、error 指向 `UnknownToolException`；审计表出现一条 FAILED（不是静默 500） |
+| 4 | 材料 D 第一条 | A 产生 STARTED+COMPLETED 各 1 条、C 产生 STARTED+FAILED 各 1 条——审计覆盖率 100%（含失败） |
+| 5 | 材料 D 第二条 | agent_id=`ops-agent`（mTLS CN 解析正确）、同一 traceId 出现两条事件 |
+| 6 | 抽查 args_json | 凭证/密钥类字段不出现明文（ADR-307-初：配置只存引用） |
+
+**失败排查**：①材料 A 也 403→`ssl.client-auth` 被改成 `need` 以外的值或证书 CN 不含 `@`（AgentPrincipal 兜底 UNTRUSTED 但过滤器仍放行，检查 attribute key 是否为 `javax.net.ssl.peerCertificates`）；②审计表空→R2DBC URL/schema 未执行 §3.1 DDL，或 `auditSink.emit` 链被 `.then()` 吞掉；③FAILED 不落库→`onErrorResume` 里 emit 的返回值没接回主链。
+
 ## 4. 量化验收
 
 | # | 目标 | 验收 |
@@ -343,23 +399,32 @@ flowchart LR
 | 4 | 代理透明 | 业务 Agent 迁移到网关只需改 base-url（协议透明代理） |
 | 5 | 延迟可接受 | 网关新增 P99 延迟 < 15ms（v1 无检测逻辑的基线） |
 
-### 验证包（手工测试与验证）
+### 4.1 本节测试与验证（量化验收全项）
 
-**前置条件**：上一迭代已验收通过；本迭代组件部署完成；测试工具/账号/沙箱就绪。
+**前置条件**：§3.8 已全部 PASS（收口/身份/审计三断言已就位）；网络层 egress NetworkPolicy 已下发到测试集群；压测器 `hey` 已安装。
 
-**材料**（按验收项构造测试输入）：一个被测业务 Agent（协议代理）+一个网络层 egress 白名单 + 压测器（hey）+ 直连工具路径的测试样本。
+**材料——压测与迁移命令**：
 
-**步骤与断言（由量化验收表转断言清单）**：
+```bash
+# E. 延迟压测（网关新增延迟基线；对照"业务 Agent 直连工具端点"的同参数压测）
+hey -z 30s -c 20 -disable-keepalive=false \
+    -cert ops-agent.pem -key ops-agent.key \
+    -D invoke.json -T 'application/json' \
+    https://localhost:8443/api/v1/tool/invoke
+# F. 直连路径抽查（在业务 Agent Pod 内执行，应被 egress 阻断）
+curl -v --max-time 5 https://tools.internal/weather/mcp
+```
 
-| # | 操作（对照材料执行） | 预期（PASS 判据） |
-|---|--------------------|------------------|
-| 1 | 构造「收口完整」对应场景，用材料执行 | 抽查业务 Agent 直连工具的路径全部被网络层阻断（egress 策略验证） |
-| 2 | 构造「身份可信」对应场景，用材料执行 | 所有调用带 Agent 身份（mTLS 证书）；匿名流量 0 |
-| 3 | 构造「审计完整」对应场景，用材料执行 | 调用审计覆盖率 100%（含失败与取消） |
-| 4 | 构造「代理透明」对应场景，用材料执行 | 业务 Agent 迁移到网关只需改 base-url（协议透明代理） |
-| 5 | 构造「延迟可接受」对应场景，用材料执行 | 网关新增 P99 延迟 < 15ms（v1 无检测逻辑的基线） |
+**步骤与断言**：
 
-**失败排查**：断言不符先分层——网关入口日志（请求到没到）→ 策略/校验层日志（为何拦/放）→ 沙箱/执行层（隔离是否真的生效）；安全类验收（投毒拦截/凭证隔离/egress 阻断）失败优先验证"测试前置的恶意样本是否真的到达被测层"，再查规则。
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 E 与"直连工具"压测对比 | 网关新增 P99 延迟 < 15ms（v1 无检测逻辑的基线） |
+| 2 | 材料 F | 连接被 egress 策略阻断（超时/拒绝），网络层不存在绕过路径（验收表 #1） |
+| 3 | 把被测业务 Agent 的工具 base-url 改为 `https://网关:8443/api/v1/tool/invoke`，重跑其工具调用用例 | 仅改 base-url 即迁移成功，协议字段不变（验收表 #4 代理透明） |
+
+**失败排查**：断言不符先分层——网关入口日志（请求到没到）→ 策略/校验层日志（为何拦/放）→ 沙箱/执行层（隔离是否真的生效）；安全类验收（egress 阻断等）失败优先验证"测试前置的恶意样本/直连请求是否真的到达被测层"，再查规则；P99 超标先看审计落库是否同步阻塞（R2DBC 应为响应式非阻塞）。
+
 ## 5. ADR 演进决策
 
 | # | 决策 | 理由 |
@@ -368,7 +433,25 @@ flowchart LR
 | ADR-305-初 | 审计事件在 v1 打全字段（含 args 与 resultPreview） | 审计是安全网关的"原料"，埋点设计决定 v4/v7 能力上限 |
 | ADR-307-初 | 凭证不落地：v1 即用引用 + 环境变量解析 | 配置/日志/错误不含明文；为 v4 凭证缝预铺路 |
 
-## 6. 总结
+### 5.1 本节核对（ADR 演进决策）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | ADR-307-初 在 §3.8 断言 6 有对应验证 | args_json/日志抽查无凭证明文 |
+| 2 | ADR-305-初 的"全字段"与 §3.1 表结构一致 | audit_event 含 args_json/result_preview/tags_json |
+
+## 6. 全篇回归验证
+
+**回归断言**（§3.8 与 §4.1 均通过后）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 重启网关，重跑材料 A→C + SQL D | 行为不变；H2 内存库清空后审计重新从 0 计数（确认无残留脏数据） |
+| 2 | 混合轮：A 一次 + B 一次 + C 一次 | 三类链路（正常/匿名拒绝/未知工具）同一进程内均正常，审计条数 = 6 |
+
+**失败排查**：重启后 403→证书文件路径/密码环境变量未持久化；混合轮审计缺条→FAILED 分支的 emit 未接回主链，回查 §3.5 `onErrorResume`。
+
+## 7. 总结
 
 v1 完成「收口 + 身份 + 审计」三件事。遗留痛点（供 v2 决策）：
 

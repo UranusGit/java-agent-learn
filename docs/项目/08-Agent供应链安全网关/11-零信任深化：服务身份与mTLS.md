@@ -17,6 +17,14 @@
 | **架构如何演进** | "网关门口一道静态 mTLS 墙" → "**全网工作负载身份 mesh**"：身份由基础设施签发、短生命周期自动轮换、按身份授权——v6 的零信任从"Agent 对工具"扩展到"服务对服务" |
 | **上一版痛点是什么** | ① 工具端证书集中过期，6 个工具调用同时失败 40 分钟（§2 事件复盘） ② 两个业务 Agent 共用一张客户端证书，审计无法区分调用者 ③ v1 的 `client-auth: want` 模式下无证书请求也能进来 ④ 长证书（一年期）意味着泄露窗口也是一年，且没有可用的吊销通道 |
 
+### 1.1 本节核对（四问）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 新增需求与正文章节一一对应 | ①②③④⑤ 分别落到 §4（全链 mTLS）、§5（轮换/吊销）、§6（指纹迁移）、§5.3（最小权限策略）、§3（SPIFFE） |
+| 2 | 痛点可在 §2 事件复盘找到出处 | ①→"6 个工具 40 分钟"、②→"证书共享"事件、③→v1 `want` 模式、④→"泄露窗口一年" |
+| 3 | "静态墙→身份 mesh"演进与 §3/§5 呼应 | 由 SPIFFE 身份（§3）+ 短 TTL（§5）承接 |
+
 ## 2. 事件复盘：长证书的三宗罪
 
 v8 后四个月内的三起事件，指向同一个根因——**身份生命周期与业务脱节**：
@@ -28,6 +36,14 @@ v8 后四个月内的三起事件，指向同一个根因——**身份生命周
 | 失陷处置失败 | 某测试 Agent 被入侵需吊销其证书 | 一年期证书无 CRL/OCSP 分发点，"吊销"唯一手段是换全网信任根——成本不可接受 |
 
 **结论**：手工长证书把"身份"退化成了"静态共享口令"。要的不是更强的证书，而是**身份的自动化生命周期**——这正是 SPIFFE 生态解决的问题。
+
+### 2.1 本节核对（长证书三宗罪）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 三起事件的根因都指向身份生命周期 | 过期（日历失维）/共享（审批成本）/失陷（无吊销）都因"手工长证书" |
+| 2 | 结论引出 SPIFFE 生态 | "自动化生命周期"正由 §3 SPIFFE/SPIRE 承接 |
+| 3 | 收益三条映射到 §3.2 | 一年一换→TTL 1h、共享→一负载一身份、无吊销→删注册表+短 TTL |
 
 ## 3. SPIFFE/SPIRE：工作负载身份体系
 
@@ -59,6 +75,14 @@ flowchart TB
 ```
 
 **关键收益映射到 §2 三宗罪**：证书一年一发 → **TTL 1 小时自动轮换**（过期不再是事件）；证书共享 → **一工作负载一身份**（审计天然区分调用者）；无法吊销 → **吊销 = 删除注册表条目，1 小时内自然失效**（等不及就缩短 TTL，见 §5）。
+
+### 3.3 本节核对（SPIFFE/SPIRE 概念）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | SPIFFE ID 形态与正文一致 | 形如 `spiffe://acme.internal/agent/ops-agent`（信任域+路径） |
+| 2 | 身份属于工作负载而非机器 | SVID 的 SAN URI 携带身份；Pod 重建身份不变、换机器变 |
+| 3 | SPIRE 职责划分准确 | Server 管根/签发、Agent 管节点证明与分发、注册表管"谁能拿哪个身份" |
 
 ## 4. 全链 mTLS：代码落地（已实证 API）
 
@@ -161,6 +185,35 @@ sequenceDiagram
     TL-->>GW: 结果
     GW-->>AG: 结果（经 v5 注入检测管道）
 ```
+
+### 4.4 本节测试与验证（全链 mTLS）
+
+**前置条件**：服务端 `application.yml` 已设为 `client-auth: need`（§4.1）；`MtlsWebClientFactory`（§4.2）编译通过；有 SPIRE 签发的 gateway/tool 的 SVID 证书链与根 bundle；`gateway.p12`+`spire-bundle.p12` 可被 Spring 加载。
+
+**材料——调用与握手核对命令**：
+
+```bash
+# A. 正常：网关→工具 带 SVID 双向认证（走 §4.2 mtlsClient 构造的 WebClient）
+curl -sk --cert gw.svid.pem --key gw.svid.key https://tools.internal:9443/tool/db-query
+# B. 无客户端证书（验证 §4.1 client-auth: need 在握手层拒绝）
+curl -k https://secgw:8443/api/v1/tool/invoke
+# C. 抓握手包验证两跳都走 TLS（§8 验收 4：无明文跳）
+tcpdump -i any -w mtls.pcap 'tcp port 8443 or 9443'           # 抓包后核对无明文 HTTP
+# D. SAN URI 校验（§8 验收 1 身份独立）
+echo | openssl s_client -connect tools.internal:9443 2>/dev/null | openssl x509 -text | grep -A1 URI
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 A（带 SVID 证书） | 第 2 跳握手成功，含密钥交换正常（`SslContextBuilder.forClient().keyManager(...)` 生效，§4.2） |
+| 2 | 材料 B（无客户端证书） | TLS 握手层即失败（应用层都到不了——`client-auth: need`，§4.1；对比 v1 的 `want` 会放行） |
+| 3 | 用另一信任域签发的假 SVID 调网关 | 根不匹配，握手失败（§7 验收 2 伪造身份拒绝） |
+| 4 | 材料 C 抓包核对 | 网关入口与网关→工具两跳均为 TLS 无明文；`Authorization` 头不出现在明文（抓包确认） |
+| 5 | 材料 D | 工具端点证书 SAN URI 为 `spiffe://acme.internal/tool/db-query`（SPIFFE ID 可校验，§3） |
+
+**失败排查**：①B 没拒绝 → `client-auth` 仍是 `want`（§4.1 未收紧）；②A 握手失败 → SVID 私钥/证书链或信任根 bundle 不匹配（SAN URI、签名链核对），或 `trustManager` 少了 SPIRE 根；③两跳明文 → 检查 WebClient 是否真的用 `secure()` 构造的 HttpClient（§4.2），或代理层透传了明文。
 
 ## 5. 证书生命周期：轮换与吊销
 
@@ -268,6 +321,38 @@ public class ServiceAuthzPolicy {
 
 **示例策略**（YAML 加载方式与 v6 一致）：网关 `secgw/gateway` 只允许访问 `tool/*` 与 `sandbox/*`；沙箱 `secgw/sandbox` **不允许**访问任何内部服务（C 级工具的出网白名单在网络层兜底，这里是身份层的第二道闸）。
 
+### 5.4 本节测试与验证（轮换、吊销与最小权限策略）
+
+**前置条件**：`SpiffeIdentity`、`ServiceAuthzPolicy`（§5.3）编译通过；SPIRE 集群可做 TTL 加速演练；`allow` 默认拒绝语义就位。
+
+**材料——身份与策略核对命令**：
+
+```java
+// ① SPIFFE ID 解析（§5.3 SpiffeIdentity）
+var id = SpiffeIdentity.parse("spiffe://acme.internal/agent/ops-agent");
+// ② 服务策略默认拒绝（§5.3 ServiceAuthzPolicy）
+var policy = new ServiceAuthzPolicy(List.of(
+    new ServiceAuthzPolicy.Rule("spiffe://acme.internal/secgw/gateway",
+        Set.of("spiffe://acme.internal/tool/", "spiffe://acme.internal/sandbox/"))));
+policy.allow(/* gateway */, /* tool/db-query */);   // → true
+policy.allow(/* gateway */, /* svc/internal-a */);  // → false（白名单外）
+policy.allow(/* sandbox */, /* internal-a */);      // → false（最小权限）
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `SpiffeIdentity.parse("spiffe://acme.internal/agent/ops-agent")` | trustDomain=`acme.internal`、workloadKind=`agent`、name=`ops-agent`；非法输入抛 IllegalArgumentException |
+| 2 | 未登记主体 `allow` 任意目标 | 返回 false（deny-by-default，§5.3） |
+| 3 | 网关访问 `tool/db-query` | 返回 true（audience 前缀命中 `spiffe://acme.internal/tool/`） |
+| 4 | 网关访问白名单外 `internal-a` | 返回 false（最小权限） |
+| 5 | SPIRE TTL 设 5 分钟加速轮换演练，持续压测网关→工具 | 轮换窗口 0 失败（宽限期在途连接复用旧 SVID，§5.1 `Rotating` 状态） |
+| 6 | 定位流转：删除某工具注册表条目 | ≤TTL 内该身份被拒认；等不及就缩短全局 TTL（§5.2 短 TTL+删注册表） |
+| 7 | `sameDomainAs` 跨信任域 | 同域 true、异域 false（federation 预留，§5.3） |
+
+**失败排查**：①`allow` 全放行 → `rules` 未用 `toMap`（subject→audiences）或为空 map 被当"无条目不拦"（应默认拒）；②access `gateway→internal-a` 意外通过 → audience 前缀匹配用了 `anyMatch` 但规则里含全通配；③吊销不生效 → 注册表条目未真删或 TTL 未缩短（§5.2 的机制被绕过改走 CRL 前先确认是删条目+等 TTL）。
+
 ## 6. 与 v2 指纹的冲突修正
 
 这是本迭代最重要的一处**存量冲突**：v2 的 `ToolFingerprint` 把 `endpointIdentity` 锚定为**服务端证书指纹**（§3.6 签名与降级模式表）。v9 引入 TTL 1h 的自动轮换后，**证书指纹每小时都会变**——指纹漂移检测（ADR-307"漂移即冻结"）会每小时把全部工具冻结进 REVIEW，准入流水线直接瘫痪。
@@ -284,17 +369,35 @@ ToolFingerprint fp = ToolFingerprint.capture(reg, toolSpiffeId);
 
 > 迁移期处理：登记库里存量的证书指纹值，按工具逐个换捕 SPIFFE ID 并重走一次 pin；未迁移的工具维持旧语义并在登记库标记 `identityScheme=LEGACY`，迁移完成前不接受新登记使用旧语义——**身份语义不允许双轨并存**，否则漂移检测的比对基线不可信。
 
-## 7. 测试与验证
+### 6.1 本节测试与验证（指纹锚定值迁移修正）
 
-| # | 测试 | 方法 | 预期 |
-|---|------|------|------|
-| 1 | 无证书拒绝 | `client-auth: need` 下用不带证书的 WebClient 调网关 | TLS 握手失败（应用层都到不了） |
-| 2 | 伪造身份拒绝 | 用另一信任域自签的"长得像"的 SVID 调网关 | 根不匹配，握手失败 |
-| 3 | 共享证书消除 | 两个 Agent 用各自 SVID 调用同一工具 | 审计事件中身份字段可区分（对比 v1 共享证书时代） |
-| 4 | 轮换无中断 | SPIRE TTL 设 5 分钟加速演练，持续压测网关→工具调用 | 轮换窗口 0 失败（宽限期在途连接复用旧 SVID） |
-| 5 | 吊销生效 | 删除某工具注册表条目，观察调用 | ≤ TTL 内该工具身份被全网拒认；调用侧熔断进 v8 降级矩阵 |
-| 6 | 指纹迁移正确性 | 对同一工具先后捕获两次指纹（间隔跨一次证书轮换） | `FingerprintDrift` 为 null（身份未变不漂移）；换 SPIFFE ID 则立刻命中 |
-| 7 | 服务策略默认拒绝 | 未登记主体访问任意目标 | `allow` 返回 false |
+**前置条件**：`ToolFingerprint.capture` 的 v9 修正（§6 代码）已编译；有跨一次证书轮换的同一工具的两份端点为验证样本。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 对同一工具先后捕获两次指纹（间隔跨一次证书轮换，SPIFFE ID 不变） | `endpointIdentity` 不变 → `FingerprintDrift` 为 null（§7 验收 6：轮换不再触发漂移误报） |
+| 2 | 换一个工作负载（不同 SPIFFE ID）再捕获 | `endpointIdentity` 变化 → 立刻命中漂移（§7 验收 6：换工作负载仍即时冻结） |
+| 3 | 登记库抽查 | 迁移中的工具标记 `identityScheme=LEGACY`；新登记一律用 SPIFFE ID 语义（§6 迁移期处理：不允许双轨并存） |
+| 4 | 到期重 pin 演练 | 存量证书指纹按工具换捕 SPIFFE ID 并重走 pin，无遗留旧语义条目 |
+
+**失败排查**：①轮换仍误报冻结 → `endpointIdentity` 仍在取证书指纹而非 SPIFFE ID（§6 修正未生效）；②漂移检测失效 → 新登记仍在用旧语义（`identityScheme` 双轨，基线不可信）。
+
+## 7. 全篇回归验证
+
+**回归断言**（§4.4、§5.4、§6.1 本节验证均通过后最终整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 无证书调用网关 | TLS 握手层失败（应用层到不了，`client-auth: need`） |
+| 2 | 用另一信任域自签的"长得像"SVID 调网关 | SCHEDULE 失败（根不匹配） |
+| 3 | 两个 Agent 用各自 SVID 调同一工具 | 审计事件身份字段可区分（对比 v1 共享证书时代） |
+| 4 | 混合轮：正常 mTLS 调用 + 无证书 + 越权目标（`gateway→internal-a`） | 三者分别握手成功/拒绝/策略 deny，均落审计 |
+| 5 | 吊销生效 + 调用侧 | 删除某工具注册表后 ≤TTL 内拒认；调用侧熔断进 v8 降级矩阵 |
+| 6 | 重启后重跑 §4.4 材料 A | 行为不变；`MtlsWebClientFactory` 冷启动重建（`cached` 清空） |
+
+**失败排查**：身份字段区分不开 → 回查 §3 SVID 一负载一身份与审计代理身份取用；越权未拦 → 回查 §5.3 策略规则是否加载；重启后握手失败 → truststore/bundle 未持久化，需在配置里重新指向 SPIRE bundle。
 
 ## 8. 验收对照
 
@@ -307,6 +410,14 @@ ToolFingerprint fp = ToolFingerprint.capture(reg, toolSpiffeId);
 | 5 | 最小权限 | 服务策略默认拒绝；网关/沙箱的越权访问尝试 100% 拒绝并落审计 | ✅ |
 | 6 | 冲突修复 | 证书轮换不再触发指纹漂移误报；换工作负载仍即时冻结 | ✅ 指纹机制恢复可用 |
 
+### 8.1 本节核对（验收对照）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 验收 1"共享证书数=0"由 §4.4 断言支撑 | SVID 一负载一身份，审计可区分 |
+| 2 | 验收 3"9分42秒"与 §5.4 吊销演练同源 | 删注册表+短 TTL 的机制（§5.2） |
+| 3 | 验收 6 冲突修复与 §6.1 断言直接对应 | 轮换不误报、换工作负载即冻结 |
+
 ## 9. ADR 演进决策
 
 | # | 决策 | 理由 |
@@ -315,10 +426,25 @@ ToolFingerprint fp = ToolFingerprint.capture(reg, toolSpiffeId);
 | ADR-327 | 吊销语义 = 短 TTL + 注册表删除，不建 CRL/OCSP | 分发点本身是攻击面与故障点；把吊销转化为时间问题，基础设施零新增 |
 | ADR-328 | 指纹 endpointIdentity 从证书指纹迁移到 SPIFFE ID | 轮换机制与锚定值冲突（每小时误报冻结）；身份才是"换工作负载"的正确信号 |
 
+### 9.1 本节核对（ADR 演进决策）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | ADR-326 有正文支撑 | §3 SPIFFE 一负载一身份 vs 共享长证书 |
+| 2 | ADR-327 的"短 TTL 即吊销"有代码/机制 | §5.2 表格与 §5.4 断言 6 |
+| 3 | ADR-328 的"锚定值迁移"有落地 | §6 修正代码与 §6.1 断言 1-2 |
+
 ## 10. 总结
 
 v10 完成「SPIFFE 服务身份 + 全链 mTLS + 短 TTL 轮换/吊销 + 最小权限服务策略」，v1 那道"静态墙"进化为有生命周期的身份 mesh，并顺手修复了它与 v2 指纹机制的冲突。遗留痛点（供 v11 决策）：
 
 身份与代码的供应链都上了锁，但**AI 特有的三类原料**还裸奔：模型文件（从模型仓库下载的权重，无来源校验——上周数据团队换了份"同参数量"的微调模型，没人说得清它是从哪来的）；RAG 数据集（语料库里被人塞了几篇"诱导泄露上下文"的文档，v5 只能拦结果拦不了源头）；Prompt 模板（内部 Git 仓库里的 system prompt 被人改了一行，没有评审也没有感知）。**模型、数据、Prompt 也是供应链的一部分，而且是更容易被忽视的一段。**
+
+### 10.1 本节核对（总结与遗留）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 遗留痛点引出下一篇 | "模型/数据/Prompt 裸奔"正是 [12-AI供应链投毒检测] 的三类投毒面 |
+| 2 | 总结覆盖本迭代能力 | "SPIFFE 身份+全链 mTLS+短 TTL+最小权限"与 §3/§4/§5 对应 |
 
 → [12-AI供应链投毒检测.md](12-AI供应链投毒检测.md)

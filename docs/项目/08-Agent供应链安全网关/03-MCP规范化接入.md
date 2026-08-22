@@ -15,6 +15,13 @@
 | **架构如何演进** | 从"HTTP 裸调用"→「**双面 MCP 网关**」：对内 MCP Server（业务 Agent 唯一端点），对外 MCP Client（按登记表连真实工具）——不用 MCP 连不上任何工具 |
 | **上一版痛点是什么** | ① 私接绕过（协议层裂缝：封了 IP 没封协议） ② 认证不统一（有 REST 包装不认网关认证头） ③ MCP 高级能力（Sampling/Elicitation）无管控 |
 
+### 1.1 本节核对（四问）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 四项新需求在 §3 各有承载 | 双面 MCP→§3.2/§3.5、OAuth→§3.6、动态目录→§3.4、高级能力→§3.8 |
+| 2 | "不用 MCP 连不上任何工具"是结构性而非约定性 | §2 与 ADR-310（egress 按协议+端口收紧）配合实现 |
+
 ## 2. 协议架构
 
 ```mermaid
@@ -32,6 +39,13 @@ flowchart LR
 ```
 
 网关是**双面 MCP**：对内它是 MCP Server（业务 Agent 的唯一工具端点），对外它是 MCP Client（按登记表连接真实工具）。这个形态把"协议统一"变成了结构性事实——不是"要求大家用 MCP"，而是"不用 MCP 连不上任何工具"。
+
+### 2.1 本节核对（协议架构）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 四条出边按来源分级 | ①mTLS+OAuth2.1 CC（对内）、②OAuth（SaaS）、③mTLS（内部）、④沙箱（社区）——与 §3.6/登记表评级 A/B/C 对应 |
+| 2 | 图中无 Agent→工具直连边 | 业务 Agent 只与网关通信，凭证三层不透传 |
 
 ## 3. 完整代码（照抄即可）
 
@@ -396,6 +410,57 @@ public class McpCapabilityPolicy {
 }
 ```
 
+### 3.9 本节测试与验证（双面 MCP 网关与动态目录）
+
+**前置条件**：§3.1 两个 MCP starter 依赖已加入 pom；三个工具端点（weather/filesystem/sandbox）以 MCP Streamable HTTP 可达；授权服务器 `https://id.internal` 可发 client_credentials token；`McpCapabilityPolicy`/`AgentScopedToolProvider`/`GatewayProxyTool` 已抄写编译通过。
+
+**材料——MCP 探测与调用命令**：
+
+```bash
+# I. 拿 token（OAuth 2.1 client_credentials + mTLS 绑定）
+curl -s --cert ops-agent.pem --key ops-agent.key \
+  -d 'grant_type=client_credentials&client_id=ops-agent&scope=tools:invoke' \
+  https://id.internal/oauth2/token
+
+# J. tools/list（目录）与 tools/call（调用），Bearer token 必带
+curl -sk --cert ops-agent.pem --key ops-agent.key \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  https://localhost:8443/mcp
+curl -sk --cert ops-agent.pem --key ops-agent.key \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"weather.query","arguments":{"city":"北京"}}}' \
+  https://localhost:8443/mcp
+
+# K. 无 token / 过期 token / 错 scope 各一次
+curl -sk -H 'Content-Type: application/json' -d @tools_list.json https://localhost:8443/mcp
+```
+
+**单测材料（McpCapabilityPolicy，JUnit5 节选）**：
+
+```java
+assertFalse(policy.samplingAllowed("saas-weather"));       // 默认拒绝
+assertTrue(policy.samplingAllowed("internal-fs"));         // 白名单
+assertFalse(policy.elicitationAllowed("internal-fs"));     // Elicitation 无白名单
+assertFalse(policy.fieldAllowed("User_Password"));          // DLP 字段拦截（大小写归一）
+assertTrue(policy.fieldAllowed("city"));
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 J 的 tools/list（PRODUCTION Agent） | 目录含 weather.query/fs.read/web.search（粗粒度授权放行的子集） |
+| 2 | 用 TESTING Agent 证书重复 tools/list | 目录**不含** C 级 web.search（`authorizationAllows` 生效，per-agent 差异） |
+| 3 | 材料 J 的 tools/call | 走 `GatewayProxyTool` → `McpSyncClient.callTool` 返回真实结果；审计表新增 STARTED+COMPLETED |
+| 4 | 材料 K | 无 token→401；过期 token→401；scope 缺 `tools:invoke`→403（OAuth 资源服务器生效） |
+| 5 | 上文单测 5 条 | 全部通过（默认拒绝 + 白名单 + DLP 字段） |
+| 6 | mock 工具漂移描述后重新 tools/list | Agent 看到的 description 仍是登记审查通过版（ADR-308，§3.3 `getToolDefinition` 用 registration.description()） |
+
+**失败排查**：①tools/list 空→`AdmissionService.liveTools()` 为空（v2 流程没走到 LIVE）或授权过滤全拒；②callTool 报 no mcp client→`serverNameOf` 兜底实现与你版本的 Bean 命名不符（见 §3.2 ⚠ 注，改 `@Qualifier`/`Map<String,McpSyncClient>` 注入）；③401 循环→`jwk-set-uri`/`issuer-uri` 与授权服务器不匹配；④SSE 报错→缺 `Accept: application/json, text/event-stream` 头（Streamable HTTP 双形式）。
+
 ## 4. 量化验收
 
 | # | 目标 | 验收 |
@@ -407,24 +472,32 @@ public class McpCapabilityPolicy {
 | 5 | 高级能力管控 | Sampling/Elicitation 默认拒绝路径验证；白名单路径的策略生效 |
 | 6 | OAuth 合规 | Token 生命周期（15min）、scope 最小化、mTLS 绑定验证 |
 
-### 验证包（手工测试与验证）
+### 4.1 本节测试与验证（量化验收全项）
 
-**前置条件**：上一迭代已验收通过；本迭代组件部署完成；测试工具/账号/沙箱就绪。
+**前置条件**：§3.9 已 PASS；抓包工具（tcpdump/mitmproxy）就绪；非 MCP 私接样本（REST 直连 + HTTP 长连接）已准备。
 
-**材料**（按验收项构造测试输入）：一个非 MCP 私接测试样本；per-agent 目录差异配置；工具描述漂移 mock；Sampling/Elicitation 越权请求样本。
+**材料——私接复测与抓包命令**：
 
-**步骤与断言（由量化验收表转断言清单）**：
+```bash
+# L. v2 私接场景复测（egress 已按协议+端口收紧）
+curl -v --max-time 5 https://tools.internal/weather/          # REST 路径，应阻断
+curl -v --max-time 5 --http1.1 https://tools.internal:443/raw # 非 MCP 端口/协议，应阻断
+# M. Agent 侧抓包（验证无工具凭证透传）
+tcpdump -i any -A -s0 'host tools.internal' 2>/dev/null | grep -iE 'authorization|apikey'
+```
 
-| # | 操作（对照材料执行） | 预期（PASS 判据） |
-|---|--------------------|------------------|
-| 1 | 构造「协议统一」对应场景，用材料执行 | 非 MCP 的工具流量在网络层不可达（egress 按协议收紧后复测 v2 的私接场景） |
-| 2 | 构造「动态目录」对应场景，用材料执行 | 每个 Agent 只看到被授权的工具（per-agent 目录差异化验证） |
-| 3 | 构造「描述防污染」对应场景，用材料执行 | 真实工具描述漂移后，Agent 侧目录仍是审查通过版 |
-| 4 | 构造「凭证隔离」对应场景，用材料执行 | Agent 侧抓包无任何工具凭证；每工具独立凭证 |
-| 5 | 构造「高级能力管控」对应场景，用材料执行 | Sampling/Elicitation 默认拒绝路径验证；白名单路径的策略生效 |
-| 6 | 构造「OAuth 合规」对应场景，用材料执行 | Token 生命周期（15min）、scope 最小化、mTLS 绑定验证 |
+**步骤与断言**：
 
-**失败排查**：断言不符先分层——网关入口日志（请求到没到）→ 策略/校验层日志（为何拦/放）→ 沙箱/执行层（隔离是否真的生效）；安全类验收（投毒拦截/凭证隔离/egress 阻断）失败优先验证"测试前置的恶意样本是否真的到达被测层"，再查规则。
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 材料 L 两条 | 非 MCP 工具流量网络层不可达（ADR-310 协议+端口收紧生效） |
+| 2 | 材料 M 抓包一轮 tools/call | Agent→网关流量只有 Agent 自己的 Bearer token；无任何工具凭证（三层凭证隔离） |
+| 3 | 网关侧核对工具凭证 | 每个工具有独立凭证（credentialRef 各自独立，无共享 DBA 账号） |
+| 4 | Token 样本解码（jwt.io 或 `--data-binary` 后 base64 解 payload） | exp−iat=15min；scope 仅 `tools:invoke`；cnf/证书绑定字段存在（mTLS 绑定） |
+| 5 | 白名单 sampling 请求走网关代理 | 仅 internal-fs 允许，且 prompt 模板与输出长度受网关限制 |
+
+**失败排查**：断言不符先分层——网关入口日志（请求到没到）→ 策略/校验层日志（为何拦/放）→ 沙箱/执行层（隔离是否真的生效）；安全类验收（私接阻断/凭证隔离）失败优先验证"测试样本是否真的到达被测层"，再查规则；Token 断言失败→授权服务器策略配置（TTL/scope/绑定）。
+
 ## 5. ADR 演进决策
 
 | # | 决策 | 理由 |
@@ -433,7 +506,25 @@ public class McpCapabilityPolicy {
 | ADR-309 | Sampling 默认拒绝 | 借模型通道的滥用面太大；确有需要的走网关代理 + 限额 |
 | ADR-310 | egress 白名单按协议 + 端口收紧 | v2 教训：只封 IP 不封协议仍有私接缝隙 |
 
-## 6. 总结
+### 5.1 本节核对（ADR 演进决策）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | ADR-308/309/310 均有对应验证 | 描述审查版→§3.9 断言 6；Sampling 默认拒绝→§3.9 断言 5；协议收紧→§4.1 断言 1 |
+| 2 | 三条 ADR 与 13-ADR 总账记录一致 | 编号、表述无分叉 |
+
+## 6. 全篇回归验证
+
+**回归断言**（§3.9 与 §4.1 均通过后）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | v1 链路（旧 `/api/v1/tool/invoke`）按 ADR-310 收紧后重试 | 旧入口应关闭或同样受 OAuth+mTLS 保护（无匿名可达路径） |
+| 2 | 重启网关，重跑 §3.9 断言 1–4 | 目录差异、调用链、鉴权行为不变；MCP 连接自动重建（starter 启动重连） |
+
+**失败排查**：旧入口仍可达→路由未摘除或 SecurityWebFilterChain 漏配 `anyExchange().authenticated()`；重启后 McpSyncClient 连接失败→工具端点 url 改动未同步 application.yml 的 connections 映射。
+
+## 7. 总结
 
 v3 完成「协议统一 + OAuth 2.1 + 动态目录 + 高级能力管控」。遗留痛点（供 v4 决策）：
 

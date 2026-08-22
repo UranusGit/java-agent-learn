@@ -15,6 +15,14 @@
 | **架构如何演进** | 工具供应链网关 → 完整供应链治理：被治理的"链"从 Agent↔工具这一跳，扩展到网关自身的构建产物与依赖树——**治理者先被治理** |
 | **上一版痛点是什么** | ① v1-v8 注意力全在工具侧，网关自己的依赖树从未盘点 ② 一次传递依赖 CVE 曝出后，安全团队花了三天才确认"是否可达、是否在用" ③ 新依赖引入无流程，pom 里已堆着 11 个没人评审过的间接依赖 ④ 沙箱里的 C 级工具带进来什么依赖，网关完全不知道 |
 
+### 1.1 本节核对（四问）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 四问与正文章节一一对应 | "新增需求①②③④"分别落到 §3（SBOM 交付）、§5（CVE 响应闸门）、§6（依赖评审）、§6.3（沙箱联动） |
+| 2 | 痛点可直接在正文找到证据 | v2 起无依赖盘点 ↔ §4 生成侧工具；pom 堆 11 个间接依赖 ↔ §6 评审流程缺失 |
+| 3 | "治理者先被治理"表述与 §2 事件呼应 | §2 两个事件（审计现场/CVE 复盘）构成"网关自身缺清单"的动因 |
+
 ## 2. 为什么收官之后还有迭代八
 
 v8 收官三个月后，两件事把项目拉回演进轨道：
@@ -36,6 +44,14 @@ timeline
     06:00 关闭 : 其中 5 小时花在“搞清楚自己用了什么”
 ```
 
+### 2.1 本节核对（迭代八动因）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 两个事件都指向同一个根因 | 都归因于"网关自身缺乏物料清单与依赖治理"，非工具侧 |
+| 2 | 时间线数据与正文一致 | 时间线"6 小时/5 小时盘点"与 §1 痛点②"三天确认可达性"叙事一致（前痛点指向治理前） |
+| 3 | 动因引出本迭代三章 | §2 结论的"物料清单+依赖治理"由 §3-SBOM / §5-漏洞响应 / §6-准入评审承接 |
+
 ## 3. SBOM：是什么、什么格式
 
 ### 3.1 定义与最小元素
@@ -53,6 +69,14 @@ SBOM（Software Bill of Materials，软件物料清单）是构建产物中**全
 | 生态 | 许可证扫描、合规审计 | 漏洞扫描、依赖分析、AI 供应链（`ml-bom`） |
 
 **选型**（ADR-323）：网关场景以**漏洞响应与安全分析**为主，且 CycloneDX 有 AI/ML 扩展（为迭代十"模型与数据集物料清单"预留），**主线用 CycloneDX，合规交付时用工具转换为 SPDX**——两者互转是成熟工具链的标配能力。
+
+### 3.3 本节核对（SBOM 定义与格式选型）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 最小元素集与 NTIA 定义一致 | §3.1 列出组件名/版本/唯一标识/供应者/依赖关系 |
+| 2 | 选型理由与场景匹配 | ADR-323 以"漏洞响应为主"+ AI/ML 扩展 → CycloneDX 主、SPDX 交付互转 |
+| 3 | 合规驱动事实准确 | EU CRA 与 NTIA Minimum Elements 均标注外部链接，驱动结论可溯源 |
 
 ## 4. 生成与集成：工具真实坐标
 
@@ -117,6 +141,33 @@ flowchart LR
 ```
 
 **关键设计**：两份清单（Maven 依赖图 vs 镜像扫描）**合并校验**——Maven 图看不见镜像基础层里的系统库，镜像扫描看不见 provided scope 的约定。差集非空即失败，防止"SBOM 很全但产物里混了清单外组件"。
+
+### 4.4 本节测试与验证（SBOM 生成与 CI 合并校验）
+
+**前置条件**：工程可 `mvn package`；`cyclonedx-maven-plugin`（§4.1）与 `syft`、`osv-scanner`（§4.2）已按坐标安装到 CI/本机。
+
+**材料——生成与核对命令**（`mvn package` 触发 §4.1 插件自动产出 BOM；syft 对产物目录扫描）：
+
+```bash
+# ① 生成：Maven 插件在 package 阶段自动产出（<build><plugins> 内已配 §4.1）
+mvn package
+# ② syft 镜像/产物扫描（§4.2，Clair 之外的第二源）
+syft <网关产物目录或镜像> -o cyclonedx-json > sbom.mirror.cdx.json
+# ③ 列表核对
+xmlstarlet sel -t -v '/bom/metadata/component' target/bom.xml   # 或 jq 读 CycloneDX JSON
+mvn dependency:tree
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn package` 后检查 target | 产出 CycloneDX 1.5 BOM（makeAggregateBom 绑定 package 阶段生效），含直接的与传递依赖 |
+| 2 | 文档 §4.3 断言 1 材料：同一构建产物分别用两种生成器产出，做组件差集 | 差集为空（两份清单合并校验通过；Maven 图补齐 provided、镜像补基础层系统库） |
+| 3 | 产物含清单外组件（人为追加一个 jar 后重新 syft） | 差集非空 → 构建失败（§4.3 `MERGE` 节点，"未知组件禁止入库"） |
+| 4 | 随机抽查任一传递依赖 | 在 `mvn dependency:tree` 与 BOM 均出现，SBOM 覆盖依赖树非"只列直接依赖"（§2 事件二痛点⑤的对应断言） |
+
+**失败排查**：①插件未产出 → pom `<executions>` 的 phase 未绑定 package，或插件坐标/版本未进 `<build><plugins>`；②差集恒非空 → syft 与 Maven 插件对"同一组件"版本坐标表示不一（如 `group:artifact:version` vs `artifactId`），先归一到 gav；③BOM 无传递依赖 → `includeCompileScope/includeRuntimeScope` 配置缺失（§4.1 `<configuration>`）。
 
 ## 5. 漏洞响应流程：从监控到闸门
 
@@ -244,6 +295,37 @@ public class VulnerabilityGate {
     }
 }
 ```
+
+### 5.5 本节测试与验证（漏洞响应闸门）
+
+**前置条件**：`VulnerabilityGate`（§5.4）编译通过；引入一个含已知历史漏洞版本组件的测试 pom（§7 验收 2 的场景样例）。
+
+**材料——单测/核对命令**：
+
+```java
+// 注入各档 Disposition，核对 §5.3 SLA 与 §5.4 assess 分支
+var gate = new VulnerabilityGate();
+// ① 不在树：观察
+gate.assess(new CveFinding("CVE-X","g:a","1.0",9.5,false,Reachability.NOT_IN_TREE));
+// ② 在野利用且可达：无条件下 P0、拦构建
+gate.assess(new CveFinding("CVE-X","g:a","1.0",0.0,true,Reachability.REACHABLE));
+// ③ 可达 CVSS 8.0：P1
+gate.assess(new CveFinding("CVE-X","g:a","1.0",8.0,false,Reachability.REACHABLE));
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 构造 `Reachable + exploitedInTheWild=true` 的 Finding 调 `assess` | 返回 `BLOCK_BUILD / P0 / 24h`（§5.4 分支②，CVSS 写多少都拦） |
+| 2 | 构造 `Reachable + cvss=8.0`（非在野） | 返回 `UPGRADE_NOW / P1 / 7天`（§5.4 分支③、§5.3 SLA 表） |
+| 3 | 构造 `NOT_IN_TREE` | 返回 `OBSERVE / P3 / 30天`（§5.4 分支①） |
+| 4 | 构造 `IN_TREE_UNREACHABLE` | 返回 `EXEMPT_WITH_CONTROL / P3 / 90天`，含补偿措施与 `exemptionExpiry`（§5.4 分支④，豁免不可无限续） |
+| 5 | 拿一个 `BLOCK_BUILD` 的 Disposition 列表调 `allowBuild` | 返回 false（CI 模拟构建失败）；全是 `OBSERVE` 时返回 true |
+| 6 | 对同一 CVE 重复 `assess` 两次 | 同输入同输出（纯函数，可复现供审计） |
+| 7 | 与 §4.3 演示打通 | 扫描到 CVSS≥7 且可达 → `allowBuild=false` → CI 闸门拦截，进本节处置流程 |
+
+**失败排查**：①P0 判不出 → 确认 `exploitedInTheWild` 与 `REACHABLE` 同时成立（§5.4 分支②先于 CVSS 判断）；②不可达也 EXEMPT 写死 90 天 → 检查 `Optional.of(补偿)` 是否到位（无补偿不允许 EXEMPT）；③`allowBuild` 放行 → 检查列表里是否存在 `BLOCK_BUILD`（`noneMatch` 语义）。
 
 ## 6. 依赖准入策略：新依赖引入评审
 
@@ -374,16 +456,48 @@ C 级沙箱工具是"带依赖进门的客人"：准入登记时要求提供其 
 | 许可证红旗 | 转法务评审，法务未过不 PINNED |
 | 无 SBOM | 视同"来源不可溯"，按 v2 评级规则降为 R（拒绝） |
 
-## 7. 测试与验证
+### 6.4 本节测试与验证（依赖准入评审与沙箱联动）
 
-| # | 测试 | 方法 | 预期 |
-|---|------|------|------|
-| 1 | SBOM 完整性 | 同一构建产物分别用 cyclonedx-maven-plugin 与 syft 生成，做组件差集 | 差集为空（§4.3 合并校验） |
-| 2 | CVE 匹配正确性 | 构造含已知漏洞版本组件的测试 pom（如引入历史漏洞版本的组件），跑扫描管道 | 扫描器命中且 `VulnerabilityGate.assess` 给出预期 Disposition |
-| 3 | 闸门拦截 | 注入 `BLOCK_BUILD` 级 Disposition，调 `allowBuild` | 返回 false，CI 模拟构建失败 |
-| 4 | 豁免到期强制复审 | `EXEMPT_WITH_CONTROL` 决策的 `exemptionExpiry` 设为过去 | 复盘任务重新打开该 CVE（豁免不可无限续） |
-| 5 | 依赖评审状态机 | `submit → score(红旗) → 状态 REJECTED`；`score(无红旗) → approve → probationReview(false) → RETIRED` | 状态迁移全部符合 §6 定义 |
-| 6 | 沙箱联动 | 提交一个 SBOM 含 RCE 组件的 C 级工具登记 | 准入 REJECTED，理由记录 |
+**前置条件**：`DependencyReviewService`（§6.2）编译通过；对 §6.3 造一份含 RCE 组件的 C 级工具 SBOM。
+
+**材料——状态机核对命令**（直接调 service）：
+
+```java
+var svc = new DependencyReviewService();
+var req = new DependencyRequest("g:a:v","purpose","alternative",null,null,Instant.now());
+svc.submit(req);                                   // → SUBMITTED
+svc.score("g:a:v", new ScoreCard(22.0, List.of(ScoreCard.RedFlag.RCE_UNFIXED))); // → REJECTED（红旗一票否决）
+svc.score("g:a:v", new ScoreCard(88.0,List.of())); // → SCORED
+svc.approve("g:a:v");                              // → PROBATION（90 天试用）
+svc.probationReview("g:a:v", false);               // → RETIRED（无人用移除）
+```
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `submit` 后 `find(gav)` | 状态 `SUBMITTED`，GAV 入库 |
+| 2 | `score(含 RCE_UNFIXED 红旗)` | 状态 `REJECTED`（红旗一票否决，§6.1 评分卡） |
+| 3 | `score(无红旗)` | 状态 `SCORED`，评分卡携带 total |
+| 4 | `approve` | 状态 `PROBATION`（90 天试用期；试用期无人用就下线——依赖也要下线，§6.2 注释） |
+| 5 | `probationReview("g:a:v", false)` | 状态 `RETIRED`（移除） |
+| 6 | `probationReview("g:a:v", true)` | 状态 `APPROVED` |
+| 7 | 提交一个 SBOM 含 RCE 组件的 C 级工具登记（§6.3 联动） | 准入 `REJECTED`，拒绝理由记录进登记库（"高危且工具会执行它"） |
+
+**失败排查**：①红旗未 REJECTED → `hasRedFlag()` 逻辑或 RedFlag 枚举值传错；②`approve` 不落试用期 → 确认状态是 `PROBATION` 而非直接 `APPROVED`；③沙箱联动不拒绝 → §6.3 规则"高危且工具会执行"的判定条件未接进 v2 AdmissionService。
+
+## 7. 全篇回归验证
+
+**回归断言**（§4.4、§5.5、§6.4 本节验证均通过后最终整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 一条 CVE 走完 §5 全流程：SBOM 命中 → `assess` → Disposition → `allowBuild` → CI 拦截 | 链条贯通：扫描器命中组件、`allowBuild=false`、CI 失败；不可达者走 EXEMPT+补偿+到期 |
+| 2 | 一个新运行时依赖走完 §6 全流程 | `submit → score → 评审 → PROBATION`，期间触发一次 §4.4 的 BOM 重新生成，新依赖进入归档 SBOM |
+| 3 | 混合验证：一个正常工具登记 + 一个 SBOM 含 RCE 的工具登记 | 前者放行、后者 REJECTED（§6.3 联动与验收表不冲突） |
+| 4 | 重启（H2 清空）后重跑 §5.5 一档 | `VulnerabilityGate` 纯函数行为不变（无状态，重启无残留） |
+
+**失败排查**：链路某跳不通优先查"该跳的输入格式"（SBOM 组件 gav 与 `CveFinding.component` 是否一致）；联动失效 → 回查 §6.3 判定条件是否接进 v2 准入服务；重启后状态异常 → 确认 `DependencyReviewService` 为内存态（重启即重来，属预期）。
 
 ## 8. 验收对照
 
@@ -396,6 +510,14 @@ C 级沙箱工具是"带依赖进门的客人"：准入登记时要求提供其 
 | 5 | 依赖瘦身 | 试用期复审移除 6 个无人使用依赖，传递依赖数下降 21% | ✅ |
 | 6 | 合规交付 | 对外交付包附带 CycloneDX 1.5 BOM，可转换 SPDX 通过客户审计工具校验 | ✅ |
 
+### 8.1 本节核对（验收对照）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 验收 1"差集为空"与 §4.4 断言 2 同源 | 都由同一次生成/合并校验佐证 |
+| 2 | 验收 3"12/12 用例"可由 §5.5 断言覆盖 | 闸门拦截（BLOCK_BUILD/allowBuild）与不可达豁免两条路径均被断言 |
+| 3 | 验收 2 的"≤1 小时缓解决策"有流程支撑 | 由 §5.3 SLA 表 P0 档（24h 缓解/72h 根治）与 §5.2 可达性评估流程支撑 |
+
 ## 9. ADR 演进决策
 
 | # | 决策 | 理由 |
@@ -404,10 +526,25 @@ C 级沙箱工具是"带依赖进门的客人"：准入登记时要求提供其 
 | ADR-324 | 漏洞响应按"可达性 × CVSS × 在野利用"分级，不按存在性一票升级 | 告警疲劳是响应第一杀手；存在性告警会把真正危险的在野利用淹没 |
 | ADR-325 | 依赖准入与工具准入同构（同一条 Submitted→Screen→Review 流水线） | 治理心智复用：依赖就是"更小的工具"；两套流程会让团队在两套规则间钻空子 |
 
+### 9.1 本节核对（ADR 演进决策）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | ADR-323 选型有正文支撑 | §3.2 的 CycloneDX AI/ML 扩展与 SPDX 互转工具链 |
+| 2 | ADR-324 的"可达性优先"有代码落地 | §5.4 `assess` 用 `Reachability` 三档而非一味按存在性/CVSS 升级 |
+| 3 | ADR-325 的"同构"在 §6 有落实 | §6.2 `DependencyReviewService` 状态机与 v2 准入（Submitted→Screen→Review）对应 |
+
 ## 10. 总结
 
 v9 完成「SBOM 生成与消费 + 漏洞响应闸门 + 依赖准入评审」，网关自身的供应链第一次变得可盘点、可响应、可审计。遗留痛点（供 v10 决策）：
 
 依赖治理管住了"代码来自哪"，但审计同时暴露了一个身份层面的裂缝：**网关与工具端、网关与内部服务之间的信任仍建立在"一张共享的、一年期的人手发放证书"上**——上季度工具端证书过期，6 个工具调用同时失败 40 分钟；安全组还发现两个业务 Agent 共用一张客户端证书，审计上无法区分"谁调的"。**服务之间需要可轮换、可吊销、每服务独立的身份**，而不是把 mTLS 当成一堵静态墙。
+
+### 10.1 本节核对（总结与遗留）
+
+| # | 核对项 | 判据 |
+|---|------|------|
+| 1 | 遗留痛点引出下一篇 | "共享长证书/无法区分调用者"正是 [11-零信任深化：服务身份与mTLS] 的动因 |
+| 2 | 总结覆盖本迭代能力 | "SBOM 生成与消费+漏洞响应闸门+依赖准入评审"与 §3/§5/§6 对应 |
 
 → [11-零信任深化：服务身份与mTLS.md](11-零信任深化：服务身份与mTLS.md)
