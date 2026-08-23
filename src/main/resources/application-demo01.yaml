@@ -8,3 +8,8 @@ spring:
       chat:
         model: deepseek-v4-flash
         timeout: 600s
+    chat:
+      client:
+        observations:
+          log-prompt: true
+          log-completion: true
