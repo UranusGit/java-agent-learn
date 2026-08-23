@@ -30,9 +30,9 @@ flowchart LR
 | ADR-2 | PGVector 而非独立向量数据库 | 00/03 | ✅ 采纳 |
 | ADR-3 | 能力经 Advisor 组装，业务代码不感知 | 02/03/04 | ✅ 采纳 |
 | ADR-4 | 记忆持久化自研 Redis `ChatMemoryRepository` | 04 | ✅ 采纳 |
-| ADR-5 | 意图三级分流前置（轻量/完整双 ChatClient） | 06 | ✅ 采纳 |
+| ADR-5 | 意图三级分流前置（记忆链/完整链/无记忆辅助链三链分流） | 06 | ✅ 采纳 |
 | ADR-6 | 槽位状态外置 Redis，不进 ChatMemory | 06 | ✅ 采纳 |
-| ADR-7 | 长会话压缩用 ChatMemory 装饰器（滚动摘要） | 06 | ✅ 采纳 |
+| ADR-7 | 长会话压缩用自研完整 ChatMemory（滚动摘要） | 06 | ✅ 采纳 |
 | ADR-8 | HITL 落点选 `ToolCallback` 包装层，非 Advisor | 07 | ✅ 采纳 |
 | ADR-9 | 审批挂起-恢复模式，EventLoop 零占用 | 07 | ✅ 采纳 |
 | ADR-10 | 转人工双信号置信度（意图 + 自评估） | 07 | ✅ 采纳 |
@@ -91,9 +91,9 @@ flowchart LR
 ### ADR-5：意图三级分流前置
 
 - **上下文**：04 后所有消息无差别走全链；闲聊占比 30-40%，白白付检索费与延迟（[06 §2.1]）。
-- **备选**：A：不分流，全靠系统提示词让 LLM 少检索（不可控）；B：关键词规则快通道（便宜但脆）；C：前置 LLM 意图分类（`entity` 结构化输出）+ 轻量/完整双 ChatClient。
-- **决策**：C，B 作快通道保留余地。
-- **取舍**：多一次轻量 LLM 调用（约 300 token）；闲聊占比 > 20% 时净收益为正。分类器可单独配小模型进一步压成本。
+- **备选**：A：不分流，全靠系统提示词让 LLM 少检索（不可控）；B：关键词规则快通道（便宜但脆）；C：前置 LLM 意图分类（`entity` 结构化输出）+ **三链分流**（`chatClient` 完整 / `liteChatClient` 闲聊记忆 / `assistantChatClient` 无记忆辅助判定）。
+- **决策**：C，B 作快通道保留余地。分流后三链职责边界见 [06 §2.4]「链选型」：分类/抽取/摘要等**单轮无状态判定统一走 `assistantChatClient`**（不挂记忆，也不依赖 `chatMemory`，天然避开了与 `SummarizingChatMemory` 的构造器循环依赖）。
+- **取舍**：多一次轻量 LLM 调用（约 300 token）；闲聊占比 > 20% 时净收益为正。分类器所在的 `assistantChatClient` 可单独配小模型进一步压成本。
 - **可回滚性**：高。路由器退化直通完整链即回到 05 版行为。
 
 ### ADR-6：槽位状态外置 Redis，不进 ChatMemory
@@ -104,13 +104,13 @@ flowchart LR
 - **取舍**：多一套状态存储与「消息→槽位」抽取步骤；换来执行前的完整性由 Java 判定（缺槽必问、不偷跑工具），不赌模型自觉。
 - **可回滚性**：高。槽位层可整体摘除退回纯 LLM 模式。
 
-### ADR-7：长会话压缩用 ChatMemory 装饰器
+### ADR-7：长会话压缩用自研完整 ChatMemory（非装饰器）
 
 - **上下文**：`maxMessages(20)` 硬截断，头部关键事实（订单号、承诺）静默丢失（[06 §4.1]）。
-- **备选**：A：调大窗口到 100（Token 成本线性涨，且仍会截断）；B：`SummarizingChatMemory` 装饰器，超阈值把最旧段滚动摘要（30 条阈值 / 保 10 条原文）。
-- **决策**：B。
-- **取舍**：触发时多一次 LLM 调用；换来「摘要 + 近期原文」兼顾长期事实与近期细节。摘要 Prompt 必须显式要求保留订单/工单号/承诺事项，否则压缩就是新的丢信息路径。
-- **可回滚性**：高。装饰器摘除即回窗口模式。
+- **备选**：A：调大窗口到 100（Token 成本线性涨，且仍会截断）；B：用装饰器包住 `MessageWindowChatMemory` 做滚动摘要；C：**自研完整 `ChatMemory` 实现 `SummarizingChatMemory`**，直接持有 04 的 `RedisChatMemoryRepository`，自己完成「读全量→判阈值→折叠→覆盖写」（30 条阈值 / 保 10 条原文）。
+- **决策**：C。**不是 B**——依据 spring-ai-model-2.0.0 真实源码（javap/反编译实证）：`MessageWindowChatMemory.process()` 每轮已按 `maxMessages(20)` 硬裁窗，其 `get()` 恒 ≤20 条；若用装饰器包它，`COMPRESS_THRESHOLD(30)` **恒不触发**，滚动摘要形同虚设。故只能自研实现替换掉它（[06 §4.2]）。
+- **取舍**：自研要自己踩边角（读改写全走 repository 覆盖语义、阈值真正生效）；换来「摘要 + 近期原文」兼顾长期事实与近期细节。摘要 Prompt 必须显式要求保留订单/工单号/承诺事项，否则压缩就是新的丢信息路径。
+- **可回滚性**：高。`chatMemory(...)` Bean 换回 `MessageWindowChatMemory` 即回窗口模式。
 
 ### ADR-8：HITL 落点选 `ToolCallback` 包装层，非 Advisor
 
@@ -165,7 +165,7 @@ timeline
     00 需求分析 : ADR-1 WebFlux+SSE : ADR-2 PGVector
     01 最小Demo : 双端点（同步+流式）跑通 ADR-1 通道
     02~04 主体迭代 : ADR-3 Advisor 组装 : ADR-4 自研 Redis 记忆仓库
-    06 进阶一 : ADR-5 意图分流 : ADR-6 槽位外置 : ADR-7 压缩装饰器
+    06 进阶一 : ADR-5 意图分流 : ADR-6 槽位外置 : ADR-7 自研完整ChatMemory
     07 进阶二 : ADR-8 HITL 落点 : ADR-9 挂起恢复 : ADR-10 双信号
     08 进阶三 : ADR-11 官方 Evaluator+金标 : ADR-12 Prompt 灰度
 ```

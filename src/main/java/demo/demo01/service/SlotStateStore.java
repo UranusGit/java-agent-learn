@@ -37,7 +37,7 @@ public class SlotStateStore {
         String key = KEY_PROXY + state.sessionId();
         Map<String, String> doc = Map.of(
                 "orderId", state.orderId(),
-                "newSeize", state.newSize(),
+                "newSize", state.newSize(),
                 "status", state.status()
         );
         redis.opsForValue().set(key, mapper.writeValueAsString(doc), TTL);
