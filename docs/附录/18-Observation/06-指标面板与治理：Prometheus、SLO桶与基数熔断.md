@@ -111,7 +111,7 @@ curl http://localhost:18080/actuator/prometheus | grep hello_request
 `MeterFilter` 在 MeterRegistry 层面拦截每个指标，管三件事——**存不存在、带什么 tag、要不要熔断基数**。都注册为 `@Bean` 即生效：
 
 ```java
-package com.example.obsdemo.step7;
+package demo.demo01.step7;
 
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.config.MeterFilter;

@@ -53,18 +53,14 @@ public interface ObservationConvention<T extends Observation.Context> {
 实现一个"聊天类"约定：
 
 ```java
-package com.example.obsdemo.step6;
+package demo.demo01.step6;
 
 import io.micrometer.common.KeyValues;
 import io.micrometer.observation.*;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.reactive.function.server.RouterFunction;
-import org.springframework.web.reactive.function.server.RouterFunctions;
-import org.springframework.web.reactive.function.server.ServerResponse;
-import static org.springframework.web.reactive.function.server.RequestPredicates.GET;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-@Configuration
+@RestController
 public class ObsStep6Config {
 
     // ① Convention：自动给"聊天类"观测补命名与标签
@@ -86,14 +82,13 @@ public class ObsStep6Config {
         }
     }
 
-    @Bean
-    RouterFunction<ServerResponse> step6Routes() {
-        return RouterFunctions.route(GET("/ext/conv"), req ->
-            // 业务代码只给一个"初始名"，标签交给 Convention
-            Observation.createNotStarted("explicit.name",
+    @GetMapping("/ext/conv")
+    public String conv() {
+        // 业务代码只给一个"初始名"，标签交给 Convention
+        return Observation.createNotStarted("explicit.name",
                         () -> new Observation.Context(), registry())
-                    .observationConvention(new MyChatConvention())   // ★ 单观测挂载
-                    .observe(() -> ServerResponse.ok().bodyValue("conv applied")));
+                .observationConvention(new MyChatConvention())   // ★ 单观测挂载
+                .observe(() -> "conv applied");
     }
 
     private ObservationRegistry registry() { return ObsStep6Helper.REGISTRY; }
@@ -173,6 +168,33 @@ ObservationPredicate noiseControl() {
 }
 ```
 
+先给一个会触发 `internal.*` 观测的端点（注意它被 Predicate 掐掉后，控制台不会出现该观测；端点用 `@RestController` + 注入注册表，和你的 `ChatController` 同款）：
+
+```java
+package demo.demo01.step6;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class ObsStep6NoiseConfig {
+
+    private final ObservationRegistry registry;   // 注入 Boot 的注册表
+
+    public ObsStep6NoiseConfig(ObservationRegistry registry) {
+        this.registry = registry;
+    }
+
+    @GetMapping("/ext/noise")
+    public String noise() {
+        Observation.createNotStarted("internal.health", () -> new Observation.Context(), registry).start().stop();
+        return "noise";
+    }
+}
+```
+
 **实测**——触发 `internal.health` 观测，控制台**完全没有**该观测（只有外层 http.server.requests）：
 
 ```bash
@@ -194,7 +216,7 @@ curl http://localhost:18080/ext/noise
 把三个扩展点放独立 `@Configuration` 全注册为 `@Bean`（Boot 自动收集，[04 §4]），业务零感知：
 
 ```java
-package com.example.obsdemo.step6;
+package demo.demo01.step6;
 
 import io.micrometer.common.KeyValue;
 import io.micrometer.observation.*;

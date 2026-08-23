@@ -66,7 +66,7 @@ graph TB
 ### 3.1 工具：会触发 `spring.ai.tool` 观测（真实注解）
 
 ```java
-package com.example.obsdemo.agent;
+package demo.demo01.agent;
 
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -104,7 +104,7 @@ public class WeatherTools {
 ### 3.2 客服 Agent：ChatClient 入口（`gen_ai.chat.*` 观测）
 
 ```java
-package com.example.obsdemo.agent;
+package demo.demo01.agent;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
@@ -149,10 +149,10 @@ public class CustomerServiceAgent {
 
 ## 4. 落地③+④：领域层与消费层（领域 Context + 类型化 Handler）
 
-`AgentObsConfig.java`（包 `com.example.obsdemo.agent`）——定义我们自己的领域观测类型 + 类型化审计 Handler。这是 [02 §Context] + [04 §领域Context/Handler] 的实战化：
+`AgentObsConfig.java`（包 `demo.demo01.agent`）——定义我们自己的领域观测类型 + 类型化审计 Handler。这是 [02 §Context] + [04 §领域Context/Handler] 的实战化：
 
 ```java
-package com.example.obsdemo.agent;
+package demo.demo01.agent;
 
 import io.micrometer.observation.Observation.Context;
 import io.micrometer.observation.ObservationHandler;
@@ -246,7 +246,7 @@ public class AgentObsConfig {
 `AgentSecurityBeansConfig.java`（独立 @Configuration，避免循环依赖，[04 §4]）。注册为 Bean 即被 Boot 自动收集（[03]）：
 
 ```java
-package com.example.obsdemo.agent;
+package demo.demo01.agent;
 
 import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation.Context;
@@ -303,7 +303,7 @@ management:
 MeterFilter 基数保险丝（可选，`MicrometerConfig.java`）：
 
 ```java
-package com.example.obsdemo.agent;
+package demo.demo01.agent;
 
 import io.micrometer.core.instrument.config.MeterFilter;
 import org.springframework.context.annotation.Bean;
@@ -324,22 +324,18 @@ public class MicrometerConfig {
 
 ## 6. 落地⑦+Controller：把 Agent 暴露成接口，包上业务观测，通链路
 
-`AgentController.java`（包 `com.example.obsdemo.agent`）——控制器注入 Boot 的 `ObservationRegistry`（[03]），把一次问答包在 `agent.qa` 观测里（[01] 生命周期 + [02] 领域 Context + [04] 审计 Handler），同时承载链路（[07]）：
+`AgentController.java`（包 `demo.demo01.agent`）——控制器注入 Boot 的 `ObservationRegistry`（[03]），把一次问答包在 `agent.qa` 观测里（[01] 生命周期 + [02] 领域 Context + [04] 审计 Handler），同时承载链路（[07]）：
 
 ```java
-package com.example.obsdemo.agent;
+package demo.demo01.agent;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.reactive.function.server.RouterFunction;
-import org.springframework.web.reactive.function.server.RouterFunctions;
-import org.springframework.web.reactive.function.server.ServerRequest;
-import org.springframework.web.reactive.function.server.ServerResponse;
-import static org.springframework.web.reactive.function.server.RequestPredicates.GET;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
-@Configuration
+@RestController
 public class AgentController {
 
     private final ObservationRegistry registry;   // 注入 Boot 的 Bean（[03]）
@@ -350,16 +346,11 @@ public class AgentController {
         this.agent = agent;
     }
 
-    @Bean
-    public RouterFunction<ServerResponse> agentRoutes() {
-        return RouterFunctions.route(GET("/agent/chat"), this::chat);
-    }
-
-    private ServerResponse chat(ServerRequest req) {
-        String question = req.queryParam("q").orElse("北京今天穿什么？");
+    @GetMapping("/agent/chat")
+    public String chat(@RequestParam(value = "q", defaultValue = "北京今天穿什么？") String question) {
 
         AgentObsConfig.QaContext q = new AgentObsConfig.QaContext(question);
-        String reply = Observation.createNotStarted("agent.qa",
+        return Observation.createNotStarted("agent.qa",
                         () -> q,                          // 领域 Context（[02] 方式②，注意是 Supplier）
                         registry)
                 .lowCardinalityKeyValue("question", question.length() > 20 ? "long" : "short") // 低基数：有界
@@ -371,7 +362,6 @@ public class AgentController {
                     q.setAnswerSnippet(r.length() > 20 ? r.substring(0, 20) : r);
                     return r;
                 });
-        return ServerResponse.ok().bodyValue(reply);
     }
 }
 ```
@@ -386,10 +376,10 @@ public class AgentController {
 
 ## 7. 落地④的异步纪律：审计/成本事件缓冲（重要）
 
-§4 的 Handler 在 `onStop` **同步**执行——若直接写库/发 Kafka 会拖慢业务（[04 §6 纪律]）。真正生产化：**同步只入队，异步批量出**。补一个异步管道（`AuditPipe.java`，包 `com.example.obsdemo.agent`）：
+§4 的 Handler 在 `onStop` **同步**执行——若直接写库/发 Kafka 会拖慢业务（[04 §6 纪律]）。真正生产化：**同步只入队，异步批量出**。补一个异步管道（`AuditPipe.java`，包 `demo.demo01.agent`）：
 
 ```java
-package com.example.obsdemo.agent;
+package demo.demo01.agent;
 
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -460,7 +450,7 @@ obs.event(io.micrometer.observation.Observation.Event.of("first.token"));
 没有 OpenAI key 时，用**本地模拟**替代真实 LLM，观测链路一模一样（只是回复是假的）。关键：**观测代码（[04]审计 /[05]Filter /[06]SLO /[07]traceId）全部不变**。`MockAgentConfig.java`：
 
 ```java
-package com.example.obsdemo.agent;
+package demo.demo01.agent;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.context.annotation.Bean;

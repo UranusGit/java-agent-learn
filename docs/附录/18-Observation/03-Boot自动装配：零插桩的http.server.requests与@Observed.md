@@ -12,17 +12,17 @@
 
 ## 1. 一个大转变：从"自己造注册表"到"注入 Boot 的 Bean"
 
-前两关你写的是 `ObservationRegistry.create()`——**自己造门面**（为了理解原理）。真实工程应该用 Boot 自动装配出来的 Bean。区别在哪？
+从 00 关起，我们就一直**注入 Boot 的 `ObservationRegistry`**（00 关开局铁律）。这一关我们看清：为什么"注入"和"自己 `ObservationRegistry.create()` 造一个"天差地别——后者是**网上不少旧例踩的坑**，会绕过所有自动配置，框架埋的点全跟你没关系：
 
 ```java
-// 前两关（为理解原理：自建注册表）
-private final ObservationRegistry registry = ObservationRegistry.create();
-
-// 这一关之后（框架接管：构造器注入 == Boot 的 Bean）
+// 正确的（本系列一直沿用）：构造器注入 == Boot 的 Bean
 private final ObservationRegistry registry;                 // 单例、已带 handler/配置
 public MyConfig(ObservationRegistry registry) {
     this.registry = registry;
 }
+
+// 错误示范（旧例常见，00 关坑 0）：自建裸注册表，handler 挂不上
+private final ObservationRegistry registry = ObservationRegistry.create();
 ```
 
 **它替你做（省）了什么？** 你手写的话，Handler（指标、Span）、Filter、Predicate 都要自己手动注册到 registry。Boot 自动装配帮你：
@@ -41,26 +41,21 @@ public MyConfig(ObservationRegistry registry) {
 
 用这个工程（[00] 已含 actuator），**只要有个接口**（不写任何观测代码），框架就自动观测你的 HTTP 请求。
 
-新建 `ObsStep4Config.java`（包 `com.example.obsdemo.step4`），只写业务，零观测代码：
+新建 `ObsStep4Config.java`（包 `demo.demo01.step4`），只写业务，零观测代码：
 
 ```java
-package com.example.obsdemo.step4;
+package demo.demo01.step4;
 
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.reactive.function.server.RouterFunction;
-import org.springframework.web.reactive.function.server.RouterFunctions;
-import org.springframework.web.reactive.function.server.ServerResponse;
-import static org.springframework.web.reactive.function.server.RequestPredicates.GET;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-@Configuration
+@RestController
 public class ObsStep4Config {
 
-    @Bean
-    RouterFunction<ServerResponse> step4Routes() {
+    @GetMapping("/auto/hello")
+    public String hello() {
         // 普通业务接口，一行观测代码都没有
-        return RouterFunctions.route(GET("/auto/hello"), req ->
-                ServerResponse.ok().bodyValue("auto hello"));
+        return "auto hello";
     }
 }
 ```
@@ -91,19 +86,14 @@ START - name='http.server.requests', context=null, error='null', low=[exception=
 在工程里注入 Bean 写一个业务观测，再用 actuator 看 `measurements`（[02 §3.3] 你已验证过一次，这关用注入 Bean 的正规姿势）：
 
 ```java
-package com.example.obsdemo.step4;
+package demo.demo01.step4;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
-import io.micrometer.common.KeyValue;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.reactive.function.server.RouterFunction;
-import org.springframework.web.reactive.function.server.RouterFunctions;
-import org.springframework.web.reactive.function.server.ServerResponse;
-import static org.springframework.web.reactive.function.server.RequestPredicates.GET;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-@Configuration
+@RestController
 public class ObsStep4MetricConfig {
 
     private final ObservationRegistry registry;   // ← 注入 Boot 的 Bean
@@ -112,12 +102,11 @@ public class ObsStep4MetricConfig {
         this.registry = registry;                 // Boot 已自动装配好
     }
 
-    @Bean
-    RouterFunction<ServerResponse> step4MetricRoutes() {
-        return RouterFunctions.route(GET("/auto/mock"), req ->
-            Observation.createNotStarted("gen_ai.mock", () -> new Observation.Context(), registry)
-                    .lowCardinalityKeyValue("model", "mock")
-                    .observe(() -> ServerResponse.ok().bodyValue("mock ok")));
+    @GetMapping("/auto/mock")
+    public String mock() {
+        return Observation.createNotStarted("gen_ai.mock", () -> new Observation.Context(), registry)
+                .lowCardinalityKeyValue("model", "mock")
+                .observe(() -> "mock ok");
     }
 }
 ```
@@ -157,11 +146,11 @@ curl http://localhost:18080/actuator/metrics/gen_ai.mock
 management:
   observations:
     key-values:
-      application: obs-series
+      application: demo01
       env: dev
 ```
 
-之后所有观测（含 `http.server.requests`, `gen_ai.mock`）都多 `application=obs-series, env=dev` 两个低基数 tag——这才是"全局公共标签"（等价旧版 common tags）。
+之后所有观测（含 `http.server.requests`, `gen_ai.mock`）都多 `application=demo01, env=dev` 两个低基数 tag——这才是"全局公共标签"（等价旧版 common tags）。
 
 ---
 
@@ -240,7 +229,7 @@ public class AgentService {
 
 **适用**：标准 Spring Boot 服务"零插桩"获得 HTTP 观测；想用配置（key-values/enable）管理观测而不写 Bean；给方法边界用 `@Observed`。
 
-**不适用**：非 Spring 环境（纯库）——直接用 `ObservationRegistry.create()`（前两关学过）；手写 `new ObservationRegistry()` 想替代自动装配——会绕过所有自动配置，Observer 全部失联。
+**不适用**：非 Spring 环境（纯库，没有容器可注入）——只能用 `ObservationRegistry.create()` 自建注册表（此时记得手动 `observationConfig().observationHandler(...)` 挂 handler，否则像 00 关坑 0 那样白搭）；**在 Spring 工程里**手写 `new ObservationRegistry()` 想替代自动装配——会绕过所有自动配置，Observer 全部失联。
 
 ---
 

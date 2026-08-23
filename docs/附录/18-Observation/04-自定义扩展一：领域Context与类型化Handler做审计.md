@@ -34,10 +34,10 @@ graph TB
 
 ## 2. 动手：一个"Agent 任务步骤"的领域观测 + 审计 Handler
 
-工程新增 `ObsStep5Config.java`（包 `com.example.obsdemo.step5`）。这次**扩展 Bean 放独立 @Configuration**（避免第 03 关误区 4 的循环依赖）。完整可复制：
+工程新增 `ObsStep5Config.java`（包 `demo.demo01.step5`）。这次**扩展 Bean 放独立 @Configuration**（避免第 03 关误区 4 的循环依赖），**接口沿用 `@RestController` 注册**。完整可复制：
 
 ```java
-package com.example.obsdemo.step5;
+package demo.demo01.step5;
 
 import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation;
@@ -46,15 +46,11 @@ import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.observation.ObservationHandler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.web.reactive.function.server.RouterFunction;
-import org.springframework.web.reactive.function.server.RouterFunctions;
-import org.springframework.web.reactive.function.server.ServerRequest;
-import org.springframework.web.reactive.function.server.ServerResponse;
-import org.springframework.web.reactive.function.server.ServerResponse;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 import java.time.Duration;
-import static org.springframework.web.reactive.function.server.RequestPredicates.GET;
 
-@Configuration
+@RestController
 public class ObsStep5Config {
 
     // ========== ① 领域 Context：装"哪个任务/哪个步骤"，Handler 靠它拿业务字段 ==========
@@ -112,13 +108,8 @@ public class ObsStep5Config {
     }
 
     // ========== ③ 业务侧：函数式 + 领域 Context；结果写进 Context（stop 前 → onStop 可见） ==========
-    @Bean
-    RouterFunction<ServerResponse> step5Routes() {
-        return RouterFunctions.route(GET("/domain/task"), this::doTask)
-                .andRoute(GET("/domain/task-error"), this::doTaskError);
-    }
-
-    private ServerResponse doTask(ServerRequest req) {
+    @GetMapping("/domain/task")
+    public String doTask() {
         TaskStepContext ctx = new TaskStepContext("t-1", "extract");
         int n = Observation.createNotStarted("agent.task.step", () -> ctx, registry())
                 .lowCardinalityKeyValue("step.name", "extract")   // 有界 → 指标 tag
@@ -127,16 +118,18 @@ public class ObsStep5Config {
                     ctx.setResult("实体x3");                        // ★ stop 前写入 → onStop 可见
                     return 3;
                 });
-        return ServerResponse.ok().bodyValue("n=" + n + ", result=" + ctx.getResult());
+        return "n=" + n + ", result=" + ctx.getResult();
     }
 
-    private ServerResponse doTaskError(ServerRequest req) {
+    @GetMapping("/domain/task-error")
+    public String doTaskError() {
         TaskStepContext ctx = new TaskStepContext("t-9", "failStep");
         try {
-            return Observation.createNotStarted("agent.task.step", () -> ctx, registry())
+            Observation.createNotStarted("agent.task.step", () -> ctx, registry())
                     .observe(() -> { throw new IllegalStateException("任务步骤失败"); });
+            return "不可能到这";
         } catch (IllegalStateException e) {
-            return ServerResponse.ok().bodyValue("task failed, error recorded");
+            return "task failed, error recorded";
         }
     }
 
@@ -179,7 +172,7 @@ class ObsStep5BeansConfig {
 教学用的自建 registry + 手工注册，真实工程改成**注册为 Bean**——Boot 自动装配收集，业务注入 Bean registry：
 
 ```java
-package com.example.obsdemo.step5;
+package demo.demo01.step5;
 
 import io.micrometer.observation.Observation.Context;
 import io.micrometer.observation.ObservationHandler;
@@ -227,13 +220,13 @@ curl http://localhost:18080/domain/task-error
 **测试**——断言审计 Handler 记下了失败工具的异常类型（error 进观测）：
 
 ```java
-package com.example.obsdemo.step5;
+package demo.demo01.step5;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.tck.TestObservationRegistry;
 import io.micrometer.observation.tck.TestObservationRegistryAssert;
 import org.junit.jupiter.api.Test;
-import static com.example.obsdemo.step5.ObsStep5Config.TaskStepContext;
+import static demo.demo01.step5.ObsStep5Config.TaskStepContext;
 
 class AuditHandlerTest {
 

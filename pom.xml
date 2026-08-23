@@ -67,6 +67,7 @@
                 </property>
             </activation>
             <dependencies>
+                <!-- Actuator：可观测自动装配（ObservationRegistry / metrics）-->
                 <dependency>
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-starter-actuator</artifactId>

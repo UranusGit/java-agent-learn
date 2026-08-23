@@ -142,47 +142,42 @@ curl http://localhost:18080/actuator/metrics/api.base
 
 ## 4. 动手：ObsStep3Config（核心 API 演示完整版）
 
-把上面三块的接口集合成一个 `custom` 配置类（包 `com.example.obsdemo.step3`），完整可复制：
+把上面三块的接口集合成一个配置类（包 `demo.demo01.step3`），**同样用 `@RestController` 注册接口**，完整可复制：
 
 ```java
-package com.example.obsdemo.step3;
+package demo.demo01.step3;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.Observation.Context;
 import io.micrometer.observation.ObservationRegistry;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.reactive.function.server.RouterFunction;
-import org.springframework.web.reactive.function.server.RouterFunctions;
-import org.springframework.web.reactive.function.server.ServerResponse;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
-import static org.springframework.web.reactive.function.server.RequestPredicates.GET;
 
-@Configuration
+@RestController
 public class ObsStep3Config {
 
-    private final ObservationRegistry registry = ObservationRegistry.create();
+    private final ObservationRegistry registry;   // 注入 Boot 的注册表（00 关铁律）
 
-    @Bean
-    RouterFunction<ServerResponse> step3Routes() {
-        return RouterFunctions.route(GET("/api/create"), this::createDemo)
-                .andRoute(GET("/api/ctx"), this::ctxDemo)
-                .andRoute(GET("/api/base"), this::baseDemo);
+    public ObsStep3Config(ObservationRegistry registry) {
+        this.registry = registry;
     }
 
     // ---------- ① 三种创建方式（方式② 自定义 Context）----------
-    private ServerResponse createDemo(org.springframework.web.reactive.function.server.ServerRequest req) {
+    @GetMapping("/api/create")
+    public String createDemo() {
         TaskContext ctx = new TaskContext("t-1");
         Integer n = Observation.createNotStarted("api.create",
                         () -> ctx,                          // 方式②：自定义 Context（Supplier！）
                         registry)
                 .lowCardinalityKeyValue("way", "ctx")
                 .observe(() -> 42);
-        return ServerResponse.ok().bodyValue("create n=" + n + ", ctx.getTaskId=" + ctx.getTaskId());
+        return "create n=" + n + ", ctx.getTaskId=" + ctx.getTaskId();
     }
 
     // ---------- ② Context 状态袋 put/get ----------
-    private ServerResponse ctxDemo(org.springframework.web.reactive.function.server.ServerRequest req) {
+    @GetMapping("/api/ctx")
+    public String ctxDemo() {
         Context ctx = new Context();
         Observation.createNotStarted("api.ctx", () -> ctx, registry)
                 .observe(() -> {
@@ -191,15 +186,16 @@ public class ObsStep3Config {
                     return 1;
                 });
         Long startedAt = ctx.get("startedAt");
-        return ServerResponse.ok().bodyValue("startedAt=" + startedAt);
+        return "startedAt=" + startedAt;
     }
 
     // ---------- ③ 基数演示 ----------
-    private ServerResponse baseDemo(org.springframework.web.reactive.function.server.ServerRequest req) {
+    @GetMapping("/api/base")
+    public String baseDemo() {
         return Observation.createNotStarted("api.base", () -> new Context(), registry)
                 .lowCardinalityKeyValue("status", "ok")
                 .highCardinalityKeyValue("user.id", "u-" + System.nanoTime())
-                .observe(() -> ServerResponse.ok().bodyValue("base done"));
+                .observe(() -> "base done");
     }
 
     // 领域 Context：第 04 关正式展开，这里先给方式②一个最简单形态
@@ -227,7 +223,7 @@ curl http://localhost:18080/actuator/metrics/api.base
 用 `TestObservationRegistryAssert`（[01 §6]）断言"哪个标签在、标签值对不对、高低基数分流"：
 
 ```java
-package com.example.obsdemo.step3;
+package demo.demo01.step3;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.tck.TestObservationRegistry;
