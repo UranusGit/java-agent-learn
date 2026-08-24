@@ -69,7 +69,7 @@ public class TokenCostHandler implements ObservationHandler<ChatModelObservation
 }
 ```
 
-要点：`type=prompt/completion` 是**低基数**标签（两种取值）；按"产线"归因时用 04 关的 `line.id`（CNC/AGV 可枚举）也安全——**但绝不能把 `deviceId` 当标签**，引出 7.5。
+要点：`type=prompt/completion` 是**低基数**标签（两种取值）；按班次归因时用 04 关的 `shift`（3 值可枚举）也安全——**但绝不能把完整时间戳/设备编号当标签**，引出 7.5。
 
 ## 7.4 SLO 分桶：给工具耗时定达标线
 
@@ -188,7 +188,7 @@ graph LR
 | Token 增长 | 调 2 次 `/inspect`（一次带工具一次闲聊），再查 `GET /actuator/metrics/agent.token.cost` | `measurements` 里 COUNT 与 TOTAL 明显增长；`availableTags` 有 `type: prompt/completion` |
 | 分维度查 | `GET /actuator/metrics/agent.token.cost?tag=type:prompt` | 只返回 prompt 侧 token 累计——成本归因成立 |
 | SLO 桶 | 多调几次后查 `GET /actuator/metrics/agent.tool.latency` | histogram 分桶计数（`getCurrentTime` 落 0.5s 桶内） |
-| 熔断演练 | 临时写 `meters.counter("test.cardinality","device.id","CNC-001")` 调一次 | `/actuator/metrics` 里**没有** `test.cardinality`——deny 生效且不抛错 |
+| 熔断演练 | 临时写 `meters.counter("test.cardinality","tool.timestamp","2026-08-24 14:03:22")` 调一次 | `/actuator/metrics` 里**没有** `test.cardinality`——deny 生效且不抛错 |
 | 噪声观测验证 | `GET /actuator/health` | 事件流/SSE 里不出现 security 类噪声观测 |
 
 ## 7.8 什么时候自定义指标——决策表

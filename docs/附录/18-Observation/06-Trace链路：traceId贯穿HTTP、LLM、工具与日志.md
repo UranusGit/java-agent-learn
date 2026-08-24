@@ -207,7 +207,7 @@ sequenceDiagram
     C->>S: GET /inspect (开启span: http.server.requests, traceId=T1)
     S->>S: chat-client span(T1)
     S->>L: chat-model span(T1) 第1次推理
-    S->>S: tool span(T1) queryDeviceStatus
+    S->>S: tool span(T1) getCurrentTime/getCurrentShift
     S->>L: chat-model span(T1) 第2次推理
     S-->>C: 结论 + 事件流均带 traceId=T1
     Note over S: 全程日志行含 [T1,spanId]
@@ -217,16 +217,16 @@ sequenceDiagram
 
 | 用例 | 操作 | 现象 |
 |---|---|---|
-| traceId 生成 | `GET /demo01/inspect?prompt=检查CNC-001状态` | ① `/demo01/events`（或 SSE 流）里所有事件携带**同一个** traceId；② console 日志行出现 `[app,64f...,c1a...]` 样式占位；③ 若起了 Zipkin（`docker run -p 9411:9411 openzipkin/zipkin`），打开 `http://localhost:9411` 能查到这条 trace 的 span 树 |
+| traceId 生成 | `GET /demo01/inspect?prompt=现在几点？当前是什么班次？` | ① `/demo01/events`（或 SSE 流）里所有事件携带**同一个** traceId；② console 日志行出现 `[app,64f...,c1a...]` 样式占位；③ 若起了 Zipkin（`docker run -p 9411:9411 openzipkin/zipkin`），打开 `http://localhost:9411` 能查到这条 trace 的 span 树 |
 | 跨阶段贯穿验证 | 对比同一请求内 CHAT_CLIENT/LLM/TOOL 事件 | traceId 完全一致——"一条请求的一生"被串起来了 |
-| 日志定位演练 | 在 `createWorkOrder` 打一条 `log.info("创建工单 {}", no)` | 该行日志自动带 traceId，用它去 Zipkin/事件流反查整条链路 |
+| 日志定位演练 | 在 `getCurrentShift` 打一条 `log.info("解析班次完成")` | 该行日志自动带 traceId，用它去 Zipkin/事件流反查整条链路 |
 | 采样验证 | `probability` 改 0.0 重启再调 | 事件流 traceId 变 `no-trace`（无当前 span），日志占位为空——理解采样对观测面的影响 |
 
 ## 6.6 工业落地的三个决策点
 
 1. **采样率**：LLM 调用成本高、频次相对低，**Agent 服务可全采样或高采样（0.5+）**——这与传统高 QPS 微服务 0.05 思路相反，因为这里的单请求价值高（一次巡检决策）。
 2. **桥的选择**：已有 Zipkin/Jaeger 栈 → Brave 桥；全站 OTel 统一 → OTel 桥 + OTLP exporter。别混用两套。
-3. **traceId 落库**：工单表、审计表存 traceId——出质量问题（如 LLM 给错建议导致误工单）时可反查当时的完整链路与 prompt（合规审计刚需，呼应 [教程 25-历史记录持久化与合规]）。
+3. **traceId 落库**：巡检记录表、审计表存 traceId——出质量问题（如 LLM 给错结论误导了交接）时可反查当时的完整链路与 prompt（合规审计刚需，呼应 [教程 25-历史记录持久化与合规]）。
 
 ## 6.7 本关沉淀
 

@@ -85,7 +85,6 @@ package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
-import demo.demo01.tools.DeviceTools;
 import demo.demo01.tools.TimeTool;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -111,12 +110,12 @@ public class InspectionController {
     private final AgentEventCollector eventCollector;
     private final ObservationRegistry registry;
 
-    public InspectionController(ChatModel chatModel, DeviceTools deviceTools, TimeTool timeTool,
+    public InspectionController(ChatModel chatModel, TimeTool timeTool,
                                 AgentEventCollector eventCollector,
                                 ObservationRegistry registry,
                                 VectorStore vectorStore) {
         this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(deviceTools, timeTool)
+                .defaultTools(timeTool)
                 .defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore)
                         .searchRequest(SearchRequest.builder()
                                 .topK(3)
@@ -281,7 +280,7 @@ timeline
 | RAG 问答 | `GET /demo01/inspect?prompt=CNC-001主轴温度高该怎么处理` | 回答含手册内容（冷却系统/散热器），而非泛泛建议 |
 | 检索事件 | 查 `/demo01/events` 或订阅 SSE | 出现 `ADVISOR(QuestionAnswerAdvisor)` 与 `RETRIEVAL(QUERY topK=3 命中=1)` 事件，位于两个 LLM 事件之间 |
 | 命中数变化 | 问一个知识库没有的问题（"食堂菜单"） | `命中=0`，回答退化为模型常识——用观测解释"为什么答得差" |
-| 工具 vs 检索对比 | `prompt=查CNC-001实时状态` | 无 RETRIEVAL 事件、有 TOOL 事件；RAG 问答反之——两种知识来源在时间线上一眼可辨 |
+| 工具 vs 检索对比 | `prompt=现在几点` | 无 RETRIEVAL 事件、有 TOOL 事件；RAG 问答反之——两种知识来源在时间线上一眼可辨 |
 | Embedding 观测 | 观察事件流/console | RETRIEVAL 前有 embedding 相关 span（query 向量化）——检索耗时的大头常在这里 |
 
 ## 9.7 本关沉淀

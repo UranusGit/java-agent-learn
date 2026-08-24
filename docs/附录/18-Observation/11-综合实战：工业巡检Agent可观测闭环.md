@@ -8,9 +8,9 @@
 
 ## 11.1 业务设定：一条巡检指令的一生
 
-> "巡检 CNC-001 和 AGV-07，判断是否异常，异常则建维修工单，最后给班组长一段总结。"
+> "现在几点？当前什么班次？结合手册给今天这个班次的交接记录写一段带时间戳的总结。"
 
-Agent 需要：两个查询工具 + 一个工单工具 + 两轮以上 LLM 推理。每一步都要"看得见、查得到、算得清"。
+Agent 能力：TimeTool（时间 + 班次两个方法）+ RAG 知识库（09 关接入的设备手册）+ 两轮以上 LLM 推理。工具面刻意精简——**观测面才是本系列的主角**：每一步都要"看得见、查得到、算得清"。
 
 ## 11.2 完整架构（本系列成果全景）
 
@@ -20,11 +20,10 @@ graph TB
         HTTP["WebFlux<br/>/inspect /observe/stream /events"]
     end
     subgraph Agent层["Agent 运行时"]
-        CC["ChatClient<br/>多工具 + RAG Advisor"]
+        CC["ChatClient<br/>TimeTool + RAG Advisor"]
         T0["TimeTool.getCurrentTime"]
-        T1["queryDeviceStatus"]
-        T2["createWorkOrder"]
-        CC --> T0 & T1 & T2
+        T1["TimeTool.getCurrentShift"]
+        CC --> T0 & T1
     end
     subgraph 观测管线["Observation 管线（本系列）"]
         R["ObservationRegistry"]
@@ -32,8 +31,8 @@ graph TB
         R --> H2["AgentEventCollector<br/>→ SSE 前端时间线"]
         R --> H3["TokenCostHandler<br/>→ MeterRegistry/actuator指标"]
         R --> H4["TracingHandler<br/>→ traceId/Zipkin"]
-        R --> F["SensitiveToolFilter<br/>脱敏"]
-        R --> CV["IndustrialToolConvention<br/>line.id 标签"]
+        R --> F["ToolAuditFilter<br/>审计标记/脱敏位"]
+        R --> CV["ShiftChatModelConvention<br/>shift 标签"]
     end
     subgraph 治理层["治理层（Control Plane 方向）"]
         G["指标治理<br/>/actuator/metrics<br/>(生产再接Prometheus)"]
@@ -61,7 +60,6 @@ package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
-import demo.demo01.tools.DeviceTools;
 import demo.demo01.tools.TimeTool;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -84,22 +82,22 @@ import java.util.List;
 public class InspectionController {
 
     private static final String SYSTEM_PROMPT = """
-            你是工厂设备巡检助手。规则：
-            1. 查询工具返回 JSON 指标；温度>75 或振动>4 判定异常。
-            2. 结论需要时间戳时必须先调用 getCurrentTime 工具，禁止自己编造时间。
-            3. 设备维修建议优先参考知识库检索到的手册内容。
+            你是工厂现场巡检与交接助手。规则：
+            1. 结论需要时间戳时必须先调用 getCurrentTime 工具，禁止自己编造时间。
+            2. 涉及班次/排班时调用 getCurrentShift 工具获取，不要凭时段猜测。
+            3. 设备相关建议优先参考知识库检索到的手册内容，检索不到就明说。
             """;
 
     private final ChatClient chatClient;
     private final AgentEventCollector eventCollector;
     private final ObservationRegistry registry;
 
-    public InspectionController(ChatModel chatModel, DeviceTools deviceTools, TimeTool timeTool,
+    public InspectionController(ChatModel chatModel, TimeTool timeTool,
                                 AgentEventCollector eventCollector,
                                 ObservationRegistry registry,
                                 VectorStore vectorStore) {
         this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(deviceTools, timeTool)
+                .defaultTools(timeTool)
                 .defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore)
                         .searchRequest(SearchRequest.builder()
                                 .topK(3)
@@ -205,7 +203,7 @@ public class AuditArchiveHandler implements ObservationHandler<ToolCallingObserv
 
 审计与事件流的区别：事件流给**实时看**（会过期、可截断），审计给**事后查**（不丢、带责任字段）——同一观测源、两种 SLA，所以分成两个 Handler 而不是一个带开关的。
 
-**③ HITL 触发点（预留）**：工单工具里对"高成本操作"插入确认。完整 HITL 落点是 `ToolCallingManager`/`ToolCallback` 包装层（非 Advisor，CLAUDE.md 铁律），本篇不展开——观测已把"哪次调用该审批"的信号（工具名+参数+traceId）备齐，[教程 28-Human-in-the-Loop与审批流] 是正篇。
+**③ HITL 触发点（预留）**：将来加入高成本操作工具（如改排班、下发停机指令）时插入人工确认。完整 HITL 落点是 `ToolCallingManager`/`ToolCallback` 包装层（非 Advisor，CLAUDE.md 铁律），本篇不展开——观测已把"哪次调用该审批"的信号（工具名+参数+traceId）备齐，[教程 28-Human-in-the-Loop与审批流] 是正篇。
 
 ## 11.4 一次巡检的完整可观测旅程（结果预期）
 
@@ -215,14 +213,12 @@ sequenceDiagram
     participant S as 巡检Agent服务
     participant L as LLM
     participant FE as 观测大屏(SSE)
-    U->>S: /inspect 巡检CNC-001和AGV-07
+    U->>S: /inspect 现在几点？什么班次？写交接总结
     S->>FE: CHAT_CLIENT/LLM事件(traceId=T)
-    S->>L: 第1次推理(决策查两台设备)
-    S->>FE: TOOL事件×2(参数+脱敏结果)
-    S->>L: 第2次推理(判定CNC异常)
-    S->>FE: TOOL事件(建工单WO-x)
-    S->>L: 第3次推理(总结)
-    S-->>U: 巡检结论
+    S->>L: 第1次推理(决策调时间与班次工具)
+    S->>FE: TOOL事件×2(getCurrentTime/getCurrentShift)
+    S->>L: 第2次推理(结合RAG手册与班次写总结)
+    S-->>U: 交接总结(真实时间戳)
     Note over S,FE: 同 traceId 贯穿:前端时间线/日志/Zipkin/审计/指标
 ```
 
@@ -230,12 +226,12 @@ sequenceDiagram
 
 | # | 用例 | 操作 | 验收现象（全部命中才算闭环） |
 |---|---|---|---|
-| 1 | 多工具巡检 | `GET /demo01/inspect?prompt=巡检CNC-001和AGV-07，异常的建维修工单` | 结论含两设备评估 + 1 张工单号 |
-| 2 | 前端时间线 | 先订阅 `GET /demo01/observe/stream` 再发用例 1 | SSE 按序收到 ≥7 条事件（CHAT_CLIENT+3×LLM+2×查询TOOL+1×工单TOOL），同一 traceId |
+| 1 | 多方法工具巡检 | `GET /demo01/inspect?prompt=现在几点？当前什么班次？给交接记录写一句总结` | 结论含真实时间戳 + 班次（工具返回，非编造） |
+| 2 | 前端时间线 | 先订阅 `GET /demo01/observe/stream` 再发用例 1 | SSE 按序收到 ≥5 条事件（CHAT_CLIENT+2×LLM+TOOL(getCurrentTime)+TOOL(getCurrentShift)），同一 traceId |
 | 3 | 链路完整性 | 用例 1 的 traceId 去查 | console 日志行、审计 AUDIT 行、Zipkin span 树三处同一 traceId |
-| 4 | 脱敏合规 | 检查一切出服务的内容（SSE/日志） | `temp` 原值只在内存，出口处均为 `***` |
-| 5 | 成本计量 | 调用前后各查一次 `GET /actuator/metrics/agent.token.cost` | `measurements` 的 TOTAL 增量 ≈ 3 次 LLM 调用 token 之和；`availableTags` 含 `type` 维度 |
-| 6 | 错误韧性 | 临时让工单工具抛异常再调 | 结论降级为"工单创建失败"；事件流出现 ERROR；指标照常；服务不崩 |
+| 4 | 班次标签合规 | 看 chat_model span 的 KeyValues | `shift` 取值仅 morning/afternoon/night 之一（低基数纪律落地） |
+| 5 | 成本计量 | 调用前后各查一次 `GET /actuator/metrics/agent.token.cost` | `measurements` 的 TOTAL 增量 ≈ 2 次 LLM 调用 token 之和；`availableTags` 含 `type` 维度 |
+| 6 | 错误韧性 | 临时让 `getCurrentShift` 抛异常再调 | 结论降级为"班次获取失败"；事件流出现 ERROR；指标照常；服务不崩 |
 | 7 | 断线重连 | 中途断开 SSE 再重连 | replay 补发近期事件后继续实时 |
 
 ## 11.6 从 demo 到生产：演进路线（ADR 风格）
@@ -243,7 +239,7 @@ sequenceDiagram
 | 演进 | 驱动需求 | 方案 | 取舍理由 |
 |---|---|---|---|
 | V1（本篇）单实例全内存 | 学习/POC | buffer + Sinks + 结构化日志审计 | 零外部依赖，架构契约已对齐生产 |
-| V2 多实例 | 高可用 | 事件走 Redis Pub/Sub 聚合；审计走 MQ；traceId 落工单表 | Handler 不改，只换"广播通道"实现 |
+| V2 多实例 | 高可用 | 事件走 Redis Pub/Sub 聚合；审计走 MQ；traceId 落巡检/交接记录表 | Handler 不改，只换"广播通道"实现 |
 | V3 合规留存 | 审计法规 | 事件+trace 全量入对象存储/时序库，保留期按合规（6 个月~2 年） | 观测数据本身成为合规证据链 |
 | V4 治理闭环 | 成本/质量 | 接入 Prometheus+Grafana（只加 registry 依赖，业务代码零改动）；采样率与脱敏规则收敛到 Control Plane 配置中心；告警回驱动（如 token 超预算自动降级模型） | 呼应 [教程 27-成本治理]、[教程 41-数据飞轮] |
 
@@ -255,7 +251,7 @@ sequenceDiagram
 | span 树/生命周期/基数纪律 | 01 |
 | 五组件协作与扩展点选型 | 02 |
 | 自定义 Handler 收集事件流 | 03 |
-| Convention 注工业标签、Filter 脱敏 | 04 |
+| Convention 注班次标签、Filter 收尾加工 | 04 |
 | SSE 推前端时间线（断线重连） | 05 |
 | traceId 全链路贯穿 + 日志定位 | 06 |
 | Token 计量、SLO、基数熔断（零安装） | 07 |

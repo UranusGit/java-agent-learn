@@ -44,7 +44,6 @@ package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
-import demo.demo01.tools.DeviceTools;
 import demo.demo01.tools.TimeTool;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -67,11 +66,11 @@ public class InspectionController {
     private final AgentEventCollector eventCollector;
     private final ObservationRegistry registry;   // 08 关起：手动埋"中断观测"用
 
-    public InspectionController(ChatModel chatModel, DeviceTools deviceTools, TimeTool timeTool,
+    public InspectionController(ChatModel chatModel, TimeTool timeTool,
                                 AgentEventCollector eventCollector,
                                 ObservationRegistry registry) {
         this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(deviceTools, timeTool)
+                .defaultTools(timeTool)
                 .build();
         this.eventCollector = eventCollector;
         this.registry = registry;
@@ -151,7 +150,7 @@ graph LR
 
 | 用例 | 操作 | 现象 |
 |---|---|---|
-| 流式巡检 | `GET http://localhost:8080/demo01/inspect/stream?prompt=巡检CNC-001并给出建议` | Postman 逐条收到 `event: delta` 的 token，最后 `event: done` |
+| 流式巡检 | `GET http://localhost:8080/demo01/inspect/stream?prompt=现在几点？当前什么班次？给交接记录写一句总结` | Postman 逐条收到 `event: delta` 的 token，最后 `event: done` |
 | 观测滞后性验证 | 同时订阅 `/observe/stream`，再发上面请求 | LLM 相关观测事件在**流结束后**才出现（span 在流终止时 stop）——与 8.1 时序图一致 |
 | 中断观测 | 发起流式请求后，立即在 Postman 点 Cancel | console 出现 `agent.stream.cancelled` 观测；无 ERROR 事件（cancel 不是 error） |
 | 工具照常 | 流式 prompt 里要求查两台设备 | 内容流里能观察到"卡顿-恢复"节奏（工具执行时不吐 token），时间线出现 TOOL 事件——用户可感知的工具等待 |

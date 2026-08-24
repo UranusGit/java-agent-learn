@@ -17,13 +17,13 @@
 
 ## 4.2 业务上下文怎么进 Convention：先解决"传值"
 
-Convention 被框架回调时，只有 `ToolCallingObservationContext`——产线号在 HTTP 请求参数里，怎么传进来？先把候选通道和坑讲清（**这里是原理辨析，本关最终代码不采用**）：
+Convention 被框架回调时，拿到的是领域 Context——业务身份（如班次）从哪来？先把候选通道和坑讲清（**这里是原理辨析，本关最终代码不采用**）：
 
 - **a. Reactor Context**：WebFlux 下的"官方通道"（铁律：禁 ThreadLocal）。但 `chatClient...call()` 是同步阻塞调用，Reactor Context 在这条调用里**取不到**——只有换成 08 关的 `.stream()` 全响应式链路才成立。这是很多团队在 WebFlux + Spring AI 上踩的第一个坑：`.contextWrite()` 写了，工具/Convention 里读不到；
-- **b. Spring AI 的 `ToolContext`**：`.prompt().toolContext(Map.of("line.id", line))` 把业务身份随提示传给工具执行链——生产推荐，工具回调里能拿到这个 Map；
-- **c. 从领域数据解析**：设备编号本身含产线信息（`CNC-001`、`AGV-07`），Convention 直接从工具参数里解析产线前缀。
+- **b. Spring AI 的 `ToolContext`**：`.prompt().toolContext(Map.of("shift", "morning"))` 把业务身份随提示传给工具执行链——生产推荐，工具回调里能拿到这个 Map；
+- **c. 从领域数据解析**：观测发生时自行从可用信息推导业务身份。
 
-为了保持 demo 简约且贴工业真相，本关采用 **c**（b 在 08 关流式改造后再演示成本更低）。c 演示的本质不变——**Convention 能基于 Context 里的领域数据动态生成标签**。本关新增文件 `ObsConventionConfig`（完整文件）：
+本关采用 **c**：给 **LLM 观测**追加 `shift`（班次）低基数标签——按观测发生时刻解析，morning/afternoon/night 恰好是**教科书级的低基数案例**（3 个可枚举取值），对照面就是"把完整时间戳当标签"的高基数灾难（时间戳无限取值，一枚标签炸掉指标系统）。演示的本质不变——**Convention 能基于领域数据动态生成标签**。本关新增文件 `ObsConventionConfig`（完整文件）：
 
 ```java
 // src/main/java/demo/demo01/obs/ObsConventionConfig.java（完整文件）
@@ -31,8 +31,8 @@ package demo.demo01.obs;
 
 import io.micrometer.common.KeyValue;
 import io.micrometer.common.KeyValues;
-import org.springframework.ai.tool.observation.DefaultToolCallingObservationConvention;
-import org.springframework.ai.tool.observation.ToolCallingObservationContext;
+import org.springframework.ai.chat.observation.ChatModelObservationContext;
+import org.springframework.ai.chat.observation.DefaultChatModelObservationConvention;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -41,41 +41,39 @@ import org.springframework.context.annotation.Primary;
 public class ObsConventionConfig {
 
     /**
-     * 覆盖默认工具 Convention：追加工业低基数标签 line.id。
-     * @Primary：容器里已有自动装配的 DefaultToolCallingObservationConvention，
+     * 覆盖默认 ChatModel Convention：追加工业低基数标签 shift（班次）。
+     * @Primary：容器里已有自动装配的 DefaultChatModelObservationConvention，
      * 显式声明优先级，确保装配不歧义。
      */
     @Bean
     @Primary
-    public IndustrialToolConvention industrialToolConvention() {
-        return new IndustrialToolConvention();
+    public ShiftChatModelConvention shiftChatModelConvention() {
+        return new ShiftChatModelConvention();
     }
 
-    public static class IndustrialToolConvention extends DefaultToolCallingObservationConvention {
+    public static class ShiftChatModelConvention extends DefaultChatModelObservationConvention {
 
         @Override
-        public KeyValues getLowCardinalityKeyValues(ToolCallingObservationContext context) {
-            return super.getLowCardinalityKeyValues(context).and(lineId(context));
+        public KeyValues getLowCardinalityKeyValues(ChatModelObservationContext context) {
+            return super.getLowCardinalityKeyValues(context).and(shift());
         }
 
-        private KeyValue lineId(ToolCallingObservationContext context) {
-            String args = String.valueOf(context.getToolCallArguments());   // {"deviceId":"CNC-001",...}
-            java.util.regex.Matcher m = java.util.regex.Pattern
-                    .compile("\"(CNC|AGV)-").matcher(args);
-            String prefix = m.find() ? m.group(1) : "unknown";
-            return KeyValue.of("line.id", prefix);   // CNC/AGV 可枚举 → 低基数，可进指标
+        private KeyValue shift() {
+            int hour = java.time.LocalDateTime.now().getHour();
+            String shift = hour < 8 ? "morning" : hour < 16 ? "afternoon" : "night";
+            return KeyValue.of("shift", shift);   // 3 个可枚举取值 → 低基数，可进指标
         }
     }
 }
 ```
 
-> demo 里正则取前缀够用；生产推荐 `ToolContext` 或从配置中心拿"设备→产线"映射表（设备字典）。**原理不变：低基数标签必须可枚举**（`CNC/AGV/unknown` 三种，安全）；`deviceId` 全量值则永不进低基数。
+> demo 里"按小时解析班次"够用；生产推荐 `ToolContext` 或从配置中心拿排班表（含调休/倒班的非常规班次日历）。**原理不变：低基数标签必须可枚举**（`morning/afternoon/night` 三种，安全）；完整时间戳、设备编号这类无限取值则永不进低基数。
 
 `@Bean` 一个 Convention 即完成替换：Boot 自动装配发现容器里有 `ToolCallingObservationConvention` 类型的 Bean，`Default` 退位（同一类型取你的是否生效取决于装配覆盖规则——实测时若两者并存，用 `@Primary` 明确优先）。
 
-## 4.3 Filter：stop 前的脱敏质检
+## 4.3 Filter：stop 前的收尾加工（审计标记与脱敏范式）
 
-`ToolCallingContentObservationFilter`（Spring AI 内置，随 `include-content=true` 起效）负责把内容放进 Context；我们要在它**之后**再洗一遍敏感字段。本关新增文件 `ObsFilterConfig`（完整文件）：
+Filter 是**所有 Handler 收到 stop 事件前的最后一道加工口**。TimeTool 的时间/班次结果没有敏感字段，所以本关演示它最典型的另一种用法——**给 Context 附加审计标记**，供下游 Handler 统一消费；敏感字段脱敏是同一个结构（在 Filter 里对 `setToolCallResult(...)` 改写一次，处处生效），范式一并写清。本关新增文件 `ObsFilterConfig`（完整文件）：
 
 ```java
 // src/main/java/demo/demo01/obs/ObsFilterConfig.java（完整文件）
@@ -90,41 +88,42 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class ObsFilterConfig {
 
+    /** 审计标记键：Filter 写入，任何 Handler 在 onStop 里都能读到 */
+    public static final String AUDIT_COMPLETE = "audit.complete";
+
     @Bean
-    public ObservationFilter sensitiveToolFilter() {
+    public ObservationFilter toolAuditFilter() {
         return context -> {
-            if (context instanceof ToolCallingObservationContext tc
-                    && tc.getToolCallResult() != null) {
-                tc.setToolCallResult(mask(tc.getToolCallResult()));   // 结果里的敏感数值脱敏
+            if (context instanceof ToolCallingObservationContext tc) {
+                // 审计完整性标记：参数与结果是否齐备（缺参数或无结果 → 交接/归档时人工复核）
+                boolean complete = tc.getToolCallArguments() != null && tc.getToolCallResult() != null;
+                context.put(AUDIT_COMPLETE, complete);
             }
             return context;
         };
-    }
-
-    private static String mask(String s) {
-        return s == null ? null : s.replaceAll("\"temp\"\\s*:\\s*[0-9.]+", "\"temp\":\"***\"");
     }
 }
 ```
 
 三个决策说明：
 
-1. **脱敏放 Filter 不放 Handler**：Filter 在所有 Handler 的 stop 消费前执行（02 关时序图），一次加工、处处安全；放 Handler 则每个 Handler 都要记得洗，漏一个就泄露。
-2. **只洗高基数内容字段**：`temp` 这类工艺参数在你厂里若属机密，就该这么拦；KeyValues 里的 `gen_ai.tool.call.name` 是可枚举工具名，无需洗。
-3. **demo 用正则，生产用结构化方案**：JSON 用 Jackson 解析后按字段白名单重建——正则脱敏对复杂嵌套不可靠（这是刻意的工业提醒，不是本文偷懒）。
+1. **收尾加工放 Filter 不放 Handler**：Filter 在所有 Handler 的 stop 消费前执行（02 关时序图），一次加工、处处可见；放 Handler 则每个 Handler 都要重复算，漏一个就不一致。
+2. **脱敏是同构范式**：将来工具结果含敏感字段（如员工手机号、工艺参数），就在同一个位置 `tc.setToolCallResult(mask(...))`——Filter 层一次改写，console/事件流/SSE/审计全部拿到脱敏后内容（TimeTool 暂无此需求，故本关先落审计标记这个真实需求）。
+3. **demo 用 put/remove 标记，生产脱敏用结构化方案**：JSON 结果用 Jackson 解析后按字段白名单重建——正则脱敏对复杂嵌套不可靠（刻意的工业提醒）。
 
 ## 4.4 组件协作全景（本关后你的观测管线）
 
 ```mermaid
 graph LR
     subgraph 埋点["Spring AI 埋点"]
+        M["ChatModelObservation"]
         T["ToolCallingObservation<br/>（Context 装参数/结果）"]
     end
-    T --> CV["IndustrialToolConvention<br/>追加 line.id 标签"]
+    M --> CV["ShiftChatModelConvention<br/>追加 shift 标签"]
     T --> F1["ContentObservationFilter<br/>内置：注入内容"]
-    F1 --> F2["SensitiveToolFilter<br/>本关：脱敏"]
+    F1 --> F2["ToolAuditFilter<br/>本关：审计标记/脱敏位"]
     F2 --> H1["ObservationTextPublisher"]
-    F2 --> H2["AgentEventCollector<br/>03关事件流（已脱敏）"]
+    F2 --> H2["AgentEventCollector<br/>03关事件流"]
     F2 --> H3["07关 MeterRegistry"]
 ```
 
@@ -147,16 +146,18 @@ flowchart TD
 
 | 用例 | 请求 | 预期现象 |
 |---|---|---|
-| 标签生效 | `GET /demo01/inspect?prompt=查CNC-001状态`，看 console 的 tool 观测 | KeyValues 出现 `line.id='CNC'`；问 AGV-07 则为 `line.id='AGV'` |
-| 脱敏生效 | 同上，看 `AgentEventCollector` 输出或 `/demo01/events` | `TOOL` 事件 detail 中 `"temp":78.5` 变为 `"temp":"***"` |
-| 默认行为保留 | 任意工具调用 | `gen_ai.tool.call.name`、`spring.ai.kind` 等默认标签仍在（继承的增量式覆写没推翻默认） |
-| 事件流对照 | `GET /demo01/events` | detail 已是脱敏后文本——验证 Filter 先于 Handler |
+| 标签生效 | `GET /demo01/inspect?prompt=现在几点？当前什么班次？`，看 console 的 chat_model 观测 | 两次 LLM span 的 KeyValues 均出现 `shift='morning'`（按你本机时刻显示对应班次） |
+| 标签可枚举验证 | 晚上 16 点后重复调用 | `shift='night'`——取值始终只有 3 种，低基数安全 |
+| 审计标记生效 | 同上，看 `AgentEventCollector` 输出或 `/demo01/events` | TOOL 事件处理时 Context 可读 `audit.complete=true`（在 Handler 的 onStop 里 `context.get(ObsFilterConfig.AUDIT_COMPLETE)` 验证） |
+| 默认行为保留 | 任意工具调用 | `gen_ai.operation.name`、`spring_ai.kind` 等默认标签仍在（继承的增量式覆写没推翻默认） |
+| 事件流对照 | `GET /demo01/events` | Filter 先于 Handler 的加工顺序（标记在 Handler 读到时已写入） |
 
 ## 4.7 本关沉淀
 
 - Convention 管标签/命名，Filter 管 Context 收尾加工，职责不混；
 - 业务身份传值：WebFlux 下禁 ThreadLocal，demo 从领域数据解析，生产用 ToolContext/字典服务；
+- 低基数的判据是可枚举：shift（3 值）安全，时间戳/设备编号（无限值）是高基数禁区；
 - 增量式覆写（继承 Default）优于推翻重写——默认行为是生态共识，别轻易丢；
-- 脱敏必须在 Filter 层一次完成，正则只配 demo，生产用结构化白名单。
+- 脱敏/标记必须在 Filter 层一次完成，正则只配 demo，生产用结构化白名单。
 
 **下一关**：事件流已合规，把它推到前端页面实时展示。→ [附录 18-Observation/05]

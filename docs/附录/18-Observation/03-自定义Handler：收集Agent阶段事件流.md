@@ -114,7 +114,6 @@ package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
-import demo.demo01.tools.DeviceTools;
 import demo.demo01.tools.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
@@ -132,10 +131,10 @@ public class InspectionController {
     private final ChatClient chatClient;
     private final AgentEventCollector eventCollector;
 
-    public InspectionController(ChatModel chatModel, DeviceTools deviceTools, TimeTool timeTool,
+    public InspectionController(ChatModel chatModel, TimeTool timeTool,
                                 AgentEventCollector eventCollector) {
         this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(deviceTools, timeTool)           // 注册工业工具 + 时间工具
+                .defaultTools(timeTool)                        // 注册时间工具
                 .build();
         this.eventCollector = eventCollector;
     }
@@ -183,9 +182,9 @@ graph LR
 
 | 用例 | 方法/URL | 现象 |
 |---|---|---|
-| 触发一轮工具调用 | `GET http://localhost:8080/demo01/inspect?prompt=检查CNC-001状态并创建维修工单` | 返回自然语言结论 |
-| 查看事件流 | `GET http://localhost:8080/demo01/events` | JSON 数组，按序出现 `CHAT_CLIENT` → `LLM` → `TOOL(queryDeviceStatus)` → `TOOL(createWorkOrder)` → `LLM`，与你 01 关看到的 span 树一一对应 |
-| 错误事件 | 在 `createWorkOrder` 里临时抛异常，重复上一用例，再查 `/events` | 数组中出现 `phase=ERROR` 条目，detail 含异常信息 |
+| 触发一轮工具调用 | `GET http://localhost:8080/demo01/inspect?prompt=现在几点？当前是什么班次？给交接记录写一句总结` | 返回自然语言结论 |
+| 查看事件流 | `GET http://localhost:8080/demo01/events` | JSON 数组，按序出现 `CHAT_CLIENT` → `LLM` → `TOOL(getCurrentTime)` → `TOOL(getCurrentShift)` → `LLM`，与你 01 关看到的 span 树一一对应 |
+| 错误事件 | 在 `getCurrentShift` 里临时抛异常，重复上一用例，再查 `/events` | 数组中出现 `phase=ERROR` 条目，detail 含异常信息 |
 | 无工具对比 | `GET /demo01/inspect?prompt=你好` 后查 `/events` | 只有 `CHAT_CLIENT`+`LLM`，无 `TOOL` |
 
 **验证要点**：`/events` 的顺序与 `ObservationTextPublisher` 的输出顺序一致——同一事件流、两种消费形态，这就是 02 关广播机制的实证。
@@ -196,4 +195,4 @@ graph LR
 - 截断、并发安全、不外泄框架对象——观测代码自己的工程纪律；
 - "内存 buffer + REST 查询"是通往生产存储（Redis/MQ）的最小正确骨架。
 
-**下一关**：事件里想带工单号/产线号？想对参数脱敏？→ Convention 与 Filter。[附录 18-Observation/04]
+**下一关**：事件里想带班次等业务标签？想对观测内容做统一加工？→ Convention 与 Filter。[附录 18-Observation/04]

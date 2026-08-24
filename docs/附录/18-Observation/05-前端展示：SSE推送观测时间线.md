@@ -112,7 +112,6 @@ package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
-import demo.demo01.tools.DeviceTools;
 import demo.demo01.tools.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
@@ -132,10 +131,10 @@ public class InspectionController {
     private final ChatClient chatClient;
     private final AgentEventCollector eventCollector;
 
-    public InspectionController(ChatModel chatModel, DeviceTools deviceTools, TimeTool timeTool,
+    public InspectionController(ChatModel chatModel, TimeTool timeTool,
                                 AgentEventCollector eventCollector) {
         this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(deviceTools, timeTool)
+                .defaultTools(timeTool)
                 .build();
         this.eventCollector = eventCollector;
     }
@@ -190,8 +189,8 @@ export default function ObserveTimeline() {
 | 步骤 | 操作 | 现象 |
 |---|---|---|
 | 1 建订阅 | Postman 新建请求 `GET http://localhost:8080/demo01/observe/stream`，点 **Send**（Postman 会识别 event-stream 并保持连接） | Body 面板进入等待，可能先收到最近的历史事件回放（`replay().limit(64)`） |
-| 2 触发业务 | **另开一个请求标签页**：`GET http://localhost:8080/demo01/inspect?prompt=检查CNC-001状态并创建维修工单` | 返回正常结论 |
-| 3 看推送 | 回到步骤 1 的标签页 | 逐条实时出现 `event: agent-event`，`data` 为 AgentEvent JSON，顺序 `CHAT_CLIENT → LLM → TOOL(queryDeviceStatus) → TOOL(createWorkOrder) → LLM` |
+| 2 触发业务 | **另开一个请求标签页**：`GET http://localhost:8080/demo01/inspect?prompt=现在几点？当前是什么班次？给交接记录写一句总结` | 返回正常结论 |
+| 3 看推送 | 回到步骤 1 的标签页 | 逐条实时出现 `event: agent-event`，`data` 为 AgentEvent JSON，顺序 `CHAT_CLIENT → LLM → TOOL(getCurrentTime) → TOOL(getCurrentShift) → LLM` |
 | 4 断线重连 | 手动断开再重发步骤 1 请求 | 先回放最近若干条再继续实时——验证 replay 语义 |
 | 5 脱敏回归 | 检查 TOOL 事件的 detail | `temp` 字段为 `***`（04 关 Filter 在 SSE 链路同样生效——**一次加工处处安全**的实证） |
 

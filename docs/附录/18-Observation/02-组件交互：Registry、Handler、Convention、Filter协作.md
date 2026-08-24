@@ -121,11 +121,11 @@ public class ToolCountHandler implements ObservationHandler<ToolCallingObservati
 | 项 | 内容 |
 |---|---|
 | 方法 | `GET` |
-| URL | `http://localhost:8080/demo01/inspect?prompt=先查CNC-001状态，再查AGV-07状态` |
+| URL | `http://localhost:8080/demo01/inspect?prompt=现在几点？当前是什么班次？` |
 
 **预期现象**：
 
-1. console 在 `ObservationTextPublisher` 的整段输出之外，多出两行 `[工具调用第 1 次] queryDeviceStatus 参数=...`、`[工具调用第 2 次] ...`——**两个 Handler 同时消费同一事件流**，验证广播机制；
+1. console 在 `ObservationTextPublisher` 的整段输出之外，多出两行 `[工具调用第 1 次] getCurrentTime 参数=null`、`[工具调用第 2 次] getCurrentShift 参数=null`——**两个 Handler 同时消费同一事件流**，验证广播机制（两个工具均无参数，参数为 null 属实）；
 2. 连续调用三次接口，计数持续增长（进程内状态）——同时体会：Handler 里放内存状态在多实例部署下会各自为政，生产要用 Micrometer 计数器（07 关）；
 3. 问一个不触发工具的问题（`prompt=你好`），确认无该输出。
 

@@ -33,31 +33,30 @@ import io.micrometer.observation.tck.TestObservationRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.observation.ToolCallingObservationContext;
+import org.springframework.ai.tool.observation.DefaultToolCallingObservationConvention;
 
 import static io.micrometer.observation.tck.TestObservationRegistryAssert.assertThat;
 
 class ToolObservationTest {
 
     @Test
-    void toolObservationCarriesLineId() {
+    void toolObservationCarriesToolName() {
         TestObservationRegistry reg = TestObservationRegistry.create();
 
         ToolCallingObservationContext ctx = ToolCallingObservationContext.builder()
                 .toolDefinition(ToolDefinition.builder()
-                        .name("queryDeviceStatus")
+                        .name("getCurrentTime")
                         .build())
                 .build();
-        ctx.setToolCallArguments("{\"deviceId\":\"CNC-001\"}");
 
         Observation.createNotStarted("spring.ai.tool", () -> ctx, reg)
-                .observationConvention(new ObsConventionConfig.IndustrialToolConvention())
+                .observationConvention(new DefaultToolCallingObservationConvention())
                 .observe(() -> { });
 
         assertThat(reg)
                 .hasObservationWithNameEqualTo("spring.ai.tool")
                 .that()
-                .hasLowCardinalityKeyValue("line.id", "CNC")   // 断言工业标签算对了
-                .hasLowCardinalityKeyValue("gen_ai.tool.call.name", "queryDeviceStatus");
+                .hasLowCardinalityKeyValue("gen_ai.tool.call.name", "getCurrentTime");   // 工具名标签算对了
     }
 
     @Test
@@ -66,7 +65,7 @@ class ToolObservationTest {
         TestObservationRegistry reg = TestObservationRegistry.create();
         ToolCallingObservationContext ctx = ToolCallingObservationContext.builder()
                 .toolDefinition(ToolDefinition.builder()
-                        .name("t")
+                        .name("getCurrentTime")
                         .build())
                 .build();   // 不 set 参数/结果 → null
         Observation.createNotStarted("spring.ai.tool", () -> ctx, reg).observe(() -> { });
@@ -74,6 +73,8 @@ class ToolObservationTest {
     }
 }
 ```
+
+（04 关的 `shift` 班次标签在 ChatModel 观测上、依赖观测发生时刻，单测里构造 `ChatModelObservationContext` 需要 Prompt 与 AiOperationMetadata，成本高于收益——它由 11 关的集成测试覆盖：跑一次 `/inspect` 后断言时间线事件的 shift 值合法。）
 
 > 断言 API 以本地 `micrometer-observation-test` 1.17.0 jar 实证为准（`hasObservationWithNameEqualTo`/`hasLowCardinalityKeyValue` 等在 `TestObservationRegistryAssert` 及其内部类上）；Builder 细节（`ToolDefinition.builder()` 的参数集）写码时 javap 复核一次——测试代码同样守铁律 0。
 
@@ -86,7 +87,7 @@ class ToolObservationTest {
 ```mermaid
 sequenceDiagram
     participant A as Agent服务(已开tracing)
-    participant T as 工具服务(工单系统)
+    participant T as 工具服务(排班系统)
     A->>T: POST /work-orders (自动注入 traceparent 头)
     Note over T: 抽取头 → 作为父span开启<br/>traceId 与上游相同
     T-->>A: 200 (span 闭合,挂到同一trace)
@@ -122,7 +123,7 @@ if (span != null) {
 |---|---|---|
 | 单测跑通 | `mvn test` | 两条观测单测绿——工业标签与 null 安全被固化 |
 | 契约测试 | 改坏 Collector（如注释掉 TOOL 分支）再跑集成测试 | 事件顺序断言失败——观测契约先于线上事故报警 |
-| 跨服务验证（有下游时） | 下游起一个最小 Boot 服务接工单接口，两边都开 tracing；调 `/inspect` 建工单 | Zipkin 一条 trace 含两个服务的 span；两服务日志同一 traceId |
+| 跨服务验证（有下游时） | 下游起一个最小 Boot 服务接排班查询接口，两边都开 tracing；调 `/inspect` 问班次 | Zipkin 一条 trace 含两个服务的 span；两服务日志同一 traceId |
 | 手动传 traceparent | Postman 请求头加 `traceparent: 00-64f...-c1a...-01` 再调 `/inspect` | 该请求的日志/事件 traceId 变成你指定的值——理解"入口接续外部 trace"（排障时把前端报错的 traceId 手工重放） |
 
 ## 10.6 本关沉淀
