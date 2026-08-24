@@ -107,26 +107,38 @@ public class ObsConfig {
 
 **为什么是它**：`ObservationTextPublisher` 是 Micrometer 自带的 `ObservationHandler`，在观测的 stop/error 时机打印整段观测。它就是后面所有自定义 Handler 的"原型"——你现在用它，03 关会自己写一个。
 
-## 0.5 Step 3：写最小工业 Agent（两个工具）
+## 0.5 Step 3：写最小工业 Agent（两个工具类）
 
 ```java
-// src/main/java/demo/demo01/tools/DeviceTools.java
+// src/main/java/demo/demo01/tools/TimeTool.java（完整文件）
 package demo.demo01.tools;
 
 import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 @Component
-public class DeviceTools {
+public class TimeTool {
 
-    @Tool(description = "获取当前时间，格式 yyyy-MM-dd HH:mm:ss。巡检、工单、报告都需要时间戳时必须先调用此工具")
+    @Tool(description = "获取当前系统时间，格式 yyyy-MM-dd HH:mm:ss。巡检、工单、报告都需要时间戳时必须先调用此工具")
     public String getCurrentTime() {
         return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
     }
+}
+```
+
+```java
+// src/main/java/demo/demo01/tools/DeviceTools.java（完整文件）
+package demo.demo01.tools;
+
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.stereotype.Component;
+
+@Component
+public class DeviceTools {
 
     @Tool(description = "查询指定工业设备的实时运行状态，返回温度、振动、负载等指标")
     public String queryDeviceStatus(
@@ -137,13 +149,14 @@ public class DeviceTools {
 }
 ```
 
-**为什么配一个时间工具**：LLM 自己没有时钟，问它"现在几点"必幻觉。给它 `getCurrentTime` 后，巡检结论里的时间戳才是真的——这也是工业场景的经典坑（工单时间错误会导致追溯错位）。更妙的是，它是**最干净的观测实验对象**：无参数、执行快，正好用来观察"LLM 何时决定调工具"（问时间才调，问设备不调）。
+**为什么单独一个 TimeTool**：LLM 自己没有时钟，问它"现在几点"必幻觉。给它 `getCurrentTime` 后，巡检结论里的时间戳才是真的——这也是工业场景的经典坑（工单时间错误会导致追溯错位）。独立成类而非塞进 DeviceTools，是因为**时间能力与设备能力是两个变化方向**（时间格式可能全局统一调整，设备工具会持续增加），单职责在工具层同样成立。更妙的是，它是**最干净的观测实验对象**：无参数、执行快，正好用来观察"LLM 何时决定调工具"（问时间才调，问设备不调）。
 
 ```java
-// src/main/java/demo/demo01/controller/InspectionController.java
+// src/main/java/demo/demo01/controller/InspectionController.java（完整文件）
 package demo.demo01.controller;
 
 import demo.demo01.tools.DeviceTools;
+import demo.demo01.tools.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -157,9 +170,9 @@ public class InspectionController {
 
     private final ChatClient chatClient;
 
-    public InspectionController(ChatModel chatModel, DeviceTools deviceTools) {
+    public InspectionController(ChatModel chatModel, DeviceTools deviceTools, TimeTool timeTool) {
         this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(deviceTools)                     // 注册工业工具
+                .defaultTools(deviceTools, timeTool)           // 注册工业工具 + 时间工具
                 .build();
     }
 

@@ -21,7 +21,7 @@ graph TB
     end
     subgraph Agent层["Agent 运行时"]
         CC["ChatClient<br/>多工具 + RAG Advisor"]
-        T0["getCurrentTime"]
+        T0["TimeTool.getCurrentTime"]
         T1["queryDeviceStatus"]
         T2["createWorkOrder"]
         CC --> T0 & T1 & T2
@@ -62,6 +62,7 @@ package demo.demo01.controller;
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
 import demo.demo01.tools.DeviceTools;
+import demo.demo01.tools.TimeTool;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
@@ -93,12 +94,12 @@ public class InspectionController {
     private final AgentEventCollector eventCollector;
     private final ObservationRegistry registry;
 
-    public InspectionController(ChatModel chatModel, DeviceTools deviceTools,
+    public InspectionController(ChatModel chatModel, DeviceTools deviceTools, TimeTool timeTool,
                                 AgentEventCollector eventCollector,
                                 ObservationRegistry registry,
                                 VectorStore vectorStore) {
         this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(deviceTools)
+                .defaultTools(deviceTools, timeTool)
                 .defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore)
                         .searchRequest(SearchRequest.builder()
                                 .topK(3)

@@ -45,6 +45,7 @@ package demo.demo01.controller;
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
 import demo.demo01.tools.DeviceTools;
+import demo.demo01.tools.TimeTool;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
@@ -66,11 +67,11 @@ public class InspectionController {
     private final AgentEventCollector eventCollector;
     private final ObservationRegistry registry;   // 08 关起：手动埋"中断观测"用
 
-    public InspectionController(ChatModel chatModel, DeviceTools deviceTools,
+    public InspectionController(ChatModel chatModel, DeviceTools deviceTools, TimeTool timeTool,
                                 AgentEventCollector eventCollector,
                                 ObservationRegistry registry) {
         this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(deviceTools)
+                .defaultTools(deviceTools, timeTool)
                 .build();
         this.eventCollector = eventCollector;
         this.registry = registry;

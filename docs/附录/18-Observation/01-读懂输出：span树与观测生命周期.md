@@ -72,9 +72,6 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-
 @Component
 public class DeviceTools {
 
@@ -82,11 +79,6 @@ public class DeviceTools {
 
     public DeviceTools(ObservationRegistry registry) {
         this.registry = registry;
-    }
-
-    @Tool(description = "获取当前时间，格式 yyyy-MM-dd HH:mm:ss。巡检、工单、报告都需要时间戳时必须先调用此工具")
-    public String getCurrentTime() {
-        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
     }
 
     @Tool(description = "查询指定工业设备的实时运行状态，返回温度、振动、负载等指标")
@@ -116,6 +108,8 @@ public class DeviceTools {
     }
 }
 ```
+
+（`TimeTool` 独立成类、本关不改动——00 关已说明：时间能力与设备能力是两个变化方向。）
 
 > javap 实证注记：`Observation` 上有实例方法 `error(Throwable)`/`stop()`/`openScope()`，静态方法 `start(String, Supplier<Context>, ObservationRegistry)`——**没有** `isStopped()`，也没有静态 `Observation.error(e, registry)`。所以"恰好 stop 一次"靠 try/finally 结构保证，不靠查询状态。日常业务更推荐一步式：`Observation.createNotStarted("work.order.create", Observation.Context::new, registry).observe(() -> doCreate())`——`observe()` 自动 start/stop；上面走四步是为了让你亲眼对应 1.3 的生命周期。
 

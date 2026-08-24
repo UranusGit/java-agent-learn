@@ -115,6 +115,7 @@ package demo.demo01.controller;
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
 import demo.demo01.tools.DeviceTools;
+import demo.demo01.tools.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -131,10 +132,10 @@ public class InspectionController {
     private final ChatClient chatClient;
     private final AgentEventCollector eventCollector;
 
-    public InspectionController(ChatModel chatModel, DeviceTools deviceTools,
+    public InspectionController(ChatModel chatModel, DeviceTools deviceTools, TimeTool timeTool,
                                 AgentEventCollector eventCollector) {
         this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(deviceTools)                     // 注册工业工具
+                .defaultTools(deviceTools, timeTool)           // 注册工业工具 + 时间工具
                 .build();
         this.eventCollector = eventCollector;
     }
