@@ -69,19 +69,15 @@ package demo.demo01.tools;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
-@Component
 public class TimeTool {
 
-    private final ObservationRegistry registry;   // 注入 Boot 自动装配的注册表（01 关起）
-
-    public TimeTool(ObservationRegistry registry) {
-        this.registry = registry;
-    }
+    @Autowired   // ★ demo01 习惯：字段注入；工具对象虽是 new 出来的，但作为 @Bean 方法参数注入容器后仍可被装配
+    private ObservationRegistry registry;   // Boot 自动装配的注册表（01 关起）
 
     @Tool(description = "获取当前系统时间，格式 yyyy-MM-dd HH:mm:ss。巡检、工单、报告都需要时间戳时必须先调用此工具")
     public String getCurrentTime() {
@@ -106,6 +102,35 @@ public class TimeTool {
     }
 }
 ```
+
+> 装配说明（demo01 习惯的关键一环）：`new TimeTool()` 出来的对象默认**不会**被 Spring 处理 `@Autowired`——本关起 `ChatConfig` 升级，把 TimeTool 也声明为 Bean（Spring 会对 `@Bean` 返回的对象执行注解注入，registry 字段才生效）：
+>
+> ```java
+> // src/main/java/demo/demo01/config/ChatConfig.java（本关完整版 v2）
+> package demo.demo01.config;
+>
+> import demo.demo01.tools.TimeTool;
+> import org.springframework.ai.chat.client.ChatClient;
+> import org.springframework.context.annotation.Bean;
+> import org.springframework.context.annotation.Configuration;
+>
+> @Configuration
+> public class ChatConfig {
+>     @Bean
+>     public TimeTool timeTool() {
+>         return new TimeTool();   // ★ @Bean 返回的对象会被 Spring 做注解注入，@Autowired registry 生效
+>     }
+>
+>     @Bean
+>     public ChatClient chatClient(ChatClient.Builder builder, TimeTool timeTool) {
+>         return builder
+>                 .defaultTools(timeTool)   // ★ 用被容器处理过的同一个 Bean
+>                 .build();
+>     }
+> }
+> ```
+>
+> **这是"new 出来的工具也要观测"的工程细节，教材不说、生产必踩。**
 
 > javap 实证注记：`Observation` 上有实例方法 `error(Throwable)`/`stop()`/`openScope()`，静态方法 `start(String, Supplier<Context>, ObservationRegistry)`——**没有** `isStopped()`，也没有静态 `Observation.error(e, registry)`。所以"恰好 stop 一次"靠 try/finally 结构保证，不靠查询状态。日常业务更推荐一步式：`Observation.createNotStarted("shift.resolve", Observation.Context::new, registry).observe(() -> doResolve())`——`observe()` 自动 start/stop；上面走四步是为了让你亲眼对应 1.3 的生命周期。
 

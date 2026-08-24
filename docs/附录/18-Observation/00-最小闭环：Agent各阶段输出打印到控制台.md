@@ -45,14 +45,15 @@ graph LR
     A["00 console看见<br/>框架原生观测"] --> B["01 读懂输出<br/>span与生命周期"]
     B --> C["02 组件交互<br/>Registry/Handler/Convention"]
     C --> D["03 自定义Handler<br/>收集Agent阶段事件"]
-    D --> E["04 Convention/Filter<br/>工业标签+脱敏"]
+    D --> E["04 Convention/Filter<br/>班次标签+收尾加工"]
     E --> F["05 前端展示<br/>SSE推送时间线"]
     F --> G["06 Trace<br/>traceId全链路贯穿"]
     G --> H["07 指标治理<br/>Token计量+基数熔断"]
     H --> I["08 流式观测<br/>span闭合与中断"]
     I --> J["09 RAG观测<br/>检索质量可观测"]
     J --> K["10 测试与传播<br/>TestRegistry+traceparent"]
-    K --> L["11 综合实战<br/>工业巡检Agent闭环"]
+    K --> L["11 深度整合<br/>SpringAI2×Observation全景"]
+    L --> M["12 综合实战<br/>工业巡检Agent闭环"]
 ```
 
 业务载体统一为**工业现场巡检 Agent**：工具集从 `TimeTool` 起步（时间/班次感知），09 关再补 RAG 知识库检索——工具面刻意精简，观测面才能聚焦。
@@ -107,19 +108,17 @@ public class ObsConfig {
 
 **为什么是它**：`ObservationTextPublisher` 是 Micrometer 自带的 `ObservationHandler`，在观测的 stop/error 时机打印整段观测。它就是后面所有自定义 Handler 的"原型"——你现在用它，03 关会自己写一个。
 
-## 0.5 Step 3：写最小工业 Agent（一个工具类：TimeTool）
+## 0.5 Step 3：写最小工业 Agent（一个工具类 + 一个配置类）
 
 ```java
 // src/main/java/demo/demo01/tools/TimeTool.java（完整文件）
 package demo.demo01.tools;
 
 import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
-@Component
 public class TimeTool {
 
     @Tool(description = "获取当前系统时间，格式 yyyy-MM-dd HH:mm:ss。巡检、工单、报告都需要时间戳时必须先调用此工具")
@@ -131,33 +130,47 @@ public class TimeTool {
 
 **为什么从 TimeTool 起步**：LLM 自己没有时钟，问它"现在几点"必幻觉。给它 `getCurrentTime` 后，结论里的时间戳才是真的——这也是工业场景的经典坑（工单时间错误会导致追溯错位）。更妙的是，它是**最干净的观测实验对象**：无参数、执行快、结果确定，正好用来观察"LLM 何时决定调工具"（问时间才调，不问不调）。整个系列就用这一个工具类贯穿——01 关它会长出第二个方法（班次查询），业务面足够，观测面反而更聚焦。
 
+按 demo01 习惯：**工具类不挂 `@Component`**（`new TimeTool()` 注册进 Builder 即可），ChatClient 统一在 `ChatConfig` 里用 Boot 自动装配的 `ChatClient.Builder` 建，controller 只注入现成 Bean：
+
+```java
+// src/main/java/demo/demo01/config/ChatConfig.java（完整文件）
+package demo.demo01.config;
+
+import demo.demo01.tools.TimeTool;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ChatConfig {
+    @Bean
+    public ChatClient chatClient(ChatClient.Builder builder) {
+        return builder
+                .defaultTools(new TimeTool())   // ★ 注册时间工具；Builder 已带 ObservationRegistry，观测自动生效
+                .build();
+    }
+}
+```
+
 ```java
 // src/main/java/demo/demo01/controller/InspectionController.java（完整文件）
 package demo.demo01.controller;
 
-import demo.demo01.tools.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/demo01")
 public class InspectionController {
-
-    private final ChatClient chatClient;
-
-    public InspectionController(ChatModel chatModel, TimeTool timeTool) {
-        this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(timeTool)                        // 注册时间工具
-                .build();
-    }
+    @Autowired
+    private ChatClient client;
 
     @GetMapping("/inspect")
-    public String inspect(@RequestParam String prompt) {
-        return chatClient.prompt().user(prompt).call().content();
+    public String inspect(String prompt) {          // ★ 隐式参数绑定（demo01 习惯）
+        return client.prompt().user(prompt).call().content();
     }
 }
 ```

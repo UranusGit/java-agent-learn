@@ -107,18 +107,16 @@ public class AgentEventCollector implements ObservationHandler<Observation.Conte
 ## 5.3 SSE 端点：`InspectionController` v3 完整文件
 
 ```java
-// src/main/java/demo/demo01/controller/InspectionController.java（本关完整版）
+// src/main/java/demo/demo01/controller/InspectionController.java（本关完整版 v3）
 package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
-import demo.demo01.tools.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
@@ -128,20 +126,15 @@ import java.util.List;
 @RequestMapping("/demo01")
 public class InspectionController {
 
-    private final ChatClient chatClient;
-    private final AgentEventCollector eventCollector;
+    @Autowired
+    private ChatClient client;
 
-    public InspectionController(ChatModel chatModel, TimeTool timeTool,
-                                AgentEventCollector eventCollector) {
-        this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(timeTool)
-                .build();
-        this.eventCollector = eventCollector;
-    }
+    @Autowired
+    private AgentEventCollector eventCollector;
 
     @GetMapping("/inspect")
-    public String inspect(@RequestParam String prompt) {
-        return chatClient.prompt().user(prompt).call().content();
+    public String inspect(String prompt) {
+        return client.prompt().user(prompt).call().content();
     }
 
     @GetMapping("/events")

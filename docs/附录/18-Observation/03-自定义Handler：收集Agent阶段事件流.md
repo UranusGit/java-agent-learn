@@ -106,7 +106,7 @@ public class AgentEventCollector implements ObservationHandler<Observation.Conte
 
 ## 3.3 暴露查询接口（为 05 关前端做准备）
 
-`InspectionController` 本关后的**完整文件**（v2：注入 `AgentEventCollector` + `/events`）：
+`InspectionController` 本关后的**完整文件**（v2：注入 `AgentEventCollector` + `/events`；ChatClient 仍由 `ChatConfig` 提供，demo01 风格纯注入）：
 
 ```java
 // src/main/java/demo/demo01/controller/InspectionController.java（本关完整版）
@@ -114,12 +114,10 @@ package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
-import demo.demo01.tools.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -128,20 +126,15 @@ import java.util.List;
 @RequestMapping("/demo01")
 public class InspectionController {
 
-    private final ChatClient chatClient;
-    private final AgentEventCollector eventCollector;
+    @Autowired
+    private ChatClient client;                 // ChatConfig v2 提供（TimeTool 已带观测）
 
-    public InspectionController(ChatModel chatModel, TimeTool timeTool,
-                                AgentEventCollector eventCollector) {
-        this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(timeTool)                        // 注册时间工具
-                .build();
-        this.eventCollector = eventCollector;
-    }
+    @Autowired
+    private AgentEventCollector eventCollector;
 
     @GetMapping("/inspect")
-    public String inspect(@RequestParam String prompt) {
-        return chatClient.prompt().user(prompt).call().content();
+    public String inspect(String prompt) {
+        return client.prompt().user(prompt).call().content();
     }
 
     @GetMapping("/events")

@@ -109,6 +109,7 @@ import io.micrometer.tracing.Tracer;
 import org.springframework.ai.chat.client.observation.ChatClientObservationContext;
 import org.springframework.ai.chat.observation.ChatModelObservationContext;
 import org.springframework.ai.tool.observation.ToolCallingObservationContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
@@ -121,15 +122,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Component
 public class AgentEventCollector implements ObservationHandler<Observation.Context> {
 
-    private final Tracer tracer;   // 引入 tracing bridge 后自动装配
+    @Autowired
+    private Tracer tracer;   // ★ 引入 tracing bridge 后自动装配（demo01 习惯：字段注入）
 
     private final ConcurrentHashMap<String, List<AgentEvent>> buffer = new ConcurrentHashMap<>();
 
     private final Sinks.Many<AgentEvent> sink = Sinks.many().replay().limit(64);
-
-    public AgentEventCollector(Tracer tracer) {
-        this.tracer = tracer;
-    }
 
     @Override
     public boolean supportsContext(Observation.Context context) {

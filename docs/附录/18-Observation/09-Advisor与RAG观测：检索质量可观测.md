@@ -77,26 +77,64 @@ public class KnowledgeBaseInitializer implements ApplicationRunner {
 }
 ```
 
-## 9.3 RAG Agent：Advisor 注入检索（`InspectionController` v5 完整文件）
+## 9.3 RAG Agent：Advisor 注入检索（`ChatConfig` v3 + `InspectionController` v5）
+
+RAG 的挂载点在 **ChatClient 构造处**——按 demo01 习惯就是升级 `ChatConfig`，controller 不动：
 
 ```java
-// src/main/java/demo/demo01/controller/InspectionController.java（本关完整版 v5）
+// src/main/java/demo/demo01/config/ChatConfig.java（本关完整版 v3，RAG 版）
+package demo.demo01.config;
+
+import demo.demo01.tools.TimeTool;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ChatConfig {
+
+    @Autowired
+    private VectorStore vectorStore;   // 9.2 关的 SimpleVectorStore（或 pgvector 自动装配）
+
+    @Bean
+    public TimeTool timeTool() {
+        return new TimeTool();
+    }
+
+    @Bean
+    public ChatClient chatClient(ChatClient.Builder builder, TimeTool timeTool) {
+        return builder
+                .defaultTools(timeTool)
+                .defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore)
+                        .searchRequest(SearchRequest.builder()
+                                .topK(3)
+                                .similarityThreshold(0.5)
+                                .build())
+                        .build())
+                .build();
+    }
+}
+```
+
+`InspectionController` 本关**零改动**（仍是 08 关 v4）——Advisor 是 ChatClient 的默认配置，挂载对使用方完全透明；这也是"RAG 是 Advisor"这个设计的第一层红利。
+
+```java
+// src/main/java/demo/demo01/controller/InspectionController.java（本关完整版 v5，与 v4 相同——列出以供对照）
 package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
 import demo.demo01.obs.AgentEventCollector;
-import demo.demo01.tools.TimeTool;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
@@ -106,30 +144,18 @@ import java.util.List;
 @RequestMapping("/demo01")
 public class InspectionController {
 
-    private final ChatClient chatClient;
-    private final AgentEventCollector eventCollector;
-    private final ObservationRegistry registry;
+    @Autowired
+    private ChatClient client;               // ★ ChatConfig v3：TimeTool + RAG Advisor
 
-    public InspectionController(ChatModel chatModel, TimeTool timeTool,
-                                AgentEventCollector eventCollector,
-                                ObservationRegistry registry,
-                                VectorStore vectorStore) {
-        this.chatClient = ChatClient.builder(chatModel)
-                .defaultTools(timeTool)
-                .defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore)
-                        .searchRequest(SearchRequest.builder()
-                                .topK(3)
-                                .similarityThreshold(0.5)
-                                .build())
-                        .build())
-                .build();
-        this.eventCollector = eventCollector;
-        this.registry = registry;
-    }
+    @Autowired
+    private AgentEventCollector eventCollector;
+
+    @Autowired
+    private ObservationRegistry registry;
 
     @GetMapping("/inspect")
-    public String inspect(@RequestParam String prompt) {
-        return chatClient.prompt().user(prompt).call().content();
+    public String inspect(String prompt) {
+        return client.prompt().user(prompt).call().content();
     }
 
     @GetMapping("/events")
@@ -144,7 +170,7 @@ public class InspectionController {
     }
 
     @GetMapping(value = "/inspect/stream", produces = "text/event-stream")
-    public Flux<ServerSentEvent<String>> inspectStream(@RequestParam String prompt) {
+    public Flux<ServerSentEvent<String>> inspectStream(String prompt) {
         String reqId = String.valueOf(System.nanoTime());
         return doStream(prompt)
                 .doOnCancel(() -> Observation
@@ -159,8 +185,8 @@ public class InspectionController {
     }
 
     private Flux<ServerSentEvent<String>> doStream(String prompt) {
-        return chatClient.prompt()
-                .system("你是工厂设备巡检助手。查询工具返回 JSON 指标；温度>75 或振动>4 判定异常。")
+        return client.prompt()
+                .system("你是工厂现场巡检与交接助手。")
                 .user(prompt)
                 .stream()
                 .content()
@@ -182,6 +208,7 @@ import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
 import org.springframework.ai.chat.client.advisor.observation.AdvisorObservationContext;
 import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.stereotype.Component;
 
@@ -194,13 +221,11 @@ public class RagObservationHandlers {
     @Component
     public static class AdvisorTraceHandler implements ObservationHandler<AdvisorObservationContext> {
 
-        private final AgentEventCollector collector;
-        private final Tracer tracer;
+        @Autowired
+        private AgentEventCollector collector;
 
-        public AdvisorTraceHandler(AgentEventCollector collector, Tracer tracer) {
-            this.collector = collector;
-            this.tracer = tracer;
-        }
+        @Autowired
+        private Tracer tracer;
 
         @Override
         public boolean supportsContext(Observation.Context ctx) {
@@ -222,13 +247,11 @@ public class RagObservationHandlers {
     @Component
     public static class VectorStoreTraceHandler implements ObservationHandler<VectorStoreObservationContext> {
 
-        private final AgentEventCollector collector;
-        private final Tracer tracer;
+        @Autowired
+        private AgentEventCollector collector;
 
-        public VectorStoreTraceHandler(AgentEventCollector collector, Tracer tracer) {
-            this.collector = collector;
-            this.tracer = tracer;
-        }
+        @Autowired
+        private Tracer tracer;
 
         @Override
         public boolean supportsContext(Observation.Context ctx) {

@@ -42,14 +42,14 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import org.springframework.ai.chat.observation.ChatModelObservationContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
 public class TokenCostHandler implements ObservationHandler<ChatModelObservationContext> {
 
-    private final MeterRegistry meters;
-
-    public TokenCostHandler(MeterRegistry meters) { this.meters = meters; }
+    @Autowired
+    private MeterRegistry meters;   // ★ demo01 习惯：字段注入
 
     @Override
     public boolean supportsContext(Observation.Context context) {
@@ -84,6 +84,7 @@ import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import org.springframework.ai.tool.observation.ToolCallingObservationContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -94,9 +95,14 @@ public class ToolLatencyHandler implements ObservationHandler<ToolCallingObserva
     /** Context 无 getDuration()（铁律）：onStart 放计时起点，onStop 取出差值 */
     private static final String START_NANOS = ToolLatencyHandler.class.getName() + ".startNanos";
 
-    private final Timer toolTimer;
+    @Autowired
+    private MeterRegistry meters;
 
-    public ToolLatencyHandler(MeterRegistry meters) {
+    private Timer toolTimer;
+
+    /** @Autowired 字段注入后初始化 Timer（@Bean 方式注册 Handler 时可省此步） */
+    @jakarta.annotation.PostConstruct
+    void initTimer() {
         this.toolTimer = Timer.builder("agent.tool.latency")
                 .publishPercentileHistogram()                       // 发布直方图桶，可算分位数
                 .serviceLevelObjectives(Duration.ofMillis(500),
