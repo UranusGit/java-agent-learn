@@ -122,36 +122,269 @@ jar 实证的装配类与关键行为：
 
 读法示范：`USAGE_CACHE_READ_INPUT_TOKENS`（缓存读 token）——DeepSeek 这类支持上下文缓存的模型，这个标签直接量化"缓存省了多少钱"，是 07 关成本计量的框架原生增强点（你只需在 Handler 里从 ChatResponse usage 取数，标签名对齐此约定即可与生态工具互通）。
 
-## 11.6 完整整合工程（demo01 风格，零省略）
+## 11.6 整合基准工程全集（demo01 风格，每个文件零省略）
 
-把上述整合面落成一个"全开关"配置——这是**风格基准版**：ChatClient 在 `ChatConfig` 里用自动装配的 `ChatClient.Builder` 建、controller 只 `@Autowired` 现成 Bean、工具类不挂容器、方法参数隐式绑定（与你的 src 完全同构）：
+把整合面落成**可运行的完整工程**——五个观测点各配一个最朴素 Handler（console 打印各自 Context 里"能拿到什么"），全部按 demo01 风格组织。工程结构：
+
+```mermaid
+graph TD
+    subgraph 工程["src/main/java/demo/demo01"]
+        APP["ApplicationDemo01"]
+        CFG["config/<br/>ObsConfig · ChatConfig<br/>SimpleVectorStoreConfig · KnowledgeBaseInitializer"]
+        TOOL["tools/TimeTool"]
+        CTL["controller/InspectionController"]
+        OBS["obs/<br/>ChatClientTraceHandler · ChatModelTokenHandler<br/>ToolCallingTraceHandler<br/>EmbeddingTraceHandler · VectorStoreTraceHandler"]
+    end
+    RES["resources/application-demo01.yaml"]
+```
+
+### 11.6.1 pom 依赖（observation profile，与 demo01 一致）
+
+```xml
+<profile>
+    <id>observation</id>
+    <activation>
+        <property>
+            <name>demo.observation</name>
+            <value>observation</value>
+        </property>
+    </activation>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+    </dependencies>
+</profile>
+```
+
+运行：`mvn spring-boot:run -Ddemo.demo=demo -Ddemo.observation=observation -Ddemo.pgvector=pgvector`
+
+### 11.6.2 application-demo01.yaml（全键版，逐键对应 11.3 总表）
+
+```yaml
+# src/main/resources/application-demo01.yaml（完整文件）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  ai:
+    openai:
+      api-key: ${DEEPSEEK_API_KEY}
+      base-url: ${DEEPSEEK_BASE_URL}
+      chat:
+        options:
+          model: deepseek-chat
+      embedding:
+        options:
+          model: text-embedding-v3   # embedding 观测点需要（DeepSeek 兼容端按实际填）
+    chat:
+      observations:
+        log-prompt: true             # ChatModel 层：完整 prompt 入观测
+        log-completion: true         # ChatModel 层：回复入观测
+        include-error-logging: true  # 错误信息入观测（排障期打开）
+    chat.client:
+      observations:
+        log-prompt: true             # ChatClient 层：请求侧内容
+        log-completion: true         # ChatClient 层：响应侧内容
+    tools:
+      observations:
+        include-content: true        # 工具参数+结果入观测
+    vectorstore:
+      observations:
+        log-query-response: true     # 检索命中文档入观测（RAG 排障用）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+```
+
+### 11.6.3 主类与观测配置
 
 ```java
-// src/main/java/demo/demo01/config/ChatConfig.java（完整文件，整合基准版）
-package demo.demo01.config;
+// src/main/java/demo/demo01/ApplicationDemo01.java（完整文件）
+package demo.demo01;
 
-import demo.demo01.tools.TimeTool;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import reactor.core.publisher.Hooks;
 
-@Configuration
-public class ChatConfig {
-    @Bean
-    public ChatClient chatClient(ChatClient.Builder builder) {
-        return builder
-                .defaultTools(new TimeTool())   // 工具对象不进容器，注册即用（demo01 习惯）
-                .build();                       // Builder 内部已带 ObservationRegistry——观测自动生效
+@SpringBootApplication
+public class ApplicationDemo01 {
+
+    public static void main(String[] args) {
+        Hooks.enableAutomaticContextPropagation();   // 06 关：Reactor Context ↔ ThreadLocal 桥接
+        SpringApplication.run(ApplicationDemo01.class, args);
     }
 }
 ```
 
 ```java
-// src/main/java/demo/demo01/controller/InspectionController.java（完整文件，整合基准版）
+// src/main/java/demo/demo01/config/ObsConfig.java（完整文件）
+package demo.demo01.config;
+
+import io.micrometer.observation.ObservationTextPublisher;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ObsConfig {
+
+    @Bean
+    public ObservationTextPublisher observationTextPublisher() {
+        return new ObservationTextPublisher();   // ★ console 收音机：观测面全开的对照输出
+    }
+}
+```
+
+### 11.6.4 RAG 底座（供 Embedding/VectorStore 两个观测点有事件可发）
+
+```java
+// src/main/java/demo/demo01/config/SimpleVectorStoreConfig.java（完整文件，零安装路线）
+package demo.demo01.config;
+
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.vectorstore.SimpleVectorStore;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class SimpleVectorStoreConfig {
+
+    @Bean
+    public VectorStore vectorStore(EmbeddingModel embeddingModel) {
+        return SimpleVectorStore.builder(embeddingModel).build();
+    }
+}
+```
+
+```java
+// src/main/java/demo/demo01/config/KnowledgeBaseInitializer.java（完整文件）
+package demo.demo01.config;
+
+import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+
+/** 启动时灌入"设备手册"，让 Embedding/VectorStore 观测点有真实事件 */
+@Component
+public class KnowledgeBaseInitializer implements ApplicationRunner {
+
+    private final VectorStore vectorStore;
+
+    public KnowledgeBaseInitializer(VectorStore vectorStore) {
+        this.vectorStore = vectorStore;
+    }
+
+    @Override
+    public void run(ApplicationArguments args) {
+        vectorStore.add(List.of(
+                new Document("CNC-001 主轴温度超过75度需停机检查冷却系统，常见原因是冷却液不足或散热器堵塞。"),
+                new Document("AGV-07 振动超过4说明导轮磨损，建议更换导轮并校准轨道。")));
+    }
+}
+```
+
+### 11.6.5 工具与 ChatClient（v4 终版）
+
+```java
+// src/main/java/demo/demo01/tools/TimeTool.java（完整文件，v2 终版）
+package demo.demo01.tools;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Autowired;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+
+public class TimeTool {
+
+    @Autowired
+    private ObservationRegistry registry;   // 01 关确立：经 @Bean 注册后字段注入生效
+
+    @Tool(description = "获取当前系统时间，格式 yyyy-MM-dd HH:mm:ss。巡检、工单、报告都需要时间戳时必须先调用此工具")
+    public String getCurrentTime() {
+        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    }
+
+    @Tool(description = "获取当前班次（morning/afternoon/night），用于巡检排班和交接记录")
+    public String getCurrentShift() {
+        Observation obs = Observation.start("shift.resolve", Observation.Context::new, registry);
+        try (Observation.Scope scope = obs.openScope()) {
+            int hour = LocalDateTime.now().getHour();
+            String shift = hour < 8 ? "morning" : hour < 16 ? "afternoon" : "night";
+            return "{\"shift\":\"" + shift + "\",\"hour\":" + hour + "}";
+        } catch (Exception e) {
+            obs.error(e);
+            throw e;
+        } finally {
+            obs.stop();
+        }
+    }
+}
+```
+
+```java
+// src/main/java/demo/demo01/config/ChatConfig.java（完整文件，v4 终版）
+package demo.demo01.config;
+
+import demo.demo01.tools.TimeTool;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ChatConfig {
+
+    private static final String SYSTEM_PROMPT = """
+            你是工厂现场巡检与交接助手。规则：
+            1. 结论需要时间戳时必须先调用 getCurrentTime 工具，禁止自己编造时间。
+            2. 涉及班次/排班时调用 getCurrentShift 工具获取，不要凭时段猜测。
+            3. 设备相关建议优先参考知识库检索到的手册内容，检索不到就明说。
+            """;
+
+    @Autowired
+    private VectorStore vectorStore;
+
+    @Bean
+    public TimeTool timeTool() {
+        return new TimeTool();
+    }
+
+    @Bean
+    public ChatClient chatClient(ChatClient.Builder builder, TimeTool timeTool) {
+        return builder
+                .defaultTools(timeTool)
+                .defaultSystem(SYSTEM_PROMPT)
+                .defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore)
+                        .searchRequest(SearchRequest.builder()
+                                .topK(3)
+                                .similarityThreshold(0.5)
+                                .build())
+                        .build())
+                .build();
+    }
+}
+```
+
+```java
+// src/main/java/demo/demo01/controller/InspectionController.java（完整文件，v6 终版）
 package demo.demo01.controller;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -160,43 +393,179 @@ import reactor.core.publisher.Flux;
 @RestController
 @RequestMapping("/demo01")
 public class InspectionController {
+
     @Autowired
     private ChatClient client;
 
     @GetMapping("/inspect")
-    public String inspect(String prompt) {           // 隐式参数绑定（demo01 习惯）
+    public String inspect(String prompt) {
         return client.prompt().user(prompt).call().content();
+    }
+
+    @GetMapping(value = "/inspect/stream", produces = "text/event-stream")
+    public Flux<ServerSentEvent<String>> inspectStream(String prompt) {
+        return client.prompt()
+                .user(prompt)
+                .stream()
+                .content()
+                .map(token -> ServerSentEvent.<String>builder(token).event("delta").build())
+                .concatWith(Flux.just(ServerSentEvent.<String>builder("[完成]").event("done").build()));
     }
 }
 ```
 
-```yaml
-# src/main/resources/application-demo01.yaml（observation 段，全键总览）
-spring:
-  ai:
-    chat:
-      observations:
-        log-prompt: true            # ChatModel 层：完整 prompt 入观测
-        log-completion: true        # ChatModel 层：回复入观测
-        include-error-logging: true # 错误信息入观测（排障期打开）
-    chat.client:
-      observations:
-        log-prompt: true            # ChatClient 层：请求侧内容
-        log-completion: true        # ChatClient 层：响应侧内容
-    tools:
-      observations:
-        include-content: true       # 工具参数+结果入观测
-    vectorstore:
-      observations:
-        log-query-response: true    # 检索命中文档入观测（RAG 排障用）
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,metrics
+### 11.6.6 五个观测点 Handler 全集（每个完整文件，全部实证 getter）
+
+```java
+// src/main/java/demo/demo01/obs/ChatClientTraceHandler.java（完整文件）
+package demo.demo01.obs;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import org.springframework.ai.chat.client.observation.ChatClientObservationContext;
+import org.springframework.stereotype.Component;
+
+/** 观测点1：ChatClient 层——编排全程（Advisor+工具+多轮推理的外壳） */
+@Component
+public class ChatClientTraceHandler implements ObservationHandler<ChatClientObservationContext> {
+
+    @Override
+    public boolean supportsContext(Observation.Context context) {
+        return context instanceof ChatClientObservationContext;
+    }
+
+    @Override
+    public void onStop(ChatClientObservationContext context) {
+        System.out.println("[观测点1 ChatClient] request=" + context.getRequest()
+                + " streaming=" + context.isStreaming()
+                + " error=" + context.getError());
+    }
+}
 ```
 
-**架构师读法**：`ChatClient.Builder` 是 Boot 自动装配的——它内部已注入 `ObservationRegistry`，所以**你从不用手动把 Registry 塞给 ChatClient**；观测生效与否的唯一开关是 classpath（Actuator 在不在）。这就是"约定优于配置"在观测层的完整形态。
+```java
+// src/main/java/demo/demo01/obs/ChatModelTokenHandler.java（完整文件）
+package demo.demo01.obs;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import org.springframework.ai.chat.observation.ChatModelObservationContext;
+import org.springframework.ai.chat.metadata.Usage;
+import org.springframework.stereotype.Component;
+
+/** 观测点2：ChatModel 层——单次推理的参数、回复与 Token（成本治理数据源） */
+@Component
+public class ChatModelTokenHandler implements ObservationHandler<ChatModelObservationContext> {
+
+    @Override
+    public boolean supportsContext(Observation.Context context) {
+        return context instanceof ChatModelObservationContext;
+    }
+
+    @Override
+    public void onStop(ChatModelObservationContext context) {
+        Usage usage = context.getResponse() != null
+                ? context.getResponse().getMetadata().getUsage() : null;
+        System.out.println("[观测点2 ChatModel] streaming=" + context.isStreaming()
+                + " prompt内容=" + String.valueOf(context.getRequest().getContents()).substring(0,
+                        Math.min(60, String.valueOf(context.getRequest().getContents()).length()))
+                + " inputTokens=" + (usage != null ? usage.getPromptTokens() : "?")
+                + " outputTokens=" + (usage != null ? usage.getCompletionTokens() : "?")
+                + " totalTokens=" + (usage != null ? usage.getTotalTokens() : "?"));
+    }
+}
+```
+
+```java
+// src/main/java/demo/demo01/obs/ToolCallingTraceHandler.java（完整文件）
+package demo.demo01.obs;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import org.springframework.ai.tool.observation.ToolCallingObservationContext;
+import org.springframework.stereotype.Component;
+
+/** 观测点3：ToolCalling 层——工具名/类型/参数/结果/调用号（Agent 行为审计核心） */
+@Component
+public class ToolCallingTraceHandler implements ObservationHandler<ToolCallingObservationContext> {
+
+    @Override
+    public boolean supportsContext(Observation.Context context) {
+        return context instanceof ToolCallingObservationContext;
+    }
+
+    @Override
+    public void onStop(ToolCallingObservationContext context) {
+        System.out.println("[观测点3 ToolCalling] tool=" + context.getToolDefinition().name()
+                + " type=" + context.getToolType()
+                + " callId=" + context.getToolCallId()
+                + " args=" + context.getToolCallArguments()
+                + " result=" + context.getToolCallResult());
+    }
+}
+```
+
+```java
+// src/main/java/demo/demo01/obs/EmbeddingTraceHandler.java（完整文件）
+package demo.demo01.obs;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import org.springframework.ai.embedding.observation.EmbeddingModelObservationContext;
+import org.springframework.stereotype.Component;
+
+/** 观测点4：Embedding 层——向量化输入数与返回向量数（RAG 延迟大头常在这里） */
+@Component
+public class EmbeddingTraceHandler implements ObservationHandler<EmbeddingModelObservationContext> {
+
+    @Override
+    public boolean supportsContext(Observation.Context context) {
+        return context instanceof EmbeddingModelObservationContext;
+    }
+
+    @Override
+    public void onStop(EmbeddingModelObservationContext context) {
+        int inCount = context.getRequest() != null ? context.getRequest().getInstructions().size() : -1;
+        int outCount = context.getResponse() != null ? context.getResponse().getResults().size() : -1;
+        System.out.println("[观测点4 Embedding] 输入文本数=" + inCount
+                + " 返回向量数=" + outCount
+                + " error=" + context.getError());
+    }
+}
+```
+
+```java
+// src/main/java/demo/demo01/obs/VectorStoreTraceHandler.java（完整文件）
+package demo.demo01.obs;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
+import org.springframework.stereotype.Component;
+
+/** 观测点5：VectorStore 层——检索质量（operation/topK/命中数），RAG 排障第一现场 */
+@Component
+public class VectorStoreTraceHandler implements ObservationHandler<VectorStoreObservationContext> {
+
+    @Override
+    public boolean supportsContext(Observation.Context context) {
+        return context instanceof VectorStoreObservationContext;
+    }
+
+    @Override
+    public void onStop(VectorStoreObservationContext context) {
+        System.out.println("[观测点5 VectorStore] operation=" + context.getOperationName()
+                + " db=" + context.getDatabaseSystem()
+                + " topK=" + (context.getQueryRequest() != null ? context.getQueryRequest().getTopK() : "?")
+                + " 命中=" + (context.getQueryResponse() != null ? context.getQueryResponse().size() : 0)
+                + " 相似度度量=" + context.getSimilarityMetric());
+    }
+}
+```
+
+> ImageModel 观测点（第 6 个）同构：`ImageModelObservationContext` + `supportsContext` 认领即可，需要图像模型依赖（`spring-ai-starter-model-openai` 的 image 部分）才会发事件——结构完全一致，留作你按本篇范式自证的自测题（javap `o.s.ai.image.observation.ImageModelObservationContext` 后照抄 Embedding 版）。
+
+**架构师读法**：`ChatClient.Builder` 是 Boot 自动装配的——它内部已注入 `ObservationRegistry`，所以**你从不用手动把 Registry 塞给 ChatClient**；观测生效与否的唯一开关是 classpath（Actuator 在不在）。五个 Handler 全部 `@Component` 即挂载——这就是"约定优于配置"在观测层的完整形态。
 
 ## 11.7 每层自定义入口汇总（决策速查）
 
@@ -217,7 +586,8 @@ management:
 
 | # | 用例 | 操作 | 验收现象 |
 |---|---|---|---|
-| 1 | 全观测点生效 | 按上文建好 ChatConfig/controller/yaml，`GET /demo01/inspect?prompt=现在几点？当前什么班次？` | console（TextPublisher 在场时）同时出现 `spring.ai.chat.client`、`gen_ai.client.operation`（contextual `chat "deepseek..."`）、`spring.ai.tool` 三类 span |
+| 1 | 全观测点生效 | 按 11.6 建好整个工程，`GET /demo01/inspect?prompt=现在几点？当前什么班次？` | console 同时打出 `[观测点1 ChatClient]`、`[观测点2 ChatModel]`（含 Token）、`[观测点3 ToolCalling]`（getCurrentTime+getCurrentShift 两条），TextPublisher 的整段输出混排对照 |
+| 1b | RAG 观测点 | `GET /demo01/inspect?prompt=CNC-001主轴温度高该怎么处理` | 追加出现 `[观测点4 Embedding]`（query 向量化）与 `[观测点5 VectorStore]`（QUERY + 命中数）——五个观测点在一条请求里全部点亮 |
 | 2 | 两层内容键独立 | 把 `chat.client.observations.log-prompt` 关掉、`chat.observations.log-prompt` 留着 | ChatClient 层 span 无 prompt 内容、ChatModel 层仍有——验证 11.3 细节 1 |
 | 3 | 工具内容开关 | `tools.observations.include-content` 改 false | tool span 里无 `gen_ai.tool.call.arguments/result` |
 | 4 | Token 四件套 | 打开 log-completion 后查 ChatModel span 高基数标签 | 出现 `gen_ai.usage.input_tokens/output_tokens/total_tokens`（缓存标签视模型支持） |
