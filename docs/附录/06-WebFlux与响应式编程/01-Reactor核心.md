@@ -4,7 +4,7 @@
 
 > **定位**：系统讲解 Reactor 的核心抽象 `Mono` 和 `Flux`，覆盖创建、变换、过滤、组合、错误处理、时间操作、背压等全部操作符类别，以及在 Spring AI 流式输出场景中的实战。
 >
-> **读者画像**：初次接触响应式编程，需要全面理解 Reactor 操作符体系的 Java 开发者。
+> **读者画像**：已读完 [附录 06-WebFlux与响应式编程/00-WebFlux从零入门]（跑通了最小工程与 SSE），需要系统补全 Reactor 操作符体系的开发者。
 
 ---
 
@@ -478,7 +478,84 @@ graph LR
 
 ---
 
-## 6. 背压（Backpressure）基础
+## 6. 冷流与热流：publish / share / cache 家族
+
+### 6.1 一条数据的旅程差异
+
+同一个 `Flux`，冷热之差决定"第二次订阅会发生什么"：
+
+- **冷流（Cold）**：每个订阅者触发一次完整生产。`just/fromIterable/create/WebClient 调用`都是冷的——两次订阅 = **两次真实副作用**（两次 LLM 调用、两次计费）。
+- **热流（Hot）**：数据独立于订阅者存在，订阅只是"把喇叭接到广播上"。`Sinks` 的 `asFlux()`、`Flux.share()` 之后都是热的——错过就错过（replay 系除外）。
+
+```mermaid
+graph TB
+    subgraph cold["冷流：N 订阅 = N 次生产"]
+        C0["LLM 调用(副作用)"] --> C1["订阅者1 独享一份"]
+        C0a["LLM 调用(副作用)"] --> C2["订阅者2 独享另一份"]
+    end
+    subgraph hot["热流：生产与订阅解耦"]
+        H0["单次生产"] --> H1["订阅者1"]
+        H0 --> H2["订阅者2 共享同一份"]
+    end
+```
+
+**Agent 场景的典型翻车**：一个会话里两个组件都订阅了 `chatClient.stream()` 的返回值 → 模型被调了两次、两个组件收到**不同**的回答。副作用唯一性是冷热流问题的第一动因。
+
+### 6.2 把冷流转热：三个档位（全部 javap 实证，reactor-core 3.8.6）
+
+```java
+// Flux 上的入口
+public final ConnectableFlux<T> publish();            // 挂起订阅，等 connect()
+public final ConnectableFlux<T> replay();             // publish + 重放全部历史
+public final ConnectableFlux<T> replay(int history);  // 重放最近 n 条
+public final ConnectableFlux<T> replay(Duration ttl); // 重放 TTL 内历史
+public final Flux<T> share();                         // publish().refCount(1)：最常用
+public final Flux<T> cache();                         // 订阅前预取并缓存全部
+public final Flux<T> cache(int history);
+public final Flux<T> cache(Duration ttl);
+
+// ConnectableFlux 上的控制（实证）
+public final Disposable connect();                    // 手动点火：从此刻开始，后来的订阅者只能收到之后的数据
+public final Flux<T> autoConnect(int n);              // 第 n 个订阅者到达时自动点火
+public final Flux<T> refCount();                      // 订阅者归零 → 断开上游；再来 → 重新订阅（重新生产！）
+public final Flux<T> refCount(int n, Duration grace); // 归零后宽限期内不断开
+```
+
+三档选型：
+
+| 手段 | 语义 | 什么时候用 |
+|---|---|---|
+| `share()` | `publish().refCount()`：**有订阅才生产，订阅归零就停**；每个订阅周期重放一次生产 | 一个请求内多个观察者共享同一次 LLM 调用（日志、SSE、缓存三个消费者） |
+| `replay(n)` + `connect()` | 热广播 + 迟到者补看 n 条 | 直播型：先启动生产，页面随到随看（与 [03-Sinks详解 §4.3] `replay().limit()` 相对——Sinks 版数据从命令式世界来） |
+| `cache(ttl)` | 首次订阅触发生产，结果缓存 ttl，后来的直接回放 | **LLM 结果短时缓存**：10 秒内同 prompt 的重复请求不再打模型 |
+
+```java
+// share()：一次 LLM 调用，三方共享
+Flux<String> shared = chatClient.prompt().user(q).stream()
+        .chatResponse()
+        .map(r -> r.getResult().getOutput().getText())
+        .share();                       // 在 share 之后的分叉才共享
+shared.subscribe(sseSink::tryEmitNext);  // 触发真实调用
+shared.subscribe(log::debug);            // 同一份数据，不重复调用
+
+// cache(ttl)：10 秒同题免打模型
+Flux<String> cached = askLlm(q).cache(Duration.ofSeconds(10));
+cached.subscribe();   // 真调用
+cached.subscribe();   // 命中缓存回放，0 成本
+```
+
+### 6.3 share/cache 与 Sinks 的分界线
+
+两者都能"多订阅者共享一份数据"，分界在**生产的触发方式**（呼应 [03-Sinks详解 §10.1] 的对比表）：
+
+- 生产能表达为"订阅驱动的管道"（副作用随订阅起止）→ `share/cache`，声明式、自动管理生命周期
+- 生产来自**管道外部**（回调、别的线程、别的请求）→ Sinks，热源独立于任何订阅存在
+
+「Sinks 全家族与更细的对比？→ [附录 06-WebFlux与响应式编程/03-Sinks详解]」
+
+---
+
+## 7. 背压（Backpressure）基础
 
 Flux 的消费者可以通过 `request(n)` 控制上游的生产速率——这就是背压：
 
@@ -513,11 +590,11 @@ Flux.interval(Duration.ofMillis(10))
     .subscribe(i -> System.out.println("Latest 保留最新值: " + i));
 ```
 
-> 背压的深入讨论见 [01-背压与流量控制](../06-WebFlux与响应式编程/01-背压与流量控制.md)。
+> 背压的深入讨论见 [01-背压与流量控制](../06-WebFlux与响应式编程/02-背压与流量控制.md)。
 
 ---
 
-## 7. 完整实战：Agent 流式推理管线
+## 8. 完整实战：Agent 流式推理管线
 
 把所有操作符组合起来，构建一个生产级的 Agent 流式推理管线：
 
@@ -612,9 +689,9 @@ graph TB
 
 ---
 
-## 8. 常见陷阱
+## 9. 常见陷阱
 
-### 8.1 忘记 subscribe
+### 9.1 忘记 subscribe
 
 ```java
 // 问题：声明了但没订阅，什么都不会发生
@@ -635,7 +712,7 @@ public Mono<String> ask() {
 }
 ```
 
-### 8.2 在 flatMap 中调用 block()
+### 9.2 在 flatMap 中调用 block()
 
 ```java
 // 问题：在 reactive 链中调用 block() 会阻塞 Event Loop 线程
@@ -652,7 +729,7 @@ Flux.range(1, 10)
     );
 ```
 
-### 8.3 错误被吞没
+### 9.3 错误被吞没
 
 ```java
 // 问题：onErrorReturn 会吞没所有错误信息
@@ -667,7 +744,7 @@ chatClient.call().content()
 
 ---
 
-## 9. 总结
+## 10. 总结
 
 Reactor 是 Spring WebFlux 和 Spring AI 流式 API 的基石。掌握 Mono / Flux 的操作符体系，是开发高性能 Agent 应用的前提：
 

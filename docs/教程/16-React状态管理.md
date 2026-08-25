@@ -178,7 +178,7 @@ function SessionCount() {
 }
 ```
 
-Zustand 的 **selector 订阅**解决了 Context 的"连坐渲染"问题：每个组件精确订阅自己需要的切片。这与后端"订阅分离"的响应式思想一致（[附录 06-WebFlux与响应式编程/00-Reactor核心 §Flux 的冷热特性]——Cold publisher 各自独立订阅流，互不影响）。
+Zustand 的 **selector 订阅**解决了 Context 的"连坐渲染"问题：每个组件精确订阅自己需要的切片。这与后端"订阅分离"的响应式思想一致（[附录 06-WebFlux与响应式编程/01-Reactor核心 §6]——Cold publisher 各自独立订阅流，互不影响）。
 
 ### 3.3 Context vs Zustand 选型决策
 

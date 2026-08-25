@@ -718,7 +718,7 @@ public class UserContextStreamAdvisor implements StreamAdvisor {
 }
 ```
 
-三条纪律（WebFlux 上下文传递铁律的落地）：① `contextWrite` 只影响**上游**（订阅方向），所以写在链的最末端才能被整条链读到；② 取值用 `deferContextual`/`transformDeferredContextual`，不能在组装期读 Context（那时还没订阅）；③ `call()` 同步调用链没有 Reactor Context 可用，请求元数据走 `.advisors(param)` 显式传——两套机制按调用模式选，别在同步路径上硬套 Context。完整原理见 [附录 06-WebFlux与响应式编程/00-Reactor核心]。
+三条纪律（WebFlux 上下文传递铁律的落地）：① `contextWrite` 只影响**上游**（订阅方向），所以写在链的最末端才能被整条链读到；② 取值用 `deferContextual`/`transformDeferredContextual`，不能在组装期读 Context（那时还没订阅）；③ `call()` 同步调用链没有 Reactor Context 可用，请求元数据走 `.advisors(param)` 显式传——两套机制按调用模式选，别在同步路径上硬套 Context。完整原理见 [附录 06-WebFlux与响应式编程/01-Reactor核心]。
 
 ---
 
@@ -964,7 +964,7 @@ flowchart TB
 > **遇到阻塞？→ [教程 40-长任务持久化与中断恢复]**：检查点恢复、幂等设计、故障转移的完整方案。
 > **想深入？→ [教程 14-Advisor链与拦截器]**：Advisor 链的执行机制和自定义 Advisor 的完整实现。
 > **想深入？→ [附录 05-SpringAI2-API基准/00-Advisor与ChatMemory]**：Advisor 与 ChatMemory 的全部真实签名与虚构 API 对照。
-> **想深入？→ [附录 06-WebFlux与响应式编程/00-Reactor核心]**：Reactor Context 的传播原理（contextWrite/deferContextual）。
+> **想深入？→ [附录 06-WebFlux与响应式编程/01-Reactor核心]**：Reactor Context 的传播原理（contextWrite/deferContextual）。
 > **想深入？→ [附录 17-Kafka/04-日志存储与高可用复制]**：事件溯源日志的保留/压实策略——压实主题如何充当"每会话最新快照"的物化载体。
 
 > **想深入？→ [附录 15/13-codex-harness/00-总体架构与会话Actor]**：单写者 Actor + 版本号快照的会话状态管理参考实现。

@@ -412,7 +412,7 @@ public Flux<String> stream(@RequestParam String message) {
 }
 ```
 
-> **术语澄清**：`delayElements` 常被误称为"背压"。它做的是**限流**——生产端按固定节奏下发，与消费者是否处理得过来无关。真正的**背压**是消费者把自己的处理能力（request(n)）反向传导给生产者，让上游按需生产，见 §5.5 与 [附录 06-WebFlux与响应式编程/01-背压与流量控制]。
+> **术语澄清**：`delayElements` 常被误称为"背压"。它做的是**限流**——生产端按固定节奏下发，与消费者是否处理得过来无关。真正的**背压**是消费者把自己的处理能力（request(n)）反向传导给生产者，让上游按需生产，见 §5.5 与 [附录 06-WebFlux与响应式编程/02-背压与流量控制]。
 
 ### 5.3 合并多个流
 
@@ -484,7 +484,7 @@ return chatClient.prompt()
         .timeout(Duration.ofMinutes(2));
 ```
 
-> **WebFlux 铁律**：这条链路里**禁止**出现 `block()`/`blockLast()`/`Thread.sleep()`——Controller 返回 Flux 后由框架在合适线程上驱动，任何阻塞都会卡死 EventLoop；确需阻塞计算（如重 IO）用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`。慢消费者与算子选择的完整推演见 [附录 06-WebFlux与响应式编程/01-背压与流量控制]。
+> **WebFlux 铁律**：这条链路里**禁止**出现 `block()`/`blockLast()`/`Thread.sleep()`——Controller 返回 Flux 后由框架在合适线程上驱动，任何阻塞都会卡死 EventLoop；确需阻塞计算（如重 IO）用 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`。慢消费者与算子选择的完整推演见 [附录 06-WebFlux与响应式编程/02-背压与流量控制]。
 
 **取消传播**是背压的孪生机制：客户端断开连接时，WebFlux 会向上游发出 `cancel` 信号——`doOnCancel` 能感知（§10.4），更重要的是**取消会沿流向上传播到 LLM HTTP 连接**，主动中止生成、释放连接与配额。这意味着"用户点停止"不只是前端停止渲染，服务端的 Token 消耗也随之停止（对按量计费的 LLM 是真金白银）。要防止取消后遗留副作用（如记忆半写、工具已执行未记录），在 `doOnCancel`/`doFinally` 里收尾，见 [教程 42-响应式错误处理]。
 
@@ -1132,6 +1132,6 @@ public Flux<ServerSentEvent<String>> guardedStream(String userId, String message
 > → [教程 02-ChatClient 与对话模型]：ChatClient 的完整 API、同步/流式调用的基础。
 > → [教程 24-多页面流式响应与会话管理]：多标签页 SSE 连接管理、会话隔离。
 > 想深入？→ [附录 03-Spring-AI源码解析/02-流式执行链源码解析]：`stream()` 从 Advisor 链到 Reactor Netty 写出端的完整执行链源码。
-> 想深入？→ [附录 06-WebFlux与响应式编程/01-背压与流量控制]：request(n)、onBackpressure* 算子族与取消传播的底层机制。
+> 想深入？→ [附录 06-WebFlux与响应式编程/02-背压与流量控制]：request(n)、onBackpressure* 算子族与取消传播的底层机制。
 > 想深入？→ [附录 18-Observation/00-Observation全景与核心概念]：流式调用的 Span 边界与流耗时/首 Token 延迟指标采集。
 > 遇到阻塞？→ [教程 42-响应式错误处理]（背压与流中断）与 [教程 38-Agent性能优化]（连接池与超时）。

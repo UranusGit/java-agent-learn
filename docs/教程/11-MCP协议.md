@@ -428,7 +428,7 @@ spring:
         type: SYNC              # SYNC（Servlet 栈）/ ASYNC（WebFlux 栈）二选一，见下方说明
 ```
 
-> **`type` 与技术栈必须匹配**：`SYNC` 用阻塞式实现（配 `spring-ai-starter-mcp-server`，跑在 Servlet 容器上）；**WebFlux 应用必须用 `ASYNC`**（配 `spring-ai-starter-mcp-server-webflux`）——SYNC 的阻塞实现在 EventLoop 上执行会把响应式事件循环卡死（WebFlux 铁律见 [附录 06-WebFlux与响应式编程/02-WebFlux-vs-MVC]）。本项目技术栈是 WebFlux，服务端也应选 ASYNC。另外注意 2025-06 规范后远程端点统一走 Streamable HTTP 的单一 `/mcp` 端点（旧配置里的 `sse-message-endpoint` 双端点写法属于 HTTP+SSE 时代）。
+> **`type` 与技术栈必须匹配**：`SYNC` 用阻塞式实现（配 `spring-ai-starter-mcp-server`，跑在 Servlet 容器上）；**WebFlux 应用必须用 `ASYNC`**（配 `spring-ai-starter-mcp-server-webflux`）——SYNC 的阻塞实现在 EventLoop 上执行会把响应式事件循环卡死（WebFlux 铁律见 [附录 06-WebFlux与响应式编程/04-WebFlux-vs-MVC]）。本项目技术栈是 WebFlux，服务端也应选 ASYNC。另外注意 2025-06 规范后远程端点统一走 Streamable HTTP 的单一 `/mcp` 端点（旧配置里的 `sse-message-endpoint` 双端点写法属于 HTTP+SSE 时代）。
 
 ### 4.3 定义 MCP 工具：@Tool + 显式 ToolCallbackProvider
 

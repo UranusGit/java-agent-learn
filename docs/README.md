@@ -217,7 +217,7 @@ docs/
 | [03-Spring AI 源码解析](附录/03-Spring-AI源码解析/00-ChatClient源码.md) | ChatClient 源码、Advisor 执行链、流式执行链 | 3 |
 | [04-测试策略](附录/04-测试策略/00-单元测试.md) | 单元测试、集成测试、Eval 评估 | 3 |
 | [05-SpringAI2-API 基准](附录/05-SpringAI2-API基准/00-Advisor与ChatMemory.md) | Advisor/ChatMemory/MCP/Tool/Observation 真实 API 对照 | 3 |
-| [06-WebFlux 与响应式编程](附录/06-WebFlux与响应式编程/00-Reactor核心.md) | Reactor、背压、WebFlux vs MVC | 3 |
+| [06-WebFlux 与响应式编程](附录/06-WebFlux与响应式编程/00-WebFlux从零入门.md) | WebFlux 入门、Reactor、背压、Sinks、vs MVC、进阶实战、线程与调度、测试调优、跨服务流 | 9 |
 | [07-企业级架构模式](附录/07-企业级架构模式/00-ControlPlane设计模式.md) | ControlPlane 设计模式、Agent 沙箱、事件驱动 | 3 |
 | [08-架构决策方法论](附录/08-架构决策方法论/00-ADR架构决策记录.md) | ADR 架构决策记录 | 1 |
 | [09-Agent 安全深度](附录/09-Agent安全深度/00-Prompt注入分类与案例.md) | Prompt 注入、Tool Poisoning、DLP | 3 |
@@ -351,7 +351,7 @@ flowchart TD
 |----|----------|------|
 | **项目主线** | 项目 05-企业级Agent中台（00→09，10 篇：LLM网关→ControlPlane→工具服务化→可观测→业务线隔离→灰度AB→高可用容灾→核心代码） | 企业级能力的集中落地 |
 | 配套教程 | 教程 20-管控分离架构 → 21-微服务拆分与Agent部署 → 22-全链路可观测性 → 23-工具执行可观测与审计 → 24-多页面流式响应与会话管理 → 25-历史记录持久化与合规 → 26-多租户隔离与资源治理 → 27-成本治理与Token计量 → 28-Human-in-the-Loop与审批流 → 29-灰度发布与版本管理 → 30-容错与弹性设计 → 31-安全与权限控制 → 32-模型路由与降级 → 33-部署与运维 | 企业级主干教程，与项目05迭代一一呼应 |
-| 下钻附录 | 附录 07-企业级架构模式/00-ControlPlane设计模式、01-Agent沙箱与隔离机制、02-事件驱动Agent架构；附录 06-WebFlux与响应式编程/00-Reactor核心、01-背压与流量控制、02-WebFlux-vs-MVC | 架构模式与响应式编程深水区；02-事件驱动涉及 Kafka 时下钻 [附录 17-Kafka](附录/17-Kafka/00-Kafka全景与核心概念.md)（00-09 全 10 篇）；教程 22/23 的 Observation 机制下钻 [附录 18-Observation](附录/18-Observation/00-Observation全景与核心概念.md)（00-05 全 6 篇） |
+| 下钻附录 | 附录 07-企业级架构模式/00-ControlPlane设计模式、01-Agent沙箱与隔离机制、02-事件驱动Agent架构；附录 06-WebFlux与响应式编程/00-WebFlux从零入门→01-Reactor核心→02-背压与流量控制→03-Sinks详解→04-WebFlux-vs-MVC→05-WebFlux进阶实战→06-线程模型与调度器→07-WebFlux测试与性能调优→08-跨服务流与RedisStreams背压 | 架构模式与响应式编程深水区；02-事件驱动涉及 Kafka 时下钻 [附录 17-Kafka](附录/17-Kafka/00-Kafka全景与核心概念.md)（00-09 全 10 篇）；教程 22/23 的 Observation 机制下钻 [附录 18-Observation](附录/18-Observation/00-Observation全景与核心概念.md)（00-05 全 6 篇） |
 
 ### 阶段 6｜行业纵深（4~6 周）
 
