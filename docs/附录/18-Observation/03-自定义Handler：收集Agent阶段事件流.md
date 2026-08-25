@@ -171,7 +171,192 @@ graph LR
 | 只要指标（QPS/耗时/token） | 不写 Handler，用 Micrometer（07 关，`ChatModelMeterObservationHandler` 已内置） |
 | 要改标签/名称 | 不是 Handler 的事，用 Convention（04 关） |
 
-## 3.5 Postman 测试
+## 3.5 进阶：仿 ToolCallingObservationContext 造自己的领域 Context
+
+### 3.5.1 为什么要自定义 Context
+
+01 关你给 `getCurrentShift` 手动埋观测时，用的是裸 `Observation.Context`——**业务数据（班次、小时数）只能靠外部变量记住，观测里"看不见"它们**。回看 Spring AI 的做法：`ToolCallingObservationContext extends Observation.Context`，把 `toolDefinition/toolCallArguments/toolCallResult` 全做成 Context 的字段，Handler/Convention 用 `instanceof` 精确认领、用类型安全的 getter 取值（javap 实证：该类提供 `getToolCallArguments()`/`setToolCallResult()` 等访问器 + `Builder` 六件套）。
+
+这就是**自定义 Context 埋点**的标准范式，适合你项目里所有"框架不认识、但值得观测的业务操作"：
+
+| 你的观测需求 | 该不该自定义 Context |
+|---|---|
+| 框架已有观测点（LLM/工具/ChatClient），只是想消费 | **不用**——直接 `instanceof` 认领框架 Context（本关 3.2 的姿势） |
+| 手动埋自己的业务操作，且结果要被 Handler/Convention 消费 | **用**——业务字段进 Context，类型安全且 `supportsContext` 精确路由 |
+| 只是本地看看耗时，没有任何下游消费 | 不用——裸 `Observation.Context` 足够（01 关姿势） |
+
+`Observation.Context` 本身就是个"Map + 领域字段"容器（javap 实证：`put(Object,T)`/`get(Object)` 泛型键值对 + `getName()`/`getError()` 等），继承它 = 免费获得 Map 能力和生命周期回调资格，你只需加自己的领域字段。
+
+### 3.5.2 三件套：Context + Convention + Handler
+
+自定义 Context 埋点的完整拼装（全部 API 已对本地 micrometer-observation jar javap 实证）：
+
+```mermaid
+graph TD
+    B["业务代码（TimeTool）<br/>Observation.start(name, ShiftContext::new, registry)"] -->|"start 时创建"| C["ShiftResolveObservationContext<br/>extends Observation.Context<br/>业务字段：shift/hour/resolvedBy"]
+    C -->|"supportsContext instanceof"| H["自定义 Handler<br/>onStop 里 getShift() 取值"]
+    C -->|"supportsContext instanceof"| V["自定义 Convention（可选）<br/>getLowCardinalityKeyValues(ctx)<br/>把 shift 变成标签"]
+    H --> E["AgentEvent 流/审计"]
+    V --> M["指标或 trace 标签"]
+```
+
+动手：把 01 关裸 Context 的 `shift.resolve` 升级为类型化观测。三个新文件 + TimeTool 升 v3（本关后**完整快照**）：
+
+**① 领域 Context——业务字段的类型安全载体**（完整文件）：
+
+```java
+// src/main/java/demo/demo01/obs/ShiftResolveObservationContext.java
+package demo.demo01.obs;
+
+import io.micrometer.observation.Observation.Context;
+
+/**
+ * 班次判定的领域观测上下文——仿 ToolCallingObservationContext 的"Context 即领域数据袋"范式。
+ * 业务字段全部 private + getter，resolve 结果在计算完成后 set 进来（onStop 时 Handler 才取得到）。
+ */
+public class ShiftResolveObservationContext extends Context {
+
+    private final int hour;          // 判定依据（start 前就已知 → 构造传入）
+    private String shift;            // 判定结果（start 后才产出 → setter 回填）
+    private String resolvedBy;       // 判定来源（排班表/本地规则），便于区分慢/快路径
+
+    public ShiftResolveObservationContext(int hour) {
+        this.hour = hour;
+    }
+
+    public int getHour() { return hour; }
+    public String getShift() { return shift; }
+    public String getResolvedBy() { return resolvedBy; }
+
+    public void setResolved(String shift, String resolvedBy) {
+        this.shift = shift;
+        this.resolvedBy = resolvedBy;
+    }
+}
+```
+
+**② Convention——把领域字段翻译成低基数标签**（完整文件；也可不写，见 3.5.3）：
+
+```java
+// src/main/java/demo/demo01/obs/ShiftResolveObservationConvention.java
+package demo.demo01.obs;
+
+import io.micrometer.common.KeyValue;
+import io.micrometer.common.KeyValues;
+import io.micrometer.observation.ObservationConvention;
+import org.springframework.stereotype.Component;
+
+/**
+ * shift.resolve 观测的命名约定：shift（3 个可枚举值，低基数）进标签，
+ * hour 属于高基数倾向字段（24 个值勉强可枚举，但聚合价值低）放高基数通道——只进 trace 不进指标。
+ * 注册方式：实现 GlobalObservationConvention 并声明为 Bean，Boot 自动装配进 ObservationRegistry。
+ */
+@Component
+public class ShiftResolveObservationConvention implements ObservationConvention<ShiftResolveObservationContext> {
+
+    @Override
+    public KeyValues getLowCardinalityKeyValues(ShiftResolveObservationContext context) {
+        return KeyValues.of(KeyValue.of("shift", String.valueOf(context.getShift())));
+    }
+
+    @Override
+    public KeyValues getHighCardinalityKeyValues(ShiftResolveObservationContext context) {
+        return KeyValues.of(KeyValue.of("shift.resolve.hour", String.valueOf(context.getHour())));
+    }
+
+    @Override
+    public boolean supportsContext(io.micrometer.observation.Observation.Context context) {
+        return context instanceof ShiftResolveObservationContext;   // ★ 类型路由：只认领自己的 Context
+    }
+}
+```
+
+> 装配说明：Boot 的 Observation 自动配置会把容器里所有 `ObservationHandler` 与 `GlobalObservationConvention` Bean 注册进 `ObservationRegistry`（javap 实证 `ObservationConfig.observationHandler(...)/observationConvention(GlobalObservationConvention)`）。注意 Convention 要被全局注册必须实现 **`GlobalObservationConvention`** 子接口（上面的类为教学清晰实现的是 `ObservationConvention`——按 04 关的 `@Bean` 定制风格挂到具体观测时无需 Global；若要全局生效把 implements 换成 `GlobalObservationConvention`，两者方法签名完全一致）。
+
+**③ Handler 消费——AgentEventCollector 加一个认领分支**（v2 增量，加在类内即可）：
+
+```java
+// AgentEventCollector 内新增（v2 增量；imports 补 demo.demo01.obs 同包无需，ChatModel 那段不变）
+@Override
+public boolean supportsContext(Observation.Context context) {
+    return context instanceof ChatClientObservationContext
+            || context instanceof ChatModelObservationContext
+            || context instanceof ToolCallingObservationContext
+            || context instanceof ShiftResolveObservationContext;   // ★ 新增认领
+}
+
+// onStop 的分派链里新增一个分支：
+else if (context instanceof ShiftResolveObservationContext sr) {
+    accept(new AgentEvent("BUSINESS", "shift.resolve",
+            "班次=" + sr.getShift() + " 来源=" + sr.getResolvedBy()
+                    + " hour=" + sr.getHour(), Instant.now()));
+}
+```
+
+**④ 业务代码升级——start 时喂 Context，结果回填**（TimeTool v3 完整文件）：
+
+```java
+// src/main/java/demo/demo01/tools/TimeTool.java（本关完整版 v3）
+package demo.demo01.tools;
+
+import demo.demo01.obs.ShiftResolveObservationContext;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Autowired;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+
+public class TimeTool {
+
+    @Autowired
+    private ObservationRegistry registry;
+
+    @Tool(description = "获取当前系统时间，格式 yyyy-MM-dd HH:mm:ss。巡检、工单、报告都需要时间戳时必须先调用此工具")
+    public String getCurrentTime() {
+        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    }
+
+    @Tool(description = "获取当前班次（morning/afternoon/night），用于巡检排班和交接记录")
+    public String getCurrentShift() {
+        int hour = LocalDateTime.now().getHour();
+        // ★ 类型化观测：Supplier 提供自己的 Context，框架在 start 时创建并回调 Handler/Convention
+        Observation obs = Observation.start("shift.resolve",
+                () -> new ShiftResolveObservationContext(hour), registry);
+        try (Observation.Scope scope = obs.openScope()) {
+            String shift = hour < 8 ? "morning" : hour < 16 ? "afternoon" : "night";
+            ShiftResolveObservationContext ctx = (ShiftResolveObservationContext) obs.getContext();
+            ctx.setResolved(shift, "local-rule");   // ★ 结果回填——onStop 前必须完成，Handler 才取得到
+            return "{\"shift\":\"" + shift + "\",\"hour\":" + hour + "}";
+        } catch (Exception e) {
+            obs.error(e);
+            throw e;
+        } finally {
+            obs.stop();
+        }
+    }
+}
+```
+
+`ChatConfig` 不变（v2 已把 TimeTool 注册为 Bean）。`Observation.start(String, Supplier<T>, ObservationRegistry)` 与 `obs.getContext()` 均已 javap 实证存在。
+
+### 3.5.3 关键机制与易错点
+
+- **`Supplier<T>` 在 start 时机执行**——`Observation.start("shift.resolve", () -> new ShiftResolveObservationContext(hour), registry)` 的 lambda 延迟到 start 才构造 Context，"start 前已知"的字段用闭包捕获传入；
+- **结果必须 stop 前回填**——Handler 的 `onStop` 与 Convention 的标签方法都在 stop 边界触发，之后 set 的字段无人看见。这是该范式最常见的 bug："明明 set 了，事件里却是 null"——多半是把回填写在了 `obs.stop()` 之后（或 observe() 的 lambda 外）；
+- **`supportsContext` 是唯一路由器**——Registry 广播给所有 Handler，靠 `instanceof` 各取所需；Context 类型就是你观测点的"身份证"；
+- **Convention 是可选件**——不写 Convention，Console/Handler 消费照常；写了才有标签（供 07 关指标分组）。日常一步式写法也可用 `observe()`：`Observation.createNotStarted(name, supplier, registry).observe(() -> { ... 回填 ... })`，lambda 内回填天然满足"stop 前完成"；
+- **别把敏感/大文本放 Context 字段**——Context 会流经所有 Handler（含未来的 tracing 导出），遵守 3.2 的截断纪律。
+
+### 3.5.4 Postman 验证（本节专属）
+
+| 用例 | 方法/URL | 现象 |
+|---|---|---|
+| 触发班次判定 | `GET /demo01/inspect?prompt=现在是什么班次？` 后查 `GET /demo01/events` | 出现 `phase=BUSINESS, name=shift.resolve`，detail 含 `班次=... 来源=local-rule hour=...` |
+| Convention 生效 | 观察 console 的 `shift.resolve` span 输出 | KeyValues 含 `shift='...'`（低基数）与 `shift.resolve.hour='...'`（高基数通道） |
+
+## 3.6 Postman 测试
 
 | 用例 | 方法/URL | 现象 |
 |---|---|---|
@@ -182,10 +367,11 @@ graph LR
 
 **验证要点**：`/events` 的顺序与 `ObservationTextPublisher` 的输出顺序一致——同一事件流、两种消费形态，这就是 02 关广播机制的实证。
 
-## 3.6 本关沉淀
+## 3.7 本关沉淀
 
 - 自定义 Handler 的三步：稳定 DTO → 类型化认领 → `onStop` 抽取（错误另挂 `onError`）；
 - 截断、并发安全、不外泄框架对象——观测代码自己的工程纪律；
+- 自定义 Context 埋点（仿 ToolCallingObservationContext）：领域字段进 Context、Supplier 闭包喂初值、结果 stop 前回填、`supportsContext` 类型路由；Convention 可选，负责把领域字段翻译成标签；
 - "内存 buffer + REST 查询"是通往生产存储（Redis/MQ）的最小正确骨架。
 
 **下一关**：事件里想带班次等业务标签？想对观测内容做统一加工？→ Convention 与 Filter。[附录 18-Observation/04]

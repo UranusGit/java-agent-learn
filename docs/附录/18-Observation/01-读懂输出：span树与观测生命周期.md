@@ -6,7 +6,76 @@
 
 ---
 
-## 1.1 span 树：一次 inspect 请求的真实结构
+## 1.1 span 到底是什么：一个概念的正名
+
+00 关到本关反复出现"span"这个词，现在把它讲透——**它是整个可观测体系里最核心的概念单元**。
+
+### 1.1.1 一句话定义
+
+**span = 一次"有时间跨度的操作"的完整记录**。它至少回答四个问题：
+
+| 组成部分 | 回答的问题 | demo01 里的例子 |
+|---|---|---|
+| **name（名称）** | 干了什么？ | `spring.ai.tool`、`shift.resolve` |
+| **start / end（起止时间戳）** | 什么时候开始、耗时多久？ | 第 2 次 LLM 调用从 10:00:01.200 到 10:00:03.850 |
+| **attributes / KeyValues（属性）** | 上下文是什么？ | `gen_ai.tool.call.name='getCurrentTime'` |
+| **parentId（父指针）** | 它是谁的一部分？ | 工具 span 的 parent 是 ChatClient span |
+
+来源：span 这个术语源自 Google 的分布式追踪论文 [Dapper](https://research.google/pubs/pub36356/)，后被 [OpenTelemetry](https://opentelemetry.io/docs/specs/otel/trace/api/#span) 定为行业标准。**一个 Trace（链路）= 从同一个根 span 出发、靠 parentId 串起来的一棵 span 树**。所以"traceId 贯穿全链路"（06 关）的意思是：同一次请求产生的所有 span 共享一个 traceId，但各有不同的 spanId。
+
+### 1.1.2 用时间轴看一次请求：span 树的另一种画法
+
+1.2 节的树形图表达"谁包含谁"，但 span 本质是**时间区间**——时间轴视角更能体现"耗时"这个核心价值：
+
+```mermaid
+gantt
+    title 一次 inspect 请求的 span 时间轴（同一 traceId）
+    dateFormat HH:mm:ss.SSS
+    axisFormat %H:%M:%S
+    section http.server.requests
+    HTTP 入口（根 span）           :a1, 10:00:01.000, 10:00:04.200
+    section spring.ai.chat.client
+    ChatClient 编排               :a2, 10:00:01.100, 10:00:04.100
+    section chat_model 第1次
+    LLM 决策"该调 getCurrentTime"  :a3, 10:00:01.150, 10:00:02.100
+    section spring.ai.tool
+    getCurrentTime 执行           :a4, 10:00:02.150, 10:00:02.300
+    section chat_model 第2次
+    LLM 拿到时间做总结            :a5, 10:00:02.350, 10:00:03.850
+```
+
+一眼能读出三件树形图给不了的信息：**第 2 次 LLM 调用占了大头（1.5s）、工具执行只花 150ms、HTTP 入口与内部观测几乎同时开始**——这就是 span 的价值：把"慢在哪一步"从猜测变成测量。
+
+### 1.1.3 Micrometer Observation 与 span 的关系（重要澄清）
+
+严格说，你在 Spring AI 里手写的是 `Observation`（Micrometer 的观测抽象），**span 是 Observation 在 tracing 后端里的投影**：
+
+```mermaid
+graph LR
+    A["你的代码<br/>Observation.start(...)<br/>ObservationRegistry"] --> B{Registry 里注册了<br/>TracingObservationHandler?}
+    B -->|是| C["Observation → OTel Span<br/>spanId/parentId/起止时间落库<br/>可导出到 Jaeger/Tempo"]
+    B -->|否（00 关现状）| D["Observation → 事件流<br/>console 打印 / MeterRegistry 指标<br/>没有 spanId，但生命周期相同"]
+```
+
+也就是说：
+
+- **00~05 关**没装 tracing，console 打印的每"段"输出，本质是 Observation 生命周期事件（start/stop/error + KeyValues）——没有真正的 spanId，但**逻辑上就是 span**（有名字、有起止、有属性、有嵌套）；
+- **06 关起**接上 Tracer（Brave/OpenTelemetry），同一个 Observation 会额外获得 spanId/traceId，变成标准 span 可导出；
+- **代码不用改**——这正是 Micrometer Observation 作为"观测门面"（facade）的设计意图：一次埋点，指标、日志、trace 三处受益。
+
+> javap 实证注记：`Observation` 上不存在 `getSpanId()`/`getTraceId()` 之类方法（见 CLAUDE.md「Observation 基准」）——traceId 要通过 `Tracer.currentSpan()` 取，这正是 06 关的主题。
+
+### 1.1.4 span 三兄弟：Trace / Span / Event 的层级
+
+| 概念 | 粒度 | demo01 例子 | 数量关系 |
+|---|---|---|---|
+| **Trace** | 一次完整请求 | GET /demo01/inspect | 1 个 |
+| **Span** | 请求内的一段操作 | ChatClient、chat_model、tool | 1 个 Trace = N 个 Span |
+| **Event** | span 内的瞬时事件点（无时长） | `onError` 时刻 | 1 个 Span = 0..N 个 Event |
+
+区分口诀：**有起点和终点的是 span，只有一个时间点的是 event**。"工具开始执行"是 span；"第 3 次重试在第 1.2 秒触发"是 event。
+
+## 1.2 span 树：一次 inspect 请求的真实结构
 
 把 00 关的 console 输出按"谁包含谁"重排，你会得到一棵树：
 
@@ -26,7 +95,7 @@ graph TD
 
 > 「想深入 gen_ai 语义约定全景？→ [教程 22-全链路可观测性 §3]」
 
-## 1.2 低基数与高基数：工业系统的第一条纪律
+## 1.3 低基数与高基数：工业系统的第一条纪律
 
 console 里标签分两类（javap 实证 `DefaultToolCallingObservationConvention` 的方法划分）：
 
@@ -37,7 +106,7 @@ console 里标签分两类（javap 实证 `DefaultToolCallingObservationConventi
 
 判据一句话：**取值可枚举且总数 < 数百 → 低基数；含业务流水号/自由文本 → 高基数**。工业场景设备编号动辄上万，`deviceId` 一律当高基数处理——这是 07 关基数熔断的伏笔。
 
-## 1.3 拆开 observe()：一次观测的一生
+## 1.4 拆开 observe()：一次观测的一生
 
 你手写的第一个观测（00 关 controller 里如果有 `Observation.createNotStarted(...).observe(...)`）和框架内部埋点走的是同一条生命周期：
 
@@ -58,7 +127,7 @@ stateDiagram-v2
 - **onError 独立于 onStop**——出错时先 `onError` 再 `onStop`，异常对象通过 `ctx.getError()` 可取。
 - **Context 是"状态袋"**——`Observation.Context` 本质是个线程安全的 Map + 领域字段。Spring AI 的五类观测点各把自己的领域字段放进去（如 `ToolCallingObservationContext.getToolCallArguments()`），Handler 用 `supportsContext()` 认领。
 
-## 1.4 实践：手动埋一个"业务阶段"观测
+## 1.5 实践：手动埋一个"业务阶段"观测
 
 框架观测点只知道"有个工具被调了"，不知道你的业务阶段语义（如"班次判定要走排班表"）。给 `TimeTool` 长出第二个方法 `getCurrentShift`（当前班次），并给它的内部业务逻辑手动埋观测。本关后 `TimeTool` 的**完整文件**如下（v2：新增 `ObservationRegistry` 注入 + `getCurrentShift`）：
 
@@ -132,9 +201,9 @@ public class TimeTool {
 >
 > **这是"new 出来的工具也要观测"的工程细节，教材不说、生产必踩。**
 
-> javap 实证注记：`Observation` 上有实例方法 `error(Throwable)`/`stop()`/`openScope()`，静态方法 `start(String, Supplier<Context>, ObservationRegistry)`——**没有** `isStopped()`，也没有静态 `Observation.error(e, registry)`。所以"恰好 stop 一次"靠 try/finally 结构保证，不靠查询状态。日常业务更推荐一步式：`Observation.createNotStarted("shift.resolve", Observation.Context::new, registry).observe(() -> doResolve())`——`observe()` 自动 start/stop；上面走四步是为了让你亲眼对应 1.3 的生命周期。
+> javap 实证注记：`Observation` 上有实例方法 `error(Throwable)`/`stop()`/`openScope()`，静态方法 `start(String, Supplier<Context>, ObservationRegistry)`——**没有** `isStopped()`，也没有静态 `Observation.error(e, registry)`。所以"恰好 stop 一次"靠 try/finally 结构保证，不靠查询状态。日常业务更推荐一步式：`Observation.createNotStarted("shift.resolve", Observation.Context::new, registry).observe(() -> doResolve())`——`observe()` 自动 start/stop；上面走四步是为了让你亲眼对应 1.4 的生命周期。
 
-## 1.5 Postman 测试
+## 1.6 Postman 测试
 
 | 项 | 内容 |
 |---|---|
@@ -147,8 +216,10 @@ public class TimeTool {
 2. 对比两次调用（一次只问时间、一次问时间+班次），观察 span 树差异：**span 树就是 Agent 行为的指纹**；
 3. 人为在班次逻辑里抛 `RuntimeException`，再调一次：console 出现 `error='java.lang.RuntimeException...'` 字段，验证 `onError` 时机。
 
-## 1.6 本关沉淀
+## 1.7 本关沉淀
 
+- span = 有起止时间的操作记录（name/起止/KeyValues/parentId），Trace = 同 traceId 的 span 树，event = 无时长的时间点；
+- Micrometer Observation 是观测门面：接 tracing 后投影为标准 span，不接也走同一生命周期——一次埋点三处受益；
 - span 树 = 请求的行为指纹；一轮工具调用 = 两次 LLM 调用；
 - 低/高基数分流是指标与 trace 的分水岭，工业编号一律高基数；
 - 生命周期 `start → openScope → (error) → stop`，`onStop` 信息最全，是 Handler 的主战场。

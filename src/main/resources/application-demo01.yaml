@@ -8,3 +8,11 @@ spring:
       chat:
         model: deepseek-v4-flash
         timeout: 600s
+#    tools:
+#      observations:
+#        include-content: true # 工具参数与结果进入观测上下文
+#    chat:
+#      client:
+#        observations:
+#          log-prompt: true # prompt进入观测上下文
+#          log-completion: true # 模型回复内容进入观测上下文
