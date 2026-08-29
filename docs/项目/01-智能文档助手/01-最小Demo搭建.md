@@ -4,7 +4,7 @@
 >
 > **读者画像**：已了解 RAG 概念，需要动手搭建第一个 Spring AI RAG 应用的开发者。
 >
-> **前置阅读**：[00-需求分析与架构设计](00-需求分析与架构设计.md)、[教程 05-RAG 检索增强生成](../../教程/05-RAG检索增强生成.md)、[教程 22-结构化输出](../../教程/22-结构化输出.md)。API 真实性以 [附录 05-SpringAI2-API基准](../../附录/05-SpringAI2-API基准/00-Advisor与ChatMemory.md) 为准。
+> **前置阅读**：[00-需求分析与架构设计](00-需求分析与架构设计.md)、[教程 00-基础与核心/05-RAG检索增强生成 检索增强生成](../../教程/00-基础与核心/05-RAG检索增强生成.md)、[教程 02-SpringAI核心机制/03-结构化输出](../../教程/02-SpringAI核心机制/03-结构化输出.md)。API 真实性以 [附录 05-SpringAI2-API基准](../../附录/05-SpringAI2-API基准/00-Advisor与ChatMemory.md) 为准。
 
 ---
 
@@ -211,7 +211,7 @@ server:
 - `distance-type: COSINE_DISTANCE`：余弦距离最适合文本语义相似度计算。
 - `spring.codec.max-in-memory-size`：WebFlux 的请求体/上传大小上限（MVC 的 `spring.servlet.multipart.*` 在 WebFlux 下不生效）。
 
-> **向量数据库索引和距离度量深入** → [教程 06-向量数据库选型](../../教程/06-向量数据库选型.md)：该教程详细对比了 HNSW、IVF 等索引类型的性能特征，以及余弦距离、欧氏距离、内积在不同场景下的选择依据。
+> **向量数据库索引和距离度量深入** → [教程 00-基础与核心/06-向量数据库选型](../../教程/00-基础与核心/06-向量数据库选型.md)：该教程详细对比了 HNSW、IVF 等索引类型的性能特征，以及余弦距离、欧氏距离、内积在不同场景下的选择依据。
 
 ### 3.3 数据库准备（SQL DDL）
 
@@ -609,7 +609,7 @@ public class DocumentService {
 
 4. **响应式上传**：`DataBufferUtils.join(filePart.content())` 把响应式数据流收拢为一个字节缓冲，`subscribeOn(Schedulers.boundedElastic())` 确保后续阻塞操作（文件写、JPA 写、Embedding 调用）不占用 Netty EventLoop。
 
-> **Spring AI ETL Pipeline 深入** → [教程 05-RAG 检索增强生成](../../教程/05-RAG检索增强生成.md)：教程中详细讲解了 `DocumentReader → DocumentTransformer → DocumentWriter` 三段式 ETL 架构，以及 `TokenTextSplitter` 的工作原理和参数调优。
+> **Spring AI ETL Pipeline 深入** → [教程 00-基础与核心/05-RAG检索增强生成 检索增强生成](../../教程/00-基础与核心/05-RAG检索增强生成.md)：教程中详细讲解了 `DocumentReader → DocumentTransformer → DocumentWriter` 三段式 ETL 架构，以及 `TokenTextSplitter` 的工作原理和参数调优。
 
 ### 4.4 统一异常处理
 
@@ -769,7 +769,7 @@ public record DocumentStatusResponse(
 
 Java 21 的 record 天然不可变、自带 equals/hashCode/toString、构造器简洁。在 RAG 场景中，问答响应是一次性数据对象，不需要可变性——record 是最合适的选择。
 
-> **结构化输出深入** → [教程 22-结构化输出](../../教程/22-结构化输出.md)：教程详细讲解了 Spring AI 2.0 的 `entity()` 方法、BeanOutputConverter 底层原理、JSON Schema 自动生成机制，以及如何通过结构化输出让 LLM 返回精确的 Java 对象。
+> **结构化输出深入** → [教程 02-SpringAI核心机制/03-结构化输出](../../教程/02-SpringAI核心机制/03-结构化输出.md)：教程详细讲解了 Spring AI 2.0 的 `entity()` 方法、BeanOutputConverter 底层原理、JSON Schema 自动生成机制，以及如何通过结构化输出让 LLM 返回精确的 Java 对象。
 
 ### 5.2 问答服务 `QaService.java`
 

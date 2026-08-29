@@ -1,6 +1,6 @@
 # Prompt 缓存与 KV Cache 深度解析
 
-> 「本文是对 [教程 81-Agent性能优化 §2-§5] 的深入展开」
+> 「本文是对 [教程 08-架构师进阶/04-Agent性能优化 §2-§5] 的深入展开」
 
 > **定位**：系统讲解 LLM 推理引擎的 Prompt Caching 机制——服务端 KV Cache 复用、OpenAI/Anthropic 的缓存 API、缓存命中条件，以及如何在 Agent 系统中设计 Prompt 结构最大化缓存命中率。
 >

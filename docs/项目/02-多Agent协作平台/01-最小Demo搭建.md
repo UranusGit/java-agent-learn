@@ -6,7 +6,7 @@
 
 > **前置阅读**：[00-需求分析与架构设计](00-需求分析与架构设计.md)。
 
-> **关联教程**：[教程 00-Agent核心概念](../../教程/00-Agent核心概念.md)、[教程 07-ReAct推理模式](../../教程/07-ReAct推理模式.md)、[教程 19-SSE流式通信](../../教程/19-SSE流式通信.md)。
+> **关联教程**：[教程 00-基础与核心/00-Agent核心概念](../../教程/00-基础与核心/00-Agent核心概念.md)、[教程 00-基础与核心/07-ReAct推理模式](../../教程/00-基础与核心/07-ReAct推理模式.md)、[教程 02-SpringAI核心机制/00-SSE流式通信](../../教程/02-SpringAI核心机制/00-SSE流式通信.md)。
 
 > **API 真实性**：所有 Spring AI 代码按 [附录 05-SpringAI2-API基准] 的真实签名书写，可照抄编译。
 
@@ -133,7 +133,7 @@
 | data-redis-reactive | 响应式 Redis | 后续状态管理、Agent 注册 |
 | actuator | 健康检查 + 指标 | 可观测性 |
 
-> 说明：本项目不用 `spring-ai-starter-model-deepseek`，而是用 `spring-ai-starter-model-openai` + `base-url: https://api.deepseek.com`（DeepSeek 兼容 OpenAI 协议，也是全体系的统一坐标，见 [教程 02 §2]）。模型参数用 `OpenAiChatOptions`（真实类，非虚构的 `DeepSeekChatOptions`）。
+> 说明：本项目不用 `spring-ai-starter-model-deepseek`，而是用 `spring-ai-starter-model-openai` + `base-url: https://api.deepseek.com`（DeepSeek 兼容 OpenAI 协议，也是全体系的统一坐标，见 [教程 00-基础与核心/02-ChatClient与对话模型 §2]）。模型参数用 `OpenAiChatOptions`（真实类，非虚构的 `DeepSeekChatOptions`）。
 
 ### 3.2 配置文件（完整 `application.yml`）
 
@@ -511,7 +511,7 @@ public class AgentExecutor {
 |------|------|
 | 每次调用 `buildClient` | 每个 Agent 有不同的 systemPrompt 和模型参数，不能用单例 |
 | 返回 `Flux<String>` | 流式输出是刚需，SSE 推送到前端 |
-| 模型参数用 `OpenAiChatOptions` | 真实 API（[教程 02 §2.2]），随 starter 自动配置 |
+| 模型参数用 `OpenAiChatOptions` | 真实 API（[教程 00-基础与核心/02-ChatClient与对话模型 §2.2]），随 starter 自动配置 |
 | 不在此层加工具 | 工具在迭代一加入，保持最小 Demo 极简 |
 
 ### 7.2 为什么用 `stream()` 而非 `call()`
@@ -645,7 +645,7 @@ public class AgentController {
 2. **错误也走 SSE 事件**——`onErrorResume` 将异常转为 `error` 事件，前端统一处理
 3. **`concatWith` 保证 done 事件**——无论成功还是失败，最后一个事件都是 `done`
 
-> 「遇到阻塞？→ [教程 19-SSE流式通信](../../教程/19-SSE流式通信.md)」
+> 「遇到阻塞？→ [教程 02-SpringAI核心机制/00-SSE流式通信](../../教程/02-SpringAI核心机制/00-SSE流式通信.md)」
 
 ### 8.3 `web/GlobalExceptionHandler.java`
 

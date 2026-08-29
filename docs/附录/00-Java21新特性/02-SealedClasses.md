@@ -1,6 +1,6 @@
 # 密封类（Sealed Classes）在 Agent 状态/事件建模中的应用
 
-> 「本文是对 [教程 21-Agent状态管理 §2-§4] 的深入展开」
+> 「本文是对 [教程 02-SpringAI核心机制/02-Agent状态管理 §2-§4] 的深入展开」
 
 > **定位**：深入讲解 Java 17+ 的密封类（Sealed Classes）特性，以及它如何在 Agent 状态机建模、事件溯源（Event Sourcing）、密封类型层级中实现"穷举安全"。
 >

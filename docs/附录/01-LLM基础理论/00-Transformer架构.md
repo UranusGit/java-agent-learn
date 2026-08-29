@@ -1,6 +1,6 @@
 # Transformer 架构：注意力机制的本质
 
-> 「本文是对 [教程 05-RAG §2] 的深入展开」
+> 「本文是对 [教程 00-基础与核心/05-RAG检索增强生成 §2] 的深入展开」
 >
 > 技术栈：Spring Boot 4.1 + Spring AI 2.0.0 + WebFlux + Java 21
 
@@ -352,4 +352,4 @@ Transformer 的核心是**多头自注意力**，它让序列中每个位置都�
 5. **KV Cache 是推理加速命脉**：理解它才能解释为什么长上下文昂贵、为什么 batch 长请求收益差。
 6. **训练谱系决定能力边界**：Base / Instruct / Chat 三档对应不同可用性，Agent 必须用 Chat 模型。
 
-这些知识会在 [01-Embedding原理]（向量表示的几何性质）和 [02-上下文窗口与Token]（token 计数与窗口管理）继续延伸，并在 [教程 05-RAG] 中被反复印证。理解了 Transformer，再回到 Spring AI 的 `ChatModel.call(prompt)` 时，那行代码背后发生的事情就有了形状。
+这些知识会在 [01-Embedding原理]（向量表示的几何性质）和 [02-上下文窗口与Token]（token 计数与窗口管理）继续延伸，并在 [教程 00-基础与核心/05-RAG检索增强生成] 中被反复印证。理解了 Transformer，再回到 Spring AI 的 `ChatModel.call(prompt)` 时，那行代码背后发生的事情就有了形状。

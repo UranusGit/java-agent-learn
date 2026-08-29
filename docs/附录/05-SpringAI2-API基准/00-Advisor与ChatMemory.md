@@ -1,6 +1,6 @@
 # 附录 05-00：Spring AI 2.0 Advisor 与 ChatMemory 真实 API 基准
 
-> **定位**：本文是对 [教程 23-Advisor链与拦截器 §API] 与 [教程 04-记忆与会话管理 §API] 的深入展开，也是**全文档体系的 API 真实性基准**——所有教程/项目中的 Advisor 与 ChatMemory 代码以本文为准。读者画像：任何要照抄本体系代码写实现的读者。前置阅读：[教程 23-Advisor链与拦截器]、[教程 04-记忆与会话管理]。
+> **定位**：本文是对 [教程 02-SpringAI核心机制/04-Advisor链与拦截器 §API] 与 [教程 00-基础与核心/04-记忆与会话管理 §API] 的深入展开，也是**全文档体系的 API 真实性基准**——所有教程/项目中的 Advisor 与 ChatMemory 代码以本文为准。读者画像：任何要照抄本体系代码写实现的读者。前置阅读：[教程 02-SpringAI核心机制/04-Advisor链与拦截器]、[教程 00-基础与核心/04-记忆与会话管理]。
 >
 > **为什么需要这篇**：2026-08 全量审计发现体系中存在三代 Advisor API 混用（1.0 式 `adviseRequest`/`chain.next()`/`AdvisedRequest` / 2.0 式 `adviseCall` 的正确与错误签名并存，且此前误以为 `BaseAdvisor.before/after` 为虚构——2026-08-16 本地 jar javap 实证其真实存在）。本篇以 Spring AI 2.0.0 本地 jar 为准统一口径，并给出错误写法对照表。
 
@@ -58,7 +58,7 @@ public class TenantTaggingAdvisor implements CallAdvisor, StreamAdvisor {
 }
 ```
 
-**三要点**：① 短路的实现是**不调用 `chain.nextCall()`** 直接返回（没有"标记跳过"这种 API）；② 同时实现两接口才能兼顾 `call()` 与 `stream()`；③ 顺序由 `Order`（Spring 的 `@Order`/`getOrder()`）控制，`SecurityAdvisor → PromptAdvisor → MemoryAdvisor → ...` 的通用顺序原则见 [教程 23-Advisor链与拦截器 §执行顺序]。
+**三要点**：① 短路的实现是**不调用 `chain.nextCall()`** 直接返回（没有"标记跳过"这种 API）；② 同时实现两接口才能兼顾 `call()` 与 `stream()`；③ 顺序由 `Order`（Spring 的 `@Order`/`getOrder()`）控制，`SecurityAdvisor → PromptAdvisor → MemoryAdvisor → ...` 的通用顺序原则见 [教程 02-SpringAI核心机制/04-Advisor链与拦截器 §执行顺序]。
 
 > **javap 实证**（`spring-ai-client-chat-2.0.0.jar`）：`ChatClientRequest.Builder` 的真实方法只有 `prompt(Prompt)`、`context(Map)`、`context(String, Object)`、`build()`——**没有 `from()` / `contextEntry()`**；正确的复制改写是 `request.mutate().context(k, v).build()`。流式下 Reactor Context 写法是 `contextWrite(ctx -> ctx.put(...))`，**没有 `ReactorContext.of(...)`** 这种 API。
 
@@ -66,21 +66,21 @@ public class TenantTaggingAdvisor implements CallAdvisor, StreamAdvisor {
 
 | 错误形态 | 出现位置（审计） | 为什么错 | 正确写法 |
 |---------|----------------|---------|---------|
-| `implements CallAdvisor` + 单参 `before(ChatClientRequest)` / `after(ChatClientResponse)` | 教程 06/11/13/25/29/34 旧稿 | **`CallAdvisor` 接口上没有 `before/after`**（这是 `BaseAdvisor` 的方法，且必须带 `AdvisorChain` 参数） | 继承 `BaseAdvisor` 实现 `before(ChatClientRequest, AdvisorChain)` / `after(ChatClientResponse, AdvisorChain)`；或实现 `CallAdvisor.adviseCall`（见 §1.2 两个模板） |
-| `adviseRequest(ChatClientRequest, Map)` | 教程 23/17 旧稿 | 1.0 之前也未有此签名 | `adviseCall(ChatClientRequest, CallAdvisorChain)` |
-| `chain.next()` / `chain.nextAroundCall()` | 教程 28-32 部分示例 | 链方法 1.0 式混写 | `chain.nextCall(request)`（Call）/ `chain.nextStream(request)`（Stream） |
-| `new ChatClientResponse(response, context)` | 教程 31/23 旧稿 | 类型不存在且响应不可这样构造 | 由 chain 返回 `ChatClientResponse` |
-| `SafeGuardAdvisor.builder().sensitiveWords(...)` | 教程 13 旧稿 | 该 builder 不存在 | `new SafeGuardAdvisor(List<String>)`（javap 实证构造函数：`(List<String>)`、`(List, String, int)`，或 `builder()`） |
+| `implements CallAdvisor` + 单参 `before(ChatClientRequest)` / `after(ChatClientResponse)` | 教程 00-基础与核心/00-Agent核心概念 §11/13/25/29/34 旧稿 | **`CallAdvisor` 接口上没有 `before/after`**（这是 `BaseAdvisor` 的方法，且必须带 `AdvisorChain` 参数） | 继承 `BaseAdvisor` 实现 `before(ChatClientRequest, AdvisorChain)` / `after(ChatClientResponse, AdvisorChain)`；或实现 `CallAdvisor.adviseCall`（见 §1.2 两个模板） |
+| `adviseRequest(ChatClientRequest, Map)` | 教程 00-基础与核心/02-ChatClient与对话模型 §17 旧稿 | 1.0 之前也未有此签名 | `adviseCall(ChatClientRequest, CallAdvisorChain)` |
+| `chain.next()` / `chain.nextAroundCall()` | 教程 00-基础与核心/02-ChatClient与对话模型 部分示例 | 链方法 1.0 式混写 | `chain.nextCall(request)`（Call）/ `chain.nextStream(request)`（Stream） |
+| `new ChatClientResponse(response, context)` | 教程 00-基础与核心/04-记忆与会话管理 §23 旧稿 | 类型不存在且响应不可这样构造 | 由 chain 返回 `ChatClientResponse` |
+| `SafeGuardAdvisor.builder().sensitiveWords(...)` | 教程 01-WebFlux与响应式编程/03-Sinks详解 旧稿 | 该 builder 不存在 | `new SafeGuardAdvisor(List<String>)`（javap 实证构造函数：`(List<String>)`、`(List, String, int)`，或 `builder()`） |
 
 ### 1.4 内置 Advisor 清单（2.0 真实存在的）
 
 | Advisor | 用途 | 常见误传 |
 |---------|------|---------|
 | `MessageChatMemoryAdvisor` | 记忆写入（call/stream 皆可） | 旧名 `MessageChatMemoryAdvisor` 在 1.0 曾叫 ChatMemoryAdvisor——2.0 以 builder 用法为准（见 §2） |
-| `QuestionAnswerAdvisor` | RAG 检索问答 | 包路径是 `org.springframework.ai.chat.client.advisor.vectorstore`（教程 05 旧稿曾写错） |
+| `QuestionAnswerAdvisor` | RAG 检索问答 | 包路径是 `org.springframework.ai.chat.client.advisor.vectorstore`（教程 00-基础与核心/05-RAG检索增强生成 旧稿曾写错） |
 | `SimpleLoggerAdvisor` | 请求/响应日志 | - |
 
-`TokenBudgetAdvisor` **不是内置组件**（审计发现教程 20/13 与教程 01 的内置表口径不一）——上下文预算需自行实现（正确姿势：实现 CallAdvisor + StreamAdvisor，在 adviseCall 里压缩 messages）。本项目体系中的 `TokenMeteringAdvisor`、`TenantTaggingAdvisor` 等均为**自定义示例类**，不是框架 API。
+`TokenBudgetAdvisor` **不是内置组件**（审计发现教程 00-基础与核心/02-ChatClient与对话模型 §13 与教程 00-基础与核心/01-Spring-AI框架入门 的内置表口径不一）——上下文预算需自行实现（正确姿势：实现 CallAdvisor + StreamAdvisor，在 adviseCall 里压缩 messages）。本项目体系中的 `TokenMeteringAdvisor`、`TenantTaggingAdvisor` 等均为**自定义示例类**，不是框架 API。
 
 > **QAA 模块坐标（javap 实证 `spring-ai-vector-store-advisor-2.0.0.jar`）**：`QuestionAnswerAdvisor` 与 `VectorStoreChatMemoryAdvisor` 在独立模块 `spring-ai-vector-store-advisor`（2.0.0 起**改名**，老坐标 `spring-ai-advisors-vector-store` 已不存在；该模块依赖 `spring-ai-client-chat` + `spring-ai-vector-store`，**pgvector starter 不会传递引入**——需显式声明）。构造器为包私有，唯一创建方式 `QuestionAnswerAdvisor.builder(VectorStore)`；Builder 方法：`searchRequest` / `promptTemplate` / `protectFromBlocking` / `scheduler` / `order` / `build()`（无 `queryTransformers`）。
 
@@ -114,7 +114,7 @@ ChatMemory memory = MessageWindowChatMemory.builder()
 |------|------|------|
 | `InMemoryChatMemoryRepository` | 无（spring-ai-model 核心包） | 唯一官方实现；`ChatMemoryAutoConfiguration` 自动装配为 `ChatMemoryRepository` Bean（反编译实证：默认 `new InMemoryChatMemoryRepository()`） |
 
-**本地仓库未发现** `JdbcChatMemoryRepository` / `spring-ai-model-chat-memory-jdbc` / `MongoChatMemoryRepository` / `RedisChatMemoryRepository`——**这些都不是本地 2.0.0 依赖中存在的类**。持久化（JDBC/Redis/对象存储）需自行实现 `ChatMemoryRepository` 接口（`findConversationIds` / `findByConversationId` / `saveAll` / `deleteByConversationId`）。`InMemoryChatMemory`（教程 09 旧稿）也不是类名——正确组合是 `InMemoryChatMemoryRepository` + `MessageWindowChatMemory`。
+**本地仓库未发现** `JdbcChatMemoryRepository` / `spring-ai-model-chat-memory-jdbc` / `MongoChatMemoryRepository` / `RedisChatMemoryRepository`——**这些都不是本地 2.0.0 依赖中存在的类**。持久化（JDBC/Redis/对象存储）需自行实现 `ChatMemoryRepository` 接口（`findConversationIds` / `findByConversationId` / `saveAll` / `deleteByConversationId`）。`InMemoryChatMemory`（教程 00-基础与核心/09-多Agent协作 旧稿）也不是类名——正确组合是 `InMemoryChatMemoryRepository` + `MessageWindowChatMemory`。
 
 ### 2.3 自研持久化仓库的正确序列化范式（实锤：`Message` 不能 Jackson 直存）
 
@@ -173,13 +173,13 @@ chatClient.prompt()
     .user(message)
     .call();
 
-// 错误形态（审计发现教程 08 旧稿）: 字面量 "chat_memory_conversation_id" 硬编码
+// 错误形态（审计发现教程 00-基础与核心/08-Plan-and-Execute模式 旧稿）: 字面量 "chat_memory_conversation_id" 硬编码
 // 常量名以所引入版本的 ChatMemory 定义为准，禁止抄字面量
 ```
 
 ### 2.5 流式调用与记忆写入
 
-`MessageChatMemoryAdvisor` 对 `stream()` 同样生效（框架在流完成后写入完整响应）——教程 09 旧稿"流式不写记忆"与"自动写入"的矛盾表述以此为准：**用 MessageChatMemoryAdvisor 时流式会自动写入；自己手写 Flux 消费时不会**。
+`MessageChatMemoryAdvisor` 对 `stream()` 同样生效（框架在流完成后写入完整响应）——教程 00-基础与核心/09-多Agent协作 旧稿"流式不写记忆"与"自动写入"的矛盾表述以此为准：**用 MessageChatMemoryAdvisor 时流式会自动写入；自己手写 Flux 消费时不会**。
 
 ---
 

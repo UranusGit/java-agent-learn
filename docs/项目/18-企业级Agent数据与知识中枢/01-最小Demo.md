@@ -1,6 +1,6 @@
 # 01-最小 Demo：单文档入库 → 检索 → 有据回答
 
-> **定位**：最小闭环：一份 Markdown 文档 →（解析→分块→向量入库）→ 相似检索 → 带引用回答。用**真实 Spring AI 2.0 API**（全部 javap 实证）。读者画像：动手起步的开发者。前置阅读：[00-需求分析与架构设计](00-需求分析与架构设计.md)、[教程 05-RAG检索增强生成]。
+> **定位**：最小闭环：一份 Markdown 文档 →（解析→分块→向量入库）→ 相似检索 → 带引用回答。用**真实 Spring AI 2.0 API**（全部 javap 实证）。读者画像：动手起步的开发者。前置阅读：[00-需求分析与架构设计](00-需求分析与架构设计.md)、[教程 00-基础与核心/05-RAG检索增强生成]。
 >
 > **铁律 0**：`MarkdownDocumentReader`（`org.springframework.ai.reader.markdown`，构造 `(String)`/`(Resource, Config)`、读取 `get()`）、`TokenTextSplitter.builder()`（spring-ai-commons）、`PgVectorStore.builder(JdbcTemplate, EmbeddingModel)`、`SearchRequest.builder()` 均实证。
 

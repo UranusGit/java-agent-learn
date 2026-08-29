@@ -1,6 +1,6 @@
 # 20-多模态与浏览器 Agent 扩展——从文本到看得到、能操作
 
-> **定位**：把平台从"纯文本 Agent"扩展到**多模态与浏览器操作**：**多模态输入**（图片/文档，`UserMessage` + `Media`）、**浏览器 Agent**（ComputerUse 类操作 Web）、**边缘端云协同**（端侧轻量 + 云侧重型）。这是平台"能力边界"的扩展。读者画像：想让 Agent "看图"、"上网操作"的读者。前置阅读：[18-前端与体验深化](18-前端与体验深化.md)、[教程 90-ComputerUse与浏览器Agent]、[教程 91-多模态Agent开发]。
+> **定位**：把平台从"纯文本 Agent"扩展到**多模态与浏览器操作**：**多模态输入**（图片/文档，`UserMessage` + `Media`）、**浏览器 Agent**（ComputerUse 类操作 Web）、**边缘端云协同**（端侧轻量 + 云侧重型）。这是平台"能力边界"的扩展。读者画像：想让 Agent "看图"、"上网操作"的读者。前置阅读：[18-前端与体验深化](18-前端与体验深化.md)、[教程 09-前沿专题/01-ComputerUse与浏览器Agent]、[教程 09-前沿专题/02-多模态Agent开发]。
 >
 > **演进纪律**：本迭代做多模态/浏览器扩展；本迭代后进入收官。
 > **铁律 0**：`UserMessage`/`Media` 已 javap 实证（`org.springframework.ai.content.Media`）；浏览器 Agent 为外部生态，标注第三方。
@@ -123,7 +123,7 @@ flowchart TB
 | 浏览器工具集 | `navigate` / `click` / `type` / `screenshot` / `extract` | 暴露为 ToolCallback，走工具治理 |
 | 页面理解 | 截图 → 多模态模型（20 §二）理解 DOM/视觉 | 与多模态联动 |
 
-> ⚠ **第三方**：浏览器自动化底层用 Playwright/Puppeteer（第三方，坐标需引入）；ComputerUse 类能力参考 [教程 90-ComputerUse与浏览器Agent] 生态。
+> ⚠ **第三方**：浏览器自动化底层用 Playwright/Puppeteer（第三方，坐标需引入）；ComputerUse 类能力参考 [教程 09-前沿专题/01-ComputerUse与浏览器Agent] 生态。
 
 ### 3.3 本节核对（浏览器 Agent）
 

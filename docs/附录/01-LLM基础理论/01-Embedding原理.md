@@ -1,6 +1,6 @@
 # Embedding 原理：向量表示与语义相似度
 
-> 「本文是对 [教程 05-RAG §2-§3] 的深入展开」
+> 「本文是对 [教程 00-基础与核心/05-RAG检索增强生成 §2-§3] 的深入展开」
 
 > **定位**：系统讲解 Embedding（词嵌入/句嵌入）的数学原理——从 Word2Vec 到 Transformer Embedding、向量空间模型、余弦相似度、Spring AI 2.0 的 EmbeddingModel API，以及 RAG 场景中 Embedding 的工程实践。
 >
@@ -609,4 +609,4 @@ Embedding 是 RAG 和语义搜索的数学基础。理解它的工作原理，�
 6. **近似搜索**：百万级向量需要 ANN 算法（HNSW/IVF），牺牲少量精度换取巨大速度提升
 7. **质量评估**：用 Recall@K 和 MRR 量化检索质量
 
-在教程 05（RAG 检索增强生成）中，`VectorStore.similaritySearch()` 底层就是 Embedding + ANN 搜索。理解 Embedding 原理，才能优化分块策略、选择合适维度、调试检索质量问题。
+在教程 00-基础与核心/05-RAG检索增强生成（RAG 检索增强生成）中，`VectorStore.similaritySearch()` 底层就是 Embedding + ANN 搜索。理解 Embedding 原理，才能优化分块策略、选择合适维度、调试检索质量问题。

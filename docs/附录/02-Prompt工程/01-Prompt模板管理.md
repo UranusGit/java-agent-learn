@@ -1,6 +1,6 @@
 # Prompt 模板管理：版本化、组合与动态装配
 
-> 「本文是对 [教程 02-ChatClient §3-§5] 的深入展开」
+> 「本文是对 [教程 00-基础与核心/02-ChatClient与对话模型 §3-§5] 的深入展开」
 
 > **定位**：系统讲解 Prompt 模板的版本管理、参数化、组合复用、A/B 测试、动态装配，以及在 Spring AI `PromptTemplate` / `SystemPromptTemplate` 中的工程实践。
 >

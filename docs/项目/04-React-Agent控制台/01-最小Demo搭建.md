@@ -2,7 +2,7 @@
 
 > **定位**：从零搭起参考后端 + agent-console 前端两套工程，跑通第一条"输入 → SSE → 打字机输出"链路。本篇只有单会话、无历史、无工具可视化——**刻意保持最小**，为后续迭代留足演进空间。本文给出**完整可手写代码**（一行不省略）。
 >
-> 「遇到阻塞？→ [教程 24-React入门与现代前端工程 §4 Vite 工程]、[教程 26-React与SSE流式UI §1 fetch+ReadableStream]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
+> 「遇到阻塞？→ [教程 03-React前端与AgenticUI/00-React入门与现代前端工程 §4 Vite 工程]、[教程 03-React前端与AgenticUI/02-React与SSE流式UI §1 fetch+ReadableStream]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
 
 ---
 
@@ -218,7 +218,7 @@ export type AgentEvent =
 ### 4.5 前端：SSE 消费封装（完整）
 
 ```ts
-// services/sse.ts —— fetch + ReadableStream 消费 SSE（教程 17 §1.2-1.3，完整版）
+// services/sse.ts —— fetch + ReadableStream 消费 SSE（教程 01-WebFlux与响应式编程/07-WebFlux测试与性能调优 §1.2-1.3，完整版）
 import type { AgentEvent } from '../types/events';
 
 export interface StreamHandlers {
@@ -279,7 +279,7 @@ export function parseSSE(buffer: string): ParsedEvents {
   for (const frame of frames) {
     let data = '';
     for (const line of frame.split('\n')) {
-      if (line.startsWith(':')) continue;                 // 心跳注释行（教程 10 §10.3）
+      if (line.startsWith(':')) continue;                 // 心跳注释行（教程 01-WebFlux与响应式编程/00-WebFlux从零入门 §10.3）
       if (line.startsWith('data:')) data += line.slice(5).trim();
     }
     if (data) {
@@ -297,7 +297,7 @@ export function parseSSE(buffer: string): ParsedEvents {
 ### 4.6 前端：useChatStream Hook（v1 完整版）
 
 ```ts
-// hooks/useChatStream.ts —— v1：本地 useState 版；迭代一升级为 reducer（教程 16 §2.2）
+// hooks/useChatStream.ts —— v1：本地 useState 版；迭代一升级为 reducer（教程 01-WebFlux与响应式编程/06-线程模型与调度器 §2.2）
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { streamChat } from '../services/sse';
 import type { AgentEvent } from '../types/events';
@@ -310,7 +310,7 @@ export function useChatStream() {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // rAF 批量缓冲：token 先进 ref，每帧最多一次渲染（教程 17 §4.2）
+  // rAF 批量缓冲：token 先进 ref，每帧最多一次渲染（教程 01-WebFlux与响应式编程/07-WebFlux测试与性能调优 §4.2）
   const pendingRef = useRef<string[]>([]);
   const rafRef = useRef<number | null>(null);
 
@@ -358,7 +358,7 @@ export function useChatStream() {
           onEvent: handleEvent,
           onDone: () => flush(),
           onError: err => {
-            if (err.name === 'AbortError') return;   // 主动取消不是错误（教程 17 §2）
+            if (err.name === 'AbortError') return;   // 主动取消不是错误（教程 01-WebFlux与响应式编程/07-WebFlux测试与性能调优 §2）
             flush(); setStatus('error'); setError(err.message);
           },
         },
@@ -369,7 +369,7 @@ export function useChatStream() {
     }
   }, [handleEvent, flush]);
 
-  // 卸载清理纪律：abort 连接 + 取消 rAF（教程 17 §5.1）
+  // 卸载清理纪律：abort 连接 + 取消 rAF（教程 01-WebFlux与响应式编程/07-WebFlux测试与性能调优 §5.1）
   useEffect(() => () => { abortRef.current?.abort(); flush(); }, [flush]);
 
   return { text, status, error, send, cancel: () => abortRef.current?.abort() };
@@ -579,7 +579,7 @@ curl -N -X POST "http://localhost:8080/api/chat" \
 
 ### ADR 04-02：取消用 AbortController + ref，AbortError 静默分流
 - **决策**：`abortRef` 存控制器；`onError` 里 `err.name === 'AbortError'` 直接 return
-- **取舍理由**：主动取消是正常操作路径，不是故障；进错误态会吓到用户（[教程 17 §2]）
+- **取舍理由**：主动取消是正常操作路径，不是故障；进错误态会吓到用户（[教程 01-WebFlux与响应式编程/07-WebFlux测试与性能调优 §2]）
 
 ### 6.1 本节核对（ADR 演进决策）
 

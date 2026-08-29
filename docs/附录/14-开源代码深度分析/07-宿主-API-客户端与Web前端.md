@@ -202,9 +202,9 @@ sequenceDiagram
 
 | DeepSeek Harness | Java/Spring AI 对应物 | 启示 |
 |---|---|---|
-| apiProxy 传输无关网关 + 四象限消息 | REST/WebSocket 网关 | 事件下行 + unary 上行的双工模型是 Agent UI 的标准（对应 [教程 19-SSE流式通信] [教程 57-多页面流式响应与会话管理]） |
+| apiProxy 传输无关网关 + 四象限消息 | REST/WebSocket 网关 | 事件下行 + unary 上行的双工模型是 Agent UI 的标准（对应 [教程 02-SpringAI核心机制/00-SSE流式通信] [教程 04-企业级架构主干/04-多页面流式响应与会话管理]） |
 | Connection RPC carrier + Typert 网关 | gRPC/WebFlux Router | 「类型系统驱动的跨进程 RPC」让前后端契约在编译期锁定 |
-| profile/bundle/patch 层叠 | Spring Profiles + 配置覆盖 | 声明式组合 + 增量覆盖可审计可回滚（对应 [教程 62-灰度发布与版本管理]） |
+| profile/bundle/patch 层叠 | Spring Profiles + 配置覆盖 | 声明式组合 + 增量覆盖可审计可回滚（对应 [教程 04-企业级架构主干/09-灰度发布与版本管理]） |
 | HMR + client modules | Vite HMR / 模块联邦 | 浏览器端插件热替换是 Agent UI 的动态扩展基础 |
 | ACP 桥 | 标准协议适配 | 复用外部标准协议（Claude Code ACP）而非自造协议 |
 

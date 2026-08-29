@@ -1,6 +1,6 @@
 # Prompt 设计模式：Few-shot、Chain-of-Thought 与高级技巧
 
-> 「本文是对 [教程 02-ChatClient §2-§4] 的深入展开」
+> 「本文是对 [教程 00-基础与核心/02-ChatClient与对话模型 §2-§4] 的深入展开」
 
 > **定位**：系统讲解 Prompt Engineering 的核心设计模式——Zero-shot、Few-shot、Chain-of-Thought、Self-Consistency、ReAct、Tree-of-Thoughts——并给出在 Spring AI `ChatClient` 中的 Java 实现与调优经验。
 >

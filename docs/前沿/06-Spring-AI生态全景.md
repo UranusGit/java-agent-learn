@@ -1,6 +1,6 @@
 # 06-Spring AI 生态全景：框架对比与选型指南
 
-> **定位**：本文调研 Spring AI 生态的完整全景，对比 Spring AI Alibaba、JetBrains Koog、JManus 等基于 Spring AI 或 JVM 构建的 Agent 框架，给出面向不同场景的选型建议。本文不是 Spring AI 的入门教程（参见 [教程 01-Spring AI 框架入门](../教程/01-Spring-AI框架入门.md)），而是站在架构选型视角审视生态格局。
+> **定位**：本文调研 Spring AI 生态的完整全景，对比 Spring AI Alibaba、JetBrains Koog、JManus 等基于 Spring AI 或 JVM 构建的 Agent 框架，给出面向不同场景的选型建议。本文不是 Spring AI 的入门教程（参见 [教程 00-基础与核心/01-Spring-AI框架入门 AI 框架入门](../教程/00-基础与核心/01-Spring-AI框架入门.md)），而是站在架构选型视角审视生态格局。
 >
 > **性质声明**：本文为调研性质，各框架处于快速迭代期，版本特性和成熟度可能随时变化。选型建议基于截至调研时点的公开信息，请以各框架最新文档为准。
 
@@ -234,7 +234,7 @@ graph LR
     style AgentGraph fill:#c8e6c9
 ```
 
-这种 Graph 编排模式与我们 [教程 36-Agent 工作流编排](../教程/79-Agent工作流编排.md) 中讨论的编排需求高度对应，但提供了框架级的抽象。它填补了 Spring AI 在多 Agent 协作方面的空白，类似于 LangGraph 在 Python 生态的角色。
+这种 Graph 编排模式与我们 [教程 05-Observation可观测/03-自定义Handler：收集Agent阶段事件流 工作流编排](../教程/08-架构师进阶/02-Agent工作流编排.md) 中讨论的编排需求高度对应，但提供了框架级的抽象。它填补了 Spring AI 在多 Agent 协作方面的空白，类似于 LangGraph 在 Python 生态的角色。
 
 ### 3.4 适用场景
 
@@ -704,7 +704,7 @@ timeline
     2024 Q3 : Spring AI 1.0<br/>GA 发布
     2025 Q1 : Spring AI Alibaba 发布<br/>首批扩展框架出现
     2025 Q2 : Koog / JManus 发布<br/>生态多元化
-    2025 Q4 : Spring AI 2.0 里程碑预览（MCP 支持）<br/>2026-06 : 2.0.0 GA（与教程 01 口径一致）
+    2025 Q4 : Spring AI 2.0 里程碑预览（MCP 支持）<br/>2026-06 : 2.0.0 GA（与教程 00-基础与核心/01-Spring-AI框架入门 口径一致）
     2026 预期 : 标准化 Agent 抽象<br/>跨框架互操作
 ```
 

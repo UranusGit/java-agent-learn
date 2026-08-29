@@ -4,7 +4,7 @@
 >
 > **读者画像**：已完成 [00-需求分析与架构设计](00-需求分析与架构设计.md)，需要把代码库 RAG 的最小内核跑通。
 >
-> 「遇到阻塞？→ [教程 05-RAG检索增强生成]、[附录 01-LLM基础理论/01-Embedding原理]、[教程 77-上下文工程 §分块]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
+> 「遇到阻塞？→ [教程 00-基础与核心/05-RAG检索增强生成]、[附录 01-LLM基础理论/01-Embedding原理]、[教程 08-架构师进阶/00-上下文工程 §分块]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
 
 ---
 
@@ -384,7 +384,7 @@ public class CodeSearchService {
 
     /** 三路混合检索（v1 先做向量 + FTS 两路，v2 加符号图）。返回按 RRF 分数降序的命中。 */
     public List<CodeHit> search(String query, String repo, int topK) {
-        // ① 向量检索（语义）——pre-filter 按 repo 元数据过滤，防跨仓泄漏（[教程 64-安全与权限控制 §数据不出域]）
+        // ① 向量检索（语义）——pre-filter 按 repo 元数据过滤，防跨仓泄漏（[教程 04-企业级架构主干/11-安全与权限控制 §数据不出域]）
         List<Document> semantic = vectorStore.similaritySearch(
                 SearchRequest.builder()
                         .query(query)

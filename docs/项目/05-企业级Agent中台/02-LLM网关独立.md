@@ -2,7 +2,7 @@
 
 > **定位**：第一次物理拆分——LLM 调用从单体中剥离为独立的 `llm-gateway` 服务，统一计量、密钥收口、模型路由。这是三座烟囱合并后的第一次架构红利兑现。**网关代码完整可手写**。
 >
-> 「遇到阻塞？→ [教程 30-微服务拆分与Agent部署 §LLM 网关]、[教程 60-成本治理与Token计量 §指标体系]、[教程 65-模型路由与降级]、[教程 31-全链路可观测性 §gen_ai 语义约定]」
+> 「遇到阻塞？→ [教程 04-企业级架构主干/01-微服务拆分与Agent部署 §LLM 网关]、[教程 04-企业级架构主干/07-成本治理与Token计量 §指标体系]、[教程 04-企业级架构主干/12-模型路由与降级]、[教程 04-企业级架构主干/02-全链路可观测性 §gen_ai 语义约定]」
 
 ---
 
@@ -56,7 +56,7 @@ flowchart LR
 | 模型路由（按业务线配置路由到不同供应商/模型） | 工具执行（工具在中台的 tool-service，未来迭代） |
 | Token 计量与归因（gen_ai 语义约定） | 记忆/会话（业务侧） |
 | 供应商密钥保管与轮换 | 检索（RAG 数据面） |
-| 降级与故障切换（[教程 65-模型路由与降级 §5 降级链设计]，v8 深化） | Prompt 缓存（语义缓存属业务层优化，附录 07） |
+| 降级与故障切换（[教程 04-企业级架构主干/12-模型路由与降级 §5 降级链设计]，v8 深化） | Prompt 缓存（语义缓存属业务层优化，附录 07） |
 | usage 流式计量（SSE 尾包的 usage 帧捕获） | |
 
 **边界设计原则**：网关是"数据面基础设施"，保持薄与稳；策略（路由规则本身）由配置驱动，v3 起接受 Control Plane 下发。
@@ -452,7 +452,7 @@ public class LlmGatewayHandler {
 
     private void recordUsage(GatewayContext ctx, Usage usage, boolean complete) {
         if (usage != null) {
-            // gen_ai 语义约定（教程 22 §gen_ai 语义约定详解、教程 27 §Token 计量指标体系）
+            // gen_ai 语义约定（教程 02-SpringAI核心机制/03-结构化输出 §gen_ai 语义约定详解、教程 03-React前端与AgenticUI/03-Agentic-UI设计 §Token 计量指标体系）
             // 网关本地 Usage record 只归因 input/output；若需把前缀缓存命中纳入成本归因，
             // 可对接 Spring AI 的 org.springframework.ai.chat.metadata.Usage（getCacheReadInputTokens()/getCacheWriteInputTokens()）
             meterRegistry.counter("gen_ai.client.token.usage",
@@ -559,7 +559,7 @@ sequenceDiagram
     GW->>Sup: 注入真实供应商 Key 转发
     Note over GW: 业务进程内存中永远没有供应商 Key
 
-    Note over Biz,Auth: 与教程 20 §Credential Vault 的区别：<br/>本方案签发的是网关私有凭证<br/>（不要求供应商认 JWT——真实 Key 只在网关出网时注入）
+    Note over Biz,Auth: 与教程 02-SpringAI核心机制/01-MCP协议 §Credential Vault 的区别：<br/>本方案签发的是网关私有凭证<br/>（不要求供应商认 JWT——真实 Key 只在网关出网时注入）
 ```
 
 ### 3.10 agent-platform 接入（零代码变更）
@@ -649,7 +649,7 @@ curl -N -X POST "http://localhost:9090/v1/chat/completions" \
 |---|------|------|
 | ADR-005 | 网关对外暴露 OpenAI 兼容协议 | 业务侧 chat-core 零代码变更完成迁移；未来换网关实现（LiteLLM/Higress）也平滑 |
 | ADR-006 | usage 计量以"流式尾包帧"为准，缺失时记丢失事件并告警 | 不做估算兜底——估算数据进入财务报表后无法审计 |
-| ADR-007 | 短期凭证 15 分钟 | 与教程 20 的 Credential Vault 方案闭环（本版本网关侧换取真实 Key），权衡安全时效与签发开销 |
+| ADR-007 | 短期凭证 15 分钟 | 与教程 02-SpringAI核心机制/01-MCP协议 的 Credential Vault 方案闭环（本版本网关侧换取真实 Key），权衡安全时效与签发开销 |
 
 ### 5.1 本节核对（ADR）
 

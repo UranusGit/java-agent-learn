@@ -1,6 +1,6 @@
 # 附录 05-02：Tool、结构化输出与 Observation 真实 API 基准
 
-> **定位**：本文是对 [教程 03-工具调用]、[教程 22-结构化输出]、[教程 31-全链路可观测性] 的深入展开，也是全体系的**工具/输出/可观测 API 真实性基准**：注解体系（`@Tool` 而非 `@ToolMethod`）、`entity()` 真实重载、ToolContext、Observation 真实扩展点。前置阅读：[教程 03]、[教程 21]、[教程 25]。
+> **定位**：本文是对 [教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/03-结构化输出]、[教程 04-企业级架构主干/02-全链路可观测性] 的深入展开，也是全体系的**工具/输出/可观测 API 真实性基准**：注解体系（`@Tool` 而非 `@ToolMethod`）、`entity()` 真实重载、ToolContext、Observation 真实扩展点。前置阅读：[教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/02-Agent状态管理]、[教程 03-React前端与AgenticUI/01-React状态管理]。
 
 ---
 
@@ -23,7 +23,7 @@ public class WeatherTools {
 }
 ```
 
-**审计发现的虚构注解**：`@ToolMethod`（教程 40 旧稿通篇）**不存在**——只有 `@Tool`（方法级）与 `@ToolParam`（参数级）。`returnDirect` 是 `@Tool` 的属性而非独立注解。
+**审计发现的虚构注解**：`@ToolMethod`（教程 05-Observation可观测/07-指标治理：Token计量、SLO与基数熔断 旧稿通篇）**不存在**——只有 `@Tool`（方法级）与 `@ToolParam`（参数级）。`returnDirect` 是 `@Tool` 的属性而非独立注解。
 
 ### 1.2 ToolCallback 手工构建（真实形态）
 
@@ -47,7 +47,7 @@ ToolCallback cb2 = FunctionToolCallback.builder("queryOrder",
         .build();
 
 // ToolDefinition 接口真实方法：name()/description()/inputSchema()，静态 builder()
-// ❌ 虚构：ToolCallback.builder()、.toolFunction(fn) 链（教程 03 旧稿）
+// ❌ 虚构：ToolCallback.builder()、.toolFunction(fn) 链（教程 00-基础与核心/03-工具调用 旧稿）
 ```
 
 ### 1.3 工具执行的拦截/观测扩展点（层次分清）
@@ -59,7 +59,7 @@ ToolCallback cb2 = FunctionToolCallback.builder("queryOrder",
 | Spring AOP `@Around("@annotation(Tool)")` | **理论拦截，实际收不到**——框架反射调用绕过代理 | （审计：项目 02 旧稿的方案无效） |
 | Observation（框架原生） | Span/指标 | 业务逻辑 |
 
-> HITL 审批要拦"工具意图已定、执行未发生"——`ToolCallingManager` 是唯一稳定层（[教程 22 §正确落点]、[项目 06 v3] 完整落地）。
+> HITL 审批要拦"工具意图已定、执行未发生"——`ToolCallingManager` 是唯一稳定层（[教程 02-SpringAI核心机制/03-结构化输出 §正确落点]、[项目 06 v3] 完整落地）。
 
 ## 2. 结构化输出：entity() 真实重载
 
@@ -122,12 +122,12 @@ public Result execute(String toolName, Map<String, Object> args) {
 
 ### 3.2 与 javaagent 的配合纪律
 
-> OTel javaagent（`-javaagent` 挂载）与手写 `SdkTracerProvider` **二选一**——同用会双重注册（审计：教程 16 旧稿的冲突）。规则：用 javaagent 就删手写 Provider；需要代码级 Span 控制才手写 SDK 且不挂 agent。
+> OTel javaagent（`-javaagent` 挂载）与手写 `SdkTracerProvider` **二选一**——同用会双重注册（审计：教程 01-WebFlux与响应式编程/06-线程模型与调度器 旧稿的冲突）。规则：用 javaagent 就删手写 Provider；需要代码级 Span 控制才手写 SDK 且不挂 agent。
 
 ## 4. SearchRequest / Document（新旧 API 分水岭）
 
 ```java
-// 2.0 式（基准——教程 62/30/34 已用，附录 03/04/07 旧稿需统一）
+// 2.0 式（基准——教程 00-基础与核心/04-记忆与会话管理 §30/34 已用，附录 03/04/07 旧稿需统一）
 List<Document> hits = vectorStore.similaritySearch(
         SearchRequest.builder().query(q).topK(5).similarityThreshold(0.7).build());
 
@@ -139,7 +139,7 @@ List<Document> hits = vectorStore.similaritySearch(
 **TokenTextSplitter 同属新旧分水岭**：包路径 `org.springframework.ai.transformer.splitter.TokenTextSplitter`（1.x 老路径 `org.springframework.ai.transformer.TokenTextSplitter` 已不存在）；全部 5 个构造器自 2.0.0-M3 起 `@Deprecated(forRemoval=true)`，唯一基准是静态 `TokenTextSplitter.builder()`（来源：[spring-ai#6347](https://github.com/spring-projects/spring-ai/issues/6347)、[官方 Javadoc](https://docs.spring.io/spring-ai/docs/current/api/org/springframework/ai/transformer/splitter/TokenTextSplitter.html)）：
 
 ```java
-// 2.0 式（基准——教程 05、项目 00-智能客服、附录 01-Embedding 已统一）
+// 2.0 式（基准——教程 00-基础与核心/05-RAG检索增强生成、项目 00-智能客服、附录 01-Embedding 已统一）
 TokenTextSplitter splitter = TokenTextSplitter.builder()
         .withChunkSize(800)            // 每个 chunk 的目标 token 数
         .withMinChunkSizeChars(100)    // chunk 内段落最小字符数
@@ -156,7 +156,7 @@ TokenTextSplitter splitter = TokenTextSplitter.builder()
 **DocumentReader / MarkdownDocumentReader 同属分水岭**：读取接口 `org.springframework.ai.document.DocumentReader extends Supplier<List<Document>>`——基准读取方法是 `get()`（Supplier 语义，这正是 ETL Reader 段的设计）；接口另有一个 `default read()` 别名（内部委托 `get()`），但**不存在** `read(Resource)` 带参形态。`MarkdownDocumentReader` 无无参构造、无单参 `(Resource)` 构造，真实构造器只有 4 个（javap 实证 `spring-ai-markdown-document-reader-2.0.0.jar`）：`(String)` / `(String, MarkdownDocumentReaderConfig)` / `(Resource, MarkdownDocumentReaderConfig)` / `(List<Resource>, MarkdownDocumentReaderConfig)`：
 
 ```java
-// 2.0 式（基准——教程 05、项目 00-智能客服已统一）
+// 2.0 式（基准——教程 00-基础与核心/05-RAG检索增强生成、项目 00-智能客服已统一）
 List<Document> mdDocs = new MarkdownDocumentReader("classpath:docs/guide.md").get();
 
 // Resource 形态必须显式传 Config——没有单参 (Resource) 构造器

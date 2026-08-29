@@ -1,6 +1,6 @@
 # ChatClient 源码解析：从调用到响应的完整执行链
 
-> 「本文是对 [教程 02-ChatClient §1-§5] 的深入展开」
+> 「本文是对 [教程 00-基础与核心/02-ChatClient与对话模型 §1-§5] 的深入展开」
 
 > **定位**：逐层拆解 Spring AI 2.0 `ChatClient` 的内部架构——从 `.prompt().user().call()` 到最终 HTTP 请求的全过程，覆盖 Prompt 装配、Advisor 链、Model 调用、响应处理四个阶段。
 >

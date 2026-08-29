@@ -19,7 +19,7 @@
 
 ## ADR-01：自研引擎，不引入 Temporal
 
-**决策**：基于教程 40 `CheckpointStore` 范式自研工作流引擎，Temporal 仅作业界对照。
+**决策**：基于教程 05-Observation可观测/07-指标治理：Token计量、SLO与基数熔断 `CheckpointStore` 范式自研工作流引擎，Temporal 仅作业界对照。
 
 **背景**：需要企业级长任务可靠性，但本机无 Temporal SDK（未实证）、引入体积/运维重。
 

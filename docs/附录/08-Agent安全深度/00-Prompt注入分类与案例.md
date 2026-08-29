@@ -1,6 +1,6 @@
 # Prompt 注入分类与案例库
 
-> 「本文是对 [教程 64-安全与权限控制 §2-§3] 的深入展开」
+> 「本文是对 [教程 04-企业级架构主干/11-安全与权限控制 §2-§3] 的深入展开」
 >
 > 技术栈：Spring Boot 4.1 + Spring AI 2.0.0 + WebFlux + Java 21
 
@@ -300,7 +300,7 @@ public Prompt buildIsolated(String userQuestion, String untrustedDoc) {
 
 ```java
 // @RequiresApproval 是本文自定义的审批注解（概念代码）。
-// 真实 HITL 落点：ToolCallingManager 装饰器或 ToolCallback 包装层，见 [教程 61-Human-in-the-Loop与审批流]。
+// 真实 HITL 落点：ToolCallingManager 装饰器或 ToolCallback 包装层，见 [教程 04-企业级架构主干/08-Human-in-the-Loop与审批流]。
 @Tool(description = "发送邮件")
 @RequiresApproval(reason = "邮件发送需要人工确认")
 public String sendEmail(String to, String subject, String body) {

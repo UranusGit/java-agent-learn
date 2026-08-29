@@ -14,11 +14,11 @@ DeepSeek Harness 的主体是 TypeScript monorepo，但它向 Python 生态提�
 本领域是「协议优先 + fail-closed」哲学的落地，另有四条领域特有原则：
 
 1. **协议优先、双 SDK 孪生**——Python 与 TS 共享同一 `dsh-sdk-protocol`，客户端结构刻意对齐（TS `HarnessClient` 自称 Python 的 *design twin*）。**为什么**：多语言维护只维护一份协议，客户端「长得一样」降低跨语言心智负担。**代价**：两边改动要同步。
-2. **独立进程 + 协议驱动，而非库内嵌**——Python SDK 把运行时当子进程拉起来。**为什么**：引擎与调用方隔离，Python 侧崩溃不影响引擎，引擎升级不重编 Python 包；呼应「管控分离」（[教程 29-管控分离架构]）。**代价**：进程间通信有序列化开销。
+2. **独立进程 + 协议驱动，而非库内嵌**——Python SDK 把运行时当子进程拉起来。**为什么**：引擎与调用方隔离，Python 侧崩溃不影响引擎，引擎升级不重编 Python 包；呼应「管控分离」（[教程 04-企业级架构主干/00-管控分离架构]）。**代价**：进程间通信有序列化开销。
 3. **运行时强制显式配置**——二进制无配置即退出；「zero-config」由 SDK 包装层注入 `DSH_CORDIS_CONFIG` 实现。**为什么**：显式传参而非隐藏回退——运行时永远知道自己要跑什么。**代价**：调用方要显式传配置。
 4. **Landlock 极简审计面**——约 300 行 C11 + 静态 musl + 本地定义 UAPI，无交叉工具链。**为什么**：「审计面就是这一个文件加内核稳定 syscall 契约」；本地定义 UAPI 摆脱头文件版本差异。**代价**：不依赖系统库，需自带构建。
 
-这与 Java/Spring AI 侧「把 Agent 引擎作为库内嵌」的形态截然不同——这里是**独立进程 + 协议驱动**的管控分离形态（呼应 [教程 29-管控分离架构]）。
+这与 Java/Spring AI 侧「把 Agent 引擎作为库内嵌」的形态截然不同——这里是**独立进程 + 协议驱动**的管控分离形态（呼应 [教程 04-企业级架构主干/00-管控分离架构]）。
 
 ```mermaid
 flowchart LR
@@ -204,7 +204,7 @@ flowchart LR
 | **mcp-memory** | 三个第三方 MCP 记忆服务 overlay（默认关闭） | 都通过 `@deepseek-ai/dsh-mcp-client` 以 stdio 启动，工具以 `mcp__<serverName>__<tool>` 暴露；`dsh web --patch "$PWD/examples/mcp-memory/memorix.cordis.yml"` 启用 |
 | **web-cordis / web-schedule** | 自指 agent 与 Web 提醒 overlay | 演示 Web 场景的 agent 组合 |
 
-> `mcp-memory` 展示了 MCP 插件化的**模型面命名约定** `mcp__<serverName>__<tool>`（对应 [教程 20-MCP协议]），以及 `--patch` 命令行 overlay 的用法——无需改任何配置，运行时热拼一个 overlay 就启用新能力。
+> `mcp-memory` 展示了 MCP 插件化的**模型面命名约定** `mcp__<serverName>__<tool>`（对应 [教程 02-SpringAI核心机制/01-MCP协议]），以及 `--patch` 命令行 overlay 的用法——无需改任何配置，运行时热拼一个 overlay 就启用新能力。
 
 ### 5.2 Demo 包（`packages/examples/`）
 
@@ -244,9 +244,9 @@ flowchart LR
 | DeepSeek Harness | Spring AI 对应物 | 启示 |
 |---|---|---|
 | Python SDK 子进程 + stdio JSON-RPC | Java 侧内嵌 `ChatClient` | 「独立进程 + 协议」适合隔离运行、跨语言驱动的管控分离形态；内嵌适合低延迟紧耦合 |
-| `session/event` + `session.status` 流式订阅 | WebFlux SSE + `ChatClient.stream()` | 把「运行区间」定义为「inbox 收据 → idle」能避开异步竞态——对应 [教程 85-响应式错误处理] |
+| `session/event` + `session.status` 流式订阅 | WebFlux SSE + `ChatClient.stream()` | 把「运行区间」定义为「inbox 收据 → idle」能避开异步竞态——对应 [教程 08-架构师进阶/08-响应式错误处理] |
 | Landlock allow-list 沙箱 | Java 侧 JVM SecurityManager（已弃用）/ seccomp/容器 | allow-list 比 deny-list 更安全；「未授予即拒绝」是沙箱黄金法则 |
-| `--patch` overlay 热拼能力 | Spring Boot `additional-spring-configuration-metadata` / Profile | 声明式 overlay 不改核心配置即可启用能力——对应 [教程 62-灰度发布与版本管理] |
+| `--patch` overlay 热拼能力 | Spring Boot `additional-spring-configuration-metadata` / Profile | 声明式 overlay 不改核心配置即可启用能力——对应 [教程 04-企业级架构主干/09-灰度发布与版本管理] |
 
 > **适用场景**：需要从 Python/外部进程驱动 Agent 引擎；需要理解 Linux 内核级沙箱；需要给 Agent 组合「骨架 + 叶子」的工程范式。
 > **不适用场景**：纯 Java 单进程内嵌 Agent 的场景（应直接使用 Spring AI）；不关心跨语言协议的设计。

@@ -1,6 +1,6 @@
 # 08-HITL 审批与安全合规——人工把关 + 纵深防御
 
-> **定位**：本迭代让平台"敢放高危操作"：**HITL 人工审批**（危险工具/高危动作在 `ToolCallingManager` 装饰器或 `ToolCallback` 包装层拦截，正确落点）、**安全纵深**（Prompt 注入检测、DLP、数据脱敏、RBAC、mTLS）、**合规留存**（GDPR 留存期限、被遗忘权删除）。读者画像：理解可观测与审计，想让平台具备生产级安全边界的读者。前置阅读：[07-全链路可观测与审计流](07-全链路可观测与审计流.md)、[教程 61-Human-in-the-Loop与审批流]、[教程 64-安全与权限控制]。
+> **定位**：本迭代让平台"敢放高危操作"：**HITL 人工审批**（危险工具/高危动作在 `ToolCallingManager` 装饰器或 `ToolCallback` 包装层拦截，正确落点）、**安全纵深**（Prompt 注入检测、DLP、数据脱敏、RBAC、mTLS）、**合规留存**（GDPR 留存期限、被遗忘权删除）。读者画像：理解可观测与审计，想让平台具备生产级安全边界的读者。前置阅读：[07-全链路可观测与审计流](07-全链路可观测与审计流.md)、[教程 04-企业级架构主干/08-Human-in-the-Loop与审批流]、[教程 04-企业级架构主干/11-安全与权限控制]。
 >
 > **演进纪律**：本迭代做 HITL + 安全；灰度发布/成本治理（09）不提前实现。
 > **铁律 0**：代码均经本地 jar `javap` 实证；`org.springframework.security.*` 本地未下载，标注「需引入依赖后实证」。
@@ -90,7 +90,7 @@ public class ApprovalToolWrapper implements ToolCallback {
 }
 ```
 
-> **铁律确认**：HITL 落点在 **`ToolCallingManager` 装饰器 或 `ToolCallback` 包装层**（`org.springframework.ai.model.tool` / `org.springframework.ai.tool`），**不是 Advisor**——Advisor 层拿不到"工具意图已定"的语义（见 [教程 61-Human-in-the-Loop与审批流 §正确落点]）。
+> **铁律确认**：HITL 落点在 **`ToolCallingManager` 装饰器 或 `ToolCallback` 包装层**（`org.springframework.ai.model.tool` / `org.springframework.ai.tool`），**不是 Advisor**——Advisor 层拿不到"工具意图已定"的语义（见 [教程 04-企业级架构主干/08-Human-in-the-Loop与审批流 §正确落点]）。
 
 ### 2.2 审批服务（挂起 + 超时）
 

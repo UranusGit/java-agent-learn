@@ -2,7 +2,7 @@
 
 > **定位**：最小预审 Agent——信贷材料文本输入，产出结构化预审意见（风险等级/理由/置信度）。本篇刻意不碰审批流与审计，先让预审能力本身立住。**本文给出完整可手写代码（一行不省略）**。
 >
-> 「遇到阻塞？→ [教程 22-结构化输出 §entity]、[教程 02-ChatClient与对话模型]、[教程 01-Spring-AI框架入门]」
+> 「遇到阻塞？→ [教程 02-SpringAI核心机制/03-结构化输出 §entity]、[教程 00-基础与核心/02-ChatClient与对话模型]、[教程 00-基础与核心/01-Spring-AI框架入门]」
 
 ---
 
@@ -34,7 +34,7 @@ package com.bank.risk.domain;
 import java.util.List;
 
 /**
- * 结构化预审意见 —— 与 entity(Class) 配合的结构化输出契约（教程 13 §2）。
+ * 结构化预审意见 —— 与 entity(Class) 配合的结构化输出契约（教程 01-WebFlux与响应式编程/03-Sinks详解 §2）。
  * 全项目消费方：审批工作台(v3)、审计回放(v4)、交叉验证比对(v5)。
  */
 public record PreTrialOpinion(
@@ -135,10 +135,10 @@ public class PreTrialService {
                                     .param("appId", applicationId)
                                     .param("material", materialText))
                             .call()
-                            .entity(PreTrialOpinion.class);   // 结构化输出（教程 13 §2）
+                            .entity(PreTrialOpinion.class);   // 结构化输出（教程 01-WebFlux与响应式编程/03-Sinks详解 §2）
                     return validate(opinion);
                 })
-                .subscribeOn(Schedulers.boundedElastic());  // 阻塞调用桥接（教程 10 §5.5）
+                .subscribeOn(Schedulers.boundedElastic());  // 阻塞调用桥接（教程 01-WebFlux与响应式编程/00-WebFlux从零入门 §5.5）
     }
 
     /** 分层信任：entity 只保证 JSON 可解析；这里做语义校验（置信度范围、等级与因子逻辑一致）。 */
@@ -155,7 +155,7 @@ public class PreTrialService {
 }
 ```
 
-> **API 真实性标注**：`entity(Class)` 是 Spring AI 2.0.0 真实重载（`CallResponseSpec.entity(Class<T>)`）；`entity(Class, spec -> ...)` 同样是**真实重载**——`EntityParamSpec` 真实方法仅 `useProviderStructuredOutput()` 与 `validateSchema()` 两个（javap 实证，见 [附录 05-SpringAI2-API基准/02-Tool与Observation真实API §2]），不存在 `maxAttempts()`。本篇用最简 `entity(Class)`：对 DeepSeek（仅支持 `json_object` 一档）与 spec 变体效果差别不大（[教程 13 §4.3]）。阻塞调用用 `Mono.fromCallable(...).subscribeOn(boundedElastic)` 桥接——`chatClient.call()` 直接跑在 Netty 线程会阻塞 EventLoop（[教程 10 §5.5]）。
+> **API 真实性标注**：`entity(Class)` 是 Spring AI 2.0.0 真实重载（`CallResponseSpec.entity(Class<T>)`）；`entity(Class, spec -> ...)` 同样是**真实重载**——`EntityParamSpec` 真实方法仅 `useProviderStructuredOutput()` 与 `validateSchema()` 两个（javap 实证，见 [附录 05-SpringAI2-API基准/02-Tool与Observation真实API §2]），不存在 `maxAttempts()`。本篇用最简 `entity(Class)`：对 DeepSeek（仅支持 `json_object` 一档）与 spec 变体效果差别不大（[教程 01-WebFlux与响应式编程/03-Sinks详解 §4.3]）。阻塞调用用 `Mono.fromCallable(...).subscribeOn(boundedElastic)` 桥接——`chatClient.call()` 直接跑在 Netty 线程会阻塞 EventLoop（[教程 01-WebFlux与响应式编程/00-WebFlux从零入门 §5.5]）。
 
 ### 3.3 `OpinionValidationException.java`（业务校验异常）
 
@@ -206,14 +206,14 @@ public class PreTrialController {
 
 ### 3.5 校验层（不能信任 LLM 输出的格式）
 
-**分层信任**：`entity(Class)` 只保证 JSON 能被反序列化，不保证数值语义正确。置信度越界、`HIGH` 等级却没有 `high` 风险因子支撑，都是业务校验层必须拦住的（[教程 13 §5]）。上述 `PreTrialService#validate` 中的两层校验——格式由框架保证（entity），语义由业务保证（validate）——缺一不可。
+**分层信任**：`entity(Class)` 只保证 JSON 能被反序列化，不保证数值语义正确。置信度越界、`HIGH` 等级却没有 `high` 风险因子支撑，都是业务校验层必须拦住的（[教程 01-WebFlux与响应式编程/03-Sinks详解 §5]）。上述 `PreTrialService#validate` 中的两层校验——格式由框架保证（entity），语义由业务保证（validate）——缺一不可。
 
 ### 3.6 最容易写错的三个姿势（对照）
 
 | # | 错误姿势 | 后果 | 正确姿势 |
 |---|---------|------|---------|
 | 1 | `chatClient.call()` 直接在 Netty 线程跑 | EventLoop 阻塞，全线卡死 | `Mono.fromCallable(...).subscribeOn(boundedElastic)` |
-| 2 | `entity(PreTrialOpinion.class, spec -> spec.maxAttempts(3))` | `maxAttempts()` 不是 `EntityParamSpec` 的真实方法，编译不过——自动重试框架不内置（[教程 13 §5]） | `entity(PreTrialOpinion.class)`，或真实重载 `entity(Class, spec -> spec.useProviderStructuredOutput().validateSchema())`（[附录 05-SpringAI2-API基准/02-Tool与Observation真实API §2]） |
+| 2 | `entity(PreTrialOpinion.class, spec -> spec.maxAttempts(3))` | `maxAttempts()` 不是 `EntityParamSpec` 的真实方法，编译不过——自动重试框架不内置（[教程 01-WebFlux与响应式编程/03-Sinks详解 §5]） | `entity(PreTrialOpinion.class)`，或真实重载 `entity(Class, spec -> spec.useProviderStructuredOutput().validateSchema())`（[附录 05-SpringAI2-API基准/02-Tool与Observation真实API §2]） |
 | 3 | 拿到 `entity()` 结果不校验直接用 | confidence 越界、HIGH 无 high 因子支撑仍被消费 | 业务层 `validate(...)` 兜底 |
 
 ### 3.7 本节测试与验证（ChatClient / 预审服务 / WebFlux 入口）

@@ -4,7 +4,7 @@
 >
 > **读者画像**：已完成迭代二，需要让文档问答系统回答跨文档、多跳、全局性问题的开发者。
 >
-> **前置阅读**：[04-核心代码讲解](04-核心代码讲解.md)、[教程 35-高级 RAG 与 Agentic RAG](../../教程/78-高级RAG与AgenticRAG.md)、[附录 10-知识图谱工程/00-Neo4j落地GraphRAG](../../附录/10-知识图谱工程/00-Neo4j落地GraphRAG.md)。API 真实性以 [附录 05-SpringAI2-API基准](../../附录/05-SpringAI2-API基准/00-Advisor与ChatMemory.md) 为准。
+> **前置阅读**：[04-核心代码讲解](04-核心代码讲解.md)、[教程 05-Observation可观测/02-组件交互：Registry、Handler、Convention、Filter协作 RAG 与 Agentic RAG](../../教程/08-架构师进阶/01-高级RAG与AgenticRAG.md)、[附录 10-知识图谱工程/00-Neo4j落地GraphRAG](../../附录/10-知识图谱工程/00-Neo4j落地GraphRAG.md)。API 真实性以 [附录 05-SpringAI2-API基准](../../附录/05-SpringAI2-API基准/00-Advisor与ChatMemory.md) 为准。
 >
 > **铁律 0**：本文 Spring AI API 均经本地 jar `javap` 实证（`entity(Class, Consumer<EntityParamSpec>)` / `SearchRequest.builder()` / `VectorStore.similaritySearch`）；Neo4j 为第三方（坐标 `spring-boot-starter-data-neo4j`，需在 pom.xml 中添加依赖，本地未下载未实证，以引入版本为准）；社区检测依赖 Neo4j GDS 插件（需在服务端安装）。
 
@@ -54,7 +54,7 @@ graph LR
 
 问题的本质：**向量相似度度量的是"表面语义接近"，而多跳问题需要的是"结构化关系推理"**。分块再聪明，也无法在一块里同时装下链条两端的实体——这正是知识图谱的用武之地。
 
-> **深入理解 GraphRAG 的原理与边界** → [教程 35-高级 RAG 与 Agentic RAG §2](../../教程/78-高级RAG与AgenticRAG.md)：教程讲解了 GraphRAG 与朴素 RAG 的能力边界对比、三元组抽取、图遍历检索的原理。
+> **深入理解 GraphRAG 的原理与边界** → [教程 05-Observation可观测/02-组件交互：Registry、Handler、Convention、Filter协作 RAG 与 Agentic RAG §2](../../教程/08-架构师进阶/01-高级RAG与AgenticRAG.md)：教程讲解了 GraphRAG 与朴素 RAG 的能力边界对比、三元组抽取、图遍历检索的原理。
 
 ### 2.2 图谱补齐的两块能力
 
@@ -480,7 +480,7 @@ public class QueryRouter {
 }
 ```
 
-**成本与延迟的权衡**：路由本身是一次 LLM 调用（约 200-400ms）。三种缓解手段：① 路由用轻量模型（模型路由详见 [教程 87-多模型协作与供应策略](../../教程/87-多模型协作与供应策略.md)）② 高频问题缓存路由结果 ③ 问题很短且含明确实体名时可先走规则短路（含"哪些部门/谁/链路/关系"多跳关键词直接 MULTI_HOP）。
+**成本与延迟的权衡**：路由本身是一次 LLM 调用（约 200-400ms）。三种缓解手段：① 路由用轻量模型（模型路由详见 [教程 08-架构师进阶/10-多模型协作与供应策略](../../教程/08-架构师进阶/10-多模型协作与供应策略.md)）② 高频问题缓存路由结果 ③ 问题很短且含明确实体名时可先走规则短路（含"哪些部门/谁/链路/关系"多跳关键词直接 MULTI_HOP）。
 
 ### 5.2 `GraphSearchService.java`（多跳图遍历，完整代码）
 

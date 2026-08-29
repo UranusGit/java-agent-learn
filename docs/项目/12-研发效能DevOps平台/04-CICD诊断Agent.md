@@ -1,10 +1,10 @@
 # 项目 12：研发效能 DevOps 平台 — 04-CI/CD 诊断 Agent
 
-> **定位**：把"构建/测试失败靠人翻日志"变成"CI 失败诊断 Agent"——日志结构化入库、确定性信号提取、相似度聚类、LLM 每簇根因假设。**关键：诊断只读，重试/修复/开 PR 必须人工审批**。教程 22 §日志 + 教程 30 §重试的落地。本文给出**完整可手写代码**（一行不省略，含全部 import）。
+> **定位**：把"构建/测试失败靠人翻日志"变成"CI 失败诊断 Agent"——日志结构化入库、确定性信号提取、相似度聚类、LLM 每簇根因假设。**关键：诊断只读，重试/修复/开 PR 必须人工审批**。教程 02-SpringAI核心机制/03-结构化输出 §日志 + 教程 04-企业级架构主干/01-微服务拆分与Agent部署 §重试的落地。本文给出**完整可手写代码**（一行不省略，含全部 import）。
 >
 > **读者画像**：已完成 [03-测试生成Agent](03-测试生成Agent.md)。
 >
-> 「遇到阻塞？→ [教程 31-全链路可观测性 §日志]、[教程 63-容错与弹性设计 §重试]、[教程 85-响应式错误处理]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
+> 「遇到阻塞？→ [教程 04-企业级架构主干/02-全链路可观测性 §日志]、[教程 04-企业级架构主干/10-容错与弹性设计 §重试]、[教程 08-架构师进阶/08-响应式错误处理]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
 
 ---
 
@@ -530,6 +530,6 @@ CI 诊断能定位单类失败，但**评审还是单 Agent 视角**：一个 PR
 
 ## 7. 总结
 
-v4 把 CI 失败诊断从人翻日志变成"结构化 + 聚类 + LLM 根因"：`DrainTemplateMiner` 把日志抽成 template_signature + 参数（无结构化索引 LLM 硬灌必败）、`ClusterService` 把 8000 行聚成 ≤150 行/簇、`CiDiagnosisService` 用真实 `entity(ParameterizedTypeReference)` 每簇产出根因假设。**关键落点**：诊断只读，`CiFixApprovalManager` 作为 `ToolCallingManager` 装饰器拦截 applyFix/retryBuild/openPr 动作——这正是 [教程 61-Human-in-the-Loop与审批流] 的 HITL 落点实现。
+v4 把 CI 失败诊断从人翻日志变成"结构化 + 聚类 + LLM 根因"：`DrainTemplateMiner` 把日志抽成 template_signature + 参数（无结构化索引 LLM 硬灌必败）、`ClusterService` 把 8000 行聚成 ≤150 行/簇、`CiDiagnosisService` 用真实 `entity(ParameterizedTypeReference)` 每簇产出根因假设。**关键落点**：诊断只读，`CiFixApprovalManager` 作为 `ToolCallingManager` 装饰器拦截 applyFix/retryBuild/openPr 动作——这正是 [教程 04-企业级架构主干/08-Human-in-the-Loop与审批流] 的 HITL 落点实现。
 
 > 本节核对（一句话）：总结中五个组件（DrainTemplateMiner、ClusterService、CiDiagnosisService、CiFixApprovalManager、ToolCallingManager 装饰器）与正文 §3.3/§3.5/§3.6/§3.7 对应，口径一致即 PASS。

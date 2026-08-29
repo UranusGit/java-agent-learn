@@ -1,6 +1,6 @@
 # 00-Codex Harness 总体架构与会话 Actor：harness 的最小正确骨架
 
-> **定位**：codex harness（`codex-rs/`，Rust 实现）是包裹 LLM 的运行时骨架——模型只决定"下一次说什么"，驱动循环/执行工具/管上下文/保安全/上报状态的全部机制都是 harness。本系列逐层解析并**转译到 Spring AI / Java 生态**。本篇讲总体架构与"心脏"：单写者会话 Actor 与 Turn 生命周期。读者画像：要设计 Agent 会话引擎的 Java 架构师。锚点：[教程 21-Agent状态管理]、[教程 83-长任务持久化与中断恢复]、[教程 28-流式工具调用与事件协议]。分析来源：codex-rs 源码行级分析（行号文内标注，基于分析时版本，升级后以实测为准）。
+> **定位**：codex harness（`codex-rs/`，Rust 实现）是包裹 LLM 的运行时骨架——模型只决定"下一次说什么"，驱动循环/执行工具/管上下文/保安全/上报状态的全部机制都是 harness。本系列逐层解析并**转译到 Spring AI / Java 生态**。本篇讲总体架构与"心脏"：单写者会话 Actor 与 Turn 生命周期。读者画像：要设计 Agent 会话引擎的 Java 架构师。锚点：[教程 02-SpringAI核心机制/02-Agent状态管理]、[教程 08-架构师进阶/06-长任务持久化与中断恢复]、[教程 03-React前端与AgenticUI/04-流式工具调用与事件协议]。分析来源：codex-rs 源码行级分析（行号文内标注，基于分析时版本，升级后以实测为准）。
 
 ---
 
@@ -55,7 +55,7 @@ flowchart TB
     style CORE fill:#fff9c4
 ```
 
-分层要点：**宿主（TUI/IDE/Web）只通过协议层消费事件**，核心层不依赖任何宿主——一个后端进程服务多前端，这正是"管控分离"思想在单机尺度上的体现（对照 [教程 29-管控分离架构]）。
+分层要点：**宿主（TUI/IDE/Web）只通过协议层消费事件**，核心层不依赖任何宿主——一个后端进程服务多前端，这正是"管控分离"思想在单机尺度上的体现（对照 [教程 04-企业级架构主干/00-管控分离架构]）。
 
 ## 三、会话 Actor：单写者 + 双通道
 
@@ -132,7 +132,7 @@ sequenceDiagram
 
 | codex 机制 | Java/Spring AI 对应 | 转译要点 |
 |-----------|--------------------|---------| 
-| 单写者 actor + 双通道 | WebFlux 下用 `Sinks.Many`（事件）/`阻塞有界队列`或 Reactor `Flux.create(requestN)` 反压（命令）；单写者=串行化的 `flatMap(i -> ..., 1)` 或 dedicated scheduler 上的循环 | 命令通道有界可用 `ArrayBlockingQueue` + 单消费者线程（虚拟线程承载）；Op/Event 枚举 = sealed interface（Java 21），与 [教程 28] 的 AgentEvent 同构 |
+| 单写者 actor + 双通道 | WebFlux 下用 `Sinks.Many`（事件）/`阻塞有界队列`或 Reactor `Flux.create(requestN)` 反压（命令）；单写者=串行化的 `flatMap(i -> ..., 1)` 或 dedicated scheduler 上的循环 | 命令通道有界可用 `ArrayBlockingQueue` + 单消费者线程（虚拟线程承载）；Op/Event 枚举 = sealed interface（Java 21），与 [教程 03-React前端与AgenticUI/04-流式工具调用与事件协议] 的 AgentEvent 同构 |
 | SessionTask trait | Java 接口 `SessionTask { Kind kind(); Mono<Void> run(); Mono<Void> abort(AbortReason); }` | 收尾单点：所有任务经同一 `doFinally` 统一钩子 |
 | 三段式取消 | Reactor 无 CancellationToken：① `Disposable.dispose()`/`takeUntil(cancelSignal)` ② `block(Duration.ofMillis(100))` 宽限 ③ dispose 强停 | 持久化先于终态事件 → `concat(persist(), emitFinal())` 保序 |
 | Steering | 会话级 pendingInput 队列 + 工具回填间隙合并（`concatMap` 内检查） | Spring AI 的 stream 工具循环间隙是注入点 |

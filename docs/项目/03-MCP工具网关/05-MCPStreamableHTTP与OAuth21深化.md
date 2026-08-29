@@ -1,6 +1,6 @@
 # 05-MCP Streamable HTTP 与 OAuth 2.1 深化——传输升级与授权体系
 
-> **定位**：把网关的 MCP 传输从旧 HTTP+SSE 升级到 **Streamable HTTP**（现行标准），并补齐 **OAuth 2.1 授权体系**：网关作为 MCP 客户端持有 token 调下游 Server、作为资源服务器验证 Agent 侧请求、token 交换透传租户身份。读者画像：已完成迭代一/二（客户端集成 + 自定义服务端），要让网关达到"协议现行 + 授权完整"的读者。前置阅读：[03-自定义MCP服务端](03-自定义MCP服务端.md)、[教程 20-MCP协议]。
+> **定位**：把网关的 MCP 传输从旧 HTTP+SSE 升级到 **Streamable HTTP**（现行标准），并补齐 **OAuth 2.1 授权体系**：网关作为 MCP 客户端持有 token 调下游 Server、作为资源服务器验证 Agent 侧请求、token 交换透传租户身份。读者画像：已完成迭代一/二（客户端集成 + 自定义服务端），要让网关达到"协议现行 + 授权完整"的读者。前置阅读：[03-自定义MCP服务端](03-自定义MCP服务端.md)、[教程 02-SpringAI核心机制/01-MCP协议]。
 >
 > **铁律 0**：MCP API 均与 `scripts/api-baseline-spring-ai-2.0.0.md` §11 一致（javap 实证）；spring-security 本地未下载，相关代码标「需引入依赖后实证」。
 

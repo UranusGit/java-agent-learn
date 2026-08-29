@@ -4,7 +4,7 @@
 >
 > **读者画像**：已经了解 MCP 协议基础概念，准备动手写代码的开发者。
 >
-> **前置阅读**：[教程 20-MCP协议](../../教程/20-MCP协议.md)、[教程 03-工具调用](../../教程/03-工具调用.md)、[00-需求分析与架构设计](00-需求分析与架构设计.md)。API 真实性以 [附录 05-SpringAI2-API基准](../../附录/05-SpringAI2-API基准/01-MCP真实API与坐标.md) 为准。
+> **前置阅读**：[教程 02-SpringAI核心机制/01-MCP协议](../../教程/02-SpringAI核心机制/01-MCP协议.md)、[教程 00-基础与核心/03-工具调用](../../教程/00-基础与核心/03-工具调用.md)、[00-需求分析与架构设计](00-需求分析与架构设计.md)。API 真实性以 [附录 05-SpringAI2-API基准](../../附录/05-SpringAI2-API基准/01-MCP真实API与坐标.md) 为准。
 
 ---
 
@@ -167,7 +167,7 @@ logging:
 
 关于虚拟线程配置：`server.threads.virtual.enabled=true` 是 Spring Boot 4.1 的关键特性。开启后，收到的每个 HTTP 请求都会运行在虚拟线程上，而不是平台线程池。对于 MCP 网关这种 IO 密集型应用，这意味着数百并发只需要几个操作系统线程就能支撑——`McpSyncClient` 的阻塞调用发生在虚拟线程上，符合 WebFlux 铁律（不在 EventLoop 上 block）。
 
-> **MCP 客户端配置详解** → [教程 20-MCP协议](../../教程/20-MCP协议.md) 第 3 节详细讲解了 `spring-ai-starter-mcp-client` 的配置方式、stdio 和 Streamable HTTP 两种传输模式的选择策略，以及 `mcp-servers.json` 配置文件的完整格式。
+> **MCP 客户端配置详解** → [教程 02-SpringAI核心机制/01-MCP协议](../../教程/02-SpringAI核心机制/01-MCP协议.md) 第 3 节详细讲解了 `spring-ai-starter-mcp-client` 的配置方式、stdio 和 Streamable HTTP 两种传输模式的选择策略，以及 `mcp-servers.json` 配置文件的完整格式。
 
 ### 3.3 `mcp-servers.json`
 
@@ -388,7 +388,7 @@ public class ToolRegistry {
 
 这段代码的核心是 `mcpClient.listTools()`——这是 Spring AI 2.0 对 MCP `tools/list` JSON-RPC 方法的封装。底层会向 MCP Server 发送 `{"method": "tools/list"}` 请求，返回的工具定义被自动解析为 Java 对象。
 
-> **MCP 工具发现机制** → [教程 20-MCP协议](../../教程/20-MCP协议.md) 第 2 节讲解了 MCP Server 暴露的 Tools / Resources / Prompts 三种能力，以及 `tools/list` 和 `tools/call` 两个核心 JSON-RPC 方法。
+> **MCP 工具发现机制** → [教程 02-SpringAI核心机制/01-MCP协议](../../教程/02-SpringAI核心机制/01-MCP协议.md) 第 2 节讲解了 MCP Server 暴露的 Tools / Resources / Prompts 三种能力，以及 `tools/list` 和 `tools/call` 两个核心 JSON-RPC 方法。
 
 ### 3.7 工具路由引擎 `ToolRouter.java`
 
@@ -474,7 +474,7 @@ public class ToolRouter {
 
 关于 `mcpClient.callTool()`：这是 Spring AI 对 MCP `tools/call` 的封装。底层会构造 `{"method": "tools/call", "params": {"name": "read_file", "arguments": {"path": "/tmp/report.txt"}}}` 的 JSON-RPC 请求，发送给 MCP Server 子进程，等待返回结果。
 
-> **工具调用机制详解** → [教程 03-工具调用](../../教程/03-工具调用.md) 第 2 节用完整的时序图讲解了工具调用从 LLM 决策到方法执行到结果返回的全过程，帮助理解工具调用的底层循环。
+> **工具调用机制详解** → [教程 00-基础与核心/03-工具调用](../../教程/00-基础与核心/03-工具调用.md) 第 2 节用完整的时序图讲解了工具调用从 LLM 决策到方法执行到结果返回的全过程，帮助理解工具调用的底层循环。
 
 ### 3.8 API Controller `ToolGatewayController.java`
 

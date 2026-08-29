@@ -3,7 +3,7 @@
 > **定位**：让 AI 客服从「单打独斗」演进为「人机协同」——**置信度低自动转人工**（双信号判定）、**危险工具人工审批**（HITL 正确落点：`ToolCallback` 包装层，不是 Advisor）、**坐席实时话术辅助**（旁路 RAG 建议）、**会话质检**（满意度与合规抽检）。读完这篇，你掌握客服场景人机协作的完整工程闭环。
 > **读者画像**：已完成 06 意图路由与槽位骨架，要让系统具备「知道自己不行」与「该出手时让人出手」能力的设计者。
 > **前置阅读**：[06-意图识别与多轮对话深化]。
-> **关联教程**：[教程 61-Human-in-the-Loop与审批流]（HITL 落点铁律）、[教程 57-多页面流式响应与会话管理]（坐席端 SSE 推送）；API 真实性以 [附录 05-SpringAI2-API基准] 为准。
+> **关联教程**：[教程 04-企业级架构主干/08-Human-in-the-Loop与审批流]（HITL 落点铁律）、[教程 04-企业级架构主干/04-多页面流式响应与会话管理]（坐席端 SSE 推送）；API 真实性以 [附录 05-SpringAI2-API基准] 为准。
 
 ---
 
@@ -39,7 +39,7 @@ flowchart TB
     style G fill:#fff3e0
 ```
 
-信号 2 复用 06 的结构化输出套路（[教程 22-结构化输出]）：
+信号 2 复用 06 的结构化输出套路（[教程 02-SpringAI核心机制/03-结构化输出]）：
 
 ```java
 package com.shop.customer.hitl;
@@ -472,7 +472,7 @@ stateDiagram-v2
 ```
 
 - **挂起**：`call(toolInput)` 返回占位文本（LLM 据此告知用户「已提交审批」）；同时经 SSE 推 `APPROVAL_REQUIRED` 事件（含审批单号、工具名、参数摘要）到坐席工作台——00 篇设计的 SSE 事件枚举正好派上用场。
-- **恢复**：坐席批准后，`ApprovalCenter` 以**新请求**重放该轮对话：`ChatService` 用 `toolContext(Map.of("approvalId", id))`（`ChatClientRequestSpec.toolContext(Map)`，javap 实证）重新发起，`ApprovalToolCallback.call(input, ctx)` 校验凭证放行执行。审批前后是**两次独立请求**，中间零线程占用——这就是响应式语境下「暂停不占计算」的落地（[教程 61-Human-in-the-Loop与审批流 §挂起模式]、[教程 83-长任务持久化与中断恢复]）。
+- **恢复**：坐席批准后，`ApprovalCenter` 以**新请求**重放该轮对话：`ChatService` 用 `toolContext(Map.of("approvalId", id))`（`ChatClientRequestSpec.toolContext(Map)`，javap 实证）重新发起，`ApprovalToolCallback.call(input, ctx)` 校验凭证放行执行。审批前后是**两次独立请求**，中间零线程占用——这就是响应式语境下「暂停不占计算」的落地（[教程 04-企业级架构主干/08-Human-in-the-Loop与审批流 §挂起模式]、[教程 08-架构师进阶/06-长任务持久化与中断恢复]）。
 - **超时**：`ApprovalCenter` 对 30 分钟未决审批单自动置为已拒绝（Redis TTL 扫描），避免用户无限等待。
 
 `ApprovalCenter`（审批单登记 / 凭证校验 / 超时拒绝 / 坐席决策接口的完整实现）：
@@ -628,7 +628,7 @@ graph TB
 
 1. **旁路链是第 4 条独立 ChatClient**：这条链在本项目里独立于 [06 §2.4] 的 `assistantChatClient`（前者无 RAG，本链**要复用 RAG Advisor** 才能结合上下文给话术）与 `chatClient`（前者挂记忆+工具，本链**不挂 MessageChatMemoryAdvisor** 只读建议）——在 `ChatClientConfig` 单独再 build 一个「仅 RAG、无记忆、无工具」的旁路链。人工会话是坐席与用户的对话，AI 只读建议**不写记忆**（写入会污染后续 AI 恢复时的上下文）。
 2. **采纳回执**：坐席点「采纳」时话术进入会话记录并打标 `source=ai_assist`——这是 08 数据飞轮的重要归因信号（AI 建议被采纳率 = 坐席对 AI 的信任度量）。
-3. **推送通道**：坐席端与用户端是两条独立 SSE 连接（[教程 57-多页面流式响应与会话管理]），靠会话 ID 关联。
+3. **推送通道**：坐席端与用户端是两条独立 SSE 连接（[教程 04-企业级架构主干/04-多页面流式响应与会话管理]），靠会话 ID 关联。
 
 ---
 
@@ -729,7 +729,7 @@ public class ComplianceEvaluator implements Evaluator {
 }
 ```
 
-> `EvaluationResponse(boolean, float, String, Map)` 四参构造真实存在（javap 实证）；`EvaluationRequest.getResponseContent()` 等 getter 同理；`entity(Class, spec)` 结构化输出复用 [06 §2.3] 套路。补全后 `ComplianceEvaluator` 与官方 `Evaluator` 同构，能以同一个 `EvaluationResponse` 进质检流水线（08 §5 复用）。质检指标上报用 Micrometer `Counter`——**需在 pom.xml 中添加依赖** `spring-boot-starter-actuator`（Micrometer 随其传递，[教程 31-全链路可观测性]）。
+> `EvaluationResponse(boolean, float, String, Map)` 四参构造真实存在（javap 实证）；`EvaluationRequest.getResponseContent()` 等 getter 同理；`entity(Class, spec)` 结构化输出复用 [06 §2.3] 套路。补全后 `ComplianceEvaluator` 与官方 `Evaluator` 同构，能以同一个 `EvaluationResponse` 进质检流水线（08 §5 复用）。质检指标上报用 Micrometer `Counter`——**需在 pom.xml 中添加依赖** `spring-boot-starter-actuator`（Micrometer 随其传递，[教程 04-企业级架构主干/02-全链路可观测性]）。
 
 ---
 

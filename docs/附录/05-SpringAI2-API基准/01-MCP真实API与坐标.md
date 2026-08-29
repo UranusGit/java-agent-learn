@@ -1,6 +1,6 @@
 # 附录 05-01：MCP 真实 API 与依赖坐标基准
 
-> **定位**：本文是对 [教程 20-MCP协议 §API] 的深入展开，也是全体系的 **MCP API 真实性基准**：真实 starter 坐标、真实客户端类型（`McpSyncClient` 而非虚构的 `org.springframework.ai.mcp.McpClient`）、`@Tool` 暴露为 MCP 工具的正确姿势、Streamable HTTP 传输。前置阅读：[教程 20-MCP协议]。
+> **定位**：本文是对 [教程 02-SpringAI核心机制/01-MCP协议 §API] 的深入展开，也是全体系的 **MCP API 真实性基准**：真实 starter 坐标、真实客户端类型（`McpSyncClient` 而非虚构的 `org.springframework.ai.mcp.McpClient`）、`@Tool` 暴露为 MCP 工具的正确姿势、Streamable HTTP 传输。前置阅读：[教程 02-SpringAI核心机制/01-MCP协议]。
 
 ---
 
@@ -104,16 +104,16 @@ spring:
         # ❌ 虚构: spring.ai.mcp.client.servers 扁平列表
 ```
 
-**旧稿必修点**（教程 10 / 前沿 04 / 项目 03）：传输层对照表补 Streamable HTTP 行；`HttpSseClientTransport` 的近似拼写更正为现行 SDK 类名（以所引版本 SDK 为准，建议统一走 starter 自动配置少手写传输类）。
+**旧稿必修点**（教程 01-WebFlux与响应式编程/00-WebFlux从零入门 / 前沿 04 / 项目 03）：传输层对照表补 Streamable HTTP 行；`HttpSseClientTransport` 的近似拼写更正为现行 SDK 类名（以所引版本 SDK 为准，建议统一走 starter 自动配置少手写传输类）。
 
 ## 5. MCP 高级能力的真实形态（简表）
 
 | 能力 | 真实机制 | 本体系落点 |
 |------|---------|-----------|
 | OAuth 2.1 授权 | 规范定义的授权流（2025-04+ 修订）；Java 侧由 HTTP 客户端层集成 | [项目 08 v3] |
-| Sampling | 服务端发起的补全请求，客户端授权代理 | [教程 10 §Sampling]、[项目 08 v3 管控] |
+| Sampling | 服务端发起的补全请求，客户端授权代理 | [教程 01-WebFlux与响应式编程/00-WebFlux从零入门 §Sampling]、[项目 08 v3 管控] |
 | Elicitation | 服务端向用户请求输入的表单机制 | [项目 08 v3 管控] |
-| Roots | 客户端暴露文件系统根给服务端 | [教程 10 §Roots] |
+| Roots | 客户端暴露文件系统根给服务端 | [教程 01-WebFlux与响应式编程/00-WebFlux从零入门 §Roots] |
 
 ## 6. 全局替换规则
 

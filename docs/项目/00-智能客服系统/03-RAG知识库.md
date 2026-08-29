@@ -3,7 +3,7 @@
 > **定位**：为客服 Agent 接入向量数据库（PGVector），实现基于产品手册的智能问答。涵盖文档 ETL 流水线、Embedding 向量化、PGVector 配置、`QuestionAnswerAdvisor` 集成。读完这篇，客服 Agent 能回答任意产品文档问题。本文给出**完整可手写代码**。
 > **读者画像**：已完成工具集成，需要让 Agent 具备「阅读长文档」能力。
 > **前置阅读**：[02-工具集成]。
-> **关联教程**：[教程 05-RAG 检索增强生成]、[教程 06-向量数据库选型]、[教程 35-高级 RAG]；API 真实性以 [附录 05] 为准。
+> **关联教程**：[教程 00-基础与核心/05-RAG检索增强生成 检索增强生成]、[教程 00-基础与核心/06-向量数据库选型]、[教程 05-Observation可观测/02-组件交互：Registry、Handler、Convention、Filter协作 RAG]；API 真实性以 [附录 05] 为准。
 
 ---
 
@@ -78,7 +78,7 @@ public class VectorStoreConfig {
 
 > **为什么不手写 `vectorStore`？** ① 手写的 `PgVectorStore.builder(jdbcTemplate, embeddingModel).build()` 是**空构建**，**读不到** yaml 里配的 `index-type/dimensions/schema/table` 等参数，配置会白白丢失；② 与 starter 自动配置同名冲突，直接启动失败。自动配置会完整读取 yaml 的 `spring.ai.vectorstore.pgvector.*` 并应用（含 `initialize-schema` 建表）。**二选一原则**：引了 starter 就用自动配置；只有当你确实需要自定义构建参数且想关掉自动配置时，才用下面 §2.3.1 的手写方式——两种方式互斥，禁止并存。
 
-> `PgVectorStore.builder()` 的真实签名是 `(JdbcTemplate, EmbeddingModel)`（javap 实证，[教程 06-向量数据库选型] 与 [附录 05]），仅在手写方式（§2.3.1）下使用。`JdbcTemplate` 由 `spring-ai-starter-vector-store-pgvector` + `spring-boot-starter-jdbc` 自动装配，`EmbeddingModel` 由 OpenAI starter 自动装配。
+> `PgVectorStore.builder()` 的真实签名是 `(JdbcTemplate, EmbeddingModel)`（javap 实证，[教程 00-基础与核心/06-向量数据库选型] 与 [附录 05]），仅在手写方式（§2.3.1）下使用。`JdbcTemplate` 由 `spring-ai-starter-vector-store-pgvector` + `spring-boot-starter-jdbc` 自动装配，`EmbeddingModel` 由 OpenAI starter 自动装配。
 
 #### 2.3.1（可选）必须手写 `vectorStore` 时的排他方式
 
@@ -217,20 +217,20 @@ public class ChatClientConfig {
 > </dependency>
 > ```
 
-> `QuestionAnswerAdvisor` 的真实包路径是 `org.springframework.ai.chat.client.advisor.vectorstore`（教程 05 旧稿曾写错），以 [附录 05-00 §1.4] 为准。
+> `QuestionAnswerAdvisor` 的真实包路径是 `org.springframework.ai.chat.client.advisor.vectorstore`（教程 00-基础与核心/05-RAG检索增强生成 旧稿曾写错），以 [附录 05-00 §1.4] 为准。
 
 ### 2.6 一句话说清：`QuestionAnswerAdvisor` 是什么
 
 它**不做回答，做检索增强**：调用链在真正调模型前，先用你的问题查向量库，把命中的文档块拼进 Prompt 当上下文，再让模型基于资料作答——这就是本项目的 RAG。它是 `BaseAdvisor` 实现，靠 `before`（检索注入）/ `after`（回写 `RETRIEVED_DOCUMENTS` 供观测）两钩子生效，所以挂在 `defaultAdvisors` 上所有调用自动生效。
 
-> **详细原理（两阶段时序图、为什么做成 Advisor、`topK`/`similarityThreshold` 调优、常见坑）→ [教程 23-Advisor链与拦截器 §4.3]**。本项目的落地代码与验证包就是这里的实践篇。
+> **详细原理（两阶段时序图、为什么做成 Advisor、`topK`/`similarityThreshold` 调优、常见坑）→ [教程 02-SpringAI核心机制/04-Advisor链与拦截器 §4.3]**。本项目的落地代码与验证包就是这里的实践篇。
 
 ### 2.7 参数速查（本项目取值）
 
 | 旋钮 | 本项目值 | 效果 | 详解 |
 |------|---------|------|------|
-| `topK` | 3 | 最多召回文档块数 | [教程 23-Advisor链与拦截器 §4.3.2] |
-| `similarityThreshold` | 0.7 | 低于该相似度的块**直接丢弃** | [教程 23-Advisor链与拦截器 §4.3.2] |
+| `topK` | 3 | 最多召回文档块数 | [教程 02-SpringAI核心机制/04-Advisor链与拦截器 §4.3.2] |
+| `similarityThreshold` | 0.7 | 低于该相似度的块**直接丢弃** | [教程 02-SpringAI核心机制/04-Advisor链与拦截器 §4.3.2] |
 
 **三项自查**（对照 §3 失败排查）：① import 必须为 `…advisor.vectorstore.QuestionAnswerAdvisor`（包名易写错）；② pom 已引 `spring-ai-vector-store-advisor` 模块；③ Advisor 挂了多半是库空（`KnowledgeBaseLoader` 没跑成）或 threshold 高到检不出东西。
 

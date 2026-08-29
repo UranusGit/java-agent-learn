@@ -1,8 +1,8 @@
 # NIST AI RMF 框架企业落地指南
 
-「本文是对 [教程 38-治理合规 §1-§4] 的深入展开」
+「本文是对 [教程 05-Observation可观测/05-前端展示：SSE推送观测时间线 §1-§4] 的深入展开」
 
-> [教程 38-治理合规] 本文是治理合规系列的开篇，系统讲解美国国家标准与技术研究院（NIST）发布的 AI 风险管理框架（AI Risk Management Framework，AI RMF 1.0）如何在企业 Java Agent 项目中落地。
+> [教程 05-Observation可观测/05-前端展示：SSE推送观测时间线] 本文是治理合规系列的开篇，系统讲解美国国家标准与技术研究院（NIST）发布的 AI 风险管理框架（AI Risk Management Framework，AI RMF 1.0）如何在企业 Java Agent 项目中落地。
 
 > 技术栈：Spring Boot 4.1 + Spring AI 2.0.0 + WebFlux + Java 21
 
@@ -314,7 +314,7 @@ public class AIRmfManageAdvisor implements CallAdvisor {
 
     // ⚠ 修正（javap 实证）：ToolAroundAdvisorChain/aroundTool/nextAroundTool、req.toolName()/toolArguments() 均不存在；
     // ChatClientRequest 只有 prompt()/context()。工具级 HITL 审批的正确落点见
-    // [教程 61-Human-in-the-Loop与审批流 §正确落点]（ToolCallback 包装层 / ToolCallingManager 装饰器）。
+    // [教程 04-企业级架构主干/08-Human-in-the-Loop与审批流 §正确落点]（ToolCallback 包装层 / ToolCallingManager 装饰器）。
     // 此处 Advisor 只做「请求级」风控分级。
     @Override
     public ChatClientResponse adviseCall(ChatClientRequest req, CallAdvisorChain chain) {

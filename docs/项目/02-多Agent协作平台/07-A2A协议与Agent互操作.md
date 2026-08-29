@@ -6,7 +6,7 @@
 
 > **前置阅读**：[04-任务委派与路由](04-任务委派与路由.md)（DelegationTool 与路由评分）、[06-DAG工作流编排深化](06-DAG工作流编排深化.md)（节点状态机与事件流）。
 
-> **关联锚点**：[前沿 00-A2A协议](../../前沿/00-A2A协议.md)（协议调研与规范细节）、[教程 20-MCP协议](../../教程/20-MCP协议.md)、[教程 64-安全与权限控制](../../教程/64-安全与权限控制.md)、[附录 08-Agent安全深度](../../附录/08-Agent安全深度/)。
+> **关联锚点**：[前沿 00-A2A协议](../../前沿/00-A2A协议.md)（协议调研与规范细节）、[教程 02-SpringAI核心机制/01-MCP协议](../../教程/02-SpringAI核心机制/01-MCP协议.md)、[教程 04-企业级架构主干/11-安全与权限控制](../../教程/04-企业级架构主干/11-安全与权限控制.md)、[附录 08-Agent安全深度](../../附录/08-Agent安全深度/)。
 
 > **API 真实性**：Spring AI 2.0 **无官方 A2A SDK**——本篇 A2A 协议适配层（AgentCard / A2aClient / 报文形状）为**自研概念代码**，字段以 [前沿 00-A2A协议] 调研的规范草案为准；Spring 侧 API（`WebClient`、`ServerSentEvent`、`ReactiveRedisTemplate`、`JdbcClient`、`@Scheduled`）均为真实 API，与既有迭代一致。
 
@@ -424,7 +424,7 @@ import java.util.UUID;
 /**
  * A2A 客户端：把平台节点执行翻译为远端 A2A 任务委托。
  * 报文为 JSON-RPC 2.0（概念代码，字段以 A2A 规范为准）；
- * WebClient 的 SSE 流式消费为 Spring 真实 API（与教程 10 同款机制）。
+ * WebClient 的 SSE 流式消费为 Spring 真实 API（与教程 01-WebFlux与响应式编程/00-WebFlux从零入门 同款机制）。
  */
 @Component
 public class A2aClient {
@@ -544,7 +544,7 @@ A2A 区分两种输出：**Message 是过程**（Agent 的中间说明），**Ar
 |---------|---------|
 | `message`（过程说明） | 追加进 SSE 事件流（`data=progress:...`），不进 `DagNode.result` |
 | `artifact`（最终产物） | 文本部分写入 `DagNode.result`，触发 [06 §4.1] 结构化输出解析，供下游 SpEL 条件使用 |
-| `artifact`（file 类型） | URL 存入节点 `config.artifactUrl`，正文留摘要——大文件不进上下文（Token 纪律，见 [教程 77-上下文工程]） |
+| `artifact`（file 类型） | URL 存入节点 `config.artifactUrl`，正文留摘要——大文件不进上下文（Token 纪律，见 [教程 08-架构师进阶/00-上下文工程]） |
 
 ### 5.5 本节测试与验证（跨组织委托与流式透传）
 
@@ -741,9 +741,9 @@ psql -c "SELECT remote_agent, capability, decision FROM a2a_call_audit ORDER BY 
 | 契约单位 | `tools[]`（name + schema） | Agent Card（skills + capabilities + 端点） |
 | 交互形态 | 单次调用返回 | 任务生命周期（多轮、流式、长时运行） |
 | 对端内部 | 必须暴露实现语义（schema 即接口） | 黑箱（Prompt / 记忆 / 内部状态不外泄） |
-| 本项目落点 | 平台内 Agent 挂工具（[教程 20-MCP协议]） | 跨组织接入远端 Agent（本篇） |
+| 本项目落点 | 平台内 Agent 挂工具（[教程 02-SpringAI核心机制/01-MCP协议]） | 跨组织接入远端 Agent（本篇） |
 
-> 「遇到阻塞？→ [教程 20-MCP协议 §1]」——MCP 的三层架构（Host/Client/Server）与工具桥接机制。
+> 「遇到阻塞？→ [教程 02-SpringAI核心机制/01-MCP协议 §1]」——MCP 的三层架构（Host/Client/Server）与工具桥接机制。
 
 ### 7.2 组合矩阵：什么时候用哪座桥
 
@@ -766,7 +766,7 @@ flowchart TB
 
 | # | 核对项 | PASS 判据 |
 |---|--------|----------|
-| 1 | 分野表六维度 | 每行 MCP/A2A 两侧成对，无单边表述；与文首"API 真实性"声明一致（本项目 MCP 落点见教程 11，A2A 落点即本篇） |
+| 1 | 分野表六维度 | 每行 MCP/A2A 两侧成对，无单边表述；与文首"API 真实性"声明一致（本项目 MCP 落点见教程 01-WebFlux与响应式编程/01-Reactor核心，A2A 落点即本篇） |
 | 2 | "要数据用 MCP，要判断用 A2A" | 能用 §3.1 的三个场景逐一验证该口诀不被反例推翻 |
 
 ---

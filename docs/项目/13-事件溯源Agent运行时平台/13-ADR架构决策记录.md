@@ -161,7 +161,7 @@ stateDiagram-v2
   - A：**Advisor 层**——❌ Advisor 环绕整个 ChatClient 调用，看不到工具执行时点，且 call/stream 两栖（[03-迭代二 §2] 论证）
   - B：AOP 拦 `@Tool` 方法——❌ 拦不到非 @Tool 的 ToolCallback、拿不到完整调用上下文
   - C：**`ToolCallingManager` 装饰器**（`org.springframework.ai.model.tool`，真实 2.0 API）——✅ 工具循环统一入口，2.0 由 `ToolCallingAdvisor` 持有它驱动循环
-- **取舍理由**：装饰器在 delegate 前后记录 `tool/call`、`tool/result`，审批守卫（v4）与观测（v6）复用同一落点。这与 CLAUDE.md「HITL 正确落点」铁律一致（[教程 61-Human-in-the-Loop与审批流 §正确落点]）
+- **取舍理由**：装饰器在 delegate 前后记录 `tool/call`、`tool/result`，审批守卫（v4）与观测（v6）复用同一落点。这与 CLAUDE.md「HITL 正确落点」铁律一致（[教程 04-企业级架构主干/08-Human-in-the-Loop与审批流 §正确落点]）
 - **可回滚性**：高——装饰器是纯组合，移除即回到默认 `DefaultToolCallingManager`
 
 ### 4.2 ADR 013-07：能力缝三分离（定义/提供者/消费者）
@@ -210,7 +210,7 @@ stateDiagram-v2
 
 - **上下文**：v5 微服务拆分时，「谁有权写事件日志」「策略放在哪一层」决定治理是否可能
 - **备选方案**：① 各服务都连事件库直写（seq 分配竞争 + 写侧纪律失守）② 事件中台独立服务（多一跳延迟，拆分过度的典型）③ **会话服务独占写权，其它服务经 API/外发管道消费**（选择）；治理侧：策略散在各服务 vs **Control Plane 集中配置、Data Plane 只执行**
-- **取舍理由**：「写侧唯一入口」从代码纪律（单方法）升级为**架构纪律**（单服务）——违反即网络层不可达，不靠 code review 把关。管控分离呼应 [教程 29-管控分离架构]
+- **取舍理由**：「写侧唯一入口」从代码纪律（单方法）升级为**架构纪律**（单服务）——违反即网络层不可达，不靠 code review 把关。管控分离呼应 [教程 04-企业级架构主干/00-管控分离架构]
 - **可回滚性**：中——服务边界可合并（回单体），写权收口的方向不应回退
 
 ### 6.2 ADR 013-14：成本归因用日志投影，不建独立成本表
