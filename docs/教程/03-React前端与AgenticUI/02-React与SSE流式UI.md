@@ -1,5 +1,4 @@
-# 17-React 与 SSE 流式 UI
-
+# 02 React 与 SSE 流式 UI
 > **定位**：本文是前后端衔接的实战核心篇——React 前端如何消费 WebFlux 后端的 SSE 流式响应：连接管理、事件解析、断线重连、token 批量渲染、取消与清理。读者画像：已掌握 [教程 01-WebFlux与响应式编程/05-WebFlux进阶实战 组件/Hook]、[教程 01-WebFlux与响应式编程/06-线程模型与调度器 状态分层] 的开发者。前置阅读：[教程 02-SpringAI核心机制/00-SSE流式通信]（后端视角）、[教程 03-React前端与AgenticUI/01-React状态管理 §5 三层状态模型]。
 >
 > **与教程 01-WebFlux与响应式编程/00-WebFlux从零入门 的分工**：教程 01-WebFlux与响应式编程/00-WebFlux从零入门 讲后端如何"产出"SSE 流（WebFlux Controller、Flux、心跳、代理配置）；本篇讲前端如何"消费"它。两端在"事件协议"处会合（协议设计深化见 [教程 03-React前端与AgenticUI/03-Agentic-UI设计]、[教程 03-React前端与AgenticUI/04-流式工具调用与事件协议]）。

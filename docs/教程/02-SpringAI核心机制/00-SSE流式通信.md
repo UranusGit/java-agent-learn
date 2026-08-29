@@ -1,5 +1,4 @@
-# 10-SSE 流式通信
-
+# 00 SSE 流式通信
 > **定位**：讲透 SSE（Server-Sent Events）在 Agent 应用中的完整实践——SSE 原理、WebFlux Flux 流式响应、Spring AI 2.0 ChatClient.stream() 的使用、前端 EventSource 对接、与 WebSocket 的对比选型。读完这篇，你能实现"打字机效果"的流式 Agent 回复，让用户不再盯着空白页面等待。
 >
 > **读者画像**：已经会用 ChatClient 完成同步对话，需要实现流式响应提升用户体验的开发者。

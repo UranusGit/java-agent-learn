@@ -1,5 +1,4 @@
-# 47-Computer Use 与浏览器 Agent
-
+# 01 Computer Use 与浏览器 Agent
 > **定位**：本文讲 Computer Use（让模型操作真实计算机：屏幕截图→视觉理解→鼠标键盘动作）与浏览器 Agent（Browser Use：操作真实浏览器完成导航、表单、抓取）两类"具身化"Agent 的工程实现。读者画像：已完成阶段 5~7 学习、掌握工具调用与 MCP 协议的进阶开发者。前置阅读：[教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/01-MCP协议]、[教程 04-企业级架构主干/11-安全与权限控制]。想深入前沿视角，看 [前沿 07-ComputerUse与AgenticBrowser]、[前沿 08-Agent技能包Skills]。
 
 ---

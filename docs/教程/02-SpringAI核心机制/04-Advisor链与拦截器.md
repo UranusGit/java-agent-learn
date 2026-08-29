@@ -1,5 +1,4 @@
-# 14-Advisor 链与拦截器
-
+# 04 Advisor 链与拦截器
 > **定位**：讲透 Advisor——Spring AI 的核心架构模式。Advisor 接口、执行链机制、前置/后置处理、Order 顺序控制、内置 Advisor 全览、自定义 Advisor 的完整实现，以及 Advisor 与 Spring MVC Interceptor/Filter 的深度对比。读完这篇，你能通过 Advisor 链实现任何 Agent 级别的横切关注点。
 >
 > **读者画像**：已经掌握 ChatClient、工具调用和记忆系统，需要深入理解 Spring AI 架构核心机制的开发者。

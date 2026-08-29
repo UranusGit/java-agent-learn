@@ -1,5 +1,4 @@
-# 11-MCP 协议
-
+# 01 MCP 协议
 > **定位**：讲透 Model Context Protocol（MCP）——它是什么、为什么出现、架构如何设计、2025-06 规范的传输与会话授权更新（Streamable HTTP / Mcp-Session-Id / OAuth 2.1）、Spring AI 2.0 如何支持 MCP 客户端和服务端（真实坐标与真实类型）、MCP 与传统 Tool Calling 的本质区别、协议工程细节与安全落地。读完这篇，你能用 MCP 协议构建标准化的工具生态。
 >
 > **读者画像**：已经掌握 Tool Calling，需要理解或构建跨平台工具协议的开发者。
