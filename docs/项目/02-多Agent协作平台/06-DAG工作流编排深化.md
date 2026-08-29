@@ -6,7 +6,7 @@
 
 > **前置阅读**：[05-核心代码讲解](05-核心代码讲解.md)（DagEngine/TaskStateStore 全貌）。
 
-> **关联教程**：[教程 36-Agent工作流编排](../../教程/36-Agent工作流编排.md)、[教程 40-长任务持久化与中断恢复](../../教程/40-长任务持久化与中断恢复.md)、[教程 42-响应式错误处理](../../教程/42-响应式错误处理.md)。
+> **关联教程**：[教程 79-Agent工作流编排](../../教程/79-Agent工作流编排.md)、[教程 83-长任务持久化与中断恢复](../../教程/83-长任务持久化与中断恢复.md)、[教程 85-响应式错误处理](../../教程/85-响应式错误处理.md)。
 
 > **API 真实性**：Reactor `Retry.backoff/retryWhen`、`SpelExpressionParser`（Spring Expression）、`JdbcClient`、`ReactiveRedisTemplate` 均为真实 API（与既有迭代一致）；Spring AI 侧仅复用已实证的 `ChatClient.prompt().call().entity(Class)`。
 
@@ -63,7 +63,7 @@
 
 **结论**：高频结构性任务应该走**版本化模板**，LLM 拆解只兜底长尾任务——这与传统工作流引擎（Airflow/Temporal）"代码即工作流"的思路一致，只是我们的模板由 LLM 首次生成后人工确认沉淀。
 
-> 「遇到阻塞？→ [教程 36-Agent工作流编排 §5]」
+> 「遇到阻塞？→ [教程 79-Agent工作流编排 §5]」
 
 ### 3.2 模板模型（`model/WorkflowTemplate.java`，完整代码）
 
@@ -304,7 +304,7 @@ flowchart TB
     style LLM fill:#e3f2fd
 ```
 
-> 灰度的价值与"Prompt 版本灰度"同构：v2 模板加了"合规前置审核"节点，先切 20% 流量观察完成率/耗时，指标不劣化再全量——这就是把 [教程 29-灰度发布与版本管理] 的思想从模型/Prompt 层搬到工作流定义层。
+> 灰度的价值与"Prompt 版本灰度"同构：v2 模板加了"合规前置审核"节点，先切 20% 流量观察完成率/耗时，指标不劣化再全量——这就是把 [教程 62-灰度发布与版本管理] 的思想从模型/Prompt 层搬到工作流定义层。
 
 ### 3.5 本节测试与验证（版本化与灰度）
 
@@ -476,7 +476,7 @@ private Mono<Boolean> evaluateLoop(DagDefinition dag, DagNode finished) {
 }
 ```
 
-**三层死循环护栏**（缺一不可，[教程 40-长任务持久化与中断恢复 §6] 的多Agent版）：
+**三层死循环护栏**（缺一不可，[教程 83-长任务持久化与中断恢复 §6] 的多Agent版）：
 
 | 护栏 | 机制 | 兜底场景 |
 |------|------|---------|
@@ -671,7 +671,7 @@ private boolean isTransient(Throwable ex) {
 }
 ```
 
-> 「遇到阻塞？→ [教程 42-响应式错误处理 §重试与退避]」——`Retry.backoff(maxAttempts, minBackoff)` 是 Reactor 真实 API；`filter` 限定可重试异常，防止把"参数校验失败"也重试三遍。
+> 「遇到阻塞？→ [教程 85-响应式错误处理 §重试与退避]」——`Retry.backoff(maxAttempts, minBackoff)` 是 Reactor 真实 API；`filter` 限定可重试异常，防止把"参数校验失败"也重试三遍。
 
 ### 5.3 Saga 补偿：逆向回滚已完成节点
 
@@ -827,7 +827,7 @@ public class DraftDeletionCompensation implements CompensationAction {
 }
 ```
 
-> 「遇到阻塞？→ [教程 36-Agent工作流编排 §6 错误处理与补偿]」——Saga 的经典定义（逆向补偿）与替代方案（前向重试/TCC）的完整对比在教程；多 Agent 场景的特有难点是"补偿动作本身可能调 LLM"，所以补偿优先选确定性代码路径（删 key/调删除 API），不让补偿再依赖一次模型调用。
+> 「遇到阻塞？→ [教程 79-Agent工作流编排 §6 错误处理与补偿]」——Saga 的经典定义（逆向补偿）与替代方案（前向重试/TCC）的完整对比在教程；多 Agent 场景的特有难点是"补偿动作本身可能调 LLM"，所以补偿优先选确定性代码路径（删 key/调删除 API），不让补偿再依赖一次模型调用。
 
 ### 5.4 本节测试与验证（重试分级与 Saga 补偿）
 
@@ -898,7 +898,7 @@ stateDiagram-v2
 | → FAILED/SKIPPED/COMPENSATED | 终态 + 结果 | 重启后保持终态 |
 | RUNNING 时崩溃 | 无（未到终态） | 重启后重置 PENDING，幂等重放 |
 
-> 「遇到阻塞？→ [教程 40-长任务持久化与中断恢复 §2 检查点机制]」——检查点应存"状态+足够恢复的输入"，本引擎的节点输入可由 `globalContext + 前驱 result` 重建，无需冗余存储。
+> 「遇到阻塞？→ [教程 83-长任务持久化与中断恢复 §2 检查点机制]」——检查点应存"状态+足够恢复的输入"，本引擎的节点输入可由 `globalContext + 前驱 result` 重建，无需冗余存储。
 
 ### 6.3 断点续跑算法（TaskRecoveryService 深化）
 

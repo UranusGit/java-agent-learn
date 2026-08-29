@@ -2,7 +2,7 @@
 
 > **定位**：把处置动作建模为工具，按"可逆性×爆炸半径"分级——低风险自动执行、中风险 HITL 审批、高风险升级。HITL 落点在 ToolCallingManager 装饰器（非 Advisor）。教程 28 的完整落地。本文代码为**完整可手写**（含全部 import、无省略），审批守卫模式即教程 28 的 HITL 模式落地。
 >
-> 「遇到阻塞？→ [教程 28-Human-in-the-Loop与审批流 全篇]、[教程 30-容错与弹性设计 §熔断]、[附录 05-SpringAI2-API基准/02 §ToolCallingManager]」
+> 「遇到阻塞？→ [教程 61-Human-in-the-Loop与审批流 全篇]、[教程 63-容错与弹性设计 §熔断]、[附录 05-SpringAI2-API基准/02 §ToolCallingManager]」
 
 ---
 
@@ -280,7 +280,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * HITL 审批：approval/asked + approval/decided 成对落库（审计可回放）。
  * 无 answerer / 超时 → Unavailable（fail-closed，绝不自动通过）。
- * 注意：request() 是同步阻塞等待，调用方应在 boundedElastic 线程（[教程 42-响应式错误处理 §6]）。
+ * 注意：request() 是同步阻塞等待，调用方应在 boundedElastic 线程（[教程 85-响应式错误处理 §6]）。
  */
 @Service
 public class ApprovalService {

@@ -116,7 +116,7 @@ Spring AI 2.0（2026 年 6 月 GA）相比 1.x 有重大升级：
 
 Agent 应用的核心交互模式是**流式响应**——LLM 逐 token 输出，服务端逐 token 推送给前端。WebFlux 基于 Reactor 的 `Flux`/`Mono` 天然支持流式，而 Web MVC 是阻塞式的。
 
-> **想深入？→ [附录 06-WebFlux与响应式编程/04-WebFlux-vs-MVC.md]**：何时选 WebFlux 何时选 MVC 的完整对比。
+> **想深入？→ [教程 14-WebFlux-vs-MVC.md]**：何时选 WebFlux 何时选 MVC 的完整对比。
 
 ### 2.2 配置文件
 
@@ -333,7 +333,7 @@ ChatClient client = ChatClient.builder(chatModel)
 > </dependency>
 > ```
 
-> **遇到阻塞？→ [教程 14-Advisor链与拦截器]**：Advisor API 深入、自定义 Advisor、执行顺序。
+> **遇到阻塞？→ [教程 23-Advisor链与拦截器]**：Advisor API 深入、自定义 Advisor、执行顺序。
 
 ### 3.4 可观测性：开箱即用
 
@@ -370,7 +370,7 @@ spring:
           log-completion: true   # 记录回复内容（生产环境慎用）
 ```
 
-> **遇到阻塞？→ [教程 22-全链路可观测性]**：全链路 Trace、gen_ai 语义约定、OTel 集成。
+> **遇到阻塞？→ [教程 31-全链路可观测性]**：全链路 Trace、gen_ai 语义约定、OTel 集成。
 
 ---
 
@@ -423,4 +423,4 @@ spring:
 ---
 
 > **想深入？→ [附录 03-Spring-AI源码解析/00-ChatClient源码.md]**：ChatClient 内部执行链的源码级解析。
-> **想深入？→ [附录 06-WebFlux与响应式编程/01-Reactor核心.md]**：Mono/Flux 操作符全解，掌握响应式编程底座。
+> **想深入？→ [教程 11-Reactor核心.md]**：Mono/Flux 操作符全解，掌握响应式编程底座。

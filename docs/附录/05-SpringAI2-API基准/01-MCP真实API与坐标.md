@@ -1,6 +1,6 @@
 # 附录 05-01：MCP 真实 API 与依赖坐标基准
 
-> **定位**：本文是对 [教程 11-MCP协议 §API] 的深入展开，也是全体系的 **MCP API 真实性基准**：真实 starter 坐标、真实客户端类型（`McpSyncClient` 而非虚构的 `org.springframework.ai.mcp.McpClient`）、`@Tool` 暴露为 MCP 工具的正确姿势、Streamable HTTP 传输。前置阅读：[教程 11-MCP协议]。
+> **定位**：本文是对 [教程 20-MCP协议 §API] 的深入展开，也是全体系的 **MCP API 真实性基准**：真实 starter 坐标、真实客户端类型（`McpSyncClient` 而非虚构的 `org.springframework.ai.mcp.McpClient`）、`@Tool` 暴露为 MCP 工具的正确姿势、Streamable HTTP 传输。前置阅读：[教程 20-MCP协议]。
 
 ---
 

@@ -1288,3 +1288,31 @@ docs 总计 386 篇（项目 248）；README/checkpoint 同步。
    - 每方向：00架构→01最小Demo→02-07六迭代→08-10三进阶→11核心代码→12 ADR→13 前沿收官；Mermaid 用 `scripts/check-mermaid-audit.py --dir` 校验 0 发现；死链用相对 `.md` 路径扫描 0。
    - 铁律0：新 SDK javap 实证；未实证标"概念代码"。
    - 完成后同步 README（专题索引+目录树+篇数）与 PLAN.md 进度，git commit 一条分支记录。
+
+## 2026-08-26 新增：附录 23-TraceId全链路追踪（9 篇，已完成）
+
+**动机**：用户指出附录缺 traceId 专线内容——18-Observation/06 只有单篇，需要"最小 demo→进阶→高级架构师"的完整系列，含管控分离微服务落地与展示/记录。
+
+**交付**：`docs/附录/23-TraceId全链路追踪/` 00-08 九篇：
+- 00 最小闭环（Boot 4.1 两坐标：`micrometer-tracing-bridge-brave` + `spring-boot-micrometer-tracing-brave`，零代码日志长 traceId）
+- 01 族谱（三 id 分工/W3C traceparent 逐位读/采样位/拼树法）
+- 02 Tracer 编程模型（startScopedSpan/SpanInScope/跨线程 nextSpan 范式）
+- 03 Baggage（remote/local/correlation/tag-fields 四组键，安全红线）
+- 04 记录三通道（X-Trace-Id 响应头/结构化日志/TraceArchive 档案落库+查询）
+- 05 跨服务传播（traceparent 穿透 WebClient + 断链排障五表）
+- 06 SSE 展示（TraceEventCollector 时间线，事件带 traceId）
+- 07 管控分离微服务（网关唯一根/baggage 收口/分级采样/六步排障 SOP）
+- 08 综合实战（工业巡检 Agent 四处同号闭环 + 错误注入验收）
+
+**实证基线**（已下载并 javap）：micrometer-tracing 1.7.0 / bridge-brave 1.7.0 / spring-boot-micrometer-tracing{,-brave} 4.1.0 / spring-boot-zipkin 4.1.0；配置键（propagation.consume=['W3C','B3','B3_MULTI']、produce=['W3C']、sampling.probability=0.1、baggage 四组、zipkin export）全部来自配置元数据。载体沿用 demo01+TimeTool；Mermaid 审计 0 发现；README 目录树+索引表已同步。
+
+**2026-08-26 追加（用户追问"工业级怎么落地/怎么存储/怎么使用"）**：系列扩为 00-10 十一篇——新增 **08-存储工程**（导出双路线 Zipkin/OTLP 全套配置键实证、Collector 管道与尾部采样、存储选型矩阵（点查 vs 组合查）、ClickHouse 宽表 DDL 示意、分区 TTL、/trace-api 查询代理）与 **09-使用运营**（五场景价值地图：排障/SLO 告警与错误预算/容量三角/按租户成本归因/评估飞轮+治理看板四格；SloPatrolJob 完整代码）；原 08 综合实战重排为 **10** 并同步全部指针与总复习表。OTLP 配置键已从 spring-boot-micrometer-tracing-opentelemetry 4.1.0 配置元数据实证（max-queue-size=2048/max-batch-size=512/schedule-delay=5s/limits/sampler=parent-based-trace-id-ratio）。Mermaid 审计 0 发现。
+
+## 2026-08-29 教程归档整改（已完成）
+
+| 任务 | 说明 | 状态 |
+|------|------|------|
+| R-归档1 | 教程重排为 101 篇（00-100，平铺无子文件夹）：00-09 基础 / 10-18 WebFlux / 19-28 SSE-MCP-前端 / 29-32 企业级可观测 / 33-45 Observation / 46-56 TraceId / 57-66 企业级主干后段 / 67-76 Kafka / 77-88 进阶 / 89-100 前沿专题 | ✅ |
+| R-归档2 | 附录 06-WebFlux、17-Kafka、18-Observation、23-TraceId 四个教材系列升入教程；附录重编号 00-19（开源代码深度分析 15→14） | ✅ |
+| R-归档3 | 全体系交叉引用脚本化改写（路径式/方括号文字式/裸编号/斜杠式/区间式/短标签六类），修复 18-Observation 重写遗留死链 3 处 + 系列自称"本附录"等残留；终验 1999 条路径式链接 0 失效 | ✅ |
+| R-归档4 | README 全量重建（目录树/教程索引 101 行/附录索引 20 行/学习路线阶段编号）+ CLAUDE.md 附录规范同步 | ✅ |

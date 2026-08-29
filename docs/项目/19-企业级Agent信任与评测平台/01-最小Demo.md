@@ -1,6 +1,6 @@
 # 01-最小 Demo：一次金标回归
 
-> **定位**：最小闭环：20 条金标（问题/期望要点/上下文）→ 对目标 Agent 跑一轮 → 官方 `RelevancyEvaluator` 判分 → 出通过率报告。读者画像：动手起步。前置阅读：[00-需求分析与架构设计](00-需求分析与架构设计.md)、[教程 37-自我反思与Agent评估]。
+> **定位**：最小闭环：20 条金标（问题/期望要点/上下文）→ 对目标 Agent 跑一轮 → 官方 `RelevancyEvaluator` 判分 → 出通过率报告。读者画像：动手起步。前置阅读：[00-需求分析与架构设计](00-需求分析与架构设计.md)、[教程 80-自我反思与Agent评估]。
 >
 > **铁律 0**：`RelevancyEvaluator.builder().chatClientBuilder()` / `EvaluationRequest(userText, docs, response)` / `EvaluationResponse.isPass()/getScore()` 全部 javap 实证。
 

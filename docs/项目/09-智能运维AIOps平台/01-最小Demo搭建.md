@@ -2,7 +2,7 @@
 
 > **定位**：把 Prometheus 告警接入为**结构化事件流**——统一告警模型、去重、审计落库。本篇刻意不做 LLM（先让"数据进得来、长得规范"），后续迭代的降噪/RCA 全部消费这个事件流。本文代码为**完整可手写**（含全部 import、无省略），照抄即可编译运行。
 >
-> 「遇到阻塞？→ [教程 42-响应式错误处理 §事件流]、[附录 06-WebFlux与响应式编程/01-Reactor核心 §6]、[教程 10-SSE流式通信]」
+> 「遇到阻塞？→ [教程 85-响应式错误处理 §事件流]、[教程 11-Reactor核心 §6]、[教程 19-SSE流式通信]」
 
 ---
 
@@ -256,7 +256,7 @@ import reactor.core.scheduler.Schedulers;
 
 /**
  * 审计落库：每条告警事件留痕（谁在何时收到什么告警）——后续迭代的复盘原料。
- * JdbcClient 是阻塞 JDBC，WebFlux 中必须用 boundedElastic 桥接（[教程 42-响应式错误处理 §6]）。
+ * JdbcClient 是阻塞 JDBC，WebFlux 中必须用 boundedElastic 桥接（[教程 85-响应式错误处理 §6]）。
  */
 @Repository
 public class AlertAuditStore {

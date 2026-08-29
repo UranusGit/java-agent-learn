@@ -2,7 +2,7 @@
 
 > **定位**：Agent 决策"查哪个库、怎么跨库关联"——Data Catalog 中枢 + Router/分解/融合 + 决策 trace。跨库关联用语义层预定义 join 图（v3 的扩展），不让 LLM 现场 join。教程 35 §Agentic 检索的落地。本文给出**完整可手写代码**（一行不省略）。
 >
-> 「遇到阻塞？→ [教程 35-高级RAG与AgenticRAG §Agentic 检索]、[教程 09-多Agent协作]、[附录 01-LLM基础理论/01-Embedding原理]」
+> 「遇到阻塞？→ [教程 78-高级RAG与AgenticRAG §Agentic 检索]、[教程 09-多Agent协作]、[附录 01-LLM基础理论/01-Embedding原理]」
 
 ---
 

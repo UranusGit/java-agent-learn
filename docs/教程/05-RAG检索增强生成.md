@@ -431,7 +431,7 @@ List<Document> results = vectorStore.similaritySearch(
 
 这在多租户、多产品线场景中非常重要——不同用户只检索自己有权限的文档。
 
-> **遇到阻塞？→ [教程 26-多租户隔离与资源治理]**：多租户 RAG 的数据隔离与权限控制。
+> **遇到阻塞？→ [教程 59-多租户隔离与资源治理]**：多租户 RAG 的数据隔离与权限控制。
 
 ---
 
@@ -453,8 +453,8 @@ List<Document> results = vectorStore.similaritySearch(
 - 用摘要代替原文（先让 LLM 摘要每条，再拼接）
 - 分级检索（先检索标题/摘要，再检索完整内容）
 
-> **遇到阻塞？→ [教程 34-上下文工程]**：Token 预算分配、上下文压缩。
-> **遇到阻塞？→ [教程 35-高级RAG与AgenticRAG]**：GraphRAG、多跳推理、自适应检索。
+> **遇到阻塞？→ [教程 77-上下文工程]**：Token 预算分配、上下文压缩。
+> **遇到阻塞？→ [教程 78-高级RAG与AgenticRAG]**：GraphRAG、多跳推理、自适应检索。
 
 ### 8.3 幻觉问题
 
@@ -500,5 +500,5 @@ LLM 可能无视检索到的上下文，自己编造答案。缓解策略：
 
 ---
 
-> **想深入？→ [教程 35-高级RAG与AgenticRAG]**：GraphRAG 多跳推理、Agentic RAG 自主决策检索。
+> **想深入？→ [教程 78-高级RAG与AgenticRAG]**：GraphRAG 多跳推理、Agentic RAG 自主决策检索。
 > **想深入？→ [附录 01-LLM基础理论/01-Embedding原理.md]**：Embedding 的数学原理和语义直觉。

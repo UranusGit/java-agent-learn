@@ -4,7 +4,7 @@
 >
 > **读者画像**：已完成 [04-CICD诊断Agent](04-CICD诊断Agent.md)。
 >
-> 「遇到阻塞？→ [教程 09-多Agent协作]、[教程 36-Agent工作流编排]、[教程 14-Advisor链与拦截器 §顺序]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
+> 「遇到阻塞？→ [教程 09-多Agent协作]、[教程 79-Agent工作流编排]、[教程 23-Advisor链与拦截器 §顺序]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
 
 ---
 
@@ -69,7 +69,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/** 安全 Agent 专属工具：挂 SAST 结果交叉确认（工具层，不是 Advisor——HITL 落点见 [教程 28-Human-in-the-Loop与审批流]）。 */
+/** 安全 Agent 专属工具：挂 SAST 结果交叉确认（工具层，不是 Advisor——HITL 落点见 [教程 61-Human-in-the-Loop与审批流]）。 */
 @Component
 public class SastTools {
 

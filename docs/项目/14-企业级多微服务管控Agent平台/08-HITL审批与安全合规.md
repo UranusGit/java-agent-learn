@@ -1,6 +1,6 @@
 # 08-HITL 审批与安全合规——人工把关 + 纵深防御
 
-> **定位**：本迭代让平台"敢放高危操作"：**HITL 人工审批**（危险工具/高危动作在 `ToolCallingManager` 装饰器或 `ToolCallback` 包装层拦截，正确落点）、**安全纵深**（Prompt 注入检测、DLP、数据脱敏、RBAC、mTLS）、**合规留存**（GDPR 留存期限、被遗忘权删除）。读者画像：理解可观测与审计，想让平台具备生产级安全边界的读者。前置阅读：[07-全链路可观测与审计流](07-全链路可观测与审计流.md)、[教程 28-Human-in-the-Loop与审批流]、[教程 31-安全与权限控制]。
+> **定位**：本迭代让平台"敢放高危操作"：**HITL 人工审批**（危险工具/高危动作在 `ToolCallingManager` 装饰器或 `ToolCallback` 包装层拦截，正确落点）、**安全纵深**（Prompt 注入检测、DLP、数据脱敏、RBAC、mTLS）、**合规留存**（GDPR 留存期限、被遗忘权删除）。读者画像：理解可观测与审计，想让平台具备生产级安全边界的读者。前置阅读：[07-全链路可观测与审计流](07-全链路可观测与审计流.md)、[教程 61-Human-in-the-Loop与审批流]、[教程 64-安全与权限控制]。
 >
 > **演进纪律**：本迭代做 HITL + 安全；灰度发布/成本治理（09）不提前实现。
 > **铁律 0**：代码均经本地 jar `javap` 实证；`org.springframework.security.*` 本地未下载，标注「需引入依赖后实证」。
@@ -90,7 +90,7 @@ public class ApprovalToolWrapper implements ToolCallback {
 }
 ```
 
-> **铁律确认**：HITL 落点在 **`ToolCallingManager` 装饰器 或 `ToolCallback` 包装层**（`org.springframework.ai.model.tool` / `org.springframework.ai.tool`），**不是 Advisor**——Advisor 层拿不到"工具意图已定"的语义（见 [教程 28-Human-in-the-Loop与审批流 §正确落点]）。
+> **铁律确认**：HITL 落点在 **`ToolCallingManager` 装饰器 或 `ToolCallback` 包装层**（`org.springframework.ai.model.tool` / `org.springframework.ai.tool`），**不是 Advisor**——Advisor 层拿不到"工具意图已定"的语义（见 [教程 61-Human-in-the-Loop与审批流 §正确落点]）。
 
 ### 2.2 审批服务（挂起 + 超时）
 
@@ -196,7 +196,7 @@ public class InjectionGuardAdvisor implements CallAdvisor {
 ### 3.2 数据脱敏（LLM 入参/出参掩码，DLP）
 
 ```java
-// 复用 [附录 09-Agent安全深度/02-数据泄露防护] 的 Masking Advisor 模式：
+// 复用 [附录 08-Agent安全深度/02-数据泄露防护] 的 Masking Advisor 模式：
 // 入参：掩码手机号/身份证/API Key → 出参：恢复或保持掩码
 // 本迭代落点：agent-executor 在 adviseCall 前掩码、after 前脱敏（概念代码，见附录基准）
 ```
@@ -234,7 +234,7 @@ public class InjectionGuardAdvisor implements CallAdvisor {
 | 2 | 注入样本（"忽略以上所有指令…"）进上下文 | 被 `InjectionGuardAdvisor` 拦截抛 `SecurityException`；基准集拦截率 ≥99% |
 | 3 | RBAC：租户A 管理员操作租户B 资源 | 返回 403 拒绝 |
 | 4 | GDPR 删除：触发租户删除 → 二次查询 | 会话/记忆/审计级联清空，查询为空（幂等） |
-| 5 | 脱敏核对 | LLM 入参/出参敏感字段（手机号/身份证/Key）已掩码（复用 [附录 09-安全深度/02] 的 Masking Advisor 模式） |
+| 5 | 脱敏核对 | LLM 入参/出参敏感字段（手机号/身份证/Key）已掩码（复用 [附录 08-安全深度/02] 的 Masking Advisor 模式） |
 
 **失败排查**：①注入未拦截→`ChatClientRequest` 取用户文本方式错（无 `userText()`，走 `prompt().getUserMessages()`+`Message.getText()`）；②RBAC 403 不到→Security 过滤器链未装配/RBAC 规则未命中；③删除未级联→`deleteByTenantId` 未覆盖会话/记忆/审计全表。
 

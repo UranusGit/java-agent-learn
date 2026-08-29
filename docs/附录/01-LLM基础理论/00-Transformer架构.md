@@ -255,7 +255,7 @@ KV cache 是 LLM 推理的核心优化，但也带来两个工程问题：
 - **显存占用随上下文线性增长**：128K 上下文的 KV cache 可能比模型权重还大。这是长上下文推理昂贵的根本原因。
 - **批处理冲突**：不同请求的 KV cache 不能混。这就是为什么 batch 推理对长上下文收益有限。
 
-主流推理框架（vLLM、SGLang、TensorRT-LLM）的核心创新几乎都围绕 KV cache 的管理（PagedAttention 等）。详见 [10-语义缓存与性能/01-Prompt缓存与KVCache]。
+主流推理框架（vLLM、SGLang、TensorRT-LLM）的核心创新几乎都围绕 KV cache 的管理（PagedAttention 等）。详见 [09-语义缓存与性能/01-Prompt缓存与KVCache]。
 
 ## 11. 训练阶段：预训练 → SFT → RLHF/DPO
 

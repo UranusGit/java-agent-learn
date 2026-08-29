@@ -307,7 +307,7 @@ sequenceDiagram
     S-->>B: [连接关闭]
 ```
 
-> **遇到阻塞？→ [教程 10-SSE流式通信]**：WebFlux SSE 完整实现、断线重连、前端 EventSource 对接。
+> **遇到阻塞？→ [教程 19-SSE流式通信]**：WebFlux SSE 完整实现、断线重连、前端 EventSource 对接。
 
 ---
 
@@ -331,7 +331,7 @@ Flux<String> safe = chatClient.prompt().user(q).stream().content()
     .onErrorResume(e -> Flux.just("（生成中断，已保留部分内容）")); // 业务决策：保部分
 ```
 
-> **遇到阻塞？→ [教程 42-响应式错误处理]**：onErrorResume/onErrorMap/retryWhen 的完整语义与流中断恢复。
+> **遇到阻塞？→ [教程 85-响应式错误处理]**：onErrorResume/onErrorMap/retryWhen 的完整语义与流中断恢复。
 
 ## 6. 结构化输出：让 LLM 返回 Java 对象
 
@@ -394,7 +394,7 @@ ChatClient client = ChatClient.builder(chatModel)
         .build();
 ```
 
-> **遇到阻塞？→ [教程 13-结构化输出]**：JSON Schema、BeanOutputConverter、Provider Native Structured Output。
+> **遇到阻塞？→ [教程 22-结构化输出]**：JSON Schema、BeanOutputConverter、Provider Native Structured Output。
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **定位**：从零搭起参考后端 + agent-console 前端两套工程，跑通第一条"输入 → SSE → 打字机输出"链路。本篇只有单会话、无历史、无工具可视化——**刻意保持最小**，为后续迭代留足演进空间。本文给出**完整可手写代码**（一行不省略）。
 >
-> 「遇到阻塞？→ [教程 15-React入门与现代前端工程 §4 Vite 工程]、[教程 17-React与SSE流式UI §1 fetch+ReadableStream]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
+> 「遇到阻塞？→ [教程 24-React入门与现代前端工程 §4 Vite 工程]、[教程 26-React与SSE流式UI §1 fetch+ReadableStream]；API 真实性以 [附录 05-SpringAI2-API基准] 为准」
 
 ---
 

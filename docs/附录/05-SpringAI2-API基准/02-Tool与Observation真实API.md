@@ -1,6 +1,6 @@
 # 附录 05-02：Tool、结构化输出与 Observation 真实 API 基准
 
-> **定位**：本文是对 [教程 03-工具调用]、[教程 13-结构化输出]、[教程 22-全链路可观测性] 的深入展开，也是全体系的**工具/输出/可观测 API 真实性基准**：注解体系（`@Tool` 而非 `@ToolMethod`）、`entity()` 真实重载、ToolContext、Observation 真实扩展点。前置阅读：[教程 03]、[教程 12]、[教程 16]。
+> **定位**：本文是对 [教程 03-工具调用]、[教程 22-结构化输出]、[教程 31-全链路可观测性] 的深入展开，也是全体系的**工具/输出/可观测 API 真实性基准**：注解体系（`@Tool` 而非 `@ToolMethod`）、`entity()` 真实重载、ToolContext、Observation 真实扩展点。前置阅读：[教程 03]、[教程 21]、[教程 25]。
 
 ---
 
@@ -127,7 +127,7 @@ public Result execute(String toolName, Map<String, Object> args) {
 ## 4. SearchRequest / Document（新旧 API 分水岭）
 
 ```java
-// 2.0 式（基准——教程 29/30/34 已用，附录 03/04/07 旧稿需统一）
+// 2.0 式（基准——教程 62/30/34 已用，附录 03/04/07 旧稿需统一）
 List<Document> hits = vectorStore.similaritySearch(
         SearchRequest.builder().query(q).topK(5).similarityThreshold(0.7).build());
 

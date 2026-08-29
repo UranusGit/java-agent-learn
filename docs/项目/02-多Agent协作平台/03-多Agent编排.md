@@ -6,7 +6,7 @@
 
 > **前置阅读**：[02-单Agent工具链](02-单Agent工具链.md)。
 
-> **关联教程**：[教程 09-多Agent协作](../../教程/09-多Agent协作.md)、[教程 20-管控分离架构](../../教程/20-管控分离架构.md)、[教程 36-Agent工作流编排](../../教程/36-Agent工作流编排.md)。
+> **关联教程**：[教程 09-多Agent协作](../../教程/09-多Agent协作.md)、[教程 29-管控分离架构](../../教程/29-管控分离架构.md)、[教程 79-Agent工作流编排](../../教程/79-Agent工作流编排.md)。
 
 > **API 真实性**：结构化输出用 `entity(Class)`（真实重载）；`Sinks`/`ReactiveRedisTemplate`/`JdbcClient` 均真实；LLM 调用阻塞包装在 `Schedulers.boundedElastic()`。
 
@@ -288,7 +288,7 @@ graph TB
 | 异步 | Agent B 可以并行处理来自多个 Agent 的请求 |
 | 可扩展 | 新增 Agent 只需订阅频道，不修改现有 Agent |
 
-> 「遇到阻塞？→ [教程 20-管控分离架构](../../教程/20-管控分离架构.md)」
+> 「遇到阻塞？→ [教程 29-管控分离架构](../../教程/29-管控分离架构.md)」
 
 ### 4.2 `agent/AgentMessage.java` + `agent/MessageType.java`
 
@@ -964,7 +964,7 @@ import org.springframework.stereotype.Service;
 /**
  * 应用重启时恢复未完成的任务。
  * 简化：从 PostgreSQL 拿到未完成任务 ID，再从 Redis 快照读回 DAG 重新执行。
- * 全量可靠恢复（从 dag_node 表重建 DAG）见 [教程 40-长任务持久化与中断恢复]。
+ * 全量可靠恢复（从 dag_node 表重建 DAG）见 [教程 83-长任务持久化与中断恢复]。
  */
 @Service
 public class TaskRecoveryService {
@@ -1213,7 +1213,7 @@ public class DagEngine {
 }
 ```
 
-> 说明：`ExecutionPolicy` 中的 `maxRetries` / `onFailure=RETRY` 在本迭代未实现重试逻辑（`handleNodeFailure` 直接置 FAILED）。重试与降级在迭代三路由降级中部分体现，完整幂等重试见 [教程 40-长任务持久化与中断恢复]。
+> 说明：`ExecutionPolicy` 中的 `maxRetries` / `onFailure=RETRY` 在本迭代未实现重试逻辑（`handleNodeFailure` 直接置 FAILED）。重试与降级在迭代三路由降级中部分体现，完整幂等重试见 [教程 83-长任务持久化与中断恢复]。
 
 ### 7.3 并行执行机制
 
@@ -1242,7 +1242,7 @@ graph TB
 
 `Flux.flatMap()` 默认并发度 256；这里限制为 10（`MAX_CONCURRENCY`），防止同时打爆 DeepSeek API。需要调并发数只改常量。
 
-> 「遇到阻塞？→ [教程 36-Agent工作流编排](../../教程/36-Agent工作流编排.md)」
+> 「遇到阻塞？→ [教程 79-Agent工作流编排](../../教程/79-Agent工作流编排.md)」
 
 ### 7.4 本节测试与验证（并行调度与防重）
 
@@ -1797,11 +1797,11 @@ graph TB
 
 ### ADR 002-09：DAG 引擎用「响应式事件驱动」而非「同步拓扑排序」
 - **决策**：`findReadyNodes` 找出就绪节点 → `flatMap` 并行执行 → 节点完成回调重新调度；`claimed` 集合防并行分支重复调度
-- **取舍理由**：同步拓扑排序要阻塞等待节点完成，无法支撑高并发；响应式不阻塞，一个引擎可同时管理大量任务。代价是调试复杂度上升（[教程 42-响应式错误处理]）
+- **取舍理由**：同步拓扑排序要阻塞等待节点完成，无法支撑高并发；响应式不阻塞，一个引擎可同时管理大量任务。代价是调试复杂度上升（[教程 85-响应式错误处理]）
 
 ### ADR 002-10：持久化双层——Redis 实时快照 + PostgreSQL 审计/恢复
 - **决策**：`TaskStateStore`（Redis）存实时 DAG 快照与事件流；`TaskRepository`（PostgreSQL）存任务与节点行用于审计与重启恢复
-- **取舍理由**：Redis 快读写（编排热路径）、PostgreSQL 可靠（审计合规），各取所长；恢复路径先 Redis 快照，全量可靠重建见 [教程 40-长任务持久化与中断恢复]
+- **取舍理由**：Redis 快读写（编排热路径）、PostgreSQL 可靠（审计合规），各取所长；恢复路径先 Redis 快照，全量可靠重建见 [教程 83-长任务持久化与中断恢复]
 
 ### 13.1 本节核对（ADR 规范性）
 

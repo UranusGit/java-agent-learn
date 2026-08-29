@@ -223,14 +223,14 @@ public class ChatClientConfig {
 
 它**不做回答，做检索增强**：调用链在真正调模型前，先用你的问题查向量库，把命中的文档块拼进 Prompt 当上下文，再让模型基于资料作答——这就是本项目的 RAG。它是 `BaseAdvisor` 实现，靠 `before`（检索注入）/ `after`（回写 `RETRIEVED_DOCUMENTS` 供观测）两钩子生效，所以挂在 `defaultAdvisors` 上所有调用自动生效。
 
-> **详细原理（两阶段时序图、为什么做成 Advisor、`topK`/`similarityThreshold` 调优、常见坑）→ [教程 14-Advisor链与拦截器 §4.3]**。本项目的落地代码与验证包就是这里的实践篇。
+> **详细原理（两阶段时序图、为什么做成 Advisor、`topK`/`similarityThreshold` 调优、常见坑）→ [教程 23-Advisor链与拦截器 §4.3]**。本项目的落地代码与验证包就是这里的实践篇。
 
 ### 2.7 参数速查（本项目取值）
 
 | 旋钮 | 本项目值 | 效果 | 详解 |
 |------|---------|------|------|
-| `topK` | 3 | 最多召回文档块数 | [教程 14-Advisor链与拦截器 §4.3.2] |
-| `similarityThreshold` | 0.7 | 低于该相似度的块**直接丢弃** | [教程 14-Advisor链与拦截器 §4.3.2] |
+| `topK` | 3 | 最多召回文档块数 | [教程 23-Advisor链与拦截器 §4.3.2] |
+| `similarityThreshold` | 0.7 | 低于该相似度的块**直接丢弃** | [教程 23-Advisor链与拦截器 §4.3.2] |
 
 **三项自查**（对照 §3 失败排查）：① import 必须为 `…advisor.vectorstore.QuestionAnswerAdvisor`（包名易写错）；② pom 已引 `spring-ai-vector-store-advisor` 模块；③ Advisor 挂了多半是库空（`KnowledgeBaseLoader` 没跑成）或 threshold 高到检不出东西。
 

@@ -2,7 +2,7 @@
 
 > **定位**：把 v1 的"一跳 mTLS + 手工长证书"升级为**全链服务身份体系**——SPIFFE/SPIRE 工作负载身份、网关↔工具↔内部服务全 mesh 双向认证、证书自动轮换与吊销语义、最小权限服务策略；并修复证书轮换与 v2 指纹机制的一处真实冲突。**完整可手写代码**：mTLS 双向认证的 WebClient（已 javap 实证）、SPIFFE 身份解析、服务授权策略、指纹适配。
 >
-> 「遇到阻塞？→ [教程 31-安全与权限控制 §零信任]、[附录 09-Agent安全深度]、[附录 19-Agent沙箱与执行环境/00-沙箱技术对比与选型 §网络隔离]」
+> 「遇到阻塞？→ [教程 64-安全与权限控制 §零信任]、[附录 08-Agent安全深度]、[附录 16-Agent沙箱与执行环境/00-沙箱技术对比与选型 §网络隔离]」
 >
 > **依赖说明**：SPIFFE 的 Java 支撑库 `org.spiffe:java-spiffe-core`（[github.com/spiffe/java-spiffe](https://github.com/spiffe/java-spiffe)）本地仓库未下载，标注「需引入依赖后实证」；spring-security 相关类本地仅有 BOM 无 jar，同样标注。netty/reactor-netty/spring-web 的 TLS API 均已对本地 jar `javap` 实证（版本注于代码处）。
 
