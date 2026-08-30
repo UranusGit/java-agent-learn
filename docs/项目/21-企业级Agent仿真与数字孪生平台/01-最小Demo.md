@@ -67,6 +67,81 @@ record CaseDiff(String caseId, String oldOut, String newOut, Verdict v) {} // BE
 
 **失败排查**：①自不一致→上下文未冻结（时间/随机数混入）或温度>0；②计数不符→去重逻辑吞案例；③超时→无并发（flatMap 并发 8 路）。
 
+### 二.2 可执行验证（mvn test）
+
+回放对比闭环可直接以 junit 断言（概念代码，断言仅覆盖本节）：
+
+```java
+package com.example.twin.replay;
+
+import java.util.List;
+import lombok.extern.slf4j.Slf4j;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** 断言仅覆盖本节：自一致 diff=0；换版本三计数之和=100。 */
+@Slf4j
+class ReplayDiffTest {
+
+    @Test
+    void 自一致为零_换版本出数() {
+        List<CapturedCase> cases = Recorder.load("replay-r7.jsonl");            // 材料 A：100 例
+        assertEquals(100, cases.size());
+        var base = replayer().run(cases, "v1");
+        assertEquals(0, Differ.diff(base, replayer().run(cases, "v1")).size()); // 自一致：diff=0
+        DiffReport r = Differ.diffReport(base, replayer().run(cases, "v2"));    // v1 vs v2
+        assertEquals(100, r.better() + r.worse() + r.same());                   // 三计数之和=100
+        log.info("BETTER={} WORSE={} SAME={}", r.better(), r.worse(), r.same());
+    }
+}
+```
+
+命令与预期输出（3-5 行，计数与 §三 流程图报告一致）：
+
+```bash
+mvn test -Dtest=ReplayDiffTest
+```
+
+```text
+10:15:30 INFO  com.example.twin.replay.ReplayDiffTest - BETTER=12 WORSE=3 SAME=85
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+判据：自一致段 diff=0（验收①）；`BETTER+WORSE+SAME=100` 且 WORSE 差例以 caseId 锚定可点开（验收②）。
+
+### 二.3 运行配置与启动（两段式）
+
+```yaml
+# application.yaml（仅 .env import + 激活 profile）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: twin
+```
+
+```yaml
+# application-twin.yaml（端口与模型配置——回放被测 Agent 用）
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+twin:
+  replay-file: replay-r7.jsonl                    # 材料 A：录制文件
+  concurrency: 8                                  # 回放并发（§二.1 排查③：flatMap 8 路）
+```
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=twin
+```
+
 ## 三、闭环流程
 
 ```mermaid
