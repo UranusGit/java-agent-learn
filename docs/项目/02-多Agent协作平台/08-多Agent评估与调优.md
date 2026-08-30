@@ -69,22 +69,159 @@
 评估面的第一条纪律：**不侵入执行链路**。指标采集走"旁路"——`TaskStateStore` 的 `emit()` 在推送任务专属 Sink（供 SSE）的同时，多推一份到全局事件总线：
 
 ```java
-// store/TaskStateStore.java 内新增（节选，其余保持 [03 §6.3] 原样）
-private final Sinks.Many<DagEvent> globalEvents =
-        Sinks.many().multicast().onBackpressureBuffer();
+// store/TaskStateStore.java（完整代码 = [03 §6.3] 原类 + 本次旁路评估面增量）
+package com.example.orchestrator.store;
 
-/** 评估面订阅入口：进程内所有任务的全量 DAG 事件。 */
-public Flux<DagEvent> allEvents() {
-    return globalEvents.asFlux();
-}
+import com.example.orchestrator.model.DagDefinition;
+import com.example.orchestrator.model.DagEvent;
+import com.example.orchestrator.model.DagNode;
+import com.example.orchestrator.model.EventType;
+import com.example.orchestrator.model.NodeStatus;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.stereotype.Repository;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
-private Mono<Void> emit(String taskId, DagEvent event) {
-    Sinks.Many<DagEvent> sink = dagEventSinks.get(taskId);
-    if (sink != null) {
-        sink.tryEmitNext(event);
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+
+/**
+ * DAG 实时状态（Redis 快照） + 事件推送（进程内 Sink，供 SSE 订阅）。
+ * 写侧：engine 每次状态变更调用 updateNodeStatus/updateNodeResult，落 Redis 快照并 emit 事件。
+ * 08 篇增量：emit 双发到全局事件总线（评估面旁路，§3.2）。
+ */
+@Repository
+public class TaskStateStore {
+
+    private static final String DAG_KEY_PREFIX = "dag:def:";
+
+    private final ReactiveRedisTemplate<String, String> redisTemplate;
+    private final ObjectMapper objectMapper;
+
+    // 进程内事件流：taskId -> 事件推送（供 /api/orchestrate/{id}/stream 订阅）
+    private final Map<String, Sinks.Many<DagEvent>> dagEventSinks = new ConcurrentHashMap<>();
+    // 08 篇新增：全局事件总线——进程内所有任务的全量 DAG 事件（评估面旁路）
+    private final Sinks.Many<DagEvent> globalEvents =
+            Sinks.many().multicast().onBackpressureBuffer();
+
+    public TaskStateStore(ReactiveRedisTemplate<String, String> redisTemplate,
+                          ObjectMapper objectMapper) {
+        this.redisTemplate = redisTemplate;
+        this.objectMapper = objectMapper;
     }
-    globalEvents.tryEmitNext(event);        // 新增一行：旁路评估面
-    return Mono.empty();
+
+    /** 首次保存 DAG 并发出 DAG_CREATED 事件。 */
+    public Mono<Void> saveDag(DagDefinition dag) {
+        return persist(dag.taskId(), dag)
+                .then(emit(dag.taskId(), new DagEvent(dag.dagId(), null, EventType.DAG_CREATED,
+                        "nodes=" + dag.nodes().size() + ", edges=" + dag.edges().size())));
+    }
+
+    /** 读取当前 DAG 快照（含最新节点状态）。 */
+    public Mono<DagDefinition> findDag(String taskId) {
+        return redisTemplate.opsForValue().get(DAG_KEY_PREFIX + taskId)
+                .map(this::deserialize);
+    }
+
+    /** 更新节点状态（RUNNING/DONE/FAILED/BLOCKED）。 */
+    public Mono<DagDefinition> updateNodeStatus(String taskId, String nodeId,
+                                                 NodeStatus status, String agentId) {
+        return findDag(taskId)
+                .map(dag -> withNode(dag, nodeId, n -> {
+                    LocalDateTime startedAt = (status == NodeStatus.RUNNING && n.startedAt() == null)
+                            ? LocalDateTime.now() : n.startedAt();
+                    LocalDateTime completedAt = (status == NodeStatus.DONE || status == NodeStatus.FAILED)
+                            ? LocalDateTime.now() : n.completedAt();
+                    return new DagNode(n.nodeId(), n.description(), n.requiredCapability(),
+                            n.type(), n.config(), status, n.result(),
+                            agentId != null ? agentId : n.assignedAgentId(),
+                            startedAt, completedAt, n.retryCount());
+                }))
+                .flatMap(dag -> persist(taskId, dag).thenReturn(dag))
+                .flatMap(dag -> emit(taskId, new DagEvent(dag.dagId(), nodeId,
+                                EventType.NODE_STARTED, status.name())).thenReturn(dag));
+    }
+
+    /** 更新节点结果并置为 DONE，发出 NODE_COMPLETED / NODE_FAILED。 */
+    public Mono<DagDefinition> updateNodeResult(String taskId, String nodeId,
+                                                 String result, NodeStatus status) {
+        return findDag(taskId)
+                .map(dag -> withNode(dag, nodeId, n -> new DagNode(
+                        n.nodeId(), n.description(), n.requiredCapability(),
+                        n.type(), n.config(), status, result, n.assignedAgentId(),
+                        n.startedAt(), LocalDateTime.now(), n.retryCount())))
+                .flatMap(dag -> persist(taskId, dag).thenReturn(dag))
+                .flatMap(dag -> emit(taskId, new DagEvent(dag.dagId(), nodeId,
+                        status == NodeStatus.FAILED ? EventType.NODE_FAILED : EventType.NODE_COMPLETED,
+                        result)).thenReturn(dag));
+    }
+
+    /** 更新全局上下文（迭代三 MODIFY 审批用）。 */
+    public Mono<Void> updateGlobalContext(String taskId, Map<String, Object> additions) {
+        return findDag(taskId)
+                .map(dag -> {
+                    Map<String, Object> merged = new java.util.HashMap<>(dag.globalContext());
+                    merged.putAll(additions);
+                    return new DagDefinition(dag.dagId(), dag.taskId(), dag.nodes(),
+                            dag.edges(), merged);
+                })
+                .flatMap(dag -> persist(taskId, dag).then());
+    }
+
+    /** SSE 订阅：实时推送该任务的 DAG 事件。 */
+    public Flux<DagEvent> subscribeDagEvents(String taskId) {
+        return dagEventSinks.computeIfAbsent(taskId,
+                k -> Sinks.many().multicast().onBackpressureBuffer()).asFlux();
+    }
+
+    /** 08 篇新增：评估面订阅入口——进程内所有任务的全量 DAG 事件。 */
+    public Flux<DagEvent> allEvents() {
+        return globalEvents.asFlux();
+    }
+
+    private Mono<Void> persist(String taskId, DagDefinition dag) {
+        return redisTemplate.opsForValue()
+                .set(DAG_KEY_PREFIX + taskId, serialize(dag))
+                .then();
+    }
+
+    private Mono<Void> emit(String taskId, DagEvent event) {
+        Sinks.Many<DagEvent> sink = dagEventSinks.get(taskId);
+        if (sink != null) {
+            sink.tryEmitNext(event);
+        }
+        globalEvents.tryEmitNext(event);        // 08 篇新增一行：旁路评估面
+        return Mono.empty();
+    }
+
+    private DagDefinition withNode(DagDefinition dag, String nodeId,
+                                   Function<DagNode, DagNode> updater) {
+        List<DagNode> nodes = dag.nodes().stream()
+                .map(n -> n.nodeId().equals(nodeId) ? updater.apply(n) : n)
+                .toList();
+        return new DagDefinition(dag.dagId(), dag.taskId(), nodes, dag.edges(), dag.globalContext());
+    }
+
+    private String serialize(DagDefinition dag) {
+        try {
+            return objectMapper.writeValueAsString(dag);
+        } catch (Exception e) {
+            throw new IllegalStateException("DAG 序列化失败: " + dag.taskId(), e);
+        }
+    }
+
+    private DagDefinition deserialize(String json) {
+        try {
+            return objectMapper.readValue(json, DagDefinition.class);
+        } catch (Exception e) {
+            throw new IllegalStateException("DAG 反序列化失败", e);
+        }
+    }
 }
 ```
 
@@ -167,29 +304,106 @@ public class CollaborationMetricsCollector {
 Token 的采集点只有一个合理位置——**拿到 `ChatResponse` 元数据的那一层**。05 §3 的第五步原来是 `promptSpec.stream().content()`（只见文本不见元数据），升级为 `chatResponse()` 双取：
 
 ```java
-// agent/AgentExecutor.java 第五步升级（节选，其余四步保持 05 §3 原样）
-public record TokenUsage(String agentId, Integer promptTokens, Integer completionTokens) {}
-private final Sinks.Many<TokenUsage> usageSink =
-        Sinks.many().multicast().onBackpressureBuffer();
+// agent/AgentExecutor.java（完整代码 = [05 §3.1] 原类 + 第五步 Token 感知升级）
+package com.example.orchestrator.agent;
 
-public Flux<TokenUsage> usageEvents() {
-    return usageSink.asFlux();
-}
+import com.example.orchestrator.model.AgentDefinition;
+import com.example.orchestrator.model.SessionMessage;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
 
-private Flux<String> streamWithUsage(ChatClient.ChatClientRequestSpec promptSpec,
-                                     AgentDefinition agent) {
-    return promptSpec.stream()
-            .chatResponse()                                    // Flux<ChatResponse>（真实方法）
-            .doOnNext(resp -> {
-                var usage = resp.getMetadata().getUsage();     // ChatResponseMetadata.getUsage()
-                if (usage != null && usage.getTotalTokens() > 0) {
-                    usageSink.tryEmitNext(new TokenUsage(
-                            agent.agentId(),
-                            usage.getPromptTokens(),           // Usage 接口 javap 实证
-                            usage.getCompletionTokens()));
-                }
-            })
-            .map(resp -> resp.getResult().getOutput().getText()); // Generation→AssistantMessage.getText()
+import java.util.List;
+
+@Service
+public class AgentExecutor {
+
+    public record TokenUsage(String agentId, Integer promptTokens, Integer completionTokens) {}
+
+    // 08 篇新增：Token 归因流（指标旁路采集，见 §3.3）
+    private final Sinks.Many<TokenUsage> usageSink =
+            Sinks.many().multicast().onBackpressureBuffer();
+
+    private final ChatClient.Builder chatClientBuilder;
+    private final ToolRegistry toolRegistry;
+
+    public AgentExecutor(ChatClient.Builder chatClientBuilder, ToolRegistry toolRegistry) {
+        this.chatClientBuilder = chatClientBuilder;
+        this.toolRegistry = toolRegistry;
+    }
+
+    public Flux<String> execute(AgentDefinition agent, String userMessage,
+                                List<SessionMessage> history) {
+        // 1. 构建独立 ChatClient
+        ChatClient client = buildClient(agent);
+
+        // 2. 构建 Prompt
+        var promptSpec = client.prompt()
+                .system(agent.systemPrompt())
+                .user(userMessage);
+
+        // 3. 注入历史消息（多轮上下文）
+        if (history != null && !history.isEmpty()) {
+            List<Message> springMessages = history.stream()
+                    .map(this::toSpringMessage)
+                    .toList();
+            promptSpec = promptSpec.messages(springMessages);
+        }
+
+        // 4. 注入工具
+        List<Object> tools = toolRegistry.resolveTools(agent.toolBeanNames());
+        if (!tools.isEmpty()) {
+            promptSpec = promptSpec.tools(tools.toArray());
+        }
+
+        // 5. 流式执行（08 篇升级：chatResponse() 双取文本与 Token 元数据）
+        return streamWithUsage(promptSpec, agent);
+    }
+
+    public Flux<TokenUsage> usageEvents() {
+        return usageSink.asFlux();
+    }
+
+    /** 第五步升级：从 ChatResponse 双取（文本 + Token 元数据），Usage 旁路进 usageSink。 */
+    private Flux<String> streamWithUsage(ChatClient.ChatClientRequestSpec promptSpec,
+                                         AgentDefinition agent) {
+        return promptSpec.stream()
+                .chatResponse()                                    // Flux<ChatResponse>（真实方法）
+                .doOnNext(resp -> {
+                    var usage = resp.getMetadata().getUsage();     // ChatResponseMetadata.getUsage()
+                    if (usage != null && usage.getTotalTokens() > 0) {
+                        usageSink.tryEmitNext(new TokenUsage(
+                                agent.agentId(),
+                                usage.getPromptTokens(),           // Usage 接口 javap 实证
+                                usage.getCompletionTokens()));
+                    }
+                })
+                .map(resp -> resp.getResult().getOutput().getText()); // Generation→AssistantMessage.getText()
+    }
+
+    private Message toSpringMessage(SessionMessage msg) {
+        return switch (msg.role()) {
+            case "assistant" -> new AssistantMessage(msg.content());
+            default -> new UserMessage(msg.content());
+        };
+    }
+
+    private ChatClient buildClient(AgentDefinition agent) {
+        var builder = chatClientBuilder.defaultSystem(agent.systemPrompt());
+        if (agent.modelConfig() != null) {
+            var config = agent.modelConfig();
+            builder = builder.defaultOptions(OpenAiChatOptions.builder()   // Spring AI 2.0.0：defaultOptions 收 Builder
+                    .model(config.model())
+                    .temperature(config.temperature())
+                    .maxTokens(config.maxTokens()));
+        }
+        return builder.build();
+    }
 }
 ```
 
@@ -246,12 +460,12 @@ flowchart LR
 ```bash
 # 提交 3 个任务（其中 1 个人为注入失败），检查指标
 for i in 1 2 3; do
-  curl -X POST http://localhost:8080/api/orchestrate \
+  curl -X POST http://localhost:8081/api/orchestrate \
     -H "Content-Type: application/json" \
     -d '{"task": "调研 AI Agent 趋势并写中文报告"}'
 done
 
-curl -s http://localhost:8080/actuator/prometheus | grep orchestrator
+curl -s http://localhost:8081/actuator/prometheus | grep orchestrator
 ```
 
 **步骤与断言**：
@@ -413,7 +627,7 @@ sequenceDiagram
 
 ```bash
 # 构造冲突任务：node-2 与 node-3 的 prompt 注入互相矛盾的"事实"
-curl -X POST http://localhost:8080/api/orchestrate \
+curl -X POST http://localhost:8081/api/orchestrate \
   -d '{"task": "评估自研缓存中间件的并发上限：node-2 认为支持50万QPS，node-3 认为仅支持5万QPS"}'
 
 psql -c "SELECT task_id, has_conflict, summary FROM reflection_report ORDER BY id DESC LIMIT 3;"
@@ -631,12 +845,15 @@ psql -c "INSERT INTO golden_task(task, expected_agent_id, expected_capability, r
 
 ### 6.1 并行度实验：让 MAX_CONCURRENCY 有据可依
 
-`MAX_CONCURRENCY=10` 从迭代二沿用至今（[03 §7.2]），当时只为"防止打爆 DeepSeek API"。并行度实验把它变成**被测量过的参数**：
+`MAX_CONCURRENCY=10` 从迭代二沿用至今（[03 §7.2]），当时只为"防止打爆 DeepSeek API"。并行度实验把它变成**被测量过的参数**。改动涉及三处，合并进 [04 §6.4] 的 `DagEngine`：
 
 ```java
-// engine/DagEngine.java 改动（节选）：常量 → 可配置
-private final int maxConcurrency;
+// engine/DagEngine.java 改动①：常量 → 实例字段（删除原 static 常量）
+private final int maxConcurrency;                     // @Value 注入，默认 10
+```
 
+```java
+// 改动②：构造器追加 maxConcurrency 参数（其余参数保持 [04 §6.4] 原样）
 public DagEngine(AgentRouter agentRouter, AgentExecutor agentExecutor,
                  TaskStateStore stateStore,
                  @Value("${orchestrator.max-concurrency:10}") int maxConcurrency) {
@@ -645,7 +862,30 @@ public DagEngine(AgentRouter agentRouter, AgentExecutor agentExecutor,
     this.stateStore = stateStore;
     this.maxConcurrency = maxConcurrency;
 }
-// schedule() 中 flatMap(..., MAX_CONCURRENCY) 同步改为 flatMap(..., maxConcurrency)
+```
+
+```java
+// 改动③：schedule() 的 flatMap 并发度从静态常量改为注入字段（完整方法）
+private Flux<DagEvent> schedule(DagDefinition dag) {
+    List<DagNode> ready = findReadyNodes(dag);
+    if (ready.isEmpty()) {
+        boolean anyRunning = dag.nodes().stream()
+                .anyMatch(n -> n.status() == NodeStatus.RUNNING);
+        if (allDone(dag)) {
+            return Flux.just(new DagEvent(dag.dagId(), null,
+                    EventType.TASK_COMPLETED, "All nodes done"));
+        }
+        if (!anyRunning && anyFailed(dag)) {
+            return Flux.just(new DagEvent(dag.dagId(), null,
+                    EventType.TASK_FAILED, "Task failed"));
+        }
+        return Flux.empty();
+    }
+    return Flux.fromIterable(ready)
+            .flatMap(node -> tryClaim(dag, node)
+                            .flatMapMany(ok -> ok ? executeNode(dag, node) : Flux.empty()),
+                    maxConcurrency);                 // 由配置驱动，实验可调（§6.4 三组对照）
+}
 ```
 
 ```mermaid
@@ -688,12 +928,34 @@ flowchart LR
 **材料——三组对照脚本**：
 
 ```bash
-# 三组各跑金标集（配置文件切换 orchestrator.max-concurrency）
+# 0. 打包（三组实验共用同一 jar；-DskipTests 跳过 CI 回归闸门，实验阶段用）
+mvn clean package -DskipTests
+
+# 1. 三组各跑金标集（命令行覆盖 orchestrator.max-concurrency，等价于改配置）
 for c in 4 8 16; do
-  java -jar orchestrator.jar --orchestrator.max-concurrency=$c &
+  java -jar target/orchestrator.jar --orchestrator.max-concurrency=$c &
   ./run-golden-set.sh 50   # 记录端到端时延与吞吐
   kill %1
 done
+```
+
+配套 `run-golden-set.sh`（示例脚本，真实可用）：
+
+```bash
+#!/usr/bin/env bash
+# run-golden-set.sh：串行跑 N 条金标任务，按 taskId 记录端到端时延，供三组对照。
+# 用法：./run-golden-set.sh <条数>；输出：总耗时/平均时延/吞吐。
+N=${1:-50}
+for i in $(seq 1 "$N"); do
+  START=$(date +%s%3N)
+  curl -s -X POST http://localhost:8081/api/orchestrate \
+    -H "Content-Type: application/json" \
+    -d '{"task":"调研 AI Agent 趋势并写中文报告"}' > /dev/null
+  END=$(date +%s%3N)
+  echo "$((END - START))"
+done | awk '{sum+=$1; n++} END {
+  if (n>0) printf "总耗时: %dms, 平均: %.0fms/条, 吞吐: %.2f 条/s\n", sum, sum/n, n*1000/sum
+}'
 ```
 
 **步骤与断言**：

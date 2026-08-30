@@ -102,17 +102,28 @@ public record DagBlueprint(
         List<BlueprintNode> nodes,
         List<BlueprintEdge> edges) {}
 
-record BlueprintNode(
+public record BlueprintNode(
         String nodeId,
         String description,
         String requiredCapability,
         NodeType type,
         Map<String, Object> config) {}     // config 可携带 loop / structuredOutput / compensate 声明
 
-record BlueprintEdge(
+public record BlueprintEdge(
         String from,
         String to,
         String condition) {}               // SpEL 条件（本篇 §4 落地）
+```
+
+```java
+// model/TemplateMatch.java
+package com.example.orchestrator.model;
+
+/**
+ * 模板意图分类结果：携带灰度决策后的最终模板版本。
+ * template 即 resolveVersion 选定的版本（ACTIVE 或 CANARY），由 TaskParser.matchTemplate 产出（§3.4）。
+ */
+public record TemplateMatch(WorkflowTemplate template) {}
 ```
 
 ### 3.3 模板存储（`store/WorkflowTemplateRepository.java`，完整代码）
@@ -228,6 +239,63 @@ CREATE TABLE IF NOT EXISTS workflow_template (
 );
 ```
 
+模板注册 API（`POST /api/workflow-templates` 的落点，完整代码）：
+
+```java
+// web/WorkflowTemplateController.java
+package com.example.orchestrator.web;
+
+import com.example.orchestrator.model.WorkflowTemplate;
+import com.example.orchestrator.store.WorkflowTemplateRepository;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
+
+import java.time.LocalDateTime;
+
+/**
+ * 模板注册 API：POST /api/workflow-templates（§3.5 材料 curl 的落点）。
+ * dagBlueprint 以 JSON 字符串传入；templateId 由 name+version 派生，createdBy 默认 admin。
+ */
+@RestController
+@RequestMapping("/api/workflow-templates")
+public class WorkflowTemplateController {
+
+    private final WorkflowTemplateRepository repository;
+
+    public WorkflowTemplateController(WorkflowTemplateRepository repository) {
+        this.repository = repository;
+    }
+
+    @PostMapping
+    public Mono<ResponseEntity<Void>> register(@RequestBody RegisterTemplateRequest request) {
+        WorkflowTemplate template = new WorkflowTemplate(
+                request.name() + "-v" + request.version(),
+                request.name(),
+                request.version(),
+                request.dagBlueprint(),
+                request.matchHint(),
+                request.status(),
+                request.canaryPercent() != null ? request.canaryPercent() : 0,
+                "admin",
+                LocalDateTime.now());
+        return Mono.fromRunnable(() -> repository.save(template))
+                .then(Mono.just(ResponseEntity.ok().build()));
+    }
+
+    public record RegisterTemplateRequest(
+            String name,
+            int version,
+            String dagBlueprint,
+            String matchHint,
+            WorkflowTemplate.TemplateStatus status,
+            Integer canaryPercent) {}
+}
+```
+
 ### 3.4 TaskParser 改造：模板匹配优先，LLM 即兴兜底
 
 ```java
@@ -261,32 +329,80 @@ private Mono<Optional<TemplateMatch>> matchTemplate(OrchestrateRequest request,
                     .user(prompt)
                     .call()
                     .content())                                   // Spring AI 2.0：CallResponseSpec.content()
-            .map(content -> templates.stream()
-                    .filter(t -> content != null && content.trim().equals(t.name()))
-                    .findFirst()
-                    .map(t -> new TemplateMatch(t, resolveVersion(t, taskId))))
+            .map(content -> {
+                String matchedName = content != null ? content.trim() : "NONE";
+                if ("NONE".equals(matchedName)) {
+                    return Optional.<TemplateMatch>empty();
+                }
+                // 同一 name 可能同时存在 ACTIVE 与 CANARY 两个版本：全部收集，按哈希切流选一
+                List<WorkflowTemplate> candidates = templates.stream()
+                        .filter(t -> matchedName.equals(t.name()))
+                        .toList();
+                if (candidates.isEmpty()) {
+                    return Optional.<TemplateMatch>empty();
+                }
+                return Optional.of(new TemplateMatch(resolveVersion(candidates, taskId)));
+            })
             .subscribeOn(Schedulers.boundedElastic());            // 阻塞调用挪出 EventLoop
 }
 
-/** 灰度决策：taskId 哈希落在 canaryPercent 内则用 CANARY 版，否则用 ACTIVE 版。 */
-private WorkflowTemplate resolveVersion(WorkflowTemplate activeOrCanary, String taskId) {
-    if (activeOrCanary.status() == WorkflowTemplate.TemplateStatus.CANARY) {
-        return activeOrCanary;                                    // findUsable 已按灰度逻辑预筛
+/** 灰度决策：同一 name 的 ACTIVE 与 CANARY 并存时，按 taskId 哈希落在 canaryPercent 内切流。 */
+private WorkflowTemplate resolveVersion(List<WorkflowTemplate> candidates, String taskId) {
+    WorkflowTemplate active = candidates.stream()
+            .filter(t -> t.status() == WorkflowTemplate.TemplateStatus.ACTIVE)
+            .findFirst().orElse(null);
+    WorkflowTemplate canary = candidates.stream()
+            .filter(t -> t.status() == WorkflowTemplate.TemplateStatus.CANARY)
+            .findFirst().orElse(null);
+    if (active == null) {
+        return canary;                                           // 只有 CANARY：无 ACTIVE 可退，直接用
     }
-    return activeOrCanary;
+    if (canary == null) {
+        return active;                                           // 只有 ACTIVE：全量走正式版
+    }
+    return pickByHash(active, canary, taskId);                   // 双版本并存：按哈希切流
 }
-```
 
-灰度切流的判定点（`resolveVersion` 的完整语义）：
-
-```java
 /** 真正的切流函数：同一 (name) 的 ACTIVE 与 CANARY 并存时按哈希切流。 */
 private WorkflowTemplate pickByHash(WorkflowTemplate active, WorkflowTemplate canary,
                                     String taskId) {
     int bucket = Math.abs(taskId.hashCode()) % 100;
     return bucket < canary.canaryPercent() ? canary : active;
 }
+
+/** 由模板蓝图实例化 DAG：解析 dagBlueprint JSON → 补齐运行态字段 → 返回可执行 DagDefinition。 */
+private Mono<DagDefinition> fromTemplate(TemplateMatch match, OrchestrateRequest request, String taskId) {
+    return Mono.fromCallable(() -> {
+        WorkflowTemplate template = match.template();
+        DagBlueprint blueprint = OBJECT_MAPPER.readValue(template.dagBlueprint(), DagBlueprint.class);
+        List<DagNode> nodes = blueprint.nodes().stream()
+                .map(bn -> new DagNode(
+                        bn.nodeId(),
+                        bn.description(),
+                        bn.requiredCapability(),
+                        bn.type() != null ? bn.type() : NodeType.TASK,
+                        bn.config() != null ? bn.config() : new HashMap<>(),
+                        NodeStatus.PENDING, null, null, null, null, 0))
+                .toList();
+        List<DagEdge> edges = blueprint.edges() != null ? blueprint.edges().stream()
+                .map(be -> new DagEdge(be.from(), be.to(), be.condition()))
+                .toList() : List.of();
+        Map<String, Object> ctx = request.params() != null
+                ? new HashMap<>(request.params()) : new HashMap<>();
+        ctx.put("templateVersion", template.version());          // 供 SSE DAG_CREATED 事件携带（§3.5 断言 1）
+        return new DagDefinition(
+                "dag-" + UUID.randomUUID().toString().substring(0, 8),
+                taskId,
+                nodes,
+                edges,
+                ctx);
+    });
+}
 ```
+
+> 接线 `TaskStateStore.saveDag`（03 §6.3 方法）把版本号带进 `DAG_CREATED` 事件：`emit(..., "nodes=" + ... + ", templateVersion=" + dag.globalContext().get("templateVersion"))`——一行改动，SSE 订阅端即可按版本分组统计两组完成率。
+
+> 合并进 `TaskParser` 时需补充：构造器注入 `WorkflowTemplateRepository templateRepository`（§3.3）；类常量 `private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();`；新增 import `com.fasterxml.jackson.databind.ObjectMapper`、`com.example.orchestrator.model.DagBlueprint`、`com.example.orchestrator.model.TemplateMatch`、`com.example.orchestrator.store.WorkflowTemplateRepository`。
 
 ```mermaid
 flowchart TB
@@ -314,7 +430,7 @@ flowchart TB
 
 ```bash
 # 1. 注册模板 v1（ACTIVE）
-curl -X POST http://localhost:8080/api/workflow-templates \
+curl -X POST http://localhost:8081/api/workflow-templates \
   -H "Content-Type: application/json" \
   -d '{
     "name": "monthly-release-report",
@@ -325,14 +441,14 @@ curl -X POST http://localhost:8080/api/workflow-templates \
   }'
 
 # 2. 注册 v2（CANARY，新增"合规前置审核"节点，灰度 20%）
-curl -X POST http://localhost:8080/api/workflow-templates \
+curl -X POST http://localhost:8081/api/workflow-templates \
   -d '{ "name": "monthly-release-report", "version": 2, "status": "CANARY",
         "canaryPercent": 20, "matchHint": "生成/输出本月产品发布报告",
         "dagBlueprint": "{\"nodes\":[{\"nodeId\":\"node-1\",\"description\":\"汇总本月产品数据\",\"requiredCapability\":\"research\"},{\"nodeId\":\"node-2\",\"description\":\"撰写发布报告\",\"requiredCapability\":\"writing\"},{\"nodeId\":\"node-3\",\"description\":\"compliance:发布前置合规审核\",\"requiredCapability\":\"compliance\"},{\"nodeId\":\"node-4\",\"description\":\"质检发布要点\",\"requiredCapability\":\"analysis\"}],\"edges\":[{\"from\":\"node-1\",\"to\":\"node-2\"},{\"from\":\"node-2\",\"to\":\"node-3\"},{\"from\":\"node-3\",\"to\":\"node-4\"}]}" }'
 
 # 3. 连续提交 10 次同类任务，检查 SSE 事件的 templateVersion 分布
 for i in $(seq 1 10); do
-  curl -X POST http://localhost:8080/api/orchestrate \
+  curl -X POST http://localhost:8081/api/orchestrate \
     -d '{"task": "生成本月产品发布报告"}' | jq .taskId
 done
 ```
@@ -400,6 +516,33 @@ public class ConditionEvaluator {
         done.contains(e.from()) && conditionEvaluator.passes(e.condition(), nodeOutputs)))
 ```
 
+> `nodeOutputs` 为 `Map<String, Object> nodeOutputs = buildNodeOutputs(dag);`（在 `findReadyNodes` 方法体内声明，§4.2 定义该辅助方法）；`incomingEdges` 辅助方法见下方。**合并进 DagEngine 时需补充 import**：`java.util.HashMap`（§4.1/§4.2/§4.3 新增方法用到）、`com.fasterxml.jackson.databind.ObjectMapper` 与常量 `private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();`（§4.2 结构化输出 / §4.3 子蓝图解析用到）。
+
+```java
+/** 节点的入边列表（所有前驱 → 本节点的边）。 */
+private List<DagEdge> incomingEdges(DagDefinition dag, String nodeId) {
+    return dag.edges().stream()
+            .filter(e -> e.to().equals(nodeId))
+            .toList();
+}
+
+/** 前驱全部进入终态（DONE/FAILED/SKIPPED/COMPENSATED），用于 SKIPPED 收敛判断。 */
+private boolean allPredecessorsTerminal(DagDefinition dag, DagNode node) {
+    List<DagEdge> incoming = incomingEdges(dag, node.nodeId());
+    if (incoming.isEmpty()) {
+        return true;
+    }
+    Set<NodeStatus> terminal = Set.of(NodeStatus.DONE, NodeStatus.FAILED,
+            NodeStatus.SKIPPED, NodeStatus.COMPENSATED);
+    return incoming.stream()
+            .map(e -> e.from())
+            .map(fromId -> dag.nodes().stream()
+                    .filter(n -> n.nodeId().equals(fromId))
+                    .findFirst().map(DagNode::status).orElse(NodeStatus.PENDING))
+            .allMatch(terminal::contains);
+}
+```
+
 条件不通过时不是无限等待，而是收敛为 `SKIPPED`（新增 NodeStatus）——巡检任务里 CPU 正常，扩容分支就应显式跳过而非悬挂：
 
 ```java
@@ -457,15 +600,19 @@ edges:
 ```java
 /** 节点 DONE 后评估循环退出条件；未达标且有余额则重置回边目标节点。 */
 private Mono<Boolean> evaluateLoop(DagDefinition dag, DagNode finished) {
-    Map<String, Object> cfg = finished.config() == null ? Map.of() : finished.config();
+    Map<String, Object> cfg = finished.config() == null ? new HashMap<>() : finished.config();
     Object backEdge = cfg.get("backEdge");
     if (backEdge == null) {
         return Mono.just(true);                              // 非循环节点，正常收敛
     }
-    Map<String, Object> loopCfg = (Map<String, Object>) cfg.computeIfAbsent("loop", k -> Map.of());
-    int maxIterations = ((Number) loopCfg.getOrDefault("maxIterations", 1)).intValue();
+    Object loopObj = cfg.getOrDefault("loop", Map.of());     // loop 配置（maxIterations/exitWhen）
+    @SuppressWarnings("unchecked")
+    Map<String, Object> loopCfg = loopObj instanceof Map ? (Map<String, Object>) loopObj : Map.of();
+    int maxIterations = loopCfg.get("maxIterations") instanceof Number n
+            ? n.intValue() : 1;
     String exitWhen = (String) loopCfg.get("exitWhen");
     int nextLoopCount = finishedLoopCount(dag, finished) + 1;
+    Map<String, Object> nodeOutputs = buildNodeOutputs(dag);  // 前驱结构化输出，供退出条件求值
 
     if (nextLoopCount >= maxIterations || Boolean.TRUE.equals(
             conditionEvaluator.passes(exitWhen, nodeOutputs))) {
@@ -473,6 +620,53 @@ private Mono<Boolean> evaluateLoop(DagDefinition dag, DagNode finished) {
     }
     return stateStore.resetNodeForLoop(dag.taskId(), (String) backEdge, nextLoopCount)
             .thenReturn(false);
+}
+
+/** 已执行轮次：从回边目标节点的 config.loopCount 读取（resetNodeForLoop 每次重置时写入）。 */
+private int finishedLoopCount(DagDefinition dag, DagNode finished) {
+    return dag.nodes().stream()
+            .filter(n -> n.nodeId().equals(finished.nodeId()))
+            .map(n -> n.config() != null
+                    ? n.config().get("loopCount") : null)
+            .filter(c -> c instanceof Number)
+            .map(c -> ((Number) c).intValue())
+            .findFirst()
+            .orElse(0);
+}
+
+/** 节点结构化输出：把各节点 result（JSON）解析为 Map，供 SpEL 条件求值；非 JSON 文本原样放入。 */
+private Map<String, Object> buildNodeOutputs(DagDefinition dag) {
+    Map<String, Object> outputs = new HashMap<>();
+    for (DagNode n : dag.nodes()) {
+        if (n.result() == null) {
+            continue;
+        }
+        try {
+            outputs.put(n.nodeId(), OBJECT_MAPPER.readValue(n.result(), Object.class));
+        } catch (Exception e) {
+            outputs.put(n.nodeId(), n.result());             // 非结构化文本：SpEL 表达式按文本判断
+        }
+    }
+    return outputs;
+}
+```
+
+配套 `TaskStateStore.resetNodeForLoop`（新增方法，语义：回边目标节点重置 PENDING 并写入 `loopCount`）：
+
+```java
+// store/TaskStateStore.java 内新增（其余保持 [03 §6.3] 原样）
+/** 循环重置：把回边目标节点重置为 PENDING，并把 loopCount 写入节点 config（供 finishedLoopCount 读取）。 */
+public Mono<DagDefinition> resetNodeForLoop(String taskId, String nodeId, int loopCount) {
+    return findDag(taskId)
+            .map(dag -> withNode(dag, nodeId, n -> {
+                Map<String, Object> newConfig = n.config() == null
+                        ? new HashMap<>() : new HashMap<>(n.config());
+                newConfig.put("loopCount", loopCount);
+                return new DagNode(n.nodeId(), n.description(), n.requiredCapability(),
+                        n.type(), newConfig, NodeStatus.PENDING,
+                        null, null, null, null, 0);
+            }))
+            .flatMap(dag -> persist(taskId, dag).thenReturn(dag));
 }
 ```
 
@@ -568,6 +762,79 @@ private Flux<DagEvent> executeApprovalNode(DagDefinition dag, DagNode node) {
 }
 ```
 
+SUBTASK 分支引用的辅助方法与组件（补齐定义——`readBlueprint`/`scopedContext` 为 DagEngine 私有方法，`BlueprintInflater` 为独立组件）：
+
+```java
+// DagEngine 新增成员与私有方法（合并进 DagEngine）
+// 字段：private final BlueprintInflater blueprintInflater;    // 构造器注入
+// 常量：private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+/** 从节点 config 读取子蓝图（config.subDag：JSON 字符串或 DagBlueprint 对象），解析为 DagBlueprint。 */
+private DagBlueprint readBlueprint(Map<String, Object> config) {
+    Object subDag = config.get("subDag");
+    if (subDag instanceof String json) {
+        try {
+            return OBJECT_MAPPER.readValue(json, DagBlueprint.class);
+        } catch (Exception e) {
+            throw new IllegalStateException("子蓝图解析失败: " + json, e);
+        }
+    }
+    if (subDag instanceof DagBlueprint blueprint) {
+        return blueprint;
+    }
+    throw new IllegalStateException("节点 config 缺少可用的 subDag 蓝图");
+}
+
+/** 子图上下文作用域：全局上下文只读副本——子图写操作进局部上下文，不污染父图。 */
+private Map<String, Object> scopedContext(DagDefinition dag) {
+    return dag.globalContext() != null ? new HashMap<>(dag.globalContext()) : new HashMap<>();
+}
+```
+
+```java
+// engine/BlueprintInflater.java（完整代码）
+package com.example.orchestrator.engine;
+
+import com.example.orchestrator.model.DagBlueprint;
+import com.example.orchestrator.model.DagDefinition;
+import com.example.orchestrator.model.DagEdge;
+import com.example.orchestrator.model.DagNode;
+import com.example.orchestrator.model.NodeStatus;
+import com.example.orchestrator.model.NodeType;
+import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 蓝图实例化器：无运行态的 DagBlueprint 骨架 → 可执行的 DagDefinition。
+ * 补 status=PENDING / result=null / 时间戳=null / retryCount=0；edge 原样拷贝。
+ * 被 SUBTASK 子图（§4.3）与模板 fromTemplate（§3.4）共用。
+ */
+@Component
+public class BlueprintInflater {
+
+    /** taskId 同时充当子图 dagId（子任务 ID 隔离状态空间，见 §4.3 调用处）。 */
+    public DagDefinition inflate(DagBlueprint blueprint, String taskId,
+                                 Map<String, Object> context) {
+        List<DagNode> nodes = blueprint.nodes().stream()
+                .map(bn -> new DagNode(
+                        bn.nodeId(),
+                        bn.description(),
+                        bn.requiredCapability(),
+                        bn.type() != null ? bn.type() : NodeType.TASK,
+                        bn.config() != null ? bn.config() : new HashMap<>(),
+                        NodeStatus.PENDING, null, null, null, null, 0))
+                .toList();
+        List<DagEdge> edges = blueprint.edges() != null ? blueprint.edges().stream()
+                .map(be -> new DagEdge(be.from(), be.to(), be.condition()))
+                .toList() : List.of();
+        return new DagDefinition(taskId, taskId, nodes, edges, context);
+    }
+}
+```
+
 **上下文作用域**是子图嵌套的关键决策：子图读全局上下文（只读），写只进自己的局部上下文；子图结束时由 MERGE 节点显式声明"哪些局部变量提升回全局"。不做变量提升，父图后续节点看不到子图内部中间态——这防止了 20 个节点的全局上下文互相踩踏（Token 也省了）。
 
 ### 4.4 深化后的 DAG 表达力
@@ -601,7 +868,7 @@ flowchart TB
 
 ```bash
 # 巡检任务（条件分支）：node-1 输出 {"risk": "low"} 时扩容分支应 SKIPPED
-curl -N http://localhost:8080/api/orchestrate/$TASK_ID/stream
+curl -N http://localhost:8081/api/orchestrate/$TASK_ID/stream
 # 循环验证：注入质检恒 0.5 的 mock（structuredOutput 节点固定输出 {quality:0.5}）
 ```
 
@@ -669,6 +936,42 @@ private boolean isTransient(Throwable ex) {
     String msg = ex.getMessage();
     return msg != null && (msg.contains("rate limit") || msg.contains("429"));
 }
+
+/**
+ * 单次执行节点（不含失败收敛）：TASK 分支失败直接以 Flux.error 暴露，交给 retryWhen 分类重试；
+ * 重试耗尽后由 onErrorMap 展开原因，进入 Saga 补偿（§5.3）。SUBTASK / APPROVAL 复用 executeNode 既有路径。
+ */
+private Flux<DagEvent> executeNodeOnce(DagDefinition dag, DagNode node) {
+    if (node.type() == NodeType.SUBTASK || node.type() == NodeType.APPROVAL) {
+        return executeNode(dag, node);                           // 两类节点不做重试语义改动
+    }
+    RoutingContext ctx = buildContext(dag);
+    return agentRouter.route(node, ctx)
+            .flatMapMany(agent -> {
+                String prompt = buildNodePrompt(dag, node);
+                return stateStore.updateNodeStatus(dag.taskId(), node.nodeId(),
+                                NodeStatus.RUNNING, agent.agentId())
+                        .flatMapMany(updated ->
+                                agentExecutor.execute(agent, prompt, List.of())
+                                        .collectList()
+                                        .flatMapMany(tokens -> {
+                                            String result = String.join("", tokens);
+                                            return stateStore.updateNodeResult(
+                                                            dag.taskId(), node.nodeId(),
+                                                            result, NodeStatus.DONE)
+                                                    .flatMapMany(updatedDone -> Flux.concat(
+                                                            Flux.just(new DagEvent(dag.dagId(), node.nodeId(),
+                                                                    EventType.NODE_COMPLETED, result)),
+                                                            schedule(updatedDone)));
+                                        }));                    // 失败不接 onErrorResume → 异常上抛给 retryWhen
+            });
+}
+
+/** 单节点最大重试次数：优先取节点 config.maxRetries，缺省回退 2（与 ExecutionPolicy.defaults() 口径一致）。 */
+private int maxRetriesOf(DagDefinition dag, DagNode node) {
+    Object retries = node.config() != null ? node.config().get("maxRetries") : null;
+    return retries instanceof Number n ? n.intValue() : 2;
+}
 ```
 
 > 「遇到阻塞？→ [教程 08-架构师进阶/08-响应式错误处理 §重试与退避]」——`Retry.backoff(maxAttempts, minBackoff)` 是 Reactor 真实 API；`filter` 限定可重试异常，防止把"参数校验失败"也重试三遍。
@@ -706,8 +1009,7 @@ import com.example.orchestrator.model.DagDefinition;
 import com.example.orchestrator.model.DagNode;
 import com.example.orchestrator.model.NodeStatus;
 import com.example.orchestrator.store.TaskStateStore;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -721,9 +1023,8 @@ import java.util.List;
  * - 任一补偿动作失败：任务终态 COMPENSATION_FAILED，发人工介入告警
  */
 @Service
+@Slf4j
 public class SagaCoordinator {
-
-    private static final Logger log = LoggerFactory.getLogger(SagaCoordinator.class);
 
     private final TaskStateStore stateStore;
     private final List<CompensationAction> actions;
@@ -839,7 +1140,7 @@ public class DraftDeletionCompensation implements CompensationAction {
 # 注入故障：发通知节点（node-4）强制抛 IllegalStateException（模拟永久失败）
 # 前置：node-2（writing）已写报告草稿到 Redis report:draft:{taskId}:node-2
 kill -STOP $NOTIFICATION_AGENT_PID   # 或用故障开关接口
-curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "写报告并发通知"}'
+curl -X POST http://localhost:8081/api/orchestrate -d '{"task": "写报告并发通知"}'
 
 # 验证命令：
 redis-cli KEYS "report:draft:*"
@@ -912,8 +1213,7 @@ import com.example.orchestrator.engine.DagEngine;
 import com.example.orchestrator.model.DagDefinition;
 import com.example.orchestrator.model.DagNode;
 import com.example.orchestrator.model.NodeStatus;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
@@ -929,9 +1229,8 @@ import java.util.List;
  * - PENDING：正常调度
  */
 @Service
+@Slf4j
 public class TaskRecoveryService {
-
-    private static final Logger log = LoggerFactory.getLogger(TaskRecoveryService.class);
 
     private final TaskRepository taskRepository;
     private final TaskStateStore stateStore;
@@ -969,6 +1268,71 @@ public class TaskRecoveryService {
 }
 ```
 
+`DagEngine.resume` 与 `resetToPending`（补齐定义）：
+
+```java
+// engine/DagEngine.java 内新增（完整代码）
+/**
+ * 续跑入口：与 execute 的唯一差异是不把全部节点重置 PENDING。
+ * 尊重既有终态——findReadyNodes 天然只挑"PENDING 且前驱 DONE"的节点，续跑即普通调度。
+ */
+public Flux<DagEvent> resume(DagDefinition dag) {
+    return stateStore.saveDag(dag)
+            .thenMany(Flux.defer(() -> schedule(dag)));
+}
+
+/** 节点重置为待处理（进行中被打断 → 幂等重放）：清空结果/时间戳/agent/retryCount，保留 config。 */
+public static DagNode resetToPending(DagNode n) {
+    return new DagNode(n.nodeId(), n.description(), n.requiredCapability(),
+            n.type(), n.config(), NodeStatus.PENDING,
+            null, null, null, null, 0);
+}
+```
+
+`TaskRepository.loadDagNodes` / `rebuildDag`（补齐定义，边与上下文从 Redis 快照读回——`dag_node` 表只存节点行）：
+
+```java
+// store/TaskRepository.java 内新增（其余保持 [03 §6.4] 原样）
+// 需在构造器追加依赖：private final TaskStateStore stateStore;  // rebuildDag 取边与全局上下文
+
+/** 从 dag_node 表重建某任务的节点列表（按 id 升序，保持既有拓扑顺序）。 */
+public Mono<List<DagNode>> loadDagNodes(String taskId) {
+    List<DagNode> nodes = jdbc.sql("""
+            SELECT node_id, description, required_capability, node_type, status,
+                   result, assigned_agent, started_at, completed_at, retry_count
+            FROM dag_node WHERE task_id = :taskId ORDER BY id
+            """)
+            .param("taskId", taskId)
+            .query((rs, i) -> new DagNode(
+                    rs.getString("node_id"),
+                    rs.getString("description"),
+                    rs.getString("required_capability"),
+                    rs.getString("node_type") == null ? NodeType.TASK
+                            : NodeType.valueOf(rs.getString("node_type")),
+                    Map.of(),                                    // config 未落库，运行态从节点行重建
+                    rs.getString("status") == null ? NodeStatus.PENDING
+                            : NodeStatus.valueOf(rs.getString("status")),
+                    rs.getString("result"),
+                    rs.getString("assigned_agent"),
+                    rs.getTimestamp("started_at") != null
+                            ? rs.getTimestamp("started_at").toLocalDateTime() : null,
+                    rs.getTimestamp("completed_at") != null
+                            ? rs.getTimestamp("completed_at").toLocalDateTime() : null,
+                    rs.getInt("retry_count")))
+            .list();
+    return Mono.just(nodes);
+}
+
+/** 重建 DAG：节点用入参（PG 行），边与全局上下文以 Redis 快照为准（快照缺失时退化为无边的空 DAG）。 */
+public Mono<DagDefinition> rebuildDag(String taskId, List<DagNode> nodes) {
+    return stateStore.findDag(taskId)
+            .defaultIfEmpty(new DagDefinition("dag-" + taskId, taskId,
+                    nodes, List.of(), Map.of()))
+            .map(snapshot -> new DagDefinition(snapshot.dagId(), taskId,
+                    nodes, snapshot.edges(), snapshot.globalContext()));
+}
+```
+
 `DagEngine.resume` 与 `execute` 的唯一差异：不把所有节点重置 PENDING，而是尊重既有终态——`findReadyNodes` 天然只会挑出"PENDING 且前驱 DONE"的节点，所以续跑就是一次普通调度，**不需要专门的恢复代码路径**（这是状态机化的第二个红利）。
 
 ```mermaid
@@ -1001,7 +1365,7 @@ sequenceDiagram
 
 ```bash
 # 1. 提交 5 节点任务，观察到 node-3 started 后立即 kill 应用
-curl -X POST http://localhost:8080/api/orchestrate -d '{"task": "调研竞品并输出对比报告"}'
+curl -X POST http://localhost:8081/api/orchestrate -d '{"task": "调研竞品并输出对比报告"}'
 kill -9 $(pgrep -f orchestrator)
 
 # 2. 重启应用，观察恢复日志

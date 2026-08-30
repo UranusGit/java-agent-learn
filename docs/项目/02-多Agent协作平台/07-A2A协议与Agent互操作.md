@@ -187,7 +187,31 @@ public class AgentCardController {
 
 ### 4.3 发布器：白名单映射（`a2a/AgentCardPublisher.java`）
 
-`AgentDefinition` 追加两个字段：`a2aExposed`（对外发布开关，默认 false）与 `remoteCard`（远端 Agent 回填的卡片，本地 Agent 为 null）——yml 配置 `a2a-exposed: true` 即上架：
+`AgentDefinition` 追加两个字段：`a2aExposed`（对外发布开关，默认 false）与 `remoteCard`（远端 Agent 回填的卡片，本地 Agent 为 null）——yml 配置 `a2a-exposed: true` 即上架。更新后的 record：
+
+```java
+// model/AgentDefinition.java（07 篇升级版，在 [01 §5.2] 基础上追加两字段）
+package com.example.orchestrator.model;
+
+import com.example.orchestrator.a2a.AgentCard;
+
+import java.util.List;
+import java.util.Set;
+
+public record AgentDefinition(
+        String agentId,
+        String name,
+        String description,
+        String systemPrompt,
+        Set<String> capabilities,
+        List<String> toolBeanNames,
+        ModelConfig modelConfig,
+        boolean a2aExposed,          // 对外发布开关（默认 false，07 §4.3）
+        AgentCard remoteCard) {      // 远端 Agent 回填卡片（本地 Agent 为 null）
+}
+```
+
+> 兼容说明：`a2aExposed` 为 boolean 时，[01 §5.2] 老构造少两个参数——升级后所有 `new AgentDefinition(...)` 调用点需补 `false, null`；若不想动老调用点，可把两字段改为带默认值的 builder 或保留旧 record 另建 `RemoteAgentDefinition`。07 篇以"追加两字段"为口径，注意同步 01/03/05 篇的 `AgentDefinition` 引用。
 
 ```java
 package com.example.orchestrator.a2a;
@@ -246,8 +270,7 @@ package com.example.orchestrator.a2a;
 
 import com.example.orchestrator.agent.AgentRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -265,9 +288,8 @@ import java.util.List;
  * 抓取失败保留上一版卡片——远端抖动不应导致能力从路由里消失。
  */
 @Component
+@Slf4j
 public class AgentCardCatalog {
-
-    private static final Logger log = LoggerFactory.getLogger(AgentCardCatalog.class);
 
     private final WebClient webClient;
     private final AgentRegistry agentRegistry;
@@ -293,6 +315,11 @@ public class AgentCardCatalog {
                 .count()
                 .subscribe(n -> log.info("[A2A] 远端目录刷新完成，注册远端 Agent {} 个", n),
                         ex -> log.warn("[A2A] 远端目录刷新失败，保留旧卡片: {}", ex.getMessage()));
+    }
+
+    /** 手动触发一次刷新（§4.5 材料用，避免干等调度周期）。 */
+    public void refreshNow() {
+        refresh();
     }
 
     private Mono<AgentCard> fetchCards(String url) {
@@ -326,7 +353,67 @@ public class AgentCardCatalog {
 }
 ```
 
-> `AgentRegistry.registerRemote(...)` 是本篇给注册中心接口新增的方法（`RedisAgentRegistry` 实现同 [03 §3.3] 的 `register`，Key 前缀换成 `agent:def:remote:`）。抓取与注册链路全部走真实 Reactor/WebClient API；`AgentCard` 报文形状属协议层概念代码。
+> `AgentRegistry.registerRemote(...)` 是本篇给注册中心接口新增的方法。接口签名与 `RedisAgentRegistry` 实现（Key 前缀 `agent:def:remote:`）：
+
+```java
+// agent/AgentRegistry.java 接口新增方法（追加到 [01 §6.1] 接口）
+/**
+ * 注册远端 Agent（来自 Agent Card 目录）：与 register 同语义，
+ * 但 agentId 带 remote: 前缀、remoteCard 回填，供执行适配层取远端端点。
+ */
+Mono<Void> registerRemote(String agentId, String description,
+                          List<String> capabilities, AgentCard remoteCard);
+```
+
+```java
+// store/RedisAgentRegistry.java 实现（追加到 [03 §3.3] 类内）
+@Override
+public Mono<Void> registerRemote(String agentId, String description,
+                                 List<String> capabilities, AgentCard remoteCard) {
+    AgentDefinition def = new AgentDefinition(
+            agentId, agentId, description, "远端 Agent（A2A）",
+            new java.util.HashSet<>(capabilities), List.of(), null);
+    String key = AGENT_KEY_PREFIX + agentId;                 // agent:def:remote:xxx
+    return redisTemplate.opsForValue().set(key, serialize(def))
+            .thenMany(Flux.fromIterable(capabilities)
+                    .flatMap(cap -> redisTemplate.opsForSet()
+                            .add(CAPABILITY_INDEX + cap, agentId)))
+            .then();
+}
+```
+
+手动触发目录刷新的端点（§4.5 材料用，真实 API）：
+
+```java
+// a2a/AgentCardAdminController.java
+package com.example.orchestrator.a2a;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
+
+/**
+ * 手动触发远端目录刷新（§4.5 材料用，避免干等 5 分钟 @Scheduled 周期）。
+ */
+@RestController
+@RequestMapping("/api/a2a")
+public class AgentCardAdminController {
+
+    private final AgentCardCatalog catalog;
+
+    public AgentCardAdminController(AgentCardCatalog catalog) {
+        this.catalog = catalog;
+    }
+
+    @PostMapping("/refresh")
+    public Mono<ResponseEntity<Void>> refresh() {
+        return Mono.fromRunnable(catalog::refreshNow)
+                .then(Mono.just(ResponseEntity.ok().build()));
+    }
+}
+```
 
 ### 4.5 本节测试与验证（能力发布与远端发现）
 
@@ -336,12 +423,11 @@ public class AgentCardCatalog {
 
 ```bash
 # 1. 确认白名单 Agent 发布卡片
-curl -s http://localhost:8080/.well-known/agent.json | jq '.[] | {name, url, skills: [.skills[].name]}'
+curl -s http://localhost:8081/.well-known/agent.json | jq '.[] | {name, url, skills: [.skills[].name]}'
 
-# 2. 启动 mock 伙伴目录（返回 legal-agent 卡片），配置：
-#    a2a.partner-cards=http://localhost:9090
-#    等 5 分钟（或手动触发 refresh 端点）后验证已注册：
-curl -s http://localhost:8080/api/agents | jq '.[].agentId'
+# 2. 启动 mock 伙伴目录（返回 legal-agent 卡片），配置 a2a.partner-cards=http://localhost:9090 后：
+curl -X POST http://localhost:8081/api/a2a/refresh   # 手动触发目录刷新（无需等 5 分钟调度周期）
+curl -s http://localhost:8081/api/agents | jq '.[].agentId'
 redis-cli SMEMBERS agent:cap:compliance
 ```
 
@@ -495,7 +581,54 @@ public class A2aClient {
 }
 ```
 
-`A2aEventParser`（同包，概念代码）只做一件事：把远端 JSON 里的 `status-update` / `artifact` / `message` 归一化为 `A2aStreamEvent`——**协议解析收敛在一个类**，A2A 规范演进时只改这里。
+```java
+// a2a/A2aEventParser.java（概念代码，字段以 A2A 规范为准）
+package com.example.orchestrator.a2a;
+
+import com.example.orchestrator.a2a.A2aClient.A2aEventType;
+import com.example.orchestrator.a2a.A2aClient.A2aStreamEvent;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+/**
+ * A2A 远端 SSE 报文归一化器：status-update / artifact / message → A2aStreamEvent。
+ * 协议解析收敛在同一个类——A2A 规范演进时只改这里。
+ */
+public final class A2aEventParser {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    private A2aEventParser() {}
+
+    /** 解析远端 SSE 的一行 JSON 报文（A2A 的 JSON-RPC 通知/事件帧）。 */
+    public static A2aStreamEvent parse(String json) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(json);
+            JsonNode params = root.path("params").isMissingNode() ? root : root.path("params");
+            String kind = params.path("kind").asText("status-update");
+            return switch (kind) {
+                case "artifact" -> new A2aStreamEvent(A2aEventType.ARTIFACT, "completed",
+                        params.path("artifact").path("parts").path(0).path("text").asText(""));
+                case "message" -> new A2aStreamEvent(A2aEventType.MESSAGE,
+                        params.path("status").asText("working"),
+                        params.path("message").path("parts").path(0).path("text").asText(""));
+                default -> {
+                    String status = params.path("status").asText("working");
+                    A2aEventType type = "completed".equals(status) ? A2aEventType.DONE
+                            : A2aEventType.STATUS_UPDATE;
+                    yield new A2aStreamEvent(type, status,
+                            params.path("message").path("parts").path(0).path("text").asText(""));
+                }
+            };
+        } catch (Exception e) {
+            // 解析失败降级为"未知状态更新"——一个坏帧不打断整条流（真实 API 边界）
+            return new A2aStreamEvent(A2aEventType.STATUS_UPDATE, "working", "");
+        }
+    }
+}
+```
+
+> **协议解析收敛在一个类**——A2A 规范演进时只改这里；`A2aStreamEvent` 三字段（type/status/text）已足够承载 §5.1 状态机映射所需的全部信息。
 
 ### 5.3 完整委托时序
 
@@ -525,13 +658,122 @@ sequenceDiagram
     AD-->>SSE: node_started(node-3, agent=remote:legal-agent)
 
     RA-->>AC: SSE status=input_required（缺合同编号）
-    AD->>AG: createApproval(node-3, "请提供合同编号")
+    AD->>AG: requestApproval(node-3, "请提供合同编号")
     AG-->>SSE: approval_required
     Note over AG: 节点转 BLOCKED（复用 04 §6 网关）
     AG->>AC: 审批通过 → appendInput(合同编号)
     RA-->>AC: SSE status=completed + artifact
     AC-->>AD: ARTIFACT(审核意见)
     AD-->>DE: result 回填，节点 DONE，下游调度
+```
+
+时序图中的 `A2aAgentAdapter`（补齐实现——远端节点执行适配，概念代码 + 真实 Reactor/Spring API）：
+
+```java
+// a2a/A2aAgentAdapter.java
+package com.example.orchestrator.a2a;
+
+import com.example.orchestrator.agent.AgentRegistry;
+import com.example.orchestrator.engine.ApprovalGateway;
+import com.example.orchestrator.model.AgentDefinition;
+import com.example.orchestrator.model.ApprovalRequest;
+import com.example.orchestrator.model.ApprovalResult;
+import com.example.orchestrator.model.DagDefinition;
+import com.example.orchestrator.model.DagEvent;
+import com.example.orchestrator.model.DagNode;
+import com.example.orchestrator.model.EventType;
+import com.example.orchestrator.model.NodeStatus;
+import com.example.orchestrator.store.TaskStateStore;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.time.LocalDateTime;
+import java.util.Map;
+import java.util.UUID;
+
+/**
+ * 远端 Agent 执行适配：把平台节点执行翻译为 A2A 任务委托（§5.3 时序图的 AD）。
+ * 与本地 AgentExecutor 同构——区别是执行通道从 ChatClient 换成 A2A 远端调用。
+ * A2A 报文形状属概念代码；WebClient/SSE/Reactor 为真实 API。
+ * DagEngine 接入点：executeNode 的普通分支按 assignedAgentId 的 remote: 前缀分流到此适配器。
+ */
+@Component
+public class A2aAgentAdapter {
+
+    private final A2aClient a2aClient;
+    private final OutboundGuard outboundGuard;
+    private final ApprovalGateway approvalGateway;
+    private final AgentRegistry agentRegistry;
+    private final TaskStateStore stateStore;
+
+    public A2aAgentAdapter(A2aClient a2aClient, OutboundGuard outboundGuard,
+                           ApprovalGateway approvalGateway, AgentRegistry agentRegistry,
+                           TaskStateStore stateStore) {
+        this.a2aClient = a2aClient;
+        this.outboundGuard = outboundGuard;
+        this.approvalGateway = approvalGateway;
+        this.agentRegistry = agentRegistry;
+        this.stateStore = stateStore;
+    }
+
+    /** 执行远端节点：构造任务 → 出站守卫 → 委托订阅 → 事件映射 → 状态回写。 */
+    public Flux<DagEvent> execute(DagDefinition dag, DagNode node) {
+        String agentId = node.assignedAgentId();
+        return agentRegistry.findById(agentId)
+                .switchIfEmpty(Mono.error(
+                        new IllegalStateException("远端 Agent 未注册: " + agentId)))
+                .flatMapMany(agent -> {
+                    AgentCard card = remoteCardOf(agent);
+                    A2aClient.A2aTask task = A2aClient.A2aTask.of(
+                            card.url(), buildPrompt(dag, node),
+                            dag.taskId(), node.nodeId());
+                    return outboundGuard.guard(task, card, node.requiredCapability())
+                            .flatMapMany(guarded -> a2aClient.sendAndSubscribe(guarded))
+                            .flatMap(event -> mapEvent(dag, node, event));
+                });
+    }
+
+    /** A2A 事件 → 平台节点状态/事件（§5.1 状态机映射表）。 */
+    private Flux<DagEvent> mapEvent(DagDefinition dag, DagNode node,
+                                    A2aClient.A2aStreamEvent event) {
+        return switch (event.type()) {
+            case STATUS_UPDATE -> Flux.just(new DagEvent(dag.dagId(), node.nodeId(),
+                    EventType.NODE_STARTED, "remote:" + node.assignedAgentId()));
+            case MESSAGE -> Flux.just(new DagEvent(dag.dagId(), node.nodeId(),
+                    EventType.NODE_COMPLETED, "progress:" + event.text()));
+            case ARTIFACT -> stateStore.updateNodeResult(
+                            dag.taskId(), node.nodeId(), event.text(), NodeStatus.DONE)
+                    .flatMapMany(updated -> Flux.just(new DagEvent(dag.dagId(), node.nodeId(),
+                            EventType.NODE_COMPLETED, event.text())));
+            case DONE -> Flux.just(new DagEvent(dag.dagId(), node.nodeId(),
+                    EventType.NODE_COMPLETED, "remote-done"));
+        };
+    }
+
+    /** input_required 审批：复用 04 篇审批网关（时序图 requestApproval 落点）。 */
+    public Mono<ApprovalResult> requestHumanInput(DagDefinition dag, DagNode node,
+                                                  String question) {
+        ApprovalRequest request = new ApprovalRequest(
+                UUID.randomUUID().toString(), dag.taskId(), node.nodeId(),
+                question, "远端 Agent 请求补充信息",
+                node.config() != null ? node.config() : Map.of(),
+                LocalDateTime.now());
+        return approvalGateway.requestApproval(dag.taskId(), node.nodeId(), request);
+    }
+
+    private AgentCard remoteCardOf(AgentDefinition agent) {
+        AgentCard card = agent.remoteCard();
+        if (card == null) {
+            throw new IllegalStateException("远端 Agent 缺少 remoteCard: " + agent.agentId());
+        }
+        return card;
+    }
+
+    private String buildPrompt(DagDefinition dag, DagNode node) {
+        return "子任务(" + node.nodeId() + "): " + node.description();
+    }
+}
 ```
 
 两个复用点值得强调：**input_required 不需要新机制**——它就是一次审批（人工补充信息也是"人给机器续跑参数"，与 [04 §6.3] 的 MODIFY 审批同构）；**远端失败不需要新机制**——`failed` 状态进入 [06 §5.2] 的错误分类，瞬时网络错误照样 `retryWhen`。适配层只做"翻译"，不做"新治理"。
@@ -553,11 +795,11 @@ A2A 区分两种输出：**Message 是过程**（Agent 的中间说明），**Ar
 **材料——委托探针**：
 
 ```bash
-curl -X POST http://localhost:8080/api/orchestrate \
+curl -X POST http://localhost:8081/api/orchestrate \
   -H "Content-Type: application/json" \
   -d '{"task": "生成发布报告并完成合规审核"}'
 
-curl -N http://localhost:8080/api/orchestrate/$TASK_ID/stream
+curl -N http://localhost:8081/api/orchestrate/$TASK_ID/stream
 ```
 
 **步骤与断言**：
@@ -602,6 +844,71 @@ flowchart LR
     style AUD fill:#fff9c4
     style OUT fill:#c8e6c9
     style EXEC fill:#c8e6c9
+```
+
+入站端点的落点（§6.1 入站边界图 `POST /a2a/{agentId}` 的代码，概念代码 + 真实 API）：
+
+```java
+// a2a/A2aInboundController.java
+package com.example.orchestrator.a2a;
+
+import com.example.orchestrator.agent.AgentExecutor;
+import com.example.orchestrator.agent.AgentRegistry;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.util.List;
+
+/**
+ * 入站 A2A 端点：外部组织 POST /a2a/{agentId} 触发本平台 Agent 执行，SSE 透传 token 进度。
+ * 认证：Bearer 校验（生产升级为 Spring Security Resource Server，见 §6.2 生产强化）。
+ * 概念代码：A2A 报文形状为协议层概念；AgentExecutor/SSE 为真实 API。
+ */
+@RestController
+@RequestMapping("/a2a")
+public class A2aInboundController {
+
+    private final AgentRegistry registry;
+    private final AgentExecutor executor;
+
+    public A2aInboundController(AgentRegistry registry, AgentExecutor executor) {
+        this.registry = registry;
+        this.executor = executor;
+    }
+
+    @PostMapping(value = "/{agentId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> invoke(@PathVariable String agentId,
+                                                @RequestBody A2aInboundRequest request,
+                                                @RequestHeader(value = "Authorization", required = false)
+                                                String auth) {
+        if (auth == null || !auth.startsWith("Bearer ")) {
+            // 入站未带凭证 → 401（§6.3 断言 5 的 curl -i 校验路径）
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthorized");
+        }
+        return registry.findById(agentId)
+                .switchIfEmpty(Mono.error(new IllegalStateException("Agent 不存在: " + agentId)))
+                .flatMapMany(agent -> executor.execute(agent, request.message(), List.of()))
+                .map(token -> ServerSentEvent.<String>builder()
+                        .event("token").data(token).build())
+                .concatWith(Mono.just(ServerSentEvent.<String>builder()
+                        .event("done").data("[DONE]").build()))
+                .onErrorResume(ex -> Flux.just(ServerSentEvent.<String>builder()
+                        .event("error").data(ex.getMessage()).build()));
+    }
+
+    /** A2A 入站请求体：{message: 用户消息}（概念代码，字段以 A2A 规范为准）。 */
+    public record A2aInboundRequest(String message) {}
+}
 ```
 
 ### 6.2 出站守卫（`a2a/OutboundGuard.java`，核心代码）
@@ -710,9 +1017,9 @@ CREATE TABLE IF NOT EXISTS a2a_call_audit (
 # 2. scope 越界：给节点伪造 requiredCapability=deploy（远端卡片未声明）
 # 3. DLP：任务参数里塞手机号 13800138000
 # 审批与审计核对：
-curl -X POST http://localhost:8080/api/tasks/$TASK_ID/approve \
+curl -X POST http://localhost:8081/api/approvals/$REQUEST_ID \
   -H "Content-Type: application/json" \
-  -d '{"decision":"APPROVE","comment":"合同编号 HT-2026-088"}'
+  -d '{"decision":"APPROVE","comment":"合同编号 HT-2026-088","approver":"admin"}'
 psql -c "SELECT remote_agent, capability, decision FROM a2a_call_audit ORDER BY id DESC LIMIT 5;"
 ```
 

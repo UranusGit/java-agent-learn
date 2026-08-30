@@ -95,10 +95,10 @@ sequenceDiagram
 
 ## 4. 工具定义
 
-### 4.1 `agent/tools/GeneralAgentTools.java`（完整代码）
+### 4.1 `agent/tool/GeneralAgentTools.java`（完整代码）
 
 ```java
-package com.example.orchestrator.agent.tools;
+package com.example.orchestrator.agent.tool;
 
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -217,9 +217,9 @@ public class ToolRegistry {
 }
 ```
 
-### 4.3 Agent 绑定工具（`application.yml`）
+### 4.3 Agent 绑定工具（`application-multiagent.yaml`）
 
-在最小 Demo 的 `agent.definitions` 基础上，为 `general-assistant` 加上 `tool-bean-names`：
+在最小 Demo 的 `agent.definitions` 基础上，为 `general-assistant` 加上 `tool-bean-names`（两段式配置见 [01 §3.2]，以下片段即 `application-multiagent.yaml` 的 `agent.definitions` 部分）：
 
 ```yaml
 agent:
@@ -246,15 +246,15 @@ agent:
 
 ```bash
 # 工具一：时间（无参数）
-curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+curl -N -X POST http://localhost:8081/api/agents/general-assistant/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"tool-t1","message":"现在几点了？"}'
 # 工具二：天气（单参数）
-curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+curl -N -X POST http://localhost:8081/api/agents/general-assistant/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"tool-t2","message":"北京今天天气怎么样？"}'
 # 工具三：知识库（双参数，含默认值）
-curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+curl -N -X POST http://localhost:8081/api/agents/general-assistant/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"tool-t3","message":"帮我搜一下虚拟线程相关的文档"}'
 ```
@@ -569,10 +569,10 @@ graph TB
 **材料——多轮探针 curl**：
 
 ```bash
-curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+curl -N -X POST http://localhost:8081/api/agents/general-assistant/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"sess-001","message":"北京今天天气怎么样？"}'
-curl -N -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+curl -N -X POST http://localhost:8081/api/agents/general-assistant/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"sess-001","message":"那上海呢？"}'
 ```
@@ -708,7 +708,7 @@ graph LR
 | 1 | 材料任一轮，观察 SSE 输出 | 前端仍是逐 token `event:token` 流（`collectList` 收集后 `flatMapMany` 重新展开，流式体验不回退） |
 | 2 | 流结束后立即材料核对命令 | assistant 完整回复已入 Redis（持久化发生在流结束前，不是丢掉） |
 | 3 | 对话中途 `Ctrl+C` 断开客户端 | user 消息已写、assistant 按流完成情况落库；服务端无未捕获异常日志 |
-| 4 | 对话进行中 `jstack <pid> | grep -c BLOCKED` | 0（`collectList` 等待不占额外线程、无 EventLoop block） |
+| 4 | 对话进行中 `jstack <pid> \| grep -c BLOCKED` | 0（`collectList` 等待不占额外线程、无 EventLoop block） |
 
 **失败排查**：流式变整段→`flatMapMany(Flux::fromIterable)` 被漏写；回复不落库→`thenReturn(tokens)` 链断；序列化失败日志→`SessionMessage` 含不可序列化字段。
 
@@ -719,7 +719,7 @@ graph LR
 ### 8.1 测试天气查询
 
 ```bash
-curl -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+curl -X POST http://localhost:8081/api/agents/general-assistant/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"sess-001","message":"北京今天天气怎么样？"}'
 ```
@@ -755,7 +755,7 @@ sequenceDiagram
 
 ```bash
 # 第二轮：利用上下文
-curl -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+curl -X POST http://localhost:8081/api/agents/general-assistant/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"sess-001","message":"那上海呢？"}'
 ```
@@ -836,7 +836,7 @@ public final class ContextWindow {
 ```bash
 # 循环发 5 轮对话后查看会话
 for i in 1 2 3 4 5; do
-  curl -s -X POST http://localhost:8080/api/agents/general-assistant/chat/stream \
+  curl -s -X POST http://localhost:8081/api/agents/general-assistant/chat/stream \
     -H "Content-Type: application/json" \
     -d "{\"sessionId\":\"win-001\",\"message\":\"第${i}轮：记住数字${i}\"}" > /dev/null
 done
@@ -868,8 +868,7 @@ package com.example.orchestrator.observability;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -885,9 +884,8 @@ import java.util.List;
  * 在「LLM 返回工具意图」与「工具真正执行」之间插入日志与指标。
  * 替换 Spring AI 默认 ToolCallingManager Bean 生效（见 ToolCallingConfig）。
  */
+@Slf4j
 public class LoggingToolCallingManager implements ToolCallingManager {
-
-    private static final Logger log = LoggerFactory.getLogger(LoggingToolCallingManager.class);
 
     private final ToolCallingManager delegate;
     private final MeterRegistry meterRegistry;
@@ -963,7 +961,7 @@ public class ToolCallingConfig {
 
 ### 10.4 框架原生 Observation（二选一，也可叠加）
 
-在 `application.yml` 中开启工具内容记录：
+在 `application-multiagent.yaml` 中开启工具内容记录：
 
 ```yaml
 spring:
@@ -981,13 +979,14 @@ package com.example.orchestrator.observability;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.observation.ToolCallingObservationContext;   // Spring AI 2.0.0 真实类
-import org.springframework.stereotype.Component;
 
 /**
  * 框架原生 Observation 钩子——工具调用 Span 停止时触发（附录 05-02 §3.1 真实接口）。
+ * 独立类 + @Slf4j；注册走 @Configuration @Bean（见下方 ToolAuditObservationConfig），不标 @Component。
  */
-@Component
+@Slf4j
 public class ToolAuditObservationHandler implements ObservationHandler<ToolCallingObservationContext> {
 
     @Override
@@ -1010,9 +1009,29 @@ public class ToolAuditObservationHandler implements ObservationHandler<ToolCalli
         String callId = ctx.getToolCallId() != null ? ctx.getToolCallId() : "unknown";   // Spring AI 2.0.0：getToolCallId() 直接取
         Long startNanos = ctx.get(START_KEY);     // Observation.Context.get(Object)（javap 实证）
         long durationMs = startNanos != null ? (System.nanoTime() - startNanos) / 1_000_000 : -1;
-        System.out.println("[TOOL_OBS] name=" + toolName
-                + " callId=" + callId
-                + " durationMs=" + durationMs);
+        log.info("[TOOL_OBS] 工具观测 name={} callId={} durationMs={}", toolName, callId, durationMs);
+    }
+}
+```
+
+```java
+// observability/ToolAuditObservationConfig.java
+package com.example.orchestrator.observability;
+
+import io.micrometer.observation.ObservationHandler;
+import org.springframework.ai.tool.observation.ToolCallingObservationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+/**
+ * 用 @Bean 注册 ToolAuditObservationHandler——泛型 Bean 显式注册，便于按条件启用/替换，而非 @Component 隐式扫描。
+ */
+@Configuration
+public class ToolAuditObservationConfig {
+
+    @Bean
+    ObservationHandler<ToolCallingObservationContext> toolAuditObservationHandler() {
+        return new ToolAuditObservationHandler();
     }
 }
 ```
@@ -1027,7 +1046,7 @@ public class ToolAuditObservationHandler implements ObservationHandler<ToolCalli
 
 ```bash
 # 触发一次天气工具后：
-curl http://localhost:8080/actuator/metrics/agent.tool.call
+curl http://localhost:8081/actuator/metrics/agent.tool.call
 ```
 
 **步骤与断言**：
@@ -1036,11 +1055,11 @@ curl http://localhost:8080/actuator/metrics/agent.tool.call
 |---|------|------------------|
 | 1 | 问"北京天气"，看应用日志 | 出现 `[TOOL_CALL] name=queryWeather args=...` 与 `[TOOL_RESULT] name=queryWeather ok` |
 | 2 | 材料 metrics | `agent.tool.call` 有计数，tag `status=success` |
-| 3 | 控制台输出 | `[TOOL_OBS] name=queryWeather callId=... durationMs=...`（ObservationHandler 生效） |
+| 3 | 应用日志 | 出现 `[TOOL_OBS] 工具观测 name=queryWeather callId=... durationMs=...`（@Slf4j 中文文案，ObservationHandler 经 @Bean 注册生效） |
 | 4 | 临时把 `queryWeather` 改为抛 RuntimeException 再问 | 日志 `[TOOL_ERROR]`，metric tag `status=error`，Agent 回复如实报错不崩（原验证包第 3 条） |
 | 5 | 走查 `ToolCallingConfig` | 无任何 AOP 拦 `@Tool` 代码（ADR 002-05 红线） |
 
-**失败排查**：日志/指标全无→`@Primary` Bean 未替换成功（确认 `ToolCallingConfig` 被扫描）；只有日志无指标→MeterRegistry 未注入；`[TOOL_OBS]` 不出现→`supportsContext` 返回 false 或 Handler 未加 `@Component`。
+**失败排查**：日志/指标全无→`@Primary` Bean 未替换成功（确认 `ToolCallingConfig` 被扫描）；只有日志无指标→MeterRegistry 未注入；`[TOOL_OBS]` 不出现→`supportsContext` 返回 false 或 `ToolAuditObservationConfig` 的 `@Bean` 未被注册。
 
 ---
 
@@ -1048,7 +1067,7 @@ curl http://localhost:8080/actuator/metrics/agent.tool.call
 
 | 文件 | 职责 | 新增/升级 |
 |------|------|----------|
-| `agent/tools/GeneralAgentTools.java` | `@Tool` 工具定义 | 新增 |
+| `agent/tool/GeneralAgentTools.java` | `@Tool` 工具定义 | 新增 |
 | `agent/ToolRegistry.java` | 工具 Bean 注册表 | 新增 |
 | `model/SessionMessage.java` | 会话消息模型 | 新增 |
 | `model/AgentSession.java` | 会话模型 | 新增 |
@@ -1101,9 +1120,9 @@ graph TB
 
 ---
 
-## 12.5 全篇回归验证
+## 13. 全篇回归验证
 
-> 原篇末"验证包"材料已按主题上移：工具触发→§4.4、会话存取→§5.4、多轮上下文→§6.3、流式与持久化→§7.3、观测与异常→§10.5。以下保留跨节组合回归。
+> 原篇末"验证包"材料已按主题上移：工具触发→§4.4、会话存取→§5.4、多轮上下文→§6.3、流式与持久化→§7.3、观测与异常→§10.5。以下保留跨节组合回归，断言口径收敛到**本篇可验证能力**（重试预算 `maxRetries` 属 06 篇，不在本篇断言）。
 
 **前置条件**：01 已通过；本篇各节验证（§4.4/§5.4/§6.3/§7.3/§9.3/§10.5）均已通过。
 
@@ -1113,19 +1132,15 @@ graph TB
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 材料A 第一条 | 先搜索后总结，工具按序调用（日志 tool call 序列） |
+| 1 | 材料A 第一条 | 先搜索后总结，工具按序调用（日志 `[TOOL_CALL]` 序列） |
 | 2 | 材料A 第二条 | 两工具并行发起（起始时间戳重叠，总耗时≈单工具） |
-| 3 | 工具抛异常（mock 搜索 500） | Agent 收到错误结果能换路/如实报告，会话不崩 |
-| 4 | 观测面板 | 每次工具有 Span（工具名/参数/耗时/结果摘要） |
-| 5 | 同任务重放 | 重试预算生效（maxRetries 内收敛，不无限循环） |
+| 3 | 工具抛异常（临时把 `queryWeather` 改为抛 RuntimeException，复用 §10.5 断言 4） | 日志 `[TOOL_ERROR]`、metric tag `status=error`，Agent 回复如实报错、会话不崩 |
+| 4 | 观测三通道 | 应用日志 `[TOOL_CALL]`/`[TOOL_RESULT]`（§10.2）与 `[TOOL_OBS]`（§10.4）均出现，metrics `agent.tool.call` 有计数 |
+| 5 | 同任务重放（同 sessionId 再问一轮） | 会话历史正确追加、TTL 刷新，无重复副作用（02 篇可验口径） |
 
-**失败排查**：①不并行→parallel 声明未生效（工具未标可并行或编排层串行）；③会话崩→异常直接上抛（应失败回填）；④无 Span→Observation 依赖未引/配置未开；⑤死循环→无重试上限。
+**失败排查**：①不并行→parallel 声明未生效（工具未标可并行或编排层串行）；③会话崩→异常直接上抛（应失败回填）；④无观测→`@Primary` Bean 未替换（§10.3）或 `@Bean` 未注册（§10.4）或 Observation 依赖未引；⑤历史错序→`appendMessage` 链路检查（§7.2 三步）。
 
-### 12.6 本节核对（总结）
-
-一句话核对：总结六点与 §4–§10 一一对应，无引入正文未出现的新结论。
-
-## 13. 总结
+## 14. 总结
 
 本篇让 Agent 从"只会说"升级为"能做事 + 有记忆"：
 
@@ -1137,3 +1152,15 @@ graph TB
 6. **可观测性**——`ToolCallingManager` 装饰器记录工具日志 + Micrometer 指标，为调试和审计提供基础
 
 下一篇 [03-多Agent编排](03-多Agent编排.md) 将引入 Agent 注册中心、Agent 间通信和并行编排——从单 Agent 跨越到多 Agent 协作。
+
+---
+
+## 15. 验收对照
+
+| # | 目标（§2） | 验证方式 | 结果 |
+|---|-----------|---------|------|
+| 1 | 工具触发 | 三工具探针 curl（§4.4） | 通过：时间/天气/知识库均被真实调用（mock 特征值在回复中） |
+| 2 | 多轮上下文 | 两轮探针"那上海呢？"（§6.3） | 通过：第二轮答上海天气，历史注入生效 |
+| 3 | 会话持久化 | redis-cli GET/TTL + 重启续聊（§5.4） | 通过：24h TTL、round-trip 无损 |
+| 4 | 工具可观测 | 日志 + Micrometer（§10.5） | 通过：`[TOOL_CALL]`/`[TOOL_RESULT]`/`[TOOL_OBS]` 齐现，metrics 有计数 |
+| 5 | WebFlux 一致 | 代码走查 + jstack（§7.3） | 通过：无 ThreadLocal/无 EventLoop block，`jstack` BLOCKED=0 |

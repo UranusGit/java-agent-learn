@@ -33,6 +33,7 @@
 | 2 | 注册中心 | 启动时从 YAML 自动注册 Agent，`/api/agents` 可列出 |
 | 3 | 流式对话 | `GET /api/agents/{id}/chat/stream?message=你好` 返回 token 级 SSE |
 | 4 | 错误语义 | Agent 不存在时返回 `AGENT_NOT_FOUND`（非空流） |
+| 5 | 首字延迟 | 流式对话首个 token 到达时间 < 2 秒 TTFT（[00 §1.2] 六项量化指标在本篇落地第一项） |
 
 **本迭代明确不做**：工具调用、会话状态、多 Agent、编排、路由、审批。
 
@@ -40,7 +41,7 @@
 
 | # | 核对项 | PASS 判据 |
 |---|--------|----------|
-| 1 | 四条验收 | 每条都可在本篇后续小节验证：#1→§5、#2→§6.4、#3→§9.2、#4→§8.4 |
+| 1 | 五条验收 | 每条都可在本篇后续小节验证：#1→§5、#2→§6.4、#3→§9.2、#4→§8.4、#5→§9.2（首 token 计时） |
 | 2 | "本迭代明确不做"清单 | 与 §10 局限表一一对应，无偷跑（本篇代码确实无工具/状态/编排） |
 
 ---
@@ -135,7 +136,21 @@
 
 > 说明：本项目不用 `spring-ai-starter-model-deepseek`，而是用 `spring-ai-starter-model-openai` + `base-url: https://api.deepseek.com`（DeepSeek 兼容 OpenAI 协议，也是全体系的统一坐标，见 [教程 00-基础与核心/02-ChatClient与对话模型 §2]）。模型参数用 `OpenAiChatOptions`（真实类，非虚构的 `DeepSeekChatOptions`）。
 
-### 3.2 配置文件（完整 `application.yml`）
+### 3.2 配置文件（两段式：`application.yaml` + `application-multiagent.yaml`）
+
+配置拆两段：`application.yaml` 只负责「激活 profile + 导入 .env 环境变量」两件事；全部业务配置（端口 / Spring AI / Redis / Agent 定义）进 `application-multiagent.yaml`。
+
+**第一段——`application.yaml`（全局，只管引导）**：
+
+```yaml
+spring:
+  config:
+    import: optional:file:.env[.properties]   # 环境变量从项目根 .env 文件导入（可选，不存在不报错）
+  profiles:
+    active: multiagent                        # 单 profile：multiagent
+```
+
+**第二段——`application-multiagent.yaml`（业务配置，端口 8081）**：
 
 ```yaml
 spring:
@@ -155,7 +170,7 @@ spring:
       port: 6379
 
 server:
-  port: 8080
+  port: 8081
 
 management:
   endpoints:
@@ -184,6 +199,8 @@ agent:
 
 注意 `temperature: 0.7`——Agent 的推理任务需要一定创造力，但不能太发散。后续不同 Agent 可以有不同 temperature：创意写作 Agent 用 0.9，数据分析 Agent 用 0.2。
 
+> **启动命令（两段式生效于 `multiagent` profile）**：`mvn spring-boot:run -Dspring-boot.run.profiles=multiagent`（§9.1 有完整命令）。
+
 ### 3.3 本节测试与验证（依赖与配置）
 
 **前置条件**：JDK 21、Maven、`DEEPSEEK_API_KEY` 环境变量可用。
@@ -202,8 +219,8 @@ mvn dependency:tree | grep -E "spring-ai-starter-model-openai|spring-boot-starte
 |---|------|------------------|
 | 1 | 材料 compile | BUILD SUCCESS（pom 完整、无缺依赖） |
 | 2 | 材料 dependency:tree | 命中三个 starter（openai/webflux/redis-reactive）；**无** `spring-ai-starter-model-deepseek`、**无** `spring-boot-starter-web`（MVC） |
-| 3 | 核对 `application.yml` | `api-key: ${DEEPSEEK_API_KEY}` 占位符未落明文；模型参数直挂 `spring.ai.openai.chat.*`（2.0 无 `options` 中缀） |
-| 4 | 启动后 `curl http://localhost:8080/actuator/health` | `{"status":"UP"}` |
+| 3 | 核对两段式配置 | `application.yaml` 仅含 `spring.config.import` + `profiles.active: multiagent`；`application-multiagent.yaml` 中 `api-key: ${DEEPSEEK_API_KEY}` 占位符未落明文、模型参数直挂 `spring.ai.openai.chat.*`（2.0 无 `options` 中缀）、`server.port: 8081` |
+| 4 | 启动（`mvn spring-boot:run -Dspring-boot.run.profiles=multiagent`）后 `curl http://localhost:8081/actuator/health` | `{"status":"UP"}` |
 
 **失败排查**：依赖树出现 deepseek starter→照抄了错误坐标，回 §3.1 说明改 openai+base-url；配置不生效→`options.` 中缀残留（2.0 已去掉）。
 
@@ -315,6 +332,20 @@ public record AgentProperties(
 ) {}
 ```
 
+### 5.5 本节测试与验证（Agent 抽象与配置绑定）
+
+**前置条件**：§3.3 已通过；`AgentDefinition`/`ModelConfig`/`AgentProperties` 已手写。
+
+**步骤与断言**：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | `mvn clean compile` | 三个 record 编译通过（不可变契约无 setter，编译器兜底） |
+| 2 | 启动应用后 `curl http://localhost:8081/actuator/env`（定位 `agent.definitions`） | yml 中 `general-assistant` 的 kebab-case 键（`agent-id`/`system-prompt`/`tool-bean-names`）被正确绑定到 record 组件 |
+| 3 | 故意把 `model-config.max-tokens` 写成非数字重启 | 绑定失败报错信息指向该属性（证明绑定真实发生，而非静默忽略） |
+
+**失败排查**：绑定不生效→`AgentAutoRegistration` 缺 `@EnableConfigurationProperties(AgentProperties.class)`（§6.3）；字段恒为 null→yml 键名与 record 组件名 kebab 映射不一致。
+
 ---
 
 ## 6. Agent 注册中心
@@ -410,7 +441,7 @@ public class AgentAutoRegistration {
 
     @Bean
     ApplicationRunner registerAgents(AgentRegistry registry, AgentProperties properties) {
-        // 启动时把 application.yml 配置的 Agent 注册到注册中心。
+        // 启动时把 application-multiagent.yaml 配置的 Agent 注册到注册中心。
         // blockLast() 只发生在启动主线程，非 EventLoop，符合 WebFlux 铁律。
         return args -> Flux.fromIterable(properties.definitions())
                 .flatMap(registry::register)
@@ -426,8 +457,8 @@ public class AgentAutoRegistration {
 **材料——发现核对 curl**：
 
 ```bash
-curl http://localhost:8080/api/agents
-curl http://localhost:8080/api/agents/general-assistant
+curl http://localhost:8081/api/agents
+curl http://localhost:8081/api/agents/general-assistant
 ```
 
 **步骤与断言**：
@@ -439,20 +470,6 @@ curl http://localhost:8080/api/agents/general-assistant
 | 3 | 重复重启应用 | 列表仍是 1 个（`ConcurrentHashMap.put` 按 agentId 覆盖，重启天然幂等） |
 
 **失败排查**：列表为空→`AgentAutoRegistration` 未生效（检查 `@EnableConfigurationProperties`）；404/字段 null→yml 绑定问题回 §5.5 排查。
-
-### 5.5 本节测试与验证（Agent 抽象与配置绑定）
-
-**前置条件**：§3.3 已通过；`AgentDefinition`/`ModelConfig`/`AgentProperties` 已手写。
-
-**步骤与断言**：
-
-| # | 操作 | 预期（PASS 判据） |
-|---|------|------------------|
-| 1 | `mvn clean compile` | 三个 record 编译通过（不可变契约无 setter，编译器兜底） |
-| 2 | 启动应用后 `curl http://localhost:8080/actuator/env`（定位 `agent.definitions`） | yml 中 `general-assistant` 的 kebab-case 键（`agent-id`/`system-prompt`/`tool-bean-names`）被正确绑定到 record 组件 |
-| 3 | 故意把 `model-config.max-tokens` 写成非数字重启 | 绑定失败报错信息指向该属性（证明绑定真实发生，而非静默忽略） |
-
-**失败排查**：绑定不生效→`AgentAutoRegistration` 缺 `@EnableConfigurationProperties(AgentProperties.class)`（§6.3）；字段恒为 null→yml 键名与 record 组件名 kebab 映射不一致。
 
 ---
 
@@ -541,7 +558,7 @@ graph LR
 **材料**（复用 §9.2 的流式 curl）：
 
 ```bash
-curl -N "http://localhost:8080/api/agents/general-assistant/chat/stream?message=你好，介绍一下你自己"
+curl -N "http://localhost:8081/api/agents/general-assistant/chat/stream?message=你好，介绍一下你自己"
 ```
 
 **步骤与断言**：
@@ -677,7 +694,7 @@ public class GlobalExceptionHandler {
 **材料——错误探针 curl**：
 
 ```bash
-curl -i -N "http://localhost:8080/api/agents/no-such-agent/chat/stream?message=hi"
+curl -i -N "http://localhost:8081/api/agents/no-such-agent/chat/stream?message=hi"
 ```
 
 **步骤与断言**：
@@ -698,17 +715,17 @@ curl -i -N "http://localhost:8080/api/agents/no-such-agent/chat/stream?message=h
 
 ```bash
 export DEEPSEEK_API_KEY=your-api-key
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.profiles=multiagent
 ```
 
 ### 9.2 测试 Agent 对话
 
 ```bash
 # 查看已注册的 Agent
-curl http://localhost:8080/api/agents
+curl http://localhost:8081/api/agents
 
 # 流式对话（终端查看 SSE 流）
-curl -N "http://localhost:8080/api/agents/general-assistant/chat/stream?message=你好，介绍一下你自己"
+curl -N "http://localhost:8081/api/agents/general-assistant/chat/stream?message=你好，介绍一下你自己"
 ```
 
 输出示例（SSE 格式）：
@@ -729,6 +746,8 @@ data:，很高兴为你服务。
 event:done
 data:[DONE]
 ```
+
+> **TTFT 计时**（§2 验收 #5 落点）：`curl -N` 在收到第一个 `event:token` 的时刻即首字到达——用 `curl -w '首字耗时: %{time_starttransfer}s' -N "http://localhost:8081/api/agents/general-assistant/chat/stream?message=你好"` 可量化 TTFT，应 < 2 秒（[00 §1.2] 指标）。
 
 ### 9.3 SSE 事件流转
 
@@ -835,13 +854,6 @@ graph LR
 | 1 | ADR 002-03/002-04 | 均含决策 + 取舍理由，且与 §6（接口先行）/§3.1（OpenAI 坐标）正文一致 |
 | 2 | 编号衔接 | 承接 00 篇的 002-02，无跳号冲突 |
 
-### 12.1 本节核对（ADR 规范性）
-
-| # | 核对项 | PASS 判据 |
-|---|--------|----------|
-| 1 | ADR 002-03/002-04 | 均含决策 + 取舍理由，且与 §6（接口先行）/§3.1（OpenAI 坐标）正文一致 |
-| 2 | 编号衔接 | 承接 00 篇的 002-02，无跳号冲突 |
-
 ---
 
 ## 13. 总结
@@ -864,7 +876,19 @@ graph LR
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | `mvn clean spring-boot:run` 冷启动后依次执行：`/actuator/health` → `/api/agents` → 流式对话 → 错误 agentId 探针 | 四步全部 PASS（健康、注册、token 流 + done、error 事件），链路无断点 |
+| 1 | `mvn clean spring-boot:run -Dspring-boot.run.profiles=multiagent` 冷启动后依次执行：`/actuator/health` → `/api/agents` → 流式对话 → 错误 agentId 探针 | 四步全部 PASS（健康、注册、token 流 + done、error 事件），链路无断点 |
 | 2 | `Ctrl+C` 后立即重启，重跑第 1 步 | 结果一致（内存注册中心重启即重建，行为可复现） |
 
 **失败排查**：重启后偶发失败→`blockLast()` 启动注册与请求时序竞争，确认启动日志中注册完成早于第一条请求。
+
+---
+
+## 15. 验收对照
+
+| # | 目标（§2） | 验证方式 | 结果 |
+|---|-----------|---------|------|
+| 1 | Agent 抽象 | `AgentDefinition` record 定义 ID/名称/能力/模型配置（§5） | 通过：配置驱动注册，不可变契约 |
+| 2 | 注册中心 | 启动自动注册 + `/api/agents` 列出（§6.4） | 通过：1 个 Agent，能力/提示词与 yml 一致 |
+| 3 | 流式对话 | token 级 SSE + done 事件（§9.2） | 通过：`event:token` 逐条到达、末尾 `event:done` |
+| 4 | 错误语义 | 错误 agentId 探针（§8.4） | 通过：`event:error` 含 `Agent not found`，done 恒在末尾 |
+| 5 | 首字延迟 | 流式对话首 token 计时（§9.2） | 通过：首字 < 2 秒 TTFT（[00 §1.2] 落地） |

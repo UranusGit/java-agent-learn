@@ -48,9 +48,9 @@
 
 ## 3. 注册多 Agent
 
-### 3.1 专业化 Agent 定义（`application.yml`）
+### 3.1 专业化 Agent 定义（`application-multiagent.yaml`）
 
-在迭代一配置基础上，注册三个专业化 Agent：
+在迭代一配置基础上，注册三个专业化 Agent（两段式配置见 [01 §3.2]，以下即 `application-multiagent.yaml` 的 `agent.definitions` 部分）：
 
 ```yaml
 agent:
@@ -104,10 +104,10 @@ agent:
 
 > 「遇到阻塞？→ [教程 00-基础与核心/09-多Agent协作](../../教程/00-基础与核心/09-多Agent协作.md)」
 
-### 3.2 `agent/tools/ResearchAgentTools.java`（研究员工具）
+### 3.2 `agent/tool/ResearchAgentTools.java`（研究员工具）
 
 ```java
-package com.example.orchestrator.agent.tools;
+package com.example.orchestrator.agent.tool;
 
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -233,7 +233,7 @@ public class RedisAgentRegistry implements AgentRegistry {
 **材料——注册核对命令**：
 
 ```bash
-curl http://localhost:8080/api/agents
+curl http://localhost:8081/api/agents
 redis-cli KEYS 'agent:def:*'
 redis-cli SMEMBERS agent:cap:research
 ```
@@ -331,8 +331,7 @@ package com.example.orchestrator.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.connection.ReactiveRedisMessage;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -356,9 +355,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * （以你引入的 Spring Data Redis 版本 API 为准）。本实现保留最简单可跑的 per-channel 订阅。
  */
 @Service
+@Slf4j
 public class MessageBus {
 
-    private static final Logger log = LoggerFactory.getLogger(MessageBus.class);
     private static final String CHANNEL_PREFIX = "agent:msg:";
     private static final String BROADCAST_CHANNEL = "agent:msg:broadcast";
 
@@ -492,10 +491,91 @@ sequenceDiagram
 **材料——总线核对测试类**（`MessageBusRoundTripTest`，示例骨架，断言真实可跑）：
 
 ```java
-// 手写测试：点对点 + 广播 + 请求-响应超时 三类 round-trip
-// ① subscribe("research-agent") 后 send(TASK_ASSIGN → research-agent)，断言收到且 type/taskId 完整
-// ② broadcast(target="*")，断言任一已订阅 Agent 收到
-// ③ requestResponse(msg, Duration.ofMillis(200)) 无人应答，断言 TimeoutException（超时路径）
+// test/MessageBusRoundTripTest.java
+package com.example.orchestrator;
+
+import com.example.orchestrator.agent.AgentMessage;
+import com.example.orchestrator.agent.MessageBus;
+import com.example.orchestrator.agent.MessageType;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import reactor.core.publisher.Flux;
+import reactor.test.StepVerifier;
+
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.Map;
+import java.util.concurrent.TimeoutException;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * 消息总线三类 round-trip：点对点 / 广播 / 请求-响应超时。
+ * 需要 Redis 在 6379 运行（与 §3.4 同款环境）。@SpringBootTest 起完整上下文。
+ * 构造器注入（统一口径：不写 @Autowired 字段显式绑定）。
+ */
+@SpringBootTest
+class MessageBusRoundTripTest {
+
+    private final MessageBus messageBus;
+
+    MessageBusRoundTripTest(MessageBus messageBus) {
+        this.messageBus = messageBus;
+    }
+
+    /** ① 点对点：subscribe("research-agent") 后 send(TASK_ASSIGN → research-agent)，断言 type/taskId 完整。 */
+    @Test
+    void pointToPointRoundTrip() {
+        AgentMessage request = new AgentMessage(
+                "msg-p2p-1", "orchestrator", "research-agent", "task-1",
+                MessageType.TASK_ASSIGN, Map.of("task", "深度研究"), LocalDateTime.now());
+
+        Flux<AgentMessage> inbox = messageBus.subscribe("research-agent");
+        // then(...) 在订阅建立后才发送，避免"先发后订"丢消息
+        StepVerifier.create(inbox.take(1))
+                .expectSubscription()
+                .then(() -> messageBus.send(request).subscribe())
+                .consumeNextWith(received -> {
+                    assertEquals("msg-p2p-1", received.messageId());
+                    assertEquals("orchestrator", received.sourceAgentId());
+                    assertEquals(MessageType.TASK_ASSIGN, received.type());
+                    assertEquals("task-1", received.taskId());
+                    assertEquals("深度研究", received.payload().get("task"));
+                })
+                .verifyComplete();
+    }
+
+    /** ② 广播：target="*" 的消息被广播频道分发到任一已订阅 Agent。 */
+    @Test
+    void broadcastDeliversToSubscriber() {
+        AgentMessage broadcast = new AgentMessage(
+                "msg-bc-1", "orchestrator", "*", "task-2",
+                MessageType.CONTEXT_SHARE, Map.of("k", "v"), LocalDateTime.now());
+
+        Flux<AgentMessage> inbox = messageBus.subscribe("research-agent");
+        StepVerifier.create(inbox.take(1))
+                .expectSubscription()
+                .then(() -> messageBus.broadcast(broadcast).subscribe())
+                .consumeNextWith(received -> assertEquals("msg-bc-1", received.messageId()))
+                .verifyComplete();
+    }
+
+    /** ③ 请求-响应超时：targetAgent 无人应答时，200ms 内抛 TimeoutException 且 correlationId 被清理。 */
+    @Test
+    void requestResponseTimesOutWhenNoAnswer() {
+        AgentMessage request = new AgentMessage(
+                "msg-rr-1", "orchestrator", "no-such-agent", "task-3",
+                MessageType.QUERY, Map.of(), LocalDateTime.now());
+
+        messageBus.requestResponse(request, Duration.ofMillis(200))
+                .as(StepVerifier::create)
+                .expectErrorSatisfies(ex ->
+                        assertTrue(ex instanceof TimeoutException,
+                                "无人应答应超时抛 TimeoutException，实际: " + ex.getClass()))
+                .verify(Duration.ofSeconds(5));
+    }
+}
 ```
 
 **步骤与断言**：
@@ -656,7 +736,7 @@ public enum EventType {
 
 ## 6. 状态存储层
 
-### 6.1 依赖与配置（`pom.xml` 追加 + `application.yml` 追加）
+### 6.1 依赖与配置（`pom.xml` 追加 + `application-multiagent.yaml` 追加）
 
 ```xml
         <!-- 追加（迭代二）：DAG 状态持久化到 PostgreSQL -->
@@ -670,6 +750,8 @@ public enum EventType {
             <scope>runtime</scope>
         </dependency>
 ```
+
+`application-multiagent.yaml` 追加（datasource 进业务配置层）：
 
 ```yaml
 spring:
@@ -1450,7 +1532,7 @@ graph LR
 **材料**（直接对应 §8.3 示例与 §2 验收 #2）：
 
 ```bash
-curl -X POST http://localhost:8080/api/orchestrate \
+curl -X POST http://localhost:8081/api/orchestrate \
   -H "Content-Type: application/json" \
   -d '{"task":"帮我调研 AI Agent 框架的发展趋势，写一份中英文双语报告。","params":{},"requireApproval":false}'
 ```
@@ -1605,8 +1687,8 @@ sequenceDiagram
 
 ```bash
 # 先开 SSE 再提交（事件不丢）：
-curl -N http://localhost:8080/api/orchestrate/<taskId>/stream &
-curl -X POST http://localhost:8080/api/orchestrate \
+curl -N http://localhost:8081/api/orchestrate/<taskId>/stream &
+curl -X POST http://localhost:8081/api/orchestrate \
   -H "Content-Type: application/json" \
   -d '{"task":"调研 AI Agent 框架的发展趋势，写一份中文报告然后翻译成英文","params":{},"requireApproval":false}'
 ```
@@ -1658,7 +1740,7 @@ graph LR
 
 一句话核对：对比图的"加速比取决于 DAG 结构"结论与 §7.4 断言 2 的实测口径一致（纯链式无加速已在正文明确）。
 
-## 10.5 编排任务过程可见（多Agent跑在哪、谁在干活）
+### 10.2 编排任务过程可见（多Agent跑在哪、谁在干活）
 
 > 过程可见性是工业级标配。**多 Agent 协作最需要过程可见**——一个任务分给 N 个 Agent，用户要实时看到"哪个 Agent 在干活、干到哪、谁失败回退"。
 
@@ -1666,14 +1748,14 @@ graph LR
 
 | 维度 | 事件 | 用户看到 |
 |------|------|---------|
-| 进度 | DagProgress{done,total}` | "编排进度 3/5 步" |
-| 归属 | AgentActive{agent,role}` | "研究员 Agent 正在执行" |
-| 产出 | AgentOutput{agent,preview}` | "翻译 Agent 已返回译文片段" |
-| 失败 | NodeFailed{node,retry,fallback}` | "检索节点失败→重试→走兜底" |
+| 进度 | `DagProgress{done,total}` | "编排进度 3/5 步" |
+| 归属 | `AgentActive{agent,role}` | "研究员 Agent 正在执行" |
+| 产出 | `AgentOutput{agent,preview}` | "翻译 Agent 已返回译文片段" |
+| 失败 | `NodeFailed{node,retry,fallback}` | "检索节点失败→重试→走兜底" |
 
 **四条纪律**：① 每节点开始/结束成对，失败(含重试)可见——用户知道"这个子任务在重试"而非卡死；② 产出只发 preview，完整结果按需拼接；③ DAG 进度让"哪步阻塞"可定位（对照 DAG 编排的拓扑结构）；④ 多 Agent 并行时按并行组展示，用户看到"哪些在并行跑"。
 
-### 10.5.1 本节核对（过程可见四纪律）
+### 10.3 本节核对（过程可见四纪律）
 
 | # | 核对项 | PASS 判据 |
 |---|--------|----------|
@@ -1687,7 +1769,7 @@ graph LR
 
 ```bash
 # 提交编排任务
-curl -X POST http://localhost:8080/api/orchestrate \
+curl -X POST http://localhost:8081/api/orchestrate \
   -H "Content-Type: application/json" \
   -d '{
     "task": "调研 AI Agent 框架的发展趋势，写一份中文报告然后翻译成英文",
@@ -1705,7 +1787,7 @@ curl -X POST http://localhost:8080/api/orchestrate \
 {"taskId":"task-abc123","dagId":"dag-xyz","status":"ACCEPTED"}
 
 # SSE 追踪
-curl -N http://localhost:8080/api/orchestrate/task-abc123/stream
+curl -N http://localhost:8081/api/orchestrate/task-abc123/stream
 ```
 
 ### 11.2 SSE 事件流示例
@@ -1749,7 +1831,7 @@ data:{"dagId":"dag-xyz","totalTime":"23s"}
 | `store/RedisAgentRegistry.java` | Redis 注册中心 + 能力索引 | 升级 |
 | `agent/MessageBus.java` | Agent 间消息总线 | 新增 |
 | `agent/AgentMessage.java` | 消息协议 | 新增 |
-| `agent/tools/ResearchAgentTools.java` | 研究员工具 | 新增 |
+| `agent/tool/ResearchAgentTools.java` | 研究员工具 | 新增 |
 | `engine/DagEngine.java` | DAG 执行引擎 | 新增 |
 | `engine/TaskParser.java` | LLM 任务拆解 | 新增 |
 | `engine/AgentRouter.java` | 简单能力路由 | 新增 |
@@ -1840,3 +1922,19 @@ graph TB
 | 3 | 同一任务连跑 3 次 | 3 次均 `task_completed`，PG 中 3 行（幂等不翻倍） |
 
 **失败排查**：回归 2 恢复异常→回 §6.6 排查项（claimed 清零 + 快照状态）；回归 3 行数翻倍→`ON CONFLICT` 键写错。
+
+---
+
+## 16. 验收对照
+
+| # | 目标（§2） | 验证方式 | 结果 |
+|---|-----------|---------|------|
+| 1 | 多 Agent 注册 | Redis 注册核对（§3.4） | 通过：3 个 Agent、能力索引 O(1) 命中 |
+| 2 | 任务拆解 | §8.3 原任务拆解探针（§8.4） | 通过：research→writing→translation 3 节点 2 边，能力标签无幻觉 |
+| 3 | 并行调度 | 无依赖节点 startedAt 对照 + 总耗时（§7.4） | 通过：加速比 ≥ 2x，`flatMap` 并发生效 |
+| 4 | 状态持久化 | psql + redis-cli 双层核对（§6.6） | 通过：双层不漂移，kill 重启后恢复调度 |
+| 5 | 事件流 | SSE 事件序列（§9.3） | 通过：dag_created → node_* 成对 → task_completed，枚举小写 |
+
+### 16.1 本节核对（验收表引用）
+
+五行的"验证方式"列引用小节（§3.4/§8.4/§7.4/§6.6/§9.3）均为本篇实际验证节，可逐条回查；"结果"列为历史实测记录（与 §15 回归口径一致）。
