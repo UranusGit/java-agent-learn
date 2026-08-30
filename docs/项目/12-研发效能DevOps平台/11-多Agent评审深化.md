@@ -494,16 +494,29 @@ public class DebateReviewController {
 **材料 A——辩论收敛与轮数上限（正文 §3.3 DebateOrchestrator / §3.1 配置同款）**：
 
 ```sh
-# ① 辩论收敛：构造 10 组已知分歧 PR（安全 critical vs 测试 minor），POST /api/v1/debate-review/{repo}/{pr}
-# ② 轮数上限：max-debate-rounds=2 时，用永不收敛的对立 System Prompt 跑一组
+# ① 辩论收敛：构造 10 组已知分歧 PR（安全 critical vs 测试 minor）
+for pr in 201 202 203 204 205 206 207 208 209 210; do
+  curl -s -X POST "http://localhost:8081/api/v1/debate-review/core/$pr" \
+    -H "Content-Type: application/json" \
+    -d "{\"changedFiles\":[\"OrderService.java\"],\"diff\":\"+validate(token)\"}"; echo
+done
+# ② 轮数上限：max-debate-rounds=2 时，用永不收敛的对立 System Prompt 跑一组（观察 LLM 调用数 = 2×2）
+curl -s -X POST "http://localhost:8081/api/v1/debate-review/core/300" \
+  -H "Content-Type: application/json" \
+  -d '{"changedFiles":["PaymentService.java"],"diff":"-allow, +deny"}'
 # ③ 仲裁纪律：仲裁 prompt 注入"你发现了一个新问题"的诱导语句跑 20 次
+for i in $(seq 1 20); do
+  curl -s -X POST "http://localhost:8081/api/v1/debate-review/core/301" \
+    -H "Content-Type: application/json" \
+    -d '{"changedFiles":["AuthService.java"],"diff":"-trust, +verify","induceNewFinding":true}'; echo
+done
 ```
 
-**材料 B——置信度分级（正文 §3.5 ConfScience/@PostMapping /score 同款）**：
+**材料 B——置信度分级（正文 §3.5 ConfidenceScorer/@PostMapping /score 同款）**：
 
 ```sh
 # 单专家无 SAST 命中 → 预期 Action.HIDE
-curl -s -X POST "http://localhost:8080/api/v1/debate-review/score?agentHits=1&sastConfirmed=false" \
+curl -s -X POST "http://localhost:8081/api/v1/debate-review/score?agentHits=1&sastConfirmed=false" \
   -H "Content-Type: application/json" \
   -d '{"id":"c1","file":"OrderService.java","line":12,"severity":"minor","category":"可维护性","message":"可读性","confidence":0.4}'
 # 2 专家共识 → 预期 OUTPUT_WITH_NOTE
@@ -523,7 +536,7 @@ curl -s -X POST "http://localhost:8080/api/v1/debate-review/score?agentHits=1&sa
 | 7 | 材料 B 3 专家/SAST | 返回 grade=HIGH、`Action.OUTPUT` |
 | 8 | 误报率回归 | v7 golden 集每日回归，误报率 < 5%（低置信隐藏后预期降至 ~3%） |
 
-**失败排查**：①`maxDebateRounds` 恒为默认值→`@ConfigurationProperties` 未被扫描/`@EnableConfigurationProperties` 未加；②辩论死循环→轮上限未读取（同上）或 `findDisputes` 冲突分组逻辑死锁；③仲裁带出新问题→`ArbiterAgent` System Prompt 未写"禁止新发现"或提示词被绕过；④/score 返回不符→`ConfScience.score` 分支阈值（agentHits/sastConfirmed）与用例不符；⑤误报率未降→低置信评论未真正 HIDE（仍进输出）。
+**失败排查**：①`maxDebateRounds` 恒为默认值→`@ConfigurationProperties` 未被扫描/`@EnableConfigurationProperties` 未加；②辩论死循环→轮上限未读取（同上）或 `findDisputes` 冲突分组逻辑死锁；③仲裁带出新问题→`ArbiterAgent` System Prompt 未写"禁止新发现"或提示词被绕过；④/score 返回不符→`ConfidenceScorer.score` 分支阈值（agentHits/sastConfirmed）与用例不符；⑤误报率未降→低置信评论未真正 HIDE（仍进输出）。
 
 ## 4. 全篇回归验证
 

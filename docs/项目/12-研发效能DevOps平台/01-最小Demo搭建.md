@@ -116,7 +116,19 @@
 </project>
 ```
 
-### 3.2 `application.yml`
+### 3.2 配置文件（两段式）
+
+`application.yaml`（主配置，只做环境装载与 profile 激活）：
+
+```yaml
+spring:
+  config:
+    import: optional:file:.env[.properties]   # 环境变量从 .env 装载（可选文件，缺失不报错）
+  profiles:
+    active: devops
+```
+
+`application-devops.yaml`（业务配置，devops profile 专属）：
 
 ```yaml
 spring:
@@ -143,8 +155,10 @@ index:
   repo-name: core
 
 server:
-  port: 8080
+  port: 8081
 ```
+
+> 启动命令统一 `mvn spring-boot:run -Dspring-boot.run.profiles=devops`；后续各迭代的 yaml 增量（数据源/评估/安全等）一律追加到 `application-devops.yaml`，不动主配置。
 
 ### 3.3 SQL DDL（pgvector 表结构 + HNSW + FTS 索引）
 
@@ -573,14 +587,14 @@ export DEEPSEEK_API_KEY=sk-xxx
 # 再把 §3.3 的 DDL 存入 devops 库（复制 SQL 块执行即可）
 psql -h localhost -U postgres -d devops
 export REPO_ROOT=/path/to/core-repo
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.profiles=devops
 # 测试：
-# curl "http://localhost:8080/api/v1/qa?question=OrderService怎么鉴权&repo=core"
+# curl "http://localhost:8081/api/v1/qa?question=OrderService怎么鉴权&repo=core"
 ```
 
 ### 3.13 本节测试与验证（AST分块、三路混合检索与代码问答）
 
-**前置条件**：PG（5432/devops 库）可连且已执行 §3.3 DDL；PG 已安装 `vector` 扩展；`DEEPSEEK_API_KEY`、`REPO_ROOT` 已设置；应用按 §3.1-§3.11 照抄并 `mvn spring-boot:run` 启动成功。
+**前置条件**：PG（5432/devops 库）可连且已执行 §3.3 DDL；PG 已安装 `vector` 扩展；`DEEPSEEK_API_KEY`、`REPO_ROOT` 已设置；应用按 §3.1-§3.11 照抄并 `mvn spring-boot:run -Dspring-boot.run.profiles=devops` 启动成功。
 
 **材料 A——建库与 DDL 核对**：
 
@@ -592,7 +606,7 @@ psql -h localhost -U postgres -d devops -c "\d code_chunk"
 **材料 B——问答请求**：
 
 ```sh
-curl "http://localhost:8080/api/v1/qa?question=OrderService怎么鉴权&repo=core"
+curl "http://localhost:8081/api/v1/qa?question=OrderService怎么鉴权&repo=core"
 ```
 
 **步骤与断言**：
@@ -646,7 +660,29 @@ curl "http://localhost:8080/api/v1/qa?question=OrderService怎么鉴权&repo=cor
 
 ---
 
-## 7. 总结
+## 7. 全篇回归验证
+
+**回归断言**（§3.13 本节验证通过后，按 §4 验收表整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 全量重建索引并复跑 §3.13 材料（20 个典型问题） | Recall@5 ≥ 85%（验收 2）；AST 分块无跨方法拼接（验收 3） |
+| 2 | 连续问答 50 次抽检返回体 | 100% 带 file_path/file:line 引用（验收 4）；带 repo 过滤条件不跨仓泄漏（验收 5） |
+| 3 | 200 万行核心仓索引复建 | 索引完整（验收 1）；分块数/索引耗时记录可对比 |
+
+**失败排查**：Recall 不达标→RRF 权重或 FTS 分词对中文/标识符失效，回到 §3.9 调两路权重；引用丢失→`CodeQaService` 上下文注入的 `Document` 元数据（file_path/line）未透传。
+
+## 8. 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 索引完整 | 200 万行核心仓索引完成（§7 回归 3） | ☐ |
+| 检索质量 | 20 个典型问题 Recall@5 ≥ 85%（§7 回归 1） | ☐ |
+| 分块正确 | 代码块按方法/类边界切分（§7 回归 1） | ☐ |
+| 引用溯源 | 问答 100% 带 file_path/file:line 引用（§7 回归 2） | ☐ |
+| 权限隔离 | 检索按 repo 元数据 pre-filter（§7 回归 2） | ☐ |
+
+## 9. 总结
 
 v1 用完整可手写代码立住了代码库 RAG 地基：`JavaChunkIndexer` 做 AST 感知分块（胜负手）、`FtsStore` 补关键词精确路、`CodeSearchService` 用 RRF 融合两路、`CodeQaService` 注入上下文生成带引用溯源的答案。**所有 API 均按 [附录 05-SpringAI2-API基准] 书写**（`QuestionAnswerAdvisor` 真实包路径、`SearchRequest.builder()`、`Document.builder()`、`entity(Class)`）。
 

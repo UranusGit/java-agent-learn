@@ -482,7 +482,7 @@ public class MultiReviewController {
 **材料 A——并行评审请求**：
 
 ```sh
-curl -s -X POST http://localhost:8080/api/v1/multi-review/core/101
+curl -s -X POST http://localhost:8081/api/v1/multi-review/core/101
 ```
 
 **材料 B——幻觉过滤核对（正文 §3.3 validLocation 同款判据）**：
@@ -546,7 +546,29 @@ wc -l $REPO_ROOT/core-repo/src/main/java/.../SignInService.java
 
 ---
 
-## 7. 总结
+## 7. 全篇回归验证
+
+**回归断言**（§3.8 本节验证通过后，按 §4 验收表整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 复跑 §3.8 材料（四专家并行 fan-out + 强聚合） | 多 Agent 发现问题数 ≥ 单 Agent 2 倍（验收 1）；重复评论合并率 ≥ 90%（验收 3） |
+| 2 | 人工回标聚合输出 | 误报率 < 5%（验收 2）；冲突评论 100% 上抛人工（验收 4） |
+| 3 | 聚合层审计 | 聚合层零重新审查，只做去重/共识/过滤/上抛（验收 5） |
+
+**失败排查**：覆盖不达标→`Mono.zip` 扇出的专家数或分域工具集挂载；重复未合并→`semanticDedup` 相似度阈值；聚合在重审→`ReviewAggregator` 出现任何 LLM 调用即违反验收 5。
+
+## 8. 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 覆盖提升 | 多 Agent 发现问题数 ≥ 单 Agent 2 倍（§7 回归 1） | ☐ |
+| 误报率 | 聚合后误报率 < 5%（§7 回归 2） | ☐ |
+| 去重有效 | 多 Agent 重复评论合并率 ≥ 90%（§7 回归 1） | ☐ |
+| 争议上抛 | 冲突评论 100% 上抛人工（§7 回归 2） | ☐ |
+| 聚合不重审 | 聚合层零重新审查（§7 回归 3） | ☐ |
+
+## 9. 总结
 
 v5 把单 Agent 审查升级为"并行专家 + 强聚合"：`ReviewAgentConfig` 用独立 ChatClient Bean 表达四个专家（安全挂 `SastTools`、性能挂 `CodeIndexTools`、合规挂 `CompliancePolicyRetriever` 策略 RAG），`ReviewOrchestrator` 用 `Mono.zip` 并行 fan-out（真实 `ParameterizedTypeReference` 泛型容器），`ReviewAggregator` 只做去重/共识/幻觉过滤/争议上抛、**禁止重新评审**。工具集用真实 `@Tool` + `@ToolParam` 注解（无 `@ToolMethod`）。
 

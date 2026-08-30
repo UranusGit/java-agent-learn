@@ -299,16 +299,20 @@ public class SelfHealingService {
     private final SignatureStats stats;
     private final HealingPolicy policy;
     private final JdbcClient jdbcClient;
+    private final org.springframework.web.reactive.function.client.WebClient ciApiClient;   // CI API 客户端（@Bean WebClient，baseUrl 指向 CI 服务）
     private final Counter healed;
     private final Counter escalated;
     private final Counter circuitBroken;
     private final Map<Long, Integer> buildBudget = new ConcurrentHashMap<>();   // build_id -> 已用自愈次数
 
     public SelfHealingService(SignatureStats stats, HealingPolicy policy,
-                              JdbcClient jdbcClient, MeterRegistry registry) {
+                              JdbcClient jdbcClient,
+                              org.springframework.web.reactive.function.client.WebClient ciApiClient,
+                              MeterRegistry registry) {
         this.stats = stats;
         this.policy = policy;
         this.jdbcClient = jdbcClient;
+        this.ciApiClient = ciApiClient;
         this.healed = Counter.builder("ci_selfheal_outcome").tag("outcome", "HEALED").register(registry);
         this.escalated = Counter.builder("ci_selfheal_outcome").tag("outcome", "ESCALATED").register(registry);
         this.circuitBroken = Counter.builder("ci_selfheal_outcome").tag("outcome", "CIRCUIT_BROKEN").register(registry);
@@ -345,9 +349,15 @@ public class SelfHealingService {
     }
 
     private String executeAuto(long buildId, String signature, HealingPolicy.Decision d) {
-        // 动作体（调 CI API 重试 step / 重调度 runner）与 v4 ApprovalStore 同款 WebClient 通道；
+        // 动作体：调 CI API（WebClient，与 v4 ApprovalStore 同款通道）重试 step / 重调度 runner；
+        // 自愈跑在批处理/有界线程上下文，允许 block()（WebFlux 铁律：非 EventLoop 不阻塞）
+        boolean ok = Boolean.TRUE.equals(ciApiClient.post()
+                .uri("/api/v1/ci/{action}", d.action().name().toLowerCase())
+                .bodyValue(Map.of("buildId", buildId, "signature", signature))
+                .retrieve()
+                .bodyToMono(Boolean.class)
+                .block());
         // 成功回填 healing_log 使 flaky 率统计闭环
-        boolean ok = true;   // 简化示意：实际为 CI API 调用结果
         audit(buildId, signature, ok ? "HEALED" : "FAILED", d.action() + "：" + d.reason());
         if (ok) {
             healed.increment();
@@ -489,7 +499,19 @@ public class BottleneckAnalyzer {
 }
 ```
 
-> `pipeline_step_timing` 表（step/start/end）由 CI webhook 完成事件写入，DDL 与 `ci_log` 同模式，此处从简。
+> `pipeline_step_timing` 表由 CI webhook 完成事件写入（step/start/end），DDL 如下（`ci_log` 之外的独立测量表，供 §3.6 BottleneckAnalyzer 关键路径计算）：
+
+```sql
+-- pipeline_step_timing：CI 各 step 起止（webhook 写，瓶颈测量数据源）
+CREATE TABLE IF NOT EXISTS pipeline_step_timing (
+    build_id   BIGINT      NOT NULL,
+    step       VARCHAR(64) NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    ended_at   TIMESTAMPTZ,
+    PRIMARY KEY (build_id, step)
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_step_timing_build ON pipeline_step_timing (build_id, started_at);
+```
 
 ### 3.7 本节测试与验证（flaky 自愈 / 预算熔断 / 高风险 HITL / 瓶颈测量）
 
@@ -498,10 +520,20 @@ public class BottleneckAnalyzer {
 **材料 A——自愈决策流核对（正文 §3.2-SignatureStats / §3.3-HealingPolicy / §3.4-SelfHealingService 同款）**：
 
 ```sh
-# ① flaky 自愈：注入 10 个历史 flaky 率 ≥ 70% 的签名 → 失败重放触发 onBuildFailure
-# ② 预算：单 build 注入 5 个可自愈失败 → 观察第 4 个起的返回
-# ③ 熔断：同签名预置 3 条 FAILED 历史 → 新失败直接观察返回
-# ④ 高风险：healing_policy 配 ROLLBACK 的签名失败 → 观察自愈动作
+# ① flaky 自愈：注入 10 条同 template_signature 的失败记录（同签名重复失败 → flaky 率 ≥ 70% 的统计基础）
+psql -h localhost -U devops -d devops -c "
+INSERT INTO ci_log (build_id, template_signature, parameters, step_type, commit_sha)
+SELECT 1000 + g, 'flaky-test:OrderService#place', '{}', 'TEST', 'abc123'
+FROM generate_series(0, 9) g;"
+# 失败重放触发 onBuildFailure（经 CI webhook 路径，正文 SelfHealingService 同款）
+# ② 预算：单 build 注入 5 个可自愈失败 → 观察第 4 个起的返回 ESCALATED（MAX_HEALS_PER_BUILD=3）
+# ③ 熔断：同签名预置 3 条连败历史 → 新失败直接观察返回 CIRCUIT_BROKEN（阈值 3）
+# ④ 高风险：healing_policy 配 ROLLBACK 的签名失败 → 观察返回 ESCALATED（转人工审批）
+# 核对 SQL：healing_log 全量落库 + 按 outcome 统计
+psql -h localhost -U devops -d devops -c \
+  "SELECT build_id, action, outcome, detail FROM healing_log ORDER BY build_id;"
+psql -h localhost -U devops -d devops -c \
+  "SELECT outcome, count(*) FROM healing_log GROUP BY outcome ORDER BY outcome;"
 ```
 
 **材料 B——指标与瓶颈对账**：

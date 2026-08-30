@@ -529,8 +529,8 @@ semgrep --config=auto --json src/ChangeMe.java
 **材料 B——HTTP 审查与反馈**：
 
 ```sh
-curl -s -X POST http://localhost:8080/api/v1/review/core/101
-curl -s -X POST http://localhost:8080/api/v1/review/feedback \
+curl -s -X POST http://localhost:8081/api/v1/review/core/101
+curl -s -X POST http://localhost:8081/api/v1/review/feedback \
   -H "Content-Type: application/json" \
   -d '{"commentId":"<L2返回的comment_id>","accepted":false,"reason":"该模式是既有约定回调，非误用"}'
 ```
@@ -589,7 +589,29 @@ curl -s -X POST http://localhost:8080/api/v1/review/feedback \
 
 ---
 
-## 7. 总结
+## 7. 全篇回归验证
+
+**回归断言**（§3.12 本节验证通过后，按 §4 验收表整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 复跑 §3.12 材料（L1 静态门禁 + L2 语义审查） | SAST 真阳性 100% 保留（验收 2）；评论 100% 定位 hunk（验收 3） |
+| 2 | 人工回标 100 条 LLM 审查评论 | 误报率 < 5%（验收 1）；无 auto-merge（验收 4） |
+| 3 | 驳回评论回流负样例后重跑 | 学习闭环 100% 回流（验收 5），且下一轮误报率下降 |
+
+**失败排查**：误报率不达标→`ReviewAgent` systemPrompt 的"宁缺勿错"指令或阈值未生效；hunk 级丢失→`ReviewComment(file,line)` 的 file/line 来自 diff hunk 而非整文件；真阳性被 suppression→`SemgrepRunner` 的 L1 结果被 LLM 层改写。
+
+## 8. 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 误报率 | LLM 审查误报率 < 5%（§7 回归 2，人工回标） | ☐ |
+| 真阳性不丢 | SAST 真阳性 100% 保留（§7 回归 1） | ☐ |
+| hunk 级 | 评论 100% 定位到 hunk（§7 回归 1） | ☐ |
+| 建议态 | 无 auto-merge，评论是建议非决策（§7 回归 2） | ☐ |
+| 学习闭环 | 驳回评论 100% 回流负样例（§7 回归 3） | ☐ |
+
+## 9. 总结
 
 v2 把 PR 审查升级为两级流水线：`LocalGitApi` 定向拉取增量 diff + `SymbolGraph` 提取改动方法（上下文策略），`SemgrepRunner` 做 L1 确定性硬门禁（零 LLM、禁止 suppression 真阳性），`ReviewAgent` 用 `entity(ParameterizedTypeReference)` 输出 hunk 级建议评论，`FalsePositiveLibrary` 把人工驳回回流为负样例压误报。**修正了 v1 体系中"概念骨架"与虚构形态**：`entity(TypeReference)` → 真实 `ParameterizedTypeReference`；`recordFeedback` 落为完整类。
 

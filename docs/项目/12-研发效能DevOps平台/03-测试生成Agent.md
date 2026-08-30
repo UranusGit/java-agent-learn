@@ -578,8 +578,8 @@ mvn org.pitest:pitest-maven:mutationCoverage \
 **材料 B——生成与批准 HTTP**：
 
 ```sh
-curl -s -X POST "http://localhost:8080/api/v1/testgen?qualifiedName=com.rd.payment.PaymentService"
-curl -s -X POST http://localhost:8080/api/v1/testgen/draft \
+curl -s -X POST "http://localhost:8081/api/v1/testgen?qualifiedName=com.rd.payment.PaymentService"
+curl -s -X POST http://localhost:8081/api/v1/testgen/draft \
   -H "Content-Type: application/json" \
   -d '{"targetRepo":"core","feature":"payment-tests","description":"LLM 生成单测，需人工批准"}'
 ```
@@ -639,7 +639,29 @@ curl -s -X POST http://localhost:8080/api/v1/testgen/draft \
 
 ---
 
-## 7. 总结
+## 7. 全篇回归验证
+
+**回归断言**（§3.11 本节验证通过后，按 §4 验收表整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 复跑 §3.11 材料（生成 + 五重过滤 + draft PR） | 编译通过率 ≥ 90%（验收 2）；变异覆盖率核心模块 ≥ 65%、支付/安全 ≥ 85%（验收 1） |
+| 2 | 变异闸门抽检：注入一个"假绿"测试 | 变异测试能抓出真 bug（验收 3 无假绿）；provenance 校验无 contract drift（验收 4） |
+| 3 | draft PR 流程走一遍 | 生成测试 100% 走人工批准（验收 5） |
+
+**失败排查**：编译率不达标→`FilterPipeline` 五道闸门顺序或 `JavaCompiler` 类路径；变异覆盖率低→变异算子或被测模块选择；假绿漏过→`MutationGate` 的 kill 判定过宽。
+
+## 8. 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 变异覆盖率 | 核心模块 ≥ 65%、支付/安全 ≥ 85%（§7 回归 1） | ☐ |
+| 可编译率 | 生成测试编译通过率 ≥ 90%（§7 回归 1） | ☐ |
+| 无假绿 | 变异测试确保测试真能抓 bug（§7 回归 2） | ☐ |
+| 无 contract drift | 生成测试不改变被测类行为契约（§7 回归 2） | ☐ |
+| 人工批准 | 生成的测试 100% 走 draft PR 人工批准（§7 回归 3） | ☐ |
+
+## 9. 总结
 
 v3 把测试覆盖不足变成"生成 + 五重确定性过滤 + 变异闸门 + 人工批准"：`TestGenAgent` 用真实 `entity(ParameterizedTypeReference)` 生成带 provenance 的测试，`FilterPipeline` 依次跑编译（`JavaCompiler`）/执行（Surefire）/flakiness（连跑 5 次）/覆盖率（JaCoCo）/变异（PIT）五道闸门，`DraftPrService` 开 draft PR 交人工批准。**核心洞察落地：行覆盖率可刷分，变异测试不可刷**。
 

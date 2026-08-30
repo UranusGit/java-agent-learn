@@ -464,7 +464,7 @@ SELECT step_type, template_signature, count(*) FROM ci_log GROUP BY 1,2;
 **材料 B——诊断请求（两条同模板、参数不同的编译错误日志）**：
 
 ```sh
-curl -s -X POST http://localhost:8080/api/v1/ci/diagnose \
+curl -s -X POST http://localhost:8081/api/v1/ci/diagnose \
   -H "Content-Type: application/json" \
   -d '{"buildId":9001,"stepType":"COMPILE","commitSha":"abc123","traceId":"tr-1",
        "rawLogs":[
@@ -528,7 +528,29 @@ CI 诊断能定位单类失败，但**评审还是单 Agent 视角**：一个 PR
 
 ---
 
-## 7. 总结
+## 7. 全篇回归验证
+
+**回归断言**（§3.9 本节验证通过后，按 §4 验收表整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 复跑 §3.9 材料（日志结构化 + 聚类 + 根因 + HITL） | 失败日志 100% 解析为 template_signature + provenance（验收 3）；常见失败根因一致率 ≥ 80%（验收 2） |
+| 2 | 对已知失败用例计时 | 定位从 20 分钟 → ≤ 2 分钟（验收 1） |
+| 3 | HITL 链路走一遍 | 修复/重试/开 PR 100% 走审批闸门（验收 5）；诊断期间零执行动作（验收 4，诊断只读） |
+
+**失败排查**：根因不准→`DrainTemplateMiner` 模板粒度或 `ClusterService` 聚类阈值；诊断产生副作用→某处误用了 `executeToolCalls`，`CiDiagnosisService` 必须只读；审批闸门跳过→`CiFixApprovalManager` 装饰器未替换默认 `ToolCallingManager` Bean。
+
+## 8. 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 定位时效 | 失败定位 ≤ 2 分钟（§7 回归 2） | ☐ |
+| 根因准确 | 常见失败根因一致率 ≥ 80%（§7 回归 1） | ☐ |
+| 日志结构化 | 失败日志 100% 解析为 template_signature + provenance（§7 回归 1） | ☐ |
+| 诊断只读 | 诊断不触发任何执行动作（§7 回归 3） | ☐ |
+| 修复审批 | 修复/重试/开 PR 100% 走人工审批闸门（§7 回归 3） | ☐ |
+
+## 9. 总结
 
 v4 把 CI 失败诊断从人翻日志变成"结构化 + 聚类 + LLM 根因"：`DrainTemplateMiner` 把日志抽成 template_signature + 参数（无结构化索引 LLM 硬灌必败）、`ClusterService` 把 8000 行聚成 ≤150 行/簇、`CiDiagnosisService` 用真实 `entity(ParameterizedTypeReference)` 每簇产出根因假设。**关键落点**：诊断只读，`CiFixApprovalManager` 作为 `ToolCallingManager` 装饰器拦截 applyFix/retryBuild/openPr 动作——这正是 [教程 04-企业级架构主干/08-Human-in-the-Loop与审批流] 的 HITL 落点实现。
 
