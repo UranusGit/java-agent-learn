@@ -168,9 +168,19 @@ stateDiagram-v2
 </project>
 ```
 
-**application.yml**：
+**配置（两段式：`application.yaml` + `application-prompt-service.yaml`）**：
 
 ```yaml
+# application.yaml（全局骨架：仅 .env 导入 + profile 激活）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: agenthub
+```
+
+```yaml
+# application-prompt-service.yaml（prompt-service 业务配置）
 spring:
   application:
     name: prompt-service
@@ -503,6 +513,68 @@ public class PromptController {
 }
 ```
 
+**实验管理（v7 灰度复用）`web/ExperimentController.java`（prompt-service）**——Prompt 级 A/B 实验：创建实验、按桶下发、一键回滚。v3 最小实现用内存存储（控制面重启即失），生产替换为 DB（模式同 §3.1 `JdbcPromptStore`）；实验配置随 `/prompts/published` 聚合下发（`status='active'` 的实验随已发布 Prompt 一起返回，数据面据此按桶取版本，见 [07-灰度发布与AB测试 §3.2]）：
+
+```java
+package com.acme.prompt.web;
+
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import reactor.core.publisher.Mono;
+
+/** Prompt 实验管理：创建实验、按桶下发、回滚（07 篇灰度的控制面落点）。 */
+@RestController
+@RequestMapping("/prompts/experiments")
+public class ExperimentController {
+
+    private final Map<String, Experiment> store = new ConcurrentHashMap<>();
+
+    /** 创建实验：桶区间 → 版本内容映射（"0-4"→v2、"5-99"→对照组）。 */
+    @PostMapping
+    public Mono<Experiment> create(@RequestBody CreateRequest req) {
+        Experiment exp = new Experiment(req.id(), req.bucketRules(), req.allocatedPercent(), "active");
+        store.put(exp.id(), exp);
+        return Mono.just(exp);
+    }
+
+    /** 回滚实验：状态置 rolled_back；数据面 Pull 时实验失效（不再按桶取版本，回到基线版本）。 */
+    @PostMapping("/{id}/rollback")
+    public Mono<Experiment> rollback(@PathVariable String id) {
+        Experiment exp = store.get(id);
+        if (exp == null) {
+            return Mono.error(new IllegalArgumentException("实验不存在: " + id));
+        }
+        Experiment rolled = new Experiment(exp.id(), exp.bucketRules(), exp.allocatedPercent(), "rolled_back");
+        store.put(id, rolled);
+        return Mono.just(rolled);
+    }
+
+    /** 数据面 Pull 通道：拉取全部实验（实验配置随 published 聚合下发）。 */
+    @GetMapping
+    public Mono<List<Experiment>> list() {
+        return Mono.just(List.copyOf(store.values()));
+    }
+
+    public record CreateRequest(String id, List<BucketRule> bucketRules, int allocatedPercent) {
+        public record BucketRule(int from, int to, String versionContent) {}
+    }
+
+    public record Experiment(String id, List<BucketRule> bucketRules,
+                             int allocatedPercent, String status) {
+        public record BucketRule(int from, int to, String versionContent) {}
+    }
+}
+```
+
 #### 3.1.1 本节测试与验证（prompt-service 版本化与审批）
 
 **前置条件**：prompt-service 已按 §3.1 手写并启动（端口以其 application.yml 为准）。
@@ -511,15 +583,15 @@ public class PromptController {
 
 ```bash
 # 提交草稿
-curl -X POST http://localhost:8100/prompts/cs-main-system/draft \
+curl -X POST http://localhost:8102/prompts/cs-main-system/draft \
   -H "Content-Type: application/json" \
   -d '{"content":"你是客服助手，处理咨询与工单。","createdBy":"op-alice","changeReason":"初始版本"}'
 # 提交审批 / 发布 / 回滚（versionId 取上一步返回）
-curl -X POST http://localhost:8100/prompts/versions/{versionId}/review  -H "Content-Type: application/json" -d '{"actor":"op-alice"}'
-curl -X POST http://localhost:8100/prompts/versions/{versionId}/publish -H "Content-Type: application/json" -d '{"actor":"op-bob"}'
-curl -X POST http://localhost:8100/prompts/versions/{versionId}/rollback -H "Content-Type: application/json" -d '{"actor":"op-bob"}'
+curl -X POST http://localhost:8102/prompts/versions/{versionId}/review  -H "Content-Type: application/json" -d '{"actor":"op-alice"}'
+curl -X POST http://localhost:8102/prompts/versions/{versionId}/publish -H "Content-Type: application/json" -d '{"actor":"op-bob"}'
+curl -X POST http://localhost:8102/prompts/versions/{versionId}/rollback -H "Content-Type: application/json" -d '{"actor":"op-bob"}'
 # 查询已发布版本
-curl http://localhost:8100/prompts/published
+curl http://localhost:8102/prompts/published
 ```
 
 **步骤与断言**：
@@ -549,19 +621,18 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import lombok.extern.slf4j.Slf4j;
+
 import reactor.core.publisher.Mono;
 
 /** Prompt 解析：控制面拉取 + 本地缓存 + 出厂文件兜底（三层来源，ADR-009）。 */
+@Slf4j
 @Component
 public class PromptResolver {
-
-    private static final Logger log = LoggerFactory.getLogger(PromptResolver.class);
 
     private final WebClient webClient;
     private final AtomicReference<Map<String, VersionedPrompt>> cache = new AtomicReference<>(Map.of());
@@ -624,7 +695,7 @@ public class PromptResolver {
 }
 ```
 
-> 需要在 `AgentPlatformApplication` 上加 `@EnableScheduling`（见 3.4）。控制面不可用 → 本地缓存续命；缓存也空 → 出厂文件；两者都没有 → 拒绝启动。
+> 需要在 `AgentPlatformApplication` 上加 `@EnableScheduling`（见 3.5）。控制面不可用 → 本地缓存续命；缓存也空 → 出厂文件；两者都没有 → 拒绝启动。
 
 #### 3.2.1 本节测试与验证（数据面 Prompt 拉取与降级）
 
@@ -643,25 +714,70 @@ public class PromptResolver {
 
 ### 3.3 policy-service 与网关的 Push 通道
 
-**pom.xml（policy-service）**：与 prompt-service 同构（webflux + jdbc + mysql），端口 8103。为节省篇幅仅列差异，完整依赖块参照 3.1 的 pom 结构。
+**pom.xml（policy-service）**：
 
 ```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-webflux</artifactId>
-</dependency>
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-jdbc</artifactId>
-</dependency>
-<dependency>
-    <groupId>com.mysql</groupId>
-    <artifactId>mysql-connector-j</artifactId>
-    <scope>runtime</scope>
-</dependency>
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.0</version>
+        <relativePath/>
+    </parent>
+    <groupId>com.acme</groupId>
+    <artifactId>policy-service</artifactId>
+    <version>1.0.0</version>
+    <name>policy-service</name>
+
+    <properties>
+        <java.version>21</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
+```
+
+**配置（两段式：`application.yaml` + `application-policy-service.yaml`）**：
+
+```yaml
+# application.yaml（全局骨架：仅 .env 导入 + profile 激活）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: agenthub
 ```
 
 ```yaml
+# application-policy-service.yaml（policy-service 业务配置）
 spring:
   application:
     name: policy-service
@@ -673,7 +789,21 @@ server:
   port: 8103
 ```
 
-**`service/PolicyService.java`**（策略版本化 + SSE 事件广播）：
+**审计表 `policy_change`（追加到 `control_plane` 库的 `schema.sql`）**：
+
+```sql
+CREATE TABLE IF NOT EXISTS policy_change (
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    version_no   BIGINT       NOT NULL,
+    business_line VARCHAR(16) NOT NULL,
+    action       VARCHAR(16)  NOT NULL,   -- 'update' | 'rollback'
+    route_json   TEXT         NULL,       -- 变更后的路由策略快照
+    at           DATETIME(6)  NOT NULL,
+    KEY idx_change_version (version_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+**`service/PolicyService.java`**（策略版本化 + SSE 事件广播 + 审计落库）：
 
 ```java
 package com.acme.policy.service;
@@ -681,11 +811,13 @@ package com.acme.policy.service;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Schedulers;
 
 @Service
 public class PolicyService {
@@ -693,18 +825,30 @@ public class PolicyService {
     private final AtomicLong version = new AtomicLong(0);
     // 多播 + 最近 100 条重放：网关断线重连后能拿到漏掉的版本
     private final Sinks.Many<PolicyUpdate> sink = Sinks.many().replay().limit(100);
+    private final JdbcClient jdbcClient;
 
-    /** 运营侧编辑策略：版本号单调递增 + 广播 + 落库（审计日志省略于篇幅，模式同 prompt_change）。 */
+    public PolicyService(JdbcClient jdbcClient) {
+        this.jdbcClient = jdbcClient;
+    }
+
+    /** 运营侧编辑策略：版本号单调递增 + 广播 + 审计日志落库（policy_change 表，模式同 prompt_change）。 */
     public Mono<PolicyUpdate> updateRoutes(RoutePolicy policy) {
         return Mono.fromCallable(() -> {
             long v = version.incrementAndGet();
             PolicyUpdate update = new PolicyUpdate(v, policy, Instant.now());
+            jdbcClient.sql("""
+                    INSERT INTO policy_change (version_no, business_line, action, route_json, at)
+                    VALUES (:v, :line, 'update', :route, :at)
+                    """)
+                    .param("v", v).param("line", policy.businessLine())
+                    .param("route", policy.toString()).param("at", update.at())
+                    .update();
             Sinks.EmitResult result = sink.tryEmitNext(update);
             if (result.isFailure()) {
                 throw new IllegalStateException("策略广播失败: " + result);
             }
             return update;
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     /** Push 通道：数据面订阅的 SSE 流，只推比客户端更新的版本。 */
@@ -775,8 +919,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import com.acme.gateway.route.ModelRouter;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.ParameterizedTypeReference;
@@ -784,13 +926,14 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import lombok.extern.slf4j.Slf4j;
+
 import reactor.util.retry.Retry;
 
 /** Push 通道客户端：订阅 policy-service 的 SSE 流，版本单调拒收乱序旧推送（ADR-010）。 */
+@Slf4j
 @Component
 public class PolicyClient {
-
-    private static final Logger log = LoggerFactory.getLogger(PolicyClient.class);
 
     private final WebClient webClient;
     private final ModelRouter modelRouter;
@@ -897,9 +1040,9 @@ sequenceDiagram
 
 ```bash
 # 订阅推送流（另一终端观察）
-curl -N "http://localhost:8102/policy/stream?fromVersion=0"
+curl -N "http://localhost:8103/policy/stream?fromVersion=0"
 # 修改路由策略（触发 Push）
-curl -X PUT http://localhost:8102/policy/routes \
+curl -X PUT http://localhost:8103/policy/routes \
   -H "Content-Type: application/json" \
   -d '{"businessLine":"da","supplier":"vllm","modelName":"internal-chat-2","endpoint":"http://llm-internal:8000/v1","keyEnvVar":"VLLM_API_KEY"}'
 ```
@@ -958,7 +1101,69 @@ public class ConfigController {
 }
 ```
 
-> 数据面接入 config-service 的 Pull 模式与 PromptResolver 完全一致（定时全量比对版本号、本地缓存、fail-safe 兜底），不再重复贴代码——这是"配置/提示词共用一套 Pull 协议"的体现。
+**`platform/chat/internal/ConfigResolver.java`（agent-platform）**——配置 Pull 通道与 PromptResolver 同构（定时比对版本号、本地缓存、fail-safe 兜底）：
+
+```java
+package com.acme.agent.platform.chat.internal;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.function.client.WebClient;
+
+import lombok.extern.slf4j.Slf4j;
+
+/** 运行时配置拉取：与 PromptResolver 同一套 Pull 协议（定时比对版本号、本地缓存续命、失败降级默认值）。 */
+@Slf4j
+@Component
+public class ConfigResolver {
+
+    private final WebClient webClient;
+    private final AtomicReference<Map<String, VersionedConfig>> cache = new AtomicReference<>(Map.of());
+
+    public ConfigResolver(WebClient.Builder webClientBuilder) {
+        this.webClient = webClientBuilder.baseUrl(System.getenv("CONFIG_SERVICE_URL")).build();
+    }
+
+    /** Pull 通道：每 30s 比对版本号，变了才替换（本地缓存续命）。 */
+    @Scheduled(fixedDelay = 30_000)
+    void refresh() {
+        webClient.get()
+                .uri("/config/{key}", "da.tools.enabled")   // 示意：拉取一个关键配置键，真实实现为全量
+                .retrieve()
+                .bodyToMono(ConfigValue.class)
+                .doOnNext(this::merge)
+                .subscribe(
+                        unused -> log.info("配置同步完成"),
+                        err -> log.warn("配置拉取失败，使用本地缓存/默认值: {}", err.getMessage()));
+    }
+
+    private void merge(ConfigValue fresh) {
+        VersionedConfig old = cache.get().get(fresh.key());
+        if (old == null || old.version() < fresh.version()) {
+            Map<String, VersionedConfig> merged = new ConcurrentHashMap<>(cache.get());
+            merged.put(fresh.key(), new VersionedConfig(fresh.value(), fresh.version()));
+            cache.set(Map.copyOf(merged));
+            log.info("配置更新生效: {} v{}", fresh.key(), fresh.version());
+        }
+    }
+
+    /** 读取运行时配置；控制面不可达时返回本地缓存，缓存也空则用调用方默认值。 */
+    public String get(String key, String fallback) {
+        VersionedConfig v = cache.get().get(key);
+        return v != null ? v.value() : fallback;
+    }
+
+    public record VersionedConfig(String value, long version) {}
+
+    public record ConfigValue(String key, String value, long version) {}
+}
+```
+
+> 与 PromptResolver 的差别仅在"单键 vs 全量"：配置键少，真实实现可把 §3.4 `GET /config/{key}` 换成 `GET /config` 全量返回 Map——Pull 协议同一套（定时比对版本号、本地缓存、fail-safe 兜底），这是"配置/提示词共用一套 Pull 协议"的落地。
 
 ### 3.5 数据面启用定时拉取
 

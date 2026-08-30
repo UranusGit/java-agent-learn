@@ -98,6 +98,11 @@ flowchart LR
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
@@ -106,9 +111,19 @@ flowchart LR
 </project>
 ```
 
-### 3.3 `application.yml`
+### 3.3 配置（两段式：`application.yaml` + `application-llm-gateway.yaml`）
 
 ```yaml
+# application.yaml（全局骨架：仅 .env 导入 + profile 激活）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: agenthub
+```
+
+```yaml
+# application-llm-gateway.yaml（llm-gateway 业务配置）
 spring:
   application:
     name: llm-gateway
@@ -152,6 +167,11 @@ import org.springframework.web.reactive.function.server.RouterFunction;
 import org.springframework.web.reactive.function.server.RouterFunctions;
 import org.springframework.web.reactive.function.server.ServerResponse;
 
+/**
+ * 项目统一约定注解式 Controller；网关是唯一刻意偏离——代理透传场景需要直接控制
+ * ServerRequest/ServerResponse 的流式响应体（DataBuffer 透传），函数式路由表达更直接。
+ * 业务侧 Controller（01 篇 §3.11、03 篇 PolicyController 等）一律注解式。
+ */
 @Configuration
 public class GatewayRoutes {
 
@@ -359,7 +379,10 @@ import org.springframework.web.reactive.function.server.ServerResponse;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-/** Spring AI 2.0 / Micrometer —— 网关核心转发（WebFlux，全链路非阻塞）。 */
+/**
+ * Spring AI 2.0 / Micrometer —— 网关核心转发（WebFlux，全链路非阻塞）。
+ * 函数式路由 handler（配合 §3.4 网关对注解式约定的唯一偏离，见 GatewayRoutes 注释）。
+ */
 @Component
 public class LlmGatewayHandler {
 
@@ -436,7 +459,7 @@ public class LlmGatewayHandler {
         return null;
     }
 
-    /** SSE 尾帧形如：data: {"choices":[...],"usage":{"prompt_tokens":N,"completion_tokens":M}}\n\n */
+    /** SSE 尾帧形如：data: {"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":34}}\n\n */
     private Usage parseUsage(String frame) {
         try {
             int idx = frame.indexOf("data:");
@@ -588,7 +611,8 @@ spring:
 curl -X POST http://localhost:9090/credentials \
   -H "Content-Type: application/json" \
   -d '{"businessLine":"cs","longTermKey":"'"$GATEWAY_ADMIN_KEY"'"}'
-# → {"value":"cs.<expiry>.<hmac>","expiresAt":...}
+# → {"value":"cs.1785690000000.<hmac>","expiresAt":1785690000000}
+#   （expiry 与 expiresAt 为同一时刻；示例时间戳，实际为当前时间 + 15 分钟 TTL）
 ```
 
 **材料 B——网关代理探针**：

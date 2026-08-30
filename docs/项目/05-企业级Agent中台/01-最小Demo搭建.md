@@ -8,6 +8,17 @@
 
 ## 1. 为什么最小 Demo 是"模块化单体"而不是直接拆微服务
 
+### 1.1 四问（首迭代豁免）
+
+| 问 | 答 |
+|----|----|
+| **新增了什么需求** | 三条业务线的 Agent 能力合并进**一个模块化单体**，用包边界与依赖规则验证"预切割线"（为后续拆分铺路） |
+| **影响了哪些模块** | 全新代码库（从三座烟囱起步，无既有模块可影响） |
+| **架构如何演进** | v0 三座烟囱 → v1 模块化单体（一个应用、三业务模块 + 平台模块 + 组装根） |
+| **上一版痛点是什么** | **首迭代豁免**——无上一版本；驱动力是三座烟囱现状（三份 Key、三套计量、工具重复、审计不过） |
+
+### 1.2 演进策略：先模块化单体、后拆分
+
 本项目的演进策略（ADR-001）：**边界先在单体内验证，再物理拆分**。理由：
 
 1. 三条业务线的边界此时只是 CTO 办公室的想象——哪个工具该共享、哪段 Prompt 该统一，只有代码跑起来才知道
@@ -16,7 +27,7 @@
 
 > 拆分时机的判断信号（何时必须拆）见 [教程 04-企业级架构主干/01-微服务拆分与Agent部署 §8.1 拆还是不拆？]，本项目的实际触发点在迭代二之前揭晓。
 
-### 1.1 本节核对（为什么是模块化单体）
+### 1.3 本节核对（为什么是模块化单体）
 
 - 三条理由与 ADR-001（[00-需求分析与架构设计 §4]）口径一致：边界先验证、重构成本对比、依赖规则即未来契约。
 - 拆分信号引用了 [教程 02-SpringAI核心机制/02-Agent状态管理 §8.1]，且本篇确实未引入任何分布式组件（无注册中心/远程调用）。
@@ -164,9 +175,19 @@ com.acme.agent
 </project>
 ```
 
-### 3.2 `application.yml`
+### 3.2 配置（两段式：`application.yaml` + `application-agent-platform.yaml`）
 
 ```yaml
+# application.yaml（全局骨架：仅 .env 导入 + profile 激活）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: agenthub
+```
+
+```yaml
+# application-agent-platform.yaml（agent-platform 业务配置）
 spring:
   application:
     name: agent-platform
@@ -346,7 +367,8 @@ import org.springframework.stereotype.Service;
 
 import reactor.core.publisher.Flux;
 
-/** Spring AI 2.0.0 —— ChatClient 编排：系统提示词/工具/记忆全部作为参数注入，代码零分支。 */
+/** Spring AI 2.0.0 —— ChatClient 编排：系统提示词/工具/记忆全部作为参数注入，代码零分支。
+ *  项目约定：统一构造器注入（Spring 按构造器自动装配，无需 @Autowired）——本篇起全项目一致，不再逐处标注。 */
 @Service
 public class DefaultAgentChatService implements AgentChatService {
 
@@ -426,6 +448,8 @@ package com.acme.agent.bootstrap;
 import java.util.List;
 import java.util.Map;
 
+import com.acme.agent.business.cs.internal.CustomerServiceTools;
+import com.acme.agent.business.km.internal.KnowledgeMgmtTools;
 import com.acme.agent.business.da.internal.DataAnalyticsTools;
 import com.acme.agent.platform.tool.api.ToolRegistry;
 import com.acme.agent.platform.tool.internal.DefaultToolRegistry;
@@ -441,10 +465,13 @@ import org.springframework.context.annotation.Configuration;
 public class ToolWiringConfig {
 
     @Bean
-    public ToolRegistry toolRegistry(DataAnalyticsTools daTools) {
+    public ToolRegistry toolRegistry(CustomerServiceTools csTools,
+                                     KnowledgeMgmtTools kmTools,
+                                     DataAnalyticsTools daTools) {
         return new DefaultToolRegistry(Map.of(
+                "cs", toCallbacks(csTools),
+                "km", toCallbacks(kmTools),
                 "da", toCallbacks(daTools)
-                // cs、km 的工具对象就绪后按同一方式注册：Map.of("cs", toCallbacks(csTools), ...)
         ));
     }
 
@@ -491,9 +518,46 @@ public class DefaultToolRegistry implements ToolRegistry {
 }
 ```
 
-### 3.11 业务模块示例（数据线）
+### 3.11 业务模块示例（三线工具对象 + 数据线薄壳 Controller）
 
-工具对象（`business/da/internal/DataAnalyticsTools.java`）：
+三线工具对象（`business/cs/internal/CustomerServiceTools.java` / `business/km/internal/KnowledgeMgmtTools.java` / `business/da/internal/DataAnalyticsTools.java`）：
+
+```java
+package com.acme.agent.business.cs.internal;
+
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.stereotype.Component;
+
+@Component
+public class CustomerServiceTools {
+
+    @Tool(name = "ticket.create",
+          description = "创建一张客服工单并返回工单号。")
+    public String createTicket(@ToolParam(description = "用户 ID") String userId,
+                               @ToolParam(description = "问题描述") String description) {
+        return "ticket-" + Integer.toHexString((userId + description).hashCode());
+    }
+}
+```
+
+```java
+package com.acme.agent.business.km.internal;
+
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.stereotype.Component;
+
+@Component
+public class KnowledgeMgmtTools {
+
+    @Tool(name = "doc.search",
+          description = "在内部文档库中检索与关键词相关的段落。")
+    public String search(@ToolParam(description = "检索关键词") String keyword) {
+        return "命中内部文档：关于 " + keyword + " 的段落（v1 示意）。";
+    }
+}
+```
 
 ```java
 package com.acme.agent.business.da.internal;
@@ -532,6 +596,7 @@ import com.acme.agent.platform.chat.api.AgentEvent;
 
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -555,6 +620,12 @@ public class DataAnalyticsAgent {
                 "da", req.sessionId(), req.userId(), req.message(),
                 List.of("sql.query", "schema.describe")      // 数据线专属工具集
         ));
+    }
+
+    /** @GetMapping 隐式绑定样例：GET /da/tools → 200 返回 JSON 数组（方法级路由，query/路径参数绑定见 §3.14 材料）。 */
+    @GetMapping("/tools")
+    public List<String> enabledTools() {
+        return List.of("sql.query", "schema.describe");
     }
 
     public record ChatRequest(String sessionId, String userId, String message) {}
@@ -603,7 +674,7 @@ class ArchitectureTest {
 
 ```sh
 export DEEPSEEK_API_KEY=sk-xxx
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.profiles=agenthub
 # 测试：
 # curl -N -X POST "http://localhost:8080/da/chat" \
 #   -H "Content-Type: application/json" \
@@ -649,13 +720,13 @@ curl -N -X POST "http://localhost:8080/da/chat" \
 
 ## 4. 验收标准
 
-| # | 验收项 | 标准 |
-|---|--------|------|
-| 1 | 三业务线 API | `POST /cs/chat`、`/km/chat`、`/da/chat` 各自可用，输出各自的系统提示词风格 |
-| 2 | 工具隔离 | `da` 无法调用 `cs` 的 `ticket.create` 工具（registry 按 businessLine 过滤） |
-| 3 | 依赖规则 | ArchUnit 测试通过：业务模块零互相依赖、internal 包不可跨模块引用 |
-| 4 | 会话隔离 | 同一 sessionId 在不同业务线互不可见（memory 按 businessLine 前缀键） |
-| 5 | 单一部署 | 一个 jar、一个进程、一套配置 |
+| # | 验收项 | 标准（量化） |
+|---|--------|--------------|
+| 1 | 三业务线 API | `POST /cs/chat`、`/km/chat`、`/da/chat` 各自可用：每线连发 5 轮，5/5 返回 SSE 流并以 `Done` 结束（成功率 100%）；三线系统提示词风格可区分（§3.9 switch） |
+| 2 | 工具隔离 | `da` 请求 `ticket.create` 100 次，0 次出现在模型侧可调工具集（registry 按 businessLine 过滤，§3.10） |
+| 3 | 依赖规则 | `mvn clean package` 通过；ArchUnit 2/2 测试绿（业务零互相依赖、internal 不可跨模块引用） |
+| 4 | 会话隔离 | 同一 sessionId 在 cs 与 da 各发一轮，第二轮互读历史为 0（memory 键带 businessLine 前缀，§3.8） |
+| 5 | 单一部署 | 单 jar、单进程（`ps` 一行）、`server.port=8080` 监听、两段式配置（application.yaml + application-agent-platform.yaml） |
 
 ### 4.1 全篇回归验证（最小 Demo 整体验收）
 

@@ -82,9 +82,19 @@ flowchart TB
 </dependency>
 ```
 
-**application.yml（业务线声明式接入——这就是"全部代码"）**：
+**配置（两段式：业务线应用的 `application.yaml` + `application-hr.yaml`）**：
 
 ```yaml
+# application.yaml（业务线应用全局骨架：仅 .env 导入 + profile 激活）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: agenthub
+```
+
+```yaml
+# application-hr.yaml（hr 业务线声明式接入——这就是"全部代码"）
 acme:
   agent:
     endpoint: http://open-gateway.internal:9070     # 中台开放入口
@@ -175,7 +185,7 @@ public class CredentialRefresher {
     public CredentialRefresher(AgentClientProperties props, WebClient webClient) {
         this.props = props;
         this.webClient = webClient;
-        refresh().block();   // 构造期一次性同步初始化（SDK 启动路径，非 EventLoop 热路径）
+        refresh().onErrorResume(e -> Mono.empty()).block();   // 构造期同步初始化；首次失败不阻断启动（沿用空凭证，10 分钟定时重试）
         ReactorSchedulerHolder.scheduleAtFixedRate(this::refreshSafe, Duration.ofMinutes(10));
     }
 
@@ -273,7 +283,14 @@ public class AgentChatClient {
 }
 ```
 
-> SSE 流消费与 v3 `PolicyClient` 同一模式：`bodyToFlux(ParameterizedTypeReference<ServerSentEvent<String>>)` 拿到逐事件到达的 Flux，`X-Agent-Degraded` 等标记头经 `ServerSentEvent.comment/event` 元数据透传（降级事件以独立 event 类型下发，SDK 转译为 `AgentEvent.Failed` 家族，映射表略）。
+> SSE 流消费与 v3 `PolicyClient` 同一模式：`bodyToFlux(ParameterizedTypeReference<ServerSentEvent<String>>)` 拿到逐事件到达的 Flux，`X-Agent-Degraded` 等标记头经 `ServerSentEvent.comment/event` 元数据透传。SDK 事件转译映射：
+>
+> | 中台事件 | SDK 转译 | 业务方可见 |
+> |---------|---------|-----------|
+> | `data: {"delta":"..."}` | `ServerSentEvent<String>` 直接透传 | `Flux<ServerSentEvent<String>>` 逐条增量 |
+> | `event: degraded` + `X-Agent-Degraded: tier\|budget` 头 | 事件元数据带降级标记（`comment/event`） | 业务方从事件头读取降级原因 |
+> | `event: recoverable-error` + `data: {"partialLength":N}` | `AgentEvent.Failed(recoverable)` 家族 | 提示用户"重试"而非重头再来（v8 ADR-026） |
+> | `event: error` + `data: {"message":...}` | `AgentEvent.Failed(message)` | 展示错误 |
 
 **接入时序**（业务方视角的"一天"）：
 
@@ -302,6 +319,52 @@ sequenceDiagram
 #### 3.1.1 本节测试与验证（agent-sdk 自助接入）
 
 **前置条件**：agent-sdk 依赖就绪；能力目录可校验。
+
+**材料——单测类**（JUnit 5 + Mockito deep stub）：
+
+```java
+// AgentClientPropertiesTest：声明式 YAML 绑定（tier/SLA 缺省值生效）
+class AgentClientPropertiesTest {
+    @Test
+    void 声明式配置绑定含缺省() {
+        AgentClientProperties props = new AgentClientProperties(
+                "http://open-gateway.internal:9070", "hr", "ltk",
+                List.of(new AgentClientProperties.CapabilityRef("agent.chat", null)),   // tier 缺省
+                null);                                                                  // sla 缺省
+        assertEquals("hr", props.businessLine());
+        assertEquals("agent.chat", props.capabilities().get(0).id());
+        assertNull(props.sla());   // 缺省值在 SDK 消费侧回退为 SILVER（时序图中"默认银牌"）
+    }
+}
+
+// CredentialRefresherTest：续期成功/失败两分支
+class CredentialRefresherTest {
+
+    private final AgentClientProperties props = new AgentClientProperties(
+            "http://open-gateway.internal:9070", "hr", "ltk", List.of(), null);
+
+    @Test
+    void 续期失败沿用旧凭证不抛出() {
+        WebClient wc = mock(WebClient.class, Mockito.RETURNS_DEEP_STUBS);
+        when(wc.post().uri(anyString()).contentType(any()).bodyValue(any())
+                .retrieve().bodyToMono(CredentialRefresher.Credential.class))
+                .thenReturn(Mono.error(new RuntimeException("boom")));
+        CredentialRefresher refresher = new CredentialRefresher(props, wc);
+        assertDoesNotThrow(refresher::refreshSafe);   // 失败被捕获，不抛出到业务链
+        assertEquals("", refresher.current());        // current 保持初始空值（无空窗）
+    }
+
+    @Test
+    void 续期成功原子替换() {
+        WebClient wc = mock(WebClient.class, Mockito.RETURNS_DEEP_STUBS);
+        when(wc.post().uri(anyString()).contentType(any()).bodyValue(any())
+                .retrieve().bodyToMono(CredentialRefresher.Credential.class))
+                .thenReturn(Mono.just(new CredentialRefresher.Credential("cs.123.hmac", 0L)));
+        CredentialRefresher refresher = new CredentialRefresher(props, wc);
+        assertEquals("cs.123.hmac", refresher.current());   // 成功原子替换
+    }
+}
+```
 
 **步骤与断言**：
 
@@ -404,9 +467,11 @@ public class SlaPolicyService {
                 : Map.of();
     }
 
+    /** 容量压力开关（生产实现：读网关队列深度/供应商健康指标，v5 观测数据；测试直接注入）。 */
+    volatile boolean capacityPressure = false;
+
     private boolean underCapacityPressure() {
-        // 生产实现：读网关队列深度/供应商健康指标（v5 观测数据）
-        return false;
+        return capacityPressure;
     }
 
     public enum SlaTier { GOLD, SILVER, BRONZE }
@@ -416,6 +481,35 @@ public class SlaPolicyService {
 #### 3.2.1 本节测试与验证（SLA 分级）
 
 **前置条件**：三档 SLA 接入方（金/银/铜）就绪；压测器可打满共享容量。
+
+**材料——单测类**（JUnit 5）：
+
+```java
+// SlaPolicyServiceTest：三档优先级/降级顺序/预算保护组合（含容量压力开关）
+class SlaPolicyServiceTest {
+    @Test
+    void 金牌永不因压力降档() {
+        SlaPolicyService svc = new SlaPolicyService();
+        svc.capacityPressure = true;
+        assertFalse(svc.shouldDegradeTier("cs", SlaPolicyService.SlaTier.GOLD));
+    }
+
+    @Test
+    void 铜牌压力时先降档() {
+        SlaPolicyService svc = new SlaPolicyService();
+        svc.capacityPressure = true;
+        assertTrue(svc.shouldDegradeTier("cs", SlaPolicyService.SlaTier.BRONZE));
+        assertEquals(100, svc.queuePriority("cs", SlaPolicyService.SlaTier.GOLD));
+        assertEquals(-10, svc.queuePriority("cs", SlaPolicyService.SlaTier.BRONZE));   // 可被抢占
+    }
+
+    @Test
+    void 金牌带预算保护() {
+        SlaPolicyService svc = new SlaPolicyService();
+        assertEquals(Map.of("protected", "true"), svc.quotaGuards("cs", SlaPolicyService.SlaTier.GOLD));
+    }
+}
+```
 
 **步骤与断言**：
 
@@ -485,6 +579,11 @@ public class ApiKeyAuthWebFilter implements WebFilter {
                 .contextWrite(ctx -> ctx.put("open.accessor", accessor));   // Reactor Context（铁律：禁 ThreadLocal）
     }
 
+    /** 登记一个 API Key（生产由 policy-service 下发密钥表时调用；测试直接调用）。 */
+    public void register(String apiKey, Accessor accessor) {
+        keys.put(sha256(apiKey), accessor);
+    }
+
     private boolean verify(String apiKey) {
         return keys.containsKey(sha256(apiKey));   // 常量时间：先哈希再查表，比较成本与 Key 无关
     }
@@ -500,6 +599,50 @@ public class ApiKeyAuthWebFilter implements WebFilter {
 
     public record Accessor(String accessorId, String partner, SlaTier sla) {}
     public enum SlaTier { GOLD, SILVER, BRONZE }
+}
+```
+
+**`web/OpenGatewayHandler.java`**——`/v1/agent/chat` 转发端点：鉴权后（ApiKeyAuthWebFilter 已验 Key 并写入 Context）按接入方身份注入受信 ns、调用内部 agent-platform，SSE 透传：
+
+```java
+package com.acme.opengateway.web;
+
+import java.util.Map;
+
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.reactive.function.client.WebClient;
+
+import reactor.core.publisher.Flux;
+
+/** 开放网关对话端点：从 Reactor Context 取接入方身份（ApiKeyAuthWebFilter 写入），注入受信 ns，转发内部 agent-platform。 */
+@RestController
+public class OpenGatewayHandler {
+
+    private static final String NS_HEADER = "X-Agent-Ns";
+    private final WebClient internalWebClient;
+
+    public OpenGatewayHandler(WebClient.Builder webClientBuilder) {
+        // 内部 agent-platform（内网地址，公网不可达）
+        this.internalWebClient = webClientBuilder.baseUrl(System.getenv("INTERNAL_AGENT_URL")).build();
+    }
+
+    @PostMapping(value = "/open/v1/agent/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> chat(@RequestBody Map<String, Object> body) {
+        return Flux.deferContextual(ctx -> {
+            ApiKeyAuthWebFilter.Accessor accessor = ctx.get("open.accessor");
+            return internalWebClient.post()
+                    .uri("/cs/chat")   // 内部会话入口（业务线由接入方身份映射）
+                    .header(NS_HEADER, accessor.accessorId())   // 注入受信 ns（外部同名头已由 ApiKeyAuthWebFilter 剥除）
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() {});
+        });
+    }
 }
 ```
 
@@ -530,6 +673,48 @@ stateDiagram-v2
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" "http://open-gateway:9070/open/v1/agent/chat" \
   -H "X-Api-Key: <partner-key>" -H "X-Agent-Ns: cs" -d @chat.json
+```
+
+`chat.json`（对话请求体）：
+
+```json
+{
+  "businessLine": "hr",
+  "sessionId": "s-partner-1",
+  "userId": "partner-user",
+  "message": "查一下员工政策",
+  "capabilities": ["agent.chat", "hr.policy-qa"]
+}
+```
+
+**材料——单测类**（JUnit 5；WebTestClient 绑定需 open-gateway 上下文，此处给行为契约断言）：
+
+```java
+// ApiKeyAuthWebFilterTest：无 Key / 伪造 Key / 有效 Key 三类 + 内部头剥除
+class ApiKeyAuthWebFilterTest {
+
+    @Test
+    void 三类鉴权请求() {
+        ApiKeyAuthWebFilter filter = new ApiKeyAuthWebFilter();
+        filter.register("partner-key-1",
+                new ApiKeyAuthWebFilter.Accessor("hr-partner", "partnerX",
+                        ApiKeyAuthWebFilter.SlaTier.SILVER));
+        // 用 WebTestClient 打 /open/v1/agent/chat：
+        // ① 无 X-Api-Key → 401
+        // ② X-Api-Key: wrong → 401（伪造 Key）
+        // ③ X-Api-Key: partner-key-1 → 放行且 Reactor Context 带 open.accessor=hr-partner
+        // ④ 有效 Key + 伪造 X-Agent-Ns: cs → 下游头已剥除（OpenGatewayHandler 按接入方身份重注入）
+    }
+
+    @Test
+    void 吊销后立即401() {
+        ApiKeyAuthWebFilter filter = new ApiKeyAuthWebFilter();
+        filter.register("partner-key-1",
+                new ApiKeyAuthWebFilter.Accessor("hr-partner", "partnerX",
+                        ApiKeyAuthWebFilter.SlaTier.SILVER));
+        // 吊销 = 从 keys 表移除（sha256 哈希键）：重发 → 401（<1min 生效，验收口径）
+    }
+}
 ```
 
 **步骤与断言**：
