@@ -48,12 +48,14 @@ flowchart LR
 ```java
 package com.example.mesh.sidecar;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.reactive.function.server.RouterFunction;
 import org.springframework.web.reactive.function.server.ServerResponse;
 import reactor.core.publisher.Mono;
 
 /** 最小 Sidecar——一个路由：劫持 /v1/chat/completions，本地限流后转发。 */
+@Slf4j
 public class LlmProxyHandler {
 
     private final org.springframework.web.reactive.function.client.WebClient upstream;
@@ -86,9 +88,9 @@ public class LlmProxyHandler {
     }
 
     private void emit(long startNanos, int status) {
-        // 最小遥测：stdout；06 迭代换 OTel 标准管道
-        System.out.printf("[MESH] path=/v1/chat/completions status=%d ms=%d%n",
-                status, (System.nanoTime() - startNanos) / 1_000_000);
+        // 最小遥测：结构化日志（@Slf4j）；06 迭代换 OTel 标准管道
+        log.info("网格转发结束，路径：{}，状态码：{}，耗时：{} ms",
+                "/v1/chat/completions", status, (System.nanoTime() - startNanos) / 1_000_000);
     }
 }
 ```
@@ -105,12 +107,61 @@ public class LlmProxyHandler {
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 编译启动 Sidecar（监听 15001） | 启动无异常；`base-url=127.0.0.1:15001` 的 Agent 首次调用透传成功，stdout 出现 `[MESH] ... status=200 ... ms=` |
+| 1 | 编译启动 Sidecar（监听 15001） | 启动无异常；`base-url=127.0.0.1:15001` 的 Agent 首次调用透传成功，日志出现「网格转发结束，路径：/v1/chat/completions，状态码：200，耗时：… ms」 |
 | 2 | 连续快速请求超过突发 5（超桶速） | 返回 `429` 与 `"mesh: local rate limited"` 文案（本地限流生效） |
 | 3 | ≤10 QPS 平稳请求 | 正常 200 透传，无 `Header 透传缺 Authorization` 类报错（上游仍能识别调用方） |
 | 4 | 直连 vs 走 Sidecar 各 100 次计时 | Sidecar 引入增量延迟 ≤5ms |
 
 **失败排查**：①改 base-url 后不通→`Authorization` 头未透传（转发时未拷贝请求 Header）；②限流不生效即全放行→桶算法窗口重置逻辑有误（检查 `tryAcquire` 的 refill）；③计时超 5ms→每请求新建上游连接（应复用 `WebClient` 连接池）。
+
+### 三.2 端到端 curl（零改造接管 + 本地遥测）
+
+对 Sidecar 接管端口（正文口径 15001）发一次标准 OpenAI 兼容请求：
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' -X POST http://127.0.0.1:15001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"用一句话介绍服务网格"}]}'
+```
+
+预期输出（上游正常放行，3-5 行）：
+
+```text
+{"id":"...","choices":[{"message":{"role":"assistant","content":"服务网格是一层独立于业务的基础设施，负责服务间通信的治理与可观测。"}}],"usage":{"total_tokens":42}}
+HTTP 200
+```
+
+同时 Sidecar 侧出现一条本地遥测日志（验收③）：
+
+```text
+... INFO ... 网格转发结束，路径：/v1/chat/completions，状态码：200，耗时：812 ms
+```
+
+### 三.3 运行配置与启动（两段式）
+
+```yaml
+# application.yaml（仅 .env import + 激活 profile）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: mesh
+```
+
+```yaml
+# application-mesh.yaml（Sidecar 监听端口——正文口径 15001，非业务端口 8081）
+server:
+  port: 15001
+mesh:
+  bypass: false           # 逃生门开关（§四）
+upstream:
+  base-url: ${LLM_UPSTREAM}
+```
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=mesh
+```
 
 ## 四、逃生门（Bypass）
 
@@ -138,7 +189,7 @@ public class LlmProxyHandler {
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | Agent 只改 base-url 指向 Sidecar（零代码改造）触发一轮调用 | 调用成功；Sidecar 遥测有该次记录（含 `[MESH]` 行） |
+| 1 | Agent 只改 base-url 指向 Sidecar（零代码改造）触发一轮调用 | 调用成功；Sidecar 遥测有该次记录（含「网格转发结束」日志行） |
 | 2 | 压测器（wrk/hey）发 15 QPS 持续 30s（桶 10） | 超桶速请求 429（本地限流生效）；≤10 QPS 正常通过 |
 | 3 | kill Sidecar 且 bypass=true 后再压测 | Agent 仍可直连上游（逃生门可用） |
 | 4 | 直连 vs 走 Sidecar 各 100 次计时 | Sidecar 增量延迟 ≤5ms |
