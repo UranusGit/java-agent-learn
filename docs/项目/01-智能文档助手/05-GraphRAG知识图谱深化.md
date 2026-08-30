@@ -236,7 +236,7 @@ ExtractedTriples t = extractionService.extract(chunk);
         </dependency>
 ```
 
-> 需在 pom.xml 中添加依赖。版本由 `spring-boot-starter-parent` 4.1.0 统一管理；本地未下载该 jar，Neo4j Driver API（`org.neo4j.driver.Driver`/`Session`）以引入版本为准。`application.yml` 追加：`spring.neo4j.uri: bolt://localhost:7687`、`spring.neo4j.authentication.username/password`（用 `${NEO4J_PASSWORD}` 环境变量占位）。
+> 需在 pom.xml 中添加依赖。版本由 `spring-boot-starter-parent` 4.1.0 统一管理；本地未下载该 jar，Neo4j Driver API（`org.neo4j.driver.Driver`/`Session`）以引入版本为准。`application-docassistant.yaml` 追加：`spring.neo4j.uri: bolt://localhost:7687`、`spring.neo4j.authentication.username/password`（用 `${NEO4J_PASSWORD}` 环境变量占位）。
 
 ### 4.2 图谱 Schema
 
@@ -284,6 +284,7 @@ package com.example.docassistant.graph;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Session;
 import org.springframework.ai.document.Document;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
@@ -293,8 +294,13 @@ import java.util.Map;
 /**
  * 图谱写入服务：三元组 upsert + 实体消歧
  * Neo4j Driver API（org.neo4j.driver）——需引入 spring-boot-starter-data-neo4j，以引入版本为准
+ *
+ * 开关落地（ADR-05-01 的"可回滚"）：app.graph.enabled=false（配置缺省时同样不装配），
+ * 本 Bean 不创建——ETL 图谱分支整体旁路，系统回退纯向量行为，检索主链路零改动。
+ * GraphSearchService / GraphIncrementalUpdater 加同一注解（同一开关一并下线）。
  */
 @Service
+@ConditionalOnProperty(name = "app.graph.enabled", havingValue = "true")
 public class GraphIngestService {
 
     private final Driver driver;
@@ -367,6 +373,14 @@ public class GraphIngestService {
 }
 ```
 
+开关对应的配置（`application-docassistant.yaml` 追加；不写则图谱路径整体不装配）：
+
+```yaml
+app:
+  graph:
+    enabled: true    # false 或删掉此键 → GraphIngest/GraphSearch/IncrementalUpdater 三 Bean 不创建，回退纯向量
+```
+
 ### 4.4 实体消歧：别名归一
 
 抽取出的实体天然带别名问题："合规部"、"法务合规部"、"Legal & Compliance" 可能是三个节点。归一策略分两层：
@@ -401,9 +415,9 @@ graph TB
 **材料——上传与 Cypher 核对**：
 
 ```bash
-curl -X POST http://localhost:8080/api/documents/upload -F "file=@org-structure.pdf"
-curl -X POST http://localhost:8080/api/documents/upload -F "file=@security-policy.pdf"
-curl -X POST http://localhost:8080/api/documents/upload -F "file=@budget-matrix.pdf"
+curl -X POST http://localhost:8081/api/documents/upload -F "file=@org-structure.pdf"
+curl -X POST http://localhost:8081/api/documents/upload -F "file=@security-policy.pdf"
+curl -X POST http://localhost:8081/api/documents/upload -F "file=@budget-matrix.pdf"
 ```
 
 ```cypher
@@ -490,6 +504,7 @@ package com.example.docassistant.graph;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Record;
 import org.neo4j.driver.Session;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -499,8 +514,10 @@ import java.util.Map;
 /**
  * 图遍历检索——多跳问题的执行器
  * 返回的 GraphPath携带证据 chunkId，可与向量检索结果统一重排
+ * 与 GraphIngestService 同受 app.graph.enabled 开关控制（缺省不装配）
  */
 @Service
+@ConditionalOnProperty(name = "app.graph.enabled", havingValue = "true")
 public class GraphSearchService {
 
     private final Driver driver;
@@ -563,14 +580,40 @@ public class GraphSearchService {
 在迭代二 `hybridSearch` 之上加一层路由分发（改动收敛在一个新方法，`HybridRagAdvisor` 改调 `routedSearch`）：
 
 ```java
-    // RetrievalService 内新增（其余代码不变）
+    // RetrievalService 内新增（其余代码不变）——QueryRouter / GraphSearchService 均受
+    // @ConditionalOnProperty(name = "app.graph.enabled", havingValue = "true") 控制，
+    // 因此用 ObjectProvider 可选注入：开关关闭时这两个 Bean 不存在，getIfAvailable() 返回 null
     private final QueryRouter queryRouter;
     private final GraphSearchService graphSearchService;
 
     /**
-     * 路由式检索：语义→迭代二混合检索；多跳→图遍历+混合检索联合；全局→社区摘要
+     * 更新后的完整构造器（迭代三：在原三参基础上追加两个图谱侧依赖）。
+     * ObjectProvider 是 Spring 对"可能缺席的 Bean"的标准注入形态——
+     * app.graph.enabled=false 时 QueryRouter/GraphSearchService 不装配，此处拿到 null 而不报错。
+     */
+    public RetrievalService(VectorStore vectorStore,
+                            KeywordSearchRepository keywordSearchRepo,
+                            RerankService rerankService,
+                            ObjectProvider<QueryRouter> queryRouterProvider,
+                            ObjectProvider<GraphSearchService> graphSearchServiceProvider) {
+        this.vectorStore = vectorStore;
+        this.keywordSearchRepo = keywordSearchRepo;
+        this.rerankService = rerankService;
+        this.queryRouter = queryRouterProvider.getIfAvailable();
+        this.graphSearchService = graphSearchServiceProvider.getIfAvailable();
+    }
+
+    /**
+     * 路由式检索：语义→迭代二混合检索；多跳→图遍历+混合检索联合；全局→社区摘要。
+     * 开关短路：graph 关闭（两个依赖为 null）时直接走混合检索——ADR-05-01 的可回滚路径。
      */
     public RoutedResult routedSearch(String query) {
+        if (queryRouter == null || graphSearchService == null) {
+            return new RoutedResult(hybridSearch(query),
+                    new QueryRouter.RouteDecision(QueryRouter.Route.SEMANTIC,
+                            List.of(), "app.graph.enabled=false，图谱路径已下线"),
+                    List.of());
+        }
         QueryRouter.RouteDecision decision = queryRouter.route(query);
         return switch (decision.route()) {
             case SEMANTIC -> new RoutedResult(hybridSearch(query), decision, List.of());
@@ -585,6 +628,17 @@ public class GraphSearchService {
     public record RoutedResult(List<SearchResult> vectorResults,
                                QueryRouter.RouteDecision decision,
                                List<GraphSearchService.GraphPath> graphPaths) {}
+```
+
+> 需在 `RetrievalService` 头部补 `import org.springframework.beans.factory.ObjectProvider;`。`ObjectProvider` 是 `ObjectFactory<T>` 的子接口（Spring Framework 6.x 真实 API，随 spring-boot-starter 提供），`getIfAvailable()` 在 Bean 缺席时返回 null 而不抛 `NoSuchBeanDefinitionException`——这是条件装配配可选依赖的标准姿势。
+
+同样给 `GraphSearchService`（§5.2）与 `GraphIncrementalUpdater`（§6.2）补上注解与 import：
+
+```java
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+// ...
+@Service
+@ConditionalOnProperty(name = "app.graph.enabled", havingValue = "true")
 ```
 
 ```mermaid
@@ -624,7 +678,7 @@ assertEquals(Route.GLOBAL, router.route("这批制度文档主要覆盖哪些主
 ```
 
 ```bash
-curl -X POST http://localhost:8080/api/qa -H "Content-Type: application/json" \
+curl -X POST http://localhost:8081/api/qa -H "Content-Type: application/json" \
   -d '{"question": "安全合规总监审批权限覆盖哪些部门的预算？"}'
 ```
 
@@ -656,6 +710,7 @@ package com.example.docassistant.graph;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Session;
 import org.springframework.ai.document.Document;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -663,8 +718,10 @@ import java.util.Map;
 
 /**
  * 图谱增量更新：文档级子图拆除 + 变更块重抽取 + 实体引用计数回收
+ * 与 GraphIngestService 同受 app.graph.enabled 开关控制（缺省不装配）
  */
 @Service
+@ConditionalOnProperty(name = "app.graph.enabled", havingValue = "true")
 public class GraphIncrementalUpdater {
 
     private final Driver driver;
@@ -749,7 +806,7 @@ sequenceDiagram
 **材料——换版上传与核对**：
 
 ```bash
-curl -X POST http://localhost:8080/api/documents/upload -F "file=@budget-matrix-v2.pdf"
+curl -X POST http://localhost:8081/api/documents/upload -F "file=@budget-matrix-v2.pdf"
 ```
 
 ```cypher

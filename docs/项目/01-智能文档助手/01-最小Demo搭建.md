@@ -159,7 +159,21 @@ graph LR
 
 > Tika（多格式解析）、JDBC（关键词检索）在迭代一 / 迭代二逐次追加，见后续文档的「pom.xml 追加依赖」块。
 
-### 3.2 完整 `application.yml`
+### 3.2 完整配置（两段式：`application.yaml` + `application-docassistant.yaml`）
+
+配置拆两段：`application.yaml` 只负责「激活 profile + 导入 .env 环境变量」两件事；全部业务配置（端口 / 数据库 / Spring AI）进 `application-docassistant.yaml`。
+
+**第一段——`application.yaml`（全局，只管引导）**：
+
+```yaml
+spring:
+  config:
+    import: optional:file:.env[.properties]   # 环境变量从项目根 .env 文件导入（可选，不存在不报错）
+  profiles:
+    active: docassistant                       # 单 profile：docassistant
+```
+
+**第二段——`application-docassistant.yaml`（业务配置，端口 8081）**：
 
 ```yaml
 spring:
@@ -201,11 +215,13 @@ spring:
         initialize-schema: true     # 自动创建 vector_store 表
 
 server:
-  port: 8080
+  port: 8081
 ```
 
 **关键配置说明**：
 
+- **两段式职责分离**：`application.yaml` 是「引导层」——只声明激活哪个 profile、从哪里导入密钥（`optional:file:.env[.properties]` 把 `.env` 文件的键值注入环境变量占位符，密钥不落仓库明文）；`application-docassistant.yaml` 是「业务层」——所有随环境变化的参数都在 profile 专属文件里。换环境（如生产）只需新增 `application-prod.yaml` 并改 `profiles.active`，引导层零改动。
+- **启动命令统一**：`mvn spring-boot:run -Dspring-boot.run.profiles=docassistant`（本篇后续所有验证步骤均以此命令启动，端口 8081）。
 - `temperature: 0.3`：文档问答是事实性任务，不需要高创造性。低温度让回答更确定、更贴合检索到的文档内容。
 - `index-type: HNSW`：Hierarchical Navigable Small World 图索引，在召回率和查询延迟之间取得最佳平衡，是 PgVector 推荐的索引类型。
 - `distance-type: COSINE_DISTANCE`：余弦距离最适合文本语义相似度计算。
@@ -311,7 +327,7 @@ psql -U docassistant -d docassistant -c "\d vector_store"
 |---|------|------------------|
 | 1 | 按材料 3.1 建 pom，`mvn clean compile` | BUILD SUCCESS；含 `spring-ai-bom:2.0.0 (import)`、`spring-ai-starter-model-openai:2.0.0`、`spring-ai-starter-vector-store-pgvector:2.0.0` |
 | 2 | 执行材料 3.3 的 DDL | `CREATE EXTENSION` 成功；`\dx` 列出 `vector`；`\d vector_store` 显示 `embedding vector(1536)` 与 HNSW 索引（或留给 initialize-schema 自动建，启动后核对同项） |
-| 3 | 检查 application.yml | `api-key` 为 `${OPENAI_API_KEY}` 占位符非明文；`dimensions: 1536` 与 DDL 一致；`max-in-memory-size: 20MB` 存在 |
+| 3 | 检查两段式配置 | `application.yaml` 仅含 `config.import` + `profiles.active: docassistant`；`application-docassistant.yaml` 中 `api-key` 为 `${OPENAI_API_KEY}` 占位符非明文、`dimensions: 1536` 与 DDL 一致、`max-in-memory-size: 20MB` 存在、`server.port: 8081` |
 | 4 | `AiConfig`/`DocAssistantApplication` 手写后编译通过 | 无符号缺失；系统提示词含"只使用参考文档"约束 |
 
 **失败排查**：
@@ -421,6 +437,7 @@ import com.example.docassistant.api.dto.DocumentStatusResponse;
 import com.example.docassistant.api.dto.UploadResponse;
 import com.example.docassistant.model.DocumentEntity;
 import com.example.docassistant.service.DocumentService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -436,11 +453,8 @@ import java.util.UUID;
 @RequestMapping("/api/documents")
 public class DocumentController {
 
-    private final DocumentService documentService;
-
-    public DocumentController(DocumentService documentService) {
-        this.documentService = documentService;
-    }
+    @Autowired
+    private DocumentService documentService;
 
     /**
      * 上传文档——同步处理（Demo 阶段简化为同步，迭代一改为异步）
@@ -663,15 +677,15 @@ public class GlobalExceptionHandler {
 
 ### 4.5 本节测试与验证（上传与同步 ETL）
 
-**前置条件**：§3.6 全部 PASS；`mvn spring-boot:run` 启动成功（8080）。
+**前置条件**：§3.6 全部 PASS；`mvn spring-boot:run -Dspring-boot.run.profiles=docassistant` 启动成功（8081）。
 
 **材料——上传与状态查询 curl**：
 
 ```bash
 # 准备一篇含"请假审批""出差报销"内容的 Markdown
-curl -X POST http://localhost:8080/api/documents/upload -F "file=@employee-handbook.md"
+curl -X POST http://localhost:8081/api/documents/upload -F "file=@employee-handbook.md"
 
-curl http://localhost:8080/api/documents/{documentId}/status
+curl http://localhost:8081/api/documents/{documentId}/status
 
 psql -U docassistant -d docassistant \
   -c "SELECT id, status, chunk_count FROM documents ORDER BY uploaded_at DESC LIMIT 1;"
@@ -685,7 +699,7 @@ psql -U docassistant -d docassistant -c "SELECT count(*) FROM vector_store;"
 | 1 | 材料 curl 上传（Docs 4.1-4.4 手写完毕） | 200；返回 `status=READY`、`chunkCount > 0` |
 | 2 | 状态查询接口 | 返回 `documentId/status/chunkCount` 三字段 |
 | 3 | SQL 两连查 | documents 最新行 status=READY；vector_store 行数 ≈ chunkCount（同一文档的块全部落库） |
-| 4 | 上传 `.pdf` 文件 | 按字节当 UTF-8 读，内容乱码或处理异常——Demo 已知局限（§7），不要求 READY |
+| 4 | 上传 `.pdf` 文件 | 按字节当 UTF-8 读，内容乱码或处理异常——Demo 已知局限（§8），不要求 READY |
 | 5 | 检查 `data/uploads/` | 出现 `{docId}_employee-handbook.md` 原始文件 |
 
 **失败排查**：
@@ -921,6 +935,7 @@ package com.example.docassistant.api;
 import com.example.docassistant.api.dto.QaRequest;
 import com.example.docassistant.api.dto.QaResponse;
 import com.example.docassistant.service.QaService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -933,11 +948,8 @@ import reactor.core.publisher.Mono;
 @RequestMapping("/api/qa")
 public class QaController {
 
-    private final QaService qaService;
-
-    public QaController(QaService qaService) {
-        this.qaService = qaService;
-    }
+    @Autowired
+    private QaService qaService;
 
     /**
      * 同步问答——返回结构化 JSON
@@ -991,17 +1003,17 @@ sequenceDiagram
 
 ```bash
 # 同步结构化问答
-curl -X POST http://localhost:8080/api/qa \
+curl -X POST http://localhost:8081/api/qa \
   -H "Content-Type: application/json" \
   -d '{"question": "年假超过多少天需要总监审批？"}'
 
 # SSE 流式问答（-N 关缓冲）
-curl -N -X POST http://localhost:8080/api/qa/stream \
+curl -N -X POST http://localhost:8081/api/qa/stream \
   -H "Content-Type: application/json" \
   -d '{"question": "出差报销流程是什么？"}'
 
 # 无关问题（拒答链路）
-curl -X POST http://localhost:8080/api/qa \
+curl -X POST http://localhost:8081/api/qa \
   -H "Content-Type: application/json" \
   -d '{"question": "明天上海天气怎么样？"}'
 ```
@@ -1026,7 +1038,7 @@ curl -X POST http://localhost:8080/api/qa \
 
 ## 6. 全篇回归验证
 
-> 前置环境变量（不落明文到仓库）：`export OPENAI_API_KEY=sk-xxx`、`export DB_USER=docassistant`、`export DB_PASSWORD=docassistant`，然后 `mvn spring-boot:run`。单节验证材料已上移至 §3.6 / §4.5 / §5.4，此处只做跨章节回归。
+> 前置环境变量（不落明文到仓库）：`export OPENAI_API_KEY=sk-xxx`、`export DB_USER=docassistant`、`export DB_PASSWORD=docassistant`，然后 `mvn spring-boot:run -Dspring-boot.run.profiles=docassistant`。单节验证材料已上移至 §3.6 / §4.5 / §5.4，此处只做跨章节回归。
 
 **回归断言**（本篇全部小节验证通过后，最终整体验收，对应 §2.2 验收表 5 个"是"项）：
 
@@ -1036,11 +1048,35 @@ curl -X POST http://localhost:8080/api/qa \
 | 2 | 同一进程内依次：上传新 Markdown → 同步问答 → 流式问答 → 无关问题 | 四条链路全部 PASS，无状态串扰 |
 | 3 | 对照 §2.2 验收表逐行打勾 | 5 个"是"项全部满足（上传 READY / chunkCount>0 / 检索命中 / 结构化三字段 / SSE 逐 token）；2 个"否"项确未实现 |
 
-**失败排查**：重启失败→8080 被占用（`lsof -i:8080`）；重复入库导致检索重复→回查 §4.5 排查项，治理方案见迭代一；混合链路异常→分别回查 §4.5 / §5.4 排查项。
+**失败排查**：重启失败→8081 被占用（`lsof -i:8081`）；重复入库导致检索重复→回查 §4.5 排查项，治理方案见迭代一；混合链路异常→分别回查 §4.5 / §5.4 排查项。
 
 ---
 
-## 7. Demo 的局限性与改进方向
+## 7. 验收对照
+
+> 验收项从 §2.2 技术范围表 5 个"是"项拆解，每项标注落地章节与验证手段；状态在 §6 回归全 PASS 后打勾。
+
+| # | 验收项 | 标准 | 状态 |
+|---|--------|------|------|
+| 1 | Markdown 文档上传 | curl 上传返回 200 且 `status=READY`（材料 curl 见 §4.5） | ✅（落地 §4，验证 §4.5 步骤 1） |
+| 2 | 文本分块 | `chunkCount > 0`，vector_store 行数与 chunkCount 一致 | ✅（落地 §4.3，验证 §4.5 步骤 3） |
+| 3 | 向量检索 | 提问命中相关文档块，answer 基于上传手册内容而非编造 | ✅（落地 §5.2，验证 §5.4 步骤 1） |
+| 4 | 结构化回答 | 返回 `answer` + `sources` + `confident` 三字段 | ✅（落地 §5.1/§5.2，验证 §5.4 步骤 1） |
+| 5 | SSE 流式输出 | `curl -N` 收到 ≥3 个 `data:` 增量块，非一次性整段 | ✅（落地 §5.2/§5.3，验证 §5.4 步骤 2） |
+| 6 | 拒答链路（附加） | 无关问题返回"根据现有文档，我无法回答这个问题"且 `confident=false` | ✅（落地 §3.5 系统提示词，验证 §5.4 步骤 3） |
+
+两个"否"项（PDF/Word 解析、混合检索/重排）未在本篇实现，落点分别为迭代一（[02](02-文档解析与向量化.md)）与迭代二（[03](03-多源检索与重排.md)）。
+
+### 7.1 本节核对（验收与验证映射）
+
+| # | 核对项 | 通过判据 |
+|---|--------|---------|
+| 1 | 验收表 5+1 项每项能指到落地章节与验证步骤 | 上传/分块→§4.5；检索/结构化/流式/拒答→§5.4 |
+| 2 | 无"验收项无验证手段"的孤儿条目 | 逐行核对 |
+
+---
+
+## 8. Demo 的局限性与改进方向
 
 当前 Demo 能跑通端到端管线，但距离生产级还有明显差距：
 
@@ -1053,7 +1089,7 @@ curl -X POST http://localhost:8080/api/qa \
 | 无重排 | Top-K 中最相关的不在前面 | Reranker 重排 | 迭代二 |
 | 无引用标注 | sources 是后补的，非 LLM 生成 | LLM 原生生成引用 | 迭代二 |
 
-### 7.1 本节核对（局限与改进映射）
+### 8.1 本节核对（局限与改进映射）
 
 | # | 核对项 | 通过判据 |
 |---|--------|---------|
@@ -1062,7 +1098,7 @@ curl -X POST http://localhost:8080/api/qa \
 
 ---
 
-## 8. ADR 演进决策
+## 9. ADR 演进决策
 
 ### ADR 001-01：迭代零允许"正确架构缺席"，但必须埋下三个换接口
 - **决策**：v0 用最直白实现（同步 ETL、固定分块、纯向量检索），但三个换接口在代码里留名——① 文档处理收敛到 `DocumentService.upload`（迭代一换异步 `EtlService`）② 分块收敛到 `TextSplitter`（迭代一换 `ParagraphAwareSplitter`）③ 检索收敛到 `VectorStore.similaritySearch`（迭代二换 `RetrievalService` 混合检索）
@@ -1076,7 +1112,7 @@ curl -X POST http://localhost:8080/api/qa \
 - **决策**：`chatClient.prompt()...call().entity(QaResponse.class)`；`entity(Class, Consumer<EntityParamSpec>)` 带 lambda 的变体也是真实重载（`useProviderStructuredOutput()` / `validateSchema()`，javap 实证），需要「使用供应商原生结构化输出 / 校验 Schema」时用它（[附录 05-02 §2]）
 - **取舍理由**：两种形态都真实存在（`entity(Class)` / `entity(Class, spec)` 等 6 种重载）；本项目迭代零用最简形态，无校验需求，后续迭代可升级到 `spec -> spec.validateSchema()`
 
-### 8.1 本节核对（决策与代码一致性）
+### 9.1 本节核对（决策与代码一致性）
 
 | # | 核对项 | 通过判据 |
 |---|--------|---------|
@@ -1086,7 +1122,7 @@ curl -X POST http://localhost:8080/api/qa \
 
 ---
 
-## 9. 总结
+## 10. 总结
 
 本文从零搭建了一个端到端的 RAG 文档问答 Demo，核心完成了以下工作：
 
