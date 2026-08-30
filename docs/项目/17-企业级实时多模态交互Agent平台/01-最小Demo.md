@@ -46,34 +46,55 @@ flowchart LR
 ## 三、核心代码
 
 ```java
-package com.example.voiceagent;
+package com.example.voiceagent.controller;
 
+import java.util.Map;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.http.client.MultipartBodyBuilder;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import jakarta.annotation.PostConstruct;
 
 /** 最小语音闭环——整句版（后续迭代改流式）。 */
 @RestController
+@RequestMapping("/voice")
 public class VoiceController {
 
-    private final ChatClient chatClient;          // javap 实证 API
-    private final WebClient asr;                  // 第三方 ASR（OpenAI 兼容 /audio/transcriptions）
-    private final WebClient tts;                  // 第三方 TTS（/audio/speech）
+    @Autowired
+    private ChatClient chatClient;                // javap 实证 API
 
-    public VoiceController(ChatClient chatClient, WebClient.Builder wb) {
-        this.chatClient = chatClient;
-        this.asr = wb.baseUrl(System.getenv("ASR_URL")).build();
-        this.tts = wb.baseUrl(System.getenv("TTS_URL")).build();
+    @Autowired
+    private WebClient.Builder webClientBuilder;
+
+    @Value("${voice.asr-url}")                    // .env 注入（见 §三.3 两段式配置）
+    private String asrUrl;                        // 第三方 ASR（OpenAI 兼容 /audio/transcriptions）
+
+    @Value("${voice.tts-url}")
+    private String ttsUrl;                        // 第三方 TTS（/audio/speech）
+
+    private WebClient asr;
+    private WebClient tts;
+
+    @PostConstruct
+    void initClients() {
+        this.asr = webClientBuilder.baseUrl(asrUrl).build();
+        this.tts = webClientBuilder.baseUrl(ttsUrl).build();
     }
 
-    @PostMapping(value = "/voice", consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
-                 produces = "audio/mpeg")
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = "audio/mpeg")
     public Mono<byte[]> voice(@RequestParam("audio") byte[] audio) {
         return asr.post().uri("/transcriptions")
-                .contentType(MediaType.MULTIPART_FORM_DATA)
-                .bodyValue(audioBody(audio))                       // multipart 组包（略）
+                .body(BodyInserters.fromMultipartData(audioBody(audio)))  // multipart 组包（§三 内展开）
                 .retrieve().bodyToMono(Transcription.class)
                 .map(Transcription::text)
                 .flatMap(text -> Mono.fromCallable(() ->
@@ -82,8 +103,18 @@ public class VoiceController {
                                 .user(text)
                                 .call().content()))                // javap 实证：content()
                 .flatMap(reply -> tts.post().uri("/speech")
-                        .bodyValue(java.util.Map.of("input", reply, "voice", "alloy"))
+                        .bodyValue(Map.of("input", reply, "voice", "alloy"))
                         .retrieve().bodyToMono(byte[].class));
+    }
+
+    /** multipart 组包完整方法体——Spring Boot 4.1.0（Spring Framework 7）真实 API，javap 实证 */
+    private MultiValueMap<String, HttpEntity<?>> audioBody(byte[] audio) {
+        MultipartBodyBuilder builder = new MultipartBodyBuilder();
+        builder.part("audio", audio)                               // 字段名与 @RequestParam("audio") 一致
+                .contentType(MediaType.parseMediaType("audio/wav"))
+                .filename("hello.wav");                            // PartBuilder：文件名 + 类型（真实 API）
+        builder.part("model", "whisper-1");                        // OpenAI 兼容转写接口必带 model
+        return builder.build();                                    // → MultiValueMap<String, HttpEntity<?>>
     }
 
     record Transcription(String text) {}
@@ -92,7 +123,7 @@ public class VoiceController {
 
 ### 三.1 本节测试与验证（整句闭环）
 
-**前置条件**：`/voice` 端点（音频上传→ASR→LLM→TTS→MP3 返回）实现并 `mvn spring-boot:run` 启动；ASR/TTS 可 mock 故障；ffmpeg 可用。
+**前置条件**：`/voice` 端点（音频上传→ASR→LLM→TTS→MP3 返回）实现；按 §三.3 两段式配置以 `mvn spring-boot:run -Dspring-boot.run.profiles=voice` 启动（监听 8081）；ASR/TTS 可 mock 故障；ffmpeg 可用。
 
 **材料 A——音频样本**：录一段 2s 的"你好，请介绍一下你们的产品"（wav/mp3 均备）。
 
@@ -102,12 +133,63 @@ public class VoiceController {
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | `curl -F file=@hello.wav /voice` -o out.mp3 | 返回 200；out.mp3 可播放且内容是对产品的中文回答 |
+| 1 | §三.1 末尾 `/voice` 端 curl | 返回 200；out.mp3 可播放且内容是对产品的中文回答 |
 | 2 | 材料B 开启后再 curl | 返回 502 + 文字版回答（降级通道不死等） |
 | 3 | 步骤1 计时（3 次取均值） | 端到端 ≤5s（整句基线；02 迭代再压） |
 | 4 | 上传非音频文件 | 明确 4xx 错误码（不进 ASR） |
 
-**失败排查**：①无声→TTS 编码采样率与 Content-Type 不符（用 ffprobe 检查 out.mp3）；②降级挂死→降级路径没有超时；③超 5s→串行 ASR/LLM/TTS 无预连接（连接池预热）。
+**`/voice` 端 curl 完整命令**（响应判据见后）：
+
+```bash
+curl -sS -D - -o out.mp3 \
+  -F "audio=@hello.wav;type=audio/wav" \
+  http://localhost:8081/voice
+```
+
+响应判据（三选一工具核验均应通过）：
+
+```text
+HTTP/1.1 200 OK
+Content-Type: audio/mpeg
+```
+
+```bash
+file out.mp3        # → MPEG ADTS, ...（音频容器，非报错 JSON）
+ffprobe out.mp3     # → Duration: 00:00:01~03（一句话回答的时长量级）
+```
+
+内容判据：out.mp3 可播放，且内容是对"介绍你们的产品"的中文口语化回答（对应材料 A 提问）。
+
+### 三.3 运行配置与启动（两段式）
+
+```yaml
+# application.yaml（仅 .env import + 激活 profile）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: voice
+```
+
+```yaml
+# application-voice.yaml（端口 + 模型 + ASR/TTS 地址）
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+voice:
+  asr-url: ${ASR_URL}                             # OpenAI 兼容 /audio/transcriptions（.env 注入）
+  tts-url: ${TTS_URL}                             # /audio/speech（.env 注入）
+```
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=voice
+```
 
 ## 四、全篇回归验证
 
