@@ -12,7 +12,7 @@
 | 问 | 答 |
 |----|----|
 | **新增了什么需求** | ① AI 答不上/可能答错时要主动转人工，不能硬答（差评主要来源）；② 创建换货工单、退款等**写操作**必须有人确认后执行；③ 转人工后坐席需要 AI 旁路辅助（话术建议 + 会话摘要交接）；④ 服务质量需要系统化抽检（满意度归因 + 合规红线） |
-| **影响了哪些模块** | 新增 `hitl/`（置信度自评 + 转接队列 + 审批工具包装 + 挂起恢复）、`qc/`（合规/满意度评估器）；改动 `tools/`（危险工具挂审批包装）、`ChatService`（双信号转人工判定）、`ChatController`（SSE 事件拆分）、SSE 事件枚举（00 的 `SSEEventType` 扩展出四类：`TRANSFER` / `TRANSFER_OPTIONAL` / `APPROVAL_REQUIRED` / `suggestion`） |
+| **影响了哪些模块** | 新增 `hitl/`（置信度自评 + 转接队列 + 审批工具包装 + 挂起恢复）、`qc/`（合规/满意度评估器）；改动 `tool/`（危险工具挂审批包装）、`ChatService`（双信号转人工判定）、`ChatController`（SSE 事件拆分）、SSE 事件枚举（00 的 `SSEEventType` 扩展出四类：`TRANSFER` / `TRANSFER_OPTIONAL` / `APPROVAL_REQUIRED` / `suggestion`） |
 | **架构如何演进** | 纯 AI 闭环 → **人机双工位**：AI 工位（ChatClient 链）与坐席工位（工作台）经「转接队列 + 审批中心 + 辅助旁路」协作；对话所有权（AI/人工）成为会话的一等状态 |
 | **上一版本的痛点是什么** | 06 后对话质量提升，但 ① 低置信问题 LLM 仍会编一个「看起来像」的答案；② 槽位填齐即可执行 `createExchange`，无人工确认——错单成本直接落到业务；③ 转人工=用户自己打电话，无数字通道 |
 
@@ -136,7 +136,8 @@ package com.shop.customer.service;
 
 import com.shop.customer.hitl.ConfidenceEvaluator;
 import com.shop.customer.hitl.TransferService;
-import com.shop.customer.dto.IntentResult;
+import com.shop.customer.intent.IntentClassifier;
+import com.shop.customer.intent.IntentResult;
 import com.shop.customer.slot.SlotManager;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -252,7 +253,7 @@ public class ChatController {
     public ChatController(ChatService service) { this.service = service; }
 
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> stream(String prompt, @RequestHeader String sessionId) {
+    public Flux<ServerSentEvent<String>> stream(@RequestParam String sessionId, @RequestBody String prompt) {
         return service.stream(prompt, sessionId)
                 .map(token -> {
                     if (token.startsWith("[TRANSFER:")) {
@@ -300,7 +301,7 @@ sequenceDiagram
 
 ---
 
-### 2.5 本节测试与验证（置信度评估与转人工）
+### 2.3 本节测试与验证（置信度评估与转人工）
 
 **前置条件**：06 已通过；双信号置信度评估已接入路由。
 
@@ -308,7 +309,7 @@ sequenceDiagram
 
 ```bash
 # ① 问一个知识库没有的问题，触发转人工
-curl -N -X POST "http://localhost:8080/api/chat/stream?s=t1" \
+curl -N -X POST "http://localhost:8081/api/chat/stream?sessionId=t1" \
   -H "Content-Type: text/plain" -d "帮我改一下收货地址顺便把发票抬头改成公司"
 ```
 
@@ -317,7 +318,7 @@ curl -N -X POST "http://localhost:8080/api/chat/stream?s=t1" \
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
 | 1 | 材料① | SSE 出现 `event: TRANSFER` |
-| 2 | `ConfidenceAssessmentTest`（10 条「知识库无答案」问题） | `hasAnswer=false` 时触发转人工路径 |
+| 2 | `ConfidenceAssessmentTest`（10 条「知识库无答案」问题，`src/test/java/com/shop/customer/hitl/ConfidenceAssessmentTest.java`） | `hasAnswer=false` 时触发转人工路径 |
 
 **失败排查**：①该转不转→置信度阈值过高或自评 Prompt 太宽松；②误转率超标→可答样本被判低置信（补金标样本校准阈值）。
 
@@ -558,7 +559,7 @@ public class ApprovalCenter {
 
 ---
 
-### 3.6 本节测试与验证（审批闸门与挂起恢复）
+### 3.4 本节测试与验证（审批闸门与挂起恢复）
 
 **前置条件**：§2.5 已通过；`createExchange` 已被审批 ToolCallback 包装；槽位链路（06）可用。
 
@@ -566,11 +567,11 @@ public class ApprovalCenter {
 
 ```bash
 # ② 槽位齐全后 AI 调 createExchange → 触发审批
-curl -N -X POST "http://localhost:8080/api/chat/stream?s=t2" \
+curl -N -X POST "http://localhost:8081/api/chat/stream?sessionId=t2" \
   -H "Content-Type: text/plain" -d "订单 DD20240810 换 XL 码"
 # 预期：SSE 出现 event: APPROVAL_REQUIRED + 审批单号；回复说已提交审批
 # 坐席批准后：
-curl -X POST "http://localhost:8080/api/approval/{id}/decision" \
+curl -X POST "http://localhost:8081/api/approval/{id}/decision" \
   -H "Content-Type: application/json" -d '{"approve": true}'
 ```
 
@@ -580,8 +581,8 @@ curl -X POST "http://localhost:8080/api/approval/{id}/decision" \
 |---|------|------------------|
 | 1 | 材料② 首条 | SSE 出现 `event: APPROVAL_REQUIRED` + 审批单号，未真正执行工具 |
 | 2 | 材料② 批准后问「换货办好了吗」 | ≤3 秒内回复含工单号（凭证放行执行） |
-| 3 | `ApprovalToolCallbackTest` | 无凭证调用返回占位文本（不含工单号）；批准后才真正执行 delegate；拒绝后不放行 |
-| 4 | `ApprovalTimeoutTest`（模拟 30 分钟超时） | 审批单自动置为拒绝，用户收到说明 |
+| 3 | `ApprovalToolCallbackTest`（`src/test/java/com/shop/customer/hitl/ApprovalToolCallbackTest.java`） | 无凭证调用返回占位文本（不含工单号）；批准后才真正执行 delegate；拒绝后不放行 |
+| 4 | `ApprovalTimeoutTest`（模拟 30 分钟超时，`src/test/java/com/shop/customer/hitl/ApprovalTimeoutTest.java`） | 审批单自动置为拒绝，用户收到说明 |
 | 5 | 挂起期间 `jstack` | 无 BLOCKED on approval（挂起不占线程） |
 
 **失败排查**：①未审批就执行→包装层未生效（确认 delegate 在凭证校验之后才调用）；②批准后不恢复→恢复事件未订阅或凭证传递断链；③挂起占线程→误用同步 wait，应事件驱动恢复。
@@ -632,9 +633,20 @@ graph TB
 
 ---
 
-### 4.4 本节测试与验证（旁路话术与采纳回执）
+### 4.1 本节测试与验证（旁路话术与采纳回执）
 
 **前置条件**：转人工链路可用；坐席端 SSE 已接入。
+
+**材料——SSE 订阅核对命令**：
+
+```bash
+# ① 触发转人工（低置信问题）后，坐席工作台侧订阅话术建议通道（独立 SSE，用户端不可见）
+curl -N -X POST "http://localhost:8081/api/chat/stream?sessionId=t1" \
+  -H "Content-Type: text/plain" -d "帮我改一下收货地址顺便把发票抬头改成公司"
+# ② 同时观察坐席端建议通道（端点按实现定义，此处为订阅核对骨架）：
+#    curl -N http://localhost:8081/api/agent-assist/t1/suggestions
+# 预期收到 suggestion 事件；用户端 /api/chat/stream 无此事件
+```
 
 **步骤与断言**：
 
@@ -737,11 +749,17 @@ public class ComplianceEvaluator implements Evaluator {
 
 **前置条件**：质检流水线已接入；Micrometer 依赖已加（actuator）。
 
+**材料——评估器单测命令**：
+
+```bash
+mvn test -Dtest=ComplianceEvaluatorTest
+```
+
 **步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | `ComplianceEvaluatorTest`（5 条红线 + 5 条正常金标样本） | 红线 100% 命中、正常 0 误报 |
+| 1 | `ComplianceEvaluatorTest`（5 条红线 + 5 条正常金标样本，`src/test/java/com/shop/customer/qc/ComplianceEvaluatorTest.java`） | 红线 100% 命中、正常 0 误报 |
 | 2 | 差评会话产生后观察质检池 | 触发式 100% 抽样将其纳入（非仅随机 5%） |
 | 3 | 看板/Micrometer 计数 | 质检报告指标可查（Relevancy/Compliance/Satisfaction 分计数） |
 
@@ -749,7 +767,7 @@ public class ComplianceEvaluator implements Evaluator {
 
 ## 6. 全篇回归验证（端到端）
 
-**回归断言**（§2.5 / §3.6 / §4.4 / §5.3 均通过后，最终整体验收）：
+**回归断言**（§2.3 / §3.4 / §4.1 / §5.3 均通过后，最终整体验收）：
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|

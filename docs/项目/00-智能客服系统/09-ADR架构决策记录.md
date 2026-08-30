@@ -84,7 +84,7 @@ flowchart LR
 
 - **上下文**：跨重启多轮对话要求记忆持久化；本地 jar 实证 Spring AI 2.0 **只有 `InMemoryChatMemoryRepository`**，无官方 Redis 实现（[04 §1] 关键 API 澄清）。
 - **备选**：A：等官方/引社区实现（不可控）；B：自研 `implements ChatMemoryRepository`（4 个同步方法，javap 实证签名）；C：JDBC 仓库（官方 starter 存在但本地未实证，且客服会话 24h TTL 语义 Redis 更贴）。
-- **决策**：B。同步 `RedisTemplate` + `GenericJackson2JsonRedisSerializer`（带类型信息还原 Message 子类型）。
+- **决策**：B。同步 `RedisTemplate` + 存 JSON 字符串（`Message → Map → JSON`；读回按 `MessageType` 用 `.builder()` 重建——**不是** `GenericJackson2JsonRedisSerializer` 直存 Message，见 [04 §2.3] 序列化铁律）。
 - **取舍**：`ChatMemoryRepository` 是同步 SPI，Redis 毫秒级延迟可接受；严格无阻塞诉求时可把记忆读写下沉独立服务。**教训沉淀**（[06 §4.2]）：初版 `saveAll` 用 `rightPushAll` 是追加语义，压缩重写场景需改为 DEL+RPUSH——自研的代价就是这些边角要自己踩。
 - **可回滚性**：中。换存储 = 换 repository 实现，门面 `MessageWindowChatMemory` 不动。
 

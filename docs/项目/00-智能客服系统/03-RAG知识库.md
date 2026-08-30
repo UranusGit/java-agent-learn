@@ -7,9 +7,16 @@
 
 ---
 
-## 1. 为什么需要 RAG
+## 1. 四问（本迭代）
 
-FAQ 工具两个硬伤：① 只能回答预置的几条 ② 产品手册几百页，无法全塞进 Prompt。RAG 让 Agent 从「预置 FAQ」升级为「任意产品文档可答」。
+| 问 | 答 |
+|----|----|
+| **新增了什么需求** | 接入向量数据库（PGVector），实现基于产品手册的智能问答——文档 ETL 流水线、Embedding 向量化、`QuestionAnswerAdvisor` 集成 |
+| **影响了哪些模块** | 新增 `rag/`（`VectorStoreConfig`/`KnowledgeBaseLoader`）；改动 `ChatClientConfig`（挂 `QuestionAnswerAdvisor`）、`pom.xml`（PGVector/文档解析依赖）、配置（`spring.ai.vectorstore.pgvector.*`） |
+| **架构如何演进** | 预置 FAQ 工具 → RAG 检索注入：ETL 三件套（Reader→Splitter→VectorStore）+ `QuestionAnswerAdvisor` 横切，客服 Agent 从「预置 FAQ」升级为「任意产品文档可答」 |
+| **上一版痛点是什么** | 02 后 FAQ 工具两个硬伤：只能回答预置的几条；产品手册几百页无法全塞进 Prompt，长尾问题答不了 |
+
+> FAQ 工具两个硬伤：① 只能回答预置的几条 ② 产品手册几百页，无法全塞进 Prompt。RAG 让 Agent 从「预置 FAQ」升级为「任意产品文档可答」。
 
 ## 2. 完整代码（照抄即可）
 
@@ -31,7 +38,7 @@ FAQ 工具两个硬伤：① 只能回答预置的几条 ② 产品手册几百�
         </dependency>
 ```
 
-### 2.2 `application.yml` 追加（PGVector）
+### 2.2 `application-customerservice.yaml` 追加（PGVector）
 
 ```yaml
 spring:
@@ -44,12 +51,12 @@ spring:
       pgvector:
         index-type: HNSW
         distance-type: COSINE_DISTANCE
-        dimensions: 1536
+        dimensions: 1024   # 与 embedding 模型真实输出一致（本机 bge-large-zh 为 1024，见 §4）
 ```
 
 ### 2.3 `VectorStoreConfig.java` ——【重要】不要手写 `vectorStore` bean
 
-> **⚠️ 2026-08-22 实证修正**：`spring-ai-starter-vector-store-pgvector` 自带的 `PgVectorStoreAutoConfiguration` **已注册名为 `vectorStore` 的 bean**（javap 实证：该方法标 `@ConditionalOnMissingBean`）。若再手写一个同名 `vectorStore` bean，会触发 `BeanDefinitionOverrideException`（Spring Boot 默认 `allow-bean-definition-overriding=false`）。**正确姿势：不手写 `vectorStore`，让 starter 自动配置接管**——它在启动时读取 `application.yml` 里 `spring.ai.vectorstore.pgvector.*` 的全部参数自动建库。你只需要提供一个 `TokenTextSplitter` bean：
+> **⚠️ 2026-08-22 实证修正**：`spring-ai-starter-vector-store-pgvector` 自带的 `PgVectorStoreAutoConfiguration` **已注册名为 `vectorStore` 的 bean**（javap 实证：该方法标 `@ConditionalOnMissingBean`）。若再手写一个同名 `vectorStore` bean，会触发 `BeanDefinitionOverrideException`（Spring Boot 默认 `allow-bean-definition-overriding=false`）。**正确姿势：不手写 `vectorStore`，让 starter 自动配置接管**——它在启动时读取 `application-customerservice.yaml` 里 `spring.ai.vectorstore.pgvector.*` 的全部参数自动建库。你只需要提供一个 `TokenTextSplitter` bean：
 
 ```java
 package com.shop.customer.rag;
@@ -92,7 +99,7 @@ public class VectorStoreConfig {
   ```
   注意：排除后 yaml 的 `spring.ai.vectorstore.pgvector.*` **不再被自动读取**，你必须在手写 bean 里显式传参，否则建库参数（dimensions/schema）丢失。
 
-- **方式二（开关关闭）**：在 `application.yml` 加配置（具体开关键以 `PgVectorStoreProperties` 实证为准）：
+- **方式二（开关关闭）**：在 `application-customerservice.yaml` 加配置（具体开关键以 `PgVectorStoreProperties` 实证为准）：
   ```yaml
   spring:
     ai:
@@ -151,7 +158,7 @@ public class KnowledgeBaseLoader implements CommandLineRunner {
 
 #### 2.4.1 本节测试与验证（ETL 入库）
 
-**前置条件**：PGVector 依赖与 `application.yml` 已就绪；PG 实例可连（5432）；`manual/产品手册.md` 在 classpath。
+**前置条件**：PGVector 依赖与 `application-customerservice.yaml` 已就绪；PG 实例可连（5432）；`manual/产品手册.md` 在 classpath。
 
 **材料——入库核对 SQL**：
 
@@ -165,7 +172,7 @@ SELECT LEFT(content, 50), metadata FROM vector_store LIMIT 3;
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
 | 1 | 启动应用 | 日志无 `BeanDefinitionOverrideException`（未手写同名 vectorStore）；KnowledgeBaseLoader 正常执行 |
-| 2 | 材料 COUNT | 行数 ≥1（demo01 手册约 940 字节、chunkSize=800 → 1–2 块） |
+| 2 | 材料 COUNT | 行数 ≥1（产品手册约 940 字节、chunkSize=800 → 1–2 块） |
 | 3 | 材料 LIMIT 抽查 | content 为手册正文片段，`embedding` 列非空 |
 | 4 | 维度核对 | `dimensions` 与 embedding 模型真实输出一致（本机 bge-large-zh 为 1024，见 §4 运行备注） |
 
@@ -236,7 +243,14 @@ public class ChatClientConfig {
 
 ### 2.8 本节测试与验证（RAG 问答与工具协同）
 
-> **前置**：§2.4.1 入库验证已通过（§2.5 Advisor 已挂载）。以下问题按「手册正文真实内容」和仓库真实数据（FAQ 3 条、订单 2 单）逐一设计，可直接复制到 `/demo01/chat` 逐个提问。
+> **前置**：§2.4.1 入库验证已通过（§2.5 Advisor 已挂载）。以下问题按「手册正文真实内容」和仓库真实数据（FAQ 3 条、订单 2 单）逐一设计，可直接复制到 `/api/chat` 逐个提问。
+
+**材料——curl 探针（逐条替换问题发送）**：
+
+```bash
+curl -X POST "http://localhost:8081/api/chat" -H "Content-Type: text/plain" -d "人工客服的上班时间是什么时候？"
+curl -X POST "http://localhost:8081/api/chat" -H "Content-Type: text/plain" -d "推荐一部好看的电影"
+```
 
 ### 材料 A——手册内可答（RAG 应命中 → 基于手册作答）
 
@@ -254,7 +268,7 @@ public class ChatClientConfig {
 
 ### 材料 A'——长尾问题（未写进 FAQ，但手册有据 → RAG 兜底，FAQ 工具不命中）
 
-FAQ 工具（`FaqTool`）只有「退换货/以旧换新/发货时效」3 条。以下问题**手册有答案但 FAQ 查不到**，用来验证 RAG 兜底：
+FAQ 工具（`FaqQueryTool`）只有「退换货/以旧换新/发货时效」3 条。以下问题**手册有答案但 FAQ 查不到**，用来验证 RAG 兜底：
 
 | # | 问题（可直接复制） | 手册依据 |
 |---|-------------------|---------|
@@ -264,15 +278,15 @@ FAQ 工具（`FaqTool`）只有「退换货/以旧换新/发货时效」3 条。
 | W4 | 值班时间之外客服在吗？ | 注意事项（工作时间之外无人工） |
 | W5 | 不确定的信息客服要怎么回应？ | 话术规范（转人工） |
 
-### 材料 A"——工具类（命中 FaqTool / OrderTool，验证工具链路）
+### 材料 A"——工具类（命中 FaqQueryTool / OrderQueryTool，验证工具链路）
 
 | # | 问题 | 预期命中的工具 |
 |---|------|---------------|
-| T1 | 退换货政策是什么 | FaqTool（faq=「退换货政策是什么」） |
-| T2 | 支持以旧换新吗 | FaqTool（faq=「支持以旧换新吗」） |
-| T3 | DD20240810 这个订单什么状态了 | OrderTool（订单「已发货/顺丰 SF123456789」） |
-| T4 | 查一下订单 DD20240811 | OrderTool（订单「待支付/无物流」） |
-| T5 | 我的订单 DD123456789 呢（不存在的单号）| OrderTool 返回 null → 如实说查不到 |
+| T1 | 退换货政策是什么 | FaqQueryTool（faq=「退换货政策是什么」） |
+| T2 | 支持以旧换新吗 | FaqQueryTool（faq=「支持以旧换新吗」） |
+| T3 | DD20240810 这个订单什么状态了 | OrderQueryTool（订单「已发货/顺丰 SF123456789」） |
+| T4 | 查一下订单 DD20240811 | OrderQueryTool（订单「待支付/无物流」） |
+| T5 | 我的订单 DD123456789 呢（不存在的单号）| OrderQueryTool 返回 null → 如实说查不到 |
 
 ### 材料 B——无关问题（RAG 应**拒绝召回**，明确"手册未提及"）
 
@@ -299,8 +313,52 @@ FAQ 工具（`FaqTool`）只有「退换货/以旧换新/发货时效」3 条。
 - A 命中率低 → 分块过大（关键句被子块稀释）或 `topK`/`similarityThreshold` 过严
 - W/W1–W5 误触发 FAQ 工具 → FAQ 与手册措辞撞了，长尾口径要在 System Prompt 讲清"工具查不到再看手册"
 - B 强召回 → `similarityThreshold` 过低或未生效（确认 QuestionAnswerAdvisor 真的挂了）
-- T5 捏造物流 → `OrderTool` 返回 null 但 System Prompt 没约束"查不到就明说"
+- T5 捏造物流 → `OrderQueryTool` 返回 null 但 System Prompt 没约束"查不到就明说"
 - 全部无依据 → 检索块没注入 Prompt（RAG Advisor 未挂 or 向量库为空）
+
+### 2.9 `ChatObservationConfig.java`（全项目通用观测 Handler）
+
+> 全项目共用一个观测 Handler Bean——认领 Spring AI 的工具调用/模型对话等观测 Context，用**中文日志**打印 span 开始/结束，排查「哪一步耗时/失败」不用再翻框架默认英文输出。装配方式：`@Bean` 自动挂进 Micrometer Observation Registry（Boot 收集所有 `ObservationHandler` Bean，[教程 05-Observation可观测/02-组件交互：Registry、Handler、Convention、Filter协作]）。
+
+```java
+package com.shop.customer.config;
+
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.tool.observation.ToolCallingObservationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+/** 全项目通用观测 Handler：supportsContext instanceof 认领观测点，中文日志打印 span 开始/结束。 */
+@Configuration
+@Slf4j
+public class ChatObservationConfig {
+
+    /** 泛型 ObservationHandler：本项目当前主要观测点是工具调用（ToolCallingObservationContext，javap 实证真实类）。 */
+    @Bean
+    public ObservationHandler<Observation.Context> agentStageObservationHandler() {
+        return new ObservationHandler<>() {
+            @Override
+            public boolean supportsContext(Observation.Context context) {
+                return context instanceof ToolCallingObservationContext;
+            }
+
+            @Override
+            public void onStart(Observation.Context context) {
+                log.info("【观测】{} 开始", context.getName());
+            }
+
+            @Override
+            public void onStop(Observation.Context context) {
+                log.info("【观测】{} 结束", context.getName());
+            }
+        };
+    }
+}
+```
+
+> 观测内容（参数/结果）需要 `spring.ai.tools.observations.include-content=true`（配置键基准见 [附录 05-SpringAI2-API基准]）；只打 span 生命周期则无需开关。后续 06-08 迭代的意图分类、工具审批、反馈归因都在此基础上叠加业务日志。
 
 ## 3. 全篇回归验证
 
@@ -313,17 +371,31 @@ FAQ 工具（`FaqTool`）只有「退换货/以旧换新/发货时效」3 条。
 
 **失败排查**：重启后重复入库导致块翻倍→ETL 加"先按 metadata.source 删旧再写"；混合轮异常→RAG 与工具 Advisor 顺序问题，回查 §2.8 排查项。
 
+## 3.1 验收对照
+
+| 验收项 | 目标 | 实测口径 |
+|--------|------|---------|
+| ETL 入库 | 启动后 `vector_store` 行数 ≥ 1，embedding 非空 | §2.4.1 材料 SQL |
+| 嵌入维度 | 配置 = 模型真实输出（本机 1024） | §2.4.1 断言 4 |
+| 手册问答（RAG） | 材料 A 七问命中 ≥ 6/7 | §2.8 断言 1 |
+| 长尾兜底（RAG 不触发 FAQ 工具） | 材料 A' 五问全部召回回答 | §2.8 断言 2 |
+| 工具链路 | T1–T4 命中真实数据、T5 如实查不到 | §2.8 断言 3 |
+| 无关拒答 | 材料 B 五条明确「手册未提及」，threshold=0.7 生效 | §2.8 断言 4 |
+| 可依据回答 | 抽检 3 条含引用/依据 | §2.8 断言 5 |
+| 入库幂等 | 重启重跑 ETL 不报错、PASS 率不降 | §3 回归断言 1 |
+| 观测日志 | 工具调用 span 开始/结束中文日志可查 | §2.9 Bean 生效 |
+
 ## 4. 运行备注（本项目/本机实测，跟随项目迁移）
 
-> 以下为 demo01 工程在本机的实测排错记录。它们**只对本项目成立**，可能随向量库/模型部署变化，移植到别处必须先按当前环境复核。
+> 以下为本项目在本机的实测排错记录。它们**只对本项目成立**，可能随向量库/模型部署变化，移植到别处必须先按当前环境复核。
 
-- **Maven profile 激活**：本项目核心依赖（webflux、spring-ai）在 Maven `demo` profile、向量依赖在 `pgvector` profile。命令行启动必须同时激活，否则抛 `NoClassDefFoundError: SpringApplication`（classpath 里连 spring-boot 都没有）：
+- **Profile 启动（两段式配置）**：本项目用两段式配置——`application.yaml` 只做 `.env import + profiles.active`，业务配置（DeepSeek/PGVector/端口）在 `application-customerservice.yaml`（基准端口 8081）。命令行启动必须带 profile，否则业务配置全部缺失（`NoSuchBeanDefinition` 或连不上 DeepSeek）：
   ```bash
-  mvn -Ddemo.demo=demo -Ddemo.pgvector=pgvector -DskipTests spring-boot:run
+  mvn spring-boot:run -Dspring-boot.run.profiles=customerservice
   ```
-  IDEA 里则把同一参数放入 Run Configuration 的 VM options（配合 `spring.profiles.active=demo01` 生效于 `application-demo01.yaml`）。
+  IDEA 里把同一参数放入 Run Configuration 的 VM options（或加 `--spring.profiles.active=customerservice` 等价）。
 
-- **嵌入维度必须等于模型真实输出**：PGVector 表的 `embedding` 列维度由配置 `spring.ai.vectorstore.pgvector.dimensions` 决定，必须与实际 embedding 模型输出一致。本机本地 embedding（`text-embedding-bge-large-zh-v1.5`）实测为 **1024 维**；配置写成 1536 会报 `expected 1536 dimensions, not 1024`。换模型/换部署时用一次实序（如 `curl POST /v1/embeddings`）确认真实维度再写配置。
+- **嵌入维度必须等于模型真实输出**：PGVector 表的 `embedding` 列维度由配置 `spring.ai.vectorstore.pgvector.dimensions` 决定，必须与实际 embedding 模型输出一致。本机本地 embedding（`text-embedding-bge-large-zh-v1.5`）实测为 **1024 维**；配置写成 1536 会报 `expected 1536 dimensions, not 1024`。换模型/换部署时用一次实测（如 `curl POST /v1/embeddings`）确认真实维度再写配置。
 
 - **vectorStore bean 交由 starter 自动配置，勿手写同名 bean**：详见 §2.3 的实证修正——手写 `vectorStore` bean 会与 `PgVectorStoreAutoConfiguration` 冲突抛 `BeanDefinitionOverrideException`。
 
