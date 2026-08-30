@@ -15,6 +15,11 @@
 | **架构如何演进** | "感觉稳定" → **数字化的 SLI/SLO + 预算驱动的发布纪律**；容量从"再挂两台" → 压测建模 |
 | **上一版痛点是什么** | 要签 SLA 但无 SLO 基础；容量靠感觉；SSE 长连接的容量特性与传统 Web 不同 |
 
+### 1.1 本节核对（四问）
+
+- [ ] 四问的"架构演进"答案（数字化 SLI/SLO + 预算驱动的发布纪律）与 §3 代码实际一致
+- [ ] 新增需求五件事（SLI 定义 / 计量埋点 / 预算燃烧监控+冻结 / SSE 压测 / 连接数 HPA）能在 §3-§4 各小节找到落点
+
 ## 2. SLO 体系
 
 | SLI | 定义 | SLO（Enterprise） | 错误预算 |
@@ -185,8 +190,11 @@ public class BudgetGate {
 **材料——SLI 指标核对**：
 
 ```bash
-curl -s "http://localhost:8080/actuator/metrics/sli.availability" | head
-curl -s "http://localhost:8080/actuator/metrics/sli.ttft" | head
+curl -s "http://localhost:8081/actuator/metrics/sli.availability" | head
+curl -s "http://localhost:8081/actuator/metrics/sli.ttft" | head
+# ③ 预算冻结核对：烧穿后，非紧急发布被拒（BudgetGate.assertNotFrozen 抛 4xx）
+curl -i -X POST "http://localhost:8081/api/releases/prompt/advance" \
+  -H "Content-Type: application/json" -d '{"configVersion":"v2"}'
 ```
 
 **步骤与断言**：
@@ -245,7 +253,7 @@ export const options = {
 export default function () {
   const payload = JSON.stringify({ message: '压测消息' });
   const res = http.post(
-    'http://localhost:8080/conversations/test/messages',
+    'http://localhost:8081/conversations/test/messages',
     payload,
     {
       headers: {
@@ -328,12 +336,12 @@ spec:
 | ADR-220 | TTFT 进 SLI | 对话场景的可用性含延迟，纯成功率 SLA 无意义 |
 | ADR-221 | HPA 用连接数不用 CPU | SSE 常驻连接下 CPU 无法反映真实负载 |
 | ADR-222 | 供应商 TPM 列为一等容量约束 | 应用扩容解决不了供应商侧限速 |
+| ADR-238 | 错误预算=发布许可证 | 把"稳定性 vs 迭代速度"的冲突变成数字决策 |
 
 ### 6.1 本节核对（ADR 与痛点衔接）
 
-- [ ] ADR-220/221/222 分别对应 §3.1 TTFT 埋点 / §4.2 连接数 HPA / §4.3 断言 4 的 TPM 天花板
+- [ ] ADR-220/221/222/238 分别对应 §3.1 TTFT 埋点 / §4.2 连接数 HPA / §4.3 断言 4 的 TPM 天花板 / §3.2 错误预算=发布许可证
 - [ ] §7 痛点（Enterprise 要数据驻留）与 v8 形成因果衔接（§7 为收束章，不另设验证）
-| ADR-238 | 错误预算=发布许可证 | 把"稳定性 vs 迭代速度"的冲突变成数字决策 |
 
 ## 7. v7 的痛点
 

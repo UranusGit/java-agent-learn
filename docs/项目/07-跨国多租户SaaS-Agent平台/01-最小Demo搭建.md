@@ -250,12 +250,24 @@ SELECT indexname FROM pg_indexes WHERE tablename = 'message';
 
 > 后续迭代新增依赖时均在对应篇标注「需在 pom.xml 中添加依赖」并给出完整 `<dependency>` 片段（v3 加 Redis、v9 加 KMS）。
 
-### 4.2 `application.yml`
+### 4.2 配置（两段式：入口 `application.yaml` + 业务 `application-saaagent.yaml`）
+
+**`application.yaml`（入口：仅 .env import + profiles.active）**
 
 ```yaml
 spring:
   application:
     name: saas-agent-platform
+  config:
+    import: optional:file:.env[.properties]   # 环境变量从 .env 导入，不落明文
+  profiles:
+    active: saaagent                    # 业务配置在 application-saaagent.yaml
+```
+
+**`application-saaagent.yaml`（业务配置：AI / R2DBC / Flyway / JWT / 端口）**
+
+```yaml
+spring:
   ai:
     openai:
       base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
@@ -272,7 +284,7 @@ app:
   jwt:
     secret: ${JWT_SECRET:dev-only-change-me-in-prod-please-32bytes}
 server:
-  port: 8080
+  port: 8081
 ```
 
 ### 4.3 `SaasAgentApplication.java`
@@ -399,10 +411,10 @@ public class TenantContextFilter implements WebFilter {
 
 ```bash
 # ① 无 Token 访问受保护端点
-curl -i -X POST "http://localhost:8080/conversations/00000000-0000-0000-0000-000000000001/messages" \
+curl -i -X POST "http://localhost:8081/conversations/00000000-0000-0000-0000-000000000001/messages" \
   -H "Content-Type: application/json" -d '{"message":"hi"}'
 # ② 带伪造 Token
-curl -i -X POST "http://localhost:8080/conversations/00000000-0000-0000-0000-000000000001/messages" \
+curl -i -X POST "http://localhost:8081/conversations/00000000-0000-0000-0000-000000000001/messages" \
   -H "Authorization: Bearer not-a-jwt" \
   -H "Content-Type: application/json" -d '{"message":"hi"}'
 ```
@@ -737,15 +749,15 @@ public class IdentityController {
 
 ```bash
 # ① 注册
-curl -i -X POST "http://localhost:8080/api/auth/register" \
+curl -i -X POST "http://localhost:8081/api/auth/register" \
   -H "Content-Type: application/json" \
   -d '{"companyName":"Acme","adminEmail":"admin@acme.io","password":"s3cret-Pass"}'
 # ② 登录
-curl -s -X POST "http://localhost:8080/api/auth/login" \
+curl -s -X POST "http://localhost:8081/api/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@acme.io","password":"s3cret-Pass"}'
 # ③ 密码错误
-curl -i -X POST "http://localhost:8080/api/auth/login" \
+curl -i -X POST "http://localhost:8081/api/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@acme.io","password":"wrong"}'
 ```
@@ -901,6 +913,7 @@ import reactor.core.publisher.Flux;
 import java.util.UUID;
 
 @RestController
+@RequestMapping("/conversations")
 public class ChatController {
 
     private final AgentChatService agentChat;
@@ -909,7 +922,7 @@ public class ChatController {
         this.agentChat = agentChat;
     }
 
-    @PostMapping(value = "/conversations/{id}/messages", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PostMapping(value = "/{id}/messages", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> chat(@PathVariable UUID id, @RequestBody ChatRequest req) {
         // WebFlux 铁律：请求上下文从 Reactor Context 读，绝不走 ThreadLocal
         return Flux.deferContextual(contextView -> {
@@ -934,7 +947,7 @@ SELECT id FROM conversation ORDER BY created_at DESC LIMIT 1;   -- 记下会话 
 **材料——SSE 对话 curl**：
 
 ```bash
-curl -N -X POST "http://localhost:8080/conversations/<会话ID>/messages" \
+curl -N -X POST "http://localhost:8081/conversations/<会话ID>/messages" \
   -H "Authorization: Bearer <JWT>" \
   -H "Content-Type: application/json" \
   -d '{"message":"你好，你能做什么？"}'
@@ -983,10 +996,10 @@ saas-agent-platform/
 
 | # | 验收项 | 标准 |
 |---|--------|------|
-| 1 | 注册登录 | 租户注册→成员登录→JWT 签发全流程（curl 可验） |
-| 2 | 对话 | SSE 流式对话可用，会话历史可查（message 表有 user/assistant 两行） |
-| 3 | 伏笔就位 | 全部业务表含 tenant_id；数据访问层统一经 TenantContextFilter 链路 |
-| 4 | 无过度设计 | 无配额/无计费/无灰度代码（git 历史可证） |
+| 1 | 注册登录 | 注册 200 返回 tenantId + userId（UUID）；登录 200 返回 JWT（1 小时过期，payload 含 tenant_id/plan/email）；`saas_user.password_hash` 形如 `120000:<salt>:<hash>`（PBKDF2 迭代 120,000 次，非明文） |
+| 2 | 对话 | SSE 流式对话可用（data: 块 ≥ 3 增量到达，非一次性）；message 表有 role=user 与 role=assistant 成对两行 |
+| 3 | 伏笔就位 | saas_user/agent/conversation/message 四张业务表全含 tenant_id；数据访问层统一经 TenantContextFilter 链路（Reactor Context，无 ThreadLocal） |
+| 4 | 无过度设计 | 无配额/无计费/无灰度代码（git 历史可证）；无 Redis 依赖；单库单应用 |
 
 > 本表即全篇回归口径：§3.2 / §4.4.1 / §4.5.1 / §4.6.1 各节验证全通过后，逐条对照本表复核。
 
