@@ -30,9 +30,9 @@
 
 ## 3. 完整代码（照抄即可，一行不省略）
 
-### 3.1 `pom.xml` 与 `application.yml`
+### 3.1 `pom.xml` 与配置文件
 
-pom.xml 基线见 [00-需求分析与架构设计 §5.1](00-需求分析与架构设计.md)；application.yml 基线见 [00 §5.2](00-需求分析与架构设计.md)。v1 不需要新增依赖。
+pom.xml 基线见 [00-需求分析与架构设计 §5.1](00-需求分析与架构设计.md)；配置文件为**两段式**（见 [00 §5.2](00-需求分析与架构设计.md)）：`application.yaml` 只放 `spring.config.import: optional:file:.env[.properties]` 与 `spring.profiles.active: datainsight`，业务配置（AI/数据源/端口 8081）在 `application-datainsight.yaml`。v1 不需要新增依赖。
 
 ### 3.2 `DataPlatApplication.java`
 
@@ -313,10 +313,11 @@ INSERT INTO orders(user_id, region, channel, status, pay_amount, order_date) VAL
 export DEEPSEEK_API_KEY=sk-xxx
 export DB_READONLY_USER=ai_analyst
 export DB_READONLY_PASSWORD=change-me
-mvn spring-boot:run
+# 带 profile 启动（业务配置在 application-datainsight.yaml，基准端口 8081）
+mvn spring-boot:run -Dspring-boot.run.profiles=datainsight
 
 # 测试
-curl -X POST "http://localhost:8080/api/query?userId=u1" \
+curl -X POST "http://localhost:8081/api/query?userId=u1" \
   -H "Content-Type: text/plain" \
   -d "华东 6 月有多少笔支付成功的订单？"
 ```
@@ -329,17 +330,17 @@ curl -X POST "http://localhost:8080/api/query?userId=u1" \
 
 ```sh
 # A. 主链路（对应 §3.10 种子数据，正确答案 rowCount=2、pay_amount 合计 798.00）
-curl -X POST "http://localhost:8080/api/query?userId=u1" \
+curl -X POST "http://localhost:8081/api/query?userId=u1" \
   -H "Content-Type: text/plain" \
   -d "华东 6 月有多少笔支付成功的订单？"
 
 # B. 单表单条件（正确答案 1 笔，399.00）
-curl -X POST "http://localhost:8080/api/query?userId=u1" \
+curl -X POST "http://localhost:8081/api/query?userId=u1" \
   -H "Content-Type: text/plain" \
   -d "统计 2026-06-03 的订单总支付金额"
 
 # C. 无关问题（Schema 里没有的实体）
-curl -X POST "http://localhost:8080/api/query?userId=u1" \
+curl -X POST "http://localhost:8081/api/query?userId=u1" \
   -H "Content-Type: text/plain" \
   -d "查一下库存表里 SKU001 的剩余数量"
 ```
@@ -391,3 +392,12 @@ SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORD
 | 3 | 用 `hey` 或 `ab` 以低并发重复材料 A 数十次 | P95 < 15s（验收项 1） |
 
 **失败排查**：成功率 < 90%→先分类失败样例：表选错（schema 过长，v2 裁剪）/ 列名臆造（v3 语义层）/ SQL 语法错（换更强调参的 system 规则）；出现非 SELECT→v1 已知缺口，直接进 [02-SQL安全护栏]。
+
+## 7. 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 链路跑通 | 自然语言 → SQL → 结果全链路 P95 < 15s（§6 回归 3） | ☐ |
+| 基础准确 | 100 条简单问题 SQL 执行成功率 ≥ 90%（§6 回归 1） | ☐ |
+| 结果可追溯 | 每次返回带生成的 SQL（§6 回归 2） | ☐ |
+| 只读约束 | 生成的 SQL 100% 是 SELECT（§6 回归 2，v1 靠 prompt 约束） | ☐ |

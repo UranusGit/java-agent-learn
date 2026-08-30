@@ -336,15 +336,27 @@ public class Text2SqlEvalService {
         if (answer.sql() == null || answer.sql().isBlank()) {
             return new CaseVerdict(t.id(), false, false, FailureType.SYNTAX, "未产出 SQL");
         }
-        // TODO（信封改造后替换）：比对 intent.metricId() 与 t.goldMetricId()——
-        // 让 SemanticLayerService.answer() 返回带 MetricIntent 的信封（见下方归因精确化提示）
-        boolean intentMatchesGold = true;
+        // 粗判（信封改造前的过渡实现）：gold 指标的聚合目标列未出现在生成 SQL 中，
+        // 即判"意图/指标选错"→ SEMANTIC。正式做法见下方「归因精确化提示」：
+        // 让 answer() 返回带 MetricIntent 的信封后，直接比对 intent.metricId() 与 goldMetricId。
+        boolean intentMatchesGold = intentMatchesGoldSql(answer.sql(), t.goldSql());
         if (!intentMatchesGold) {
             return new CaseVerdict(t.id(), executionAcc, resultAcc, FailureType.SEMANTIC,
                     "意图/指标选择偏离 gold: " + t.goldMetricId());
         }
         return new CaseVerdict(t.id(), executionAcc, resultAcc, FailureType.DATA,
                 "口径一致但数值不一致 → 转指标对账（v8）与质量规则（v12 后篇）");
+    }
+
+    /** 过渡版意图比对：gold SQL 的聚合目标列（如 SUM(pay_amount) 的 pay_amount）是否出现在生成 SQL 中。 */
+    private boolean intentMatchesGoldSql(String actualSql, String goldSql) {
+        var m = java.util.regex.Pattern.compile(
+                "(?i)(SUM|COUNT|AVG|MAX|MIN)\\s*\\(\\s*([a-z_]+)\\s*\\)").matcher(goldSql);
+        if (!m.find()) {
+            return true;   // gold 无聚合目标（如 SELECT COUNT(*)）时无法反推，保守放行
+        }
+        String target = m.group(2);
+        return actualSql.toLowerCase().contains(target.toLowerCase());
     }
 
     private List<GoldenTriplet> loadTriplets() {
@@ -374,6 +386,7 @@ public class Text2SqlEvalService {
 | 2 | 构造一条生成 SQL 与 gold 结果一致、但 `expected_result` 人工标注偏离的样本 | `execution_acc=1`、`result_acc=0`（双口径差异暴露"标注过期/碰巧对"，验收 2 双口径分开报告） |
 | 3 | 让生成路径异常（gold SQL 抛错） | 归因 `SYNTAX`（`evaluateOne` 的 `onErrorResume` + gold SQL 执行失败分支） |
 | 4 | 抽验 `judge` 的 `answer.sql()` 为空路径 | 归因 `SYNTAX`("未产出 SQL")，不误归到 `DATA` |
+| 5 | 意图选错样本：构造一条 gold 聚合列为 `pay_amount`（gold_metric_id=gmv）、但生成 SQL 聚合 `order_count` 无 `pay_amount` 的三元组 | 归因 `SEMANTIC`（`intentMatchesGoldSql` 反推不命中 → "意图/指标选择偏离 gold"），证明 SEMANTIC 归因分支可达（验收 3） |
 
 **失败排查**：①双口径差异不出现→`judge` 里 `resultAcc` 误用 `goldResultJson` 而非 `expectedResultJson`（比对对象张冠李戴）；②归因全落 `SYNTAX`→`evaluateOne` 的 `onErrorResume` 吞了 `DATA/SEMANTIC` 的异常，需先看错误消息；③gold SQL 缓存旧结果→`last_verified_at` 超期未重跑，双口径双盲。
 
@@ -604,13 +617,24 @@ flowchart LR
 ```java
 package com.group.dataplat.eval;
 
+import com.group.dataplat.dto.UserContext;
+import com.group.dataplat.security.SqlRejectedException;
+import com.group.dataplat.security.TieredQueryGuardService;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;   // ⚠ 需引入依赖 org.springframework.boot:spring-boot-starter-test（以引入依赖后 javap 输出为准）
+import reactor.test.StepVerifier;                               // ⚠ 需引入依赖 io.projectreactor:reactor-test
+
 import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
+@SpringBootTest
 class ResultComparatorTest {
 
     private final ResultComparator comparator = new ResultComparator();
+
+    @Autowired
+    private TieredQueryGuardService tieredGuard;   // fail-closed 用例需真实护栏 Bean（也可用 @MockitoBean 替身）
 
     @Test
     void unorderedRowsMatchAsSet() {
@@ -637,8 +661,12 @@ class ResultComparatorTest {
     @Test
     void guardrailFailClosedWithoutTenant() {
         // 无 Reactor Context 租户 → 拒绝（不再默认全国）
-        // StepVerifier.create(tieredGuard.guardedExecute("SELECT 1", evalUser))
-        //     .expectError(SqlRejectedException.class).verify();
+        UserContext evalUser = new UserContext("eval-bot", "eval", "admin", null);
+        StepVerifier.create(tieredGuard.guardedExecute("SELECT 1", evalUser))
+                .expectErrorSatisfies(e -> assertThat(e)
+                        .isInstanceOf(SqlRejectedException.class)
+                        .hasMessageContaining("租户上下文缺失"))
+                .verify();
     }
 }
 ```

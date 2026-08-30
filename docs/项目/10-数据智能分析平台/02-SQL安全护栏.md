@@ -506,3 +506,14 @@ FROM query_audit ORDER BY occurred_at DESC LIMIT 10;
 | 4 | 抽查 `query_audit` | 成功与拒绝记录齐全可追溯（验收 5） |
 
 **失败排查**：P99 超标→EXPLAIN 预检在小表上本应 <10ms，检查是否把审计 INSERT 也计入了热路径（可异步化）；超时不生效→`timeout(TIMEOUT)` 需在 subscribeOn 之后仍生效，确认没有在内层吞掉 `TimeoutException`。
+
+## 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 注入阻断 | 多语句/非 SELECT 100% 拒绝（本节验证 1） | ☐ |
+| 全表扫描 | 无 LIMIT 自动加 LIMIT；EXPLAIN 代价超限拒绝（本节验证 2） | ☐ |
+| 强制只读 | DB 层验证 AI 账号无法写（绕过应用也失败） | ☐ |
+| 超时兜底 | 慢查询 10s 超时终止（全篇回归 1） | ☐ |
+| 审计完整 | 成功与拒绝全部入 `query_audit`（全篇回归 4） | ☐ |
+| 延迟影响 | 护栏新增 P99 < 100ms（全篇回归 3） | ☐ |

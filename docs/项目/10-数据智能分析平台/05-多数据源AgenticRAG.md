@@ -458,10 +458,10 @@ assertThrows(IllegalArgumentException.class, () -> catalogService.joinPath("orde
 
 ```sh
 # D. 单源问题（应路由到 order_dw/orders，不碰 payments）
-curl -X POST "http://localhost:8080/api/query?userId=u1" -H "Content-Type: text/plain" \
+curl -X POST "http://localhost:8081/api/query?userId=u1" -H "Content-Type: text/plain" \
   -d "2026 年 6 月华东的 GMV"
 # E. 跨库问题（decomposition=true，join orders↔customers）
-curl -X POST "http://localhost:8080/api/query?userId=u1" -H "Content-Type: text/plain" \
+curl -X POST "http://localhost:8081/api/query?userId=u1" -H "Content-Type: text/plain" \
   -d "华东客户的订单明细（含客户姓名）"
 ```
 
@@ -507,3 +507,13 @@ SELECT question, sources, decomposition, join_paths FROM routing_audit ORDER BY 
 | 3 | 抽查 routing_audit | 每次查询均有 trace（验收 3） |
 
 **失败排查**：路由准确率低→多为概念词与 catalog `concept` 不匹配（补同义词种子或改进检索）；跨库不一致→先核对人工 SQL 与 fuse 语义差异（LEFT join 下右侧缺行是否保留左侧行）。
+
+## 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 路由准确 | 单源问题路由正确率 ≥ 95%（全篇回归 1） | ☐ |
+| 跨库正确 | 跨库关联与人工 SQL 一致率 ≥ 90%（全篇回归 2） | ☐ |
+| 决策可追溯 | routing plan 全量入审计（全篇回归 3） | ☐ |
+| 防劣质表 | 路由避开 untrusted/过期表 | ☐ |
+| 无 join 幻觉 | 跨库 100% 走 join_graph 预定义路径（全篇回归 2） | ☐ |
