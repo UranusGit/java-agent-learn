@@ -30,6 +30,8 @@
 
 ```java
 // Spring AI 2.0.0 / Java 21 —— 概念代码：最小意图路由
+package com.example.route.router;
+
 @Component
 public class MinimalRouter {
     // 已实证：EmbeddingModel#embed(String) 返回 float[]
@@ -99,6 +101,88 @@ public class MinimalRouter {
 
 **失败排查**：①全走兜底→规则关键词未覆盖或 `@Qualifier` 装配错 Bean；②语义兜底抛异常→EmbeddingModel 未装配或 `embed()` 未实证调用；③应命中却被兜底→`byRule` 关键词与正文验收输入表不一致。
 
+### 二.2 端到端路由（curl，8081）
+
+把统一入口挂上 HTTP（demo01 仓 controller 习惯：类级前缀 + `@Autowired` 字段注入）：
+
+```java
+// Spring AI 2.0.0 / 概念代码：路由统一入口的最小暴露
+package com.example.route.controller;
+
+import com.example.route.router.MinimalRouter;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Flux;
+
+@RestController
+@RequestMapping("/route")
+public class RouteController {
+
+    @Autowired
+    private MinimalRouter router;
+
+    /** 三类路由输入的统一入口 */
+    @GetMapping("/ask")
+    public Flux<String> ask(String q) {
+        return router.ask(q).map(resp -> resp.getResult().getOutput().getText());
+    }
+}
+```
+
+三类路由输入 curl 完整命令（服务经 §二.3 启动后执行）：
+
+```bash
+# ① 规则命中（关键词"订单"）→ orderChatClient
+curl -s "http://localhost:8081/route/ask?q=我订单还没到"
+# ② 语义命中（无规则关键词，与 KNOWLEDGE 示例句相似度 ≥0.6）→ knowledgeChatClient
+curl -s "http://localhost:8081/route/ask?q=帮我看下公司的报销制度文件"
+# ③ 兜底（规则不中、语义 <0.6）→ fallbackChatClient
+curl -s "http://localhost:8081/route/ask?q=今天天气怎么样"
+```
+
+预期路由结果输出（正文链为流式，此处 `Flux<String>` 逐段拼接后示意）：
+
+```text
+① "您的订单 20260829… 正在派送中，预计今日 18:00 前送达。"        # 订单链口吻（带单号/物流）
+② "《差旅费报销制度》第 3 条规定：须在行程结束后 30 日内提交…"    # 制度问答链口吻（引用条款）
+③ "抱歉，我不太理解您的问题，您可以问我订单物流或公司制度相关问题。" # 兜底链话术
+```
+
+> 三条输出以「回答来源链」而非文本内容为判据：①②命中业务链（有业务上下文），③落兜底链（通用话术）。路由依据可用日志核对——04 迭代后可直接看 `intent/stage/outcome` 打点。
+
+### 二.3 运行配置与启动（两段式）
+
+```yaml
+# application.yaml（仅 .env import + 激活 profile）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: routing
+```
+
+```yaml
+# application-routing.yaml（端口与模型/embedding 配置）
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+      embedding:
+        options:
+          model: text-embedding-v3                # 语义路由的向量化模型
+```
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=routing
+```
+
 ## 三、为什么"规则 + 语义"优先于"纯 LLM"
 
 - **免费零延迟**：规则 0 耗 Token；语义只多一次 embedding（约 5~30ms），不烧推理 Token。
@@ -131,3 +215,14 @@ public class MinimalRouter {
 **回归失败排查**：①某输入未按期望走→`byRule`/`bySemantics` 阈值或关键词与正文不一致，回查 §二.1；②延迟超 50ms→首次语义兜底含 embed 冷启动，可接受一次，连续多次仍慢则检查 EmbeddingModel/网络。
 
 > **下一步**：最小闭环已通。弱点立刻暴露——①路由目标是硬编码 `switch`，加业务要改代码 → 03 迭代做成路由表/执行链注册；②路由正确率不可见、阈值拍脑袋 → 04 迭代加观测与漂移告警。
+
+## 五、验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 规则命中直达 | 关键词输入 0 耗 Token 直达业务链 | ✅（§二.1 断言 1-2） |
+| 语义命中 | 无关键词输入按相似度 ≥0.6 命中 | ✅（§二.2 curl ②） |
+| 兜底可达 | 规则/语义双不中 → fallback 链 | ✅（§二.1 断言 3、§二.2 curl ③） |
+| 入口延迟 | 分发延迟 ≤ 50ms（本篇基线口径） | ✅（§四 回归断言 2） |
+
+> 本节核对（一句话）：四项验收拆自 [00-需求分析与架构设计](00-需求分析与架构设计.md) §三 量化验收（直达/兜底/延迟口径）与本篇 §一 本迭代验收，逐条锚定 §二.1/§二.2 测验与 §四 回归断言编号，无"验收了但没验证"项即 PASS。
