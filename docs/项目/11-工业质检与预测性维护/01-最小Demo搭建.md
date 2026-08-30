@@ -121,7 +121,19 @@
 </project>
 ```
 
-### 3.2 `application.yml`
+### 3.2 配置文件（两段式）
+
+`application.yaml`（主配置，只做环境装载与 profile 激活）：
+
+```yaml
+spring:
+  config:
+    import: optional:file:.env[.properties]   # 环境变量从 .env 装载（可选文件，缺失不报错）
+  profiles:
+    active: indqc
+```
+
+`application-indqc.yaml`（业务配置，indqc profile 专属）：
 
 ```yaml
 spring:
@@ -145,8 +157,10 @@ mqtt:
   topic-pattern: factory/sensors/+/reading
 
 server:
-  port: 8080
+  port: 8081
 ```
+
+> 启动命令统一 `mvn spring-boot:run -Dspring-boot.run.profiles=indqc`；后续各迭代的 yaml 增量（数据源/边缘/灰度等）一律追加到 `application-indqc.yaml`，不动主配置。
 
 ### 3.3 SQL DDL `db/schema-v1-tdengine.sql`
 
@@ -446,14 +460,14 @@ class EwmaAnomalyDetectorTest {
 
 ```sh
 export DEEPSEEK_API_KEY=sk-xxx            # v1 用不到，但避免启动时占位符告警
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.profiles=indqc
 
 # 模拟设备上报（MQTT 客户端发一条 JSON）：
 # mosquitto_pub -h mqtt-broker -t factory/sensors/pump-01/reading \
 #   -m '{"deviceId":"pump-01","vibration":0.85,"temp":65.3}'
 
 # 订阅异常事件流（SSE）：
-# curl -N http://localhost:8080/api/anomalies/stream
+# curl -N http://localhost:8081/api/anomalies/stream
 ```
 
 ### 3.13 本节测试与验证（主迭代"时序检测"）
@@ -472,7 +486,7 @@ mosquitto_pub -h mqtt-broker -t factory/sensors/pump-01/reading \
   -m '{"deviceId":"pump-01","vibration":0.85,"temp":65.3}'
 
 # C. 订阅异常事件流（SSE，§3.12）
-curl -N http://localhost:8080/api/anomalies/stream
+curl -N http://localhost:8081/api/anomalies/stream
 ```
 
 ```bash
@@ -522,7 +536,17 @@ SELECT * FROM sensor_pump_01 ORDER BY ts DESC LIMIT 5;
 
 **失败排查**：触发率 < 95%→`Z_THRESHOLD=3.0` 过严或 EWMA 平滑因子需调；误触发高→基线方差初始化（`0.01`）偏小放大了早期抖动；字段丢失→MQTT payload 与 §3.6 `SensorReading` 字段名（deviceId/vibration/temp）不一致。
 
-## 6. 验收与已知痛点
+## 6. 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 数据接入 | 设备 MQTT 数据 100% 入时序库（§2-1，§5 回归） | ☐ |
+| 检测有效 | 注入已知异常 EWMA 触发率 ≥ 95%（§2-2，§5 回归） | ☐ |
+| 误报可控 | 正常工况误触发率 < 3%（§2-3，§5 回归） | ☐ |
+| 实时性 | 检测延迟 < 1s（§2-4，§5 回归） | ☐ |
+| 零成本 | 检测全程零 LLM Token（§2-5，§5 回归） | ☐ |
+
+## 7. 验收与已知痛点
 
 **验收**：MQTT 数据 100% 入时序库、注入异常触发率 ≥ 95%、正常误触发 < 3%、检测延迟 < 1s、零 Token。
 
