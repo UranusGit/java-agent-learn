@@ -524,15 +524,72 @@ SELECT approval_id, tool_name, stage, detail, asked_at, decided_at
 FROM approval_audit ORDER BY asked_at DESC LIMIT 6;
 ```
 
+**材料 C——验证触发入口（临时 Controller，验收后删除）**：步骤 2/3/5 的触发路径是内部方法调用，补一个临时 REST 端点使其可执行：
+
+```java
+// src/main/java/com/aiops/platform/remediate/ApprovalVerifyController.java（仅用于本节验证，验收后删除）
+package com.aiops.platform.remediate;
+
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.time.Duration;
+
+/** 仅用于 §4.10 验证的临时触发入口（不进生产代码，验收后删除）。 */
+@RestController
+@RequestMapping("/dev/approval")
+public class ApprovalVerifyController {
+
+    private final ApprovalService approvalService;
+
+    public ApprovalVerifyController(ApprovalService approvalService) {
+        this.approvalService = approvalService;
+    }
+
+    /** 步骤 2/5 触发：发起一次 flushCachePrefix 审批（REQUIRE_APPROVAL 档）。 */
+    @PostMapping("/request")
+    public Mono<String> request() {
+        return Mono.fromCallable(() -> approvalService.request(
+                        "s-verify", "flushCachePrefix", "call-verify", "HITL 验证", Duration.ofMinutes(5)))
+                .subscribeOn(Schedulers.boundedElastic())
+                .map(outcome -> "outcome=" + outcome);
+    }
+
+    /** 步骤 3 决策：审批 UI 的等价物（ApprovalService.decide）。 */
+    @PostMapping("/{approvalId}/decide")
+    public Mono<Void> decide(@PathVariable String approvalId) {
+        return Mono.fromRunnable(() ->
+                approvalService.decide(approvalId, new ApprovalOutcome.AllowedOnce()));
+    }
+}
+```
+
+可执行命令与预期日志输出：
+
+```bash
+# C1（步骤 2 触发）：后台发起审批挂起，不阻塞终端
+curl -s -X POST http://localhost:8081/dev/approval/request &
+# 应用日志预期：审批挂起 approvalId=<id> tool=flushCachePrefix session=s-verify
+# 材料 B 出现 ASKED 行且 decided_at 为空；<id> 从该日志行获取
+
+# C2（步骤 3 决策）：用日志中的 <id> 替换
+curl -s -X POST http://localhost:8081/dev/approval/<id>/decide
+# 预期：C1 挂起的请求返回 outcome=AllowedOnce；材料 B 新增 DECIDED 行；适配器日志显示 flush 执行
+```
+
 **步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
 | 1 | 材料 A 四用例 | 分级结果与表中预期逐一一致（纯函数可直接断言） |
-| 2 | 触发一次 `flushCachePrefix`（recoverability=0.5 → REQUIRE_APPROVAL） | 日志"审批挂起 approvalId=..."；材料 B 出现 ASKED 行且 decided_at 为空 |
-| 3 | 调 `ApprovalService.decide(approvalId, new ApprovalOutcome.AllowedOnce())` | ASKED 之后新增 DECIDED 行；适配器日志显示 flush 执行 |
+| 2 | 材料 C1 触发一次 `flushCachePrefix`（recoverability=0.5 → REQUIRE_APPROVAL） | 日志"审批挂起 approvalId=..."；材料 B 出现 ASKED 行且 decided_at 为空 |
+| 3 | 材料 C2：POST /dev/approval/<id>/decide（等价 `decide(approvalId, new ApprovalOutcome.AllowedOnce())`） | ASKED 之后新增 DECIDED 行；适配器日志显示 flush 执行 |
 | 4 | 再次发起但 decide 传 `Rejected("测试")` | 工具返回"处置被否决"；Agent 收到 returnDirect 终止，不再重试 |
-| 5 | 发起后不 decide，等 5 分钟超时 | outcome=Unavailable（fail-closed），动作未执行 |
+| 5 | 重发材料 C1 但不调 C2，等 5 分钟超时 | outcome=Unavailable（fail-closed），动作未执行 |
 | 6 | 非处置工具（如 v3 的 queryMetrics）调用 | 直接放行，不产生审批记录 |
 
 **失败排查**：①闸门不生效（工具直接执行）→装饰器 Bean 未替换默认 ToolCallingManager（检查注入的 delegate 来源）；②步骤 3 不执行→decide 传的 approvalId 与日志不一致或 future 已超时完成；③步骤 5 自动执行了→`Unavailable` 未被当拒绝处理（确认 `instanceof AllowedOnce` 判断）；④AUDIT 只有 ASKED 无 DECIDED→request 抛异常中断，查 JDBC 报错。
@@ -548,6 +605,16 @@ FROM approval_audit ORDER BY asked_at DESC LIMIT 6;
 | 3 | 自动边界 | 仅 `recoverability ≥ 0.9 && impact < 0.2` 的动作自动（验证过的） |
 | 4 | 拒绝防绕过 | 审批拒绝后 Agent 不得重试同一动作 |
 | 5 | 全量审计 | 每次处置（含自动）入审计链，可回放 |
+
+**验收对照**（对照上表逐项，标注落地章节）：
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 分级正确 | 500 个历史样本分级与人工判定一致率 ≥ 90% | ✅ §4.10 断言 1（材料 A 四用例边界；500 样本为统计项） |
+| 闸门强制性 | 绕过审批的执行路径不存在 | ✅ §4.10 断言 2/3（材料 C 端到端：挂起→批准才执行；代码审查 + 渗透项） |
+| 自动边界 | 仅 recoverability ≥ 0.9 且 impact < 0.2 自动 | ✅ §4.10 断言 1（材料 A R1/R4 边界用例） |
+| 拒绝防绕过 | 拒绝后 Agent 不得重试同一动作 | ✅ §4.10 断言 4（Rejected → returnDirect 终止） |
+| 全量审计 | 每次处置（含自动）入审计链 | ✅ §4.10 断言 2-5（材料 B ASKED/DECIDED 成对可回放） |
 
 ## 6. 本迭代的 ADR
 

@@ -198,7 +198,7 @@ flowchart TB
 ### 5.3 ADR-415：长任务用 Checkpoint 而非 durable execution
 
 - **上下文**：v5 巡检任务跑 30 分钟，进程重启即断；引入 Temporal 意味着新运行时、新运维面、团队学习成本。
-- **备选**：① 只把状态落库、无恢复循环（"假 checkpoint"）② 自研完整恢复循环（教程 05-Observation可观测/07-指标治理：Token计量、SLO与基数熔断 Checkpoint 机制）③ Temporal durable execution ④ 不做恢复，靠任务重跑。
+- **备选**：① 只把状态落库、无恢复循环（"假 checkpoint"）② 自研完整恢复循环（[教程 08-架构师进阶/06-长任务持久化与中断恢复] 的 Checkpoint 机制）③ Temporal durable execution ④ 不做恢复，靠任务重跑。
 - **取舍**：选 ②。① 崩溃后仍要人工干预（状态存了没人读）；④ 浪费已执行成本且长窗口任务重跑代价大；③ 最强但当前需求只有"本进程重启续跑"，为零外部依赖选择自研。代价：跨主机故障（Pod 漂移）时新实例需重新加载检查点续跑，恢复逻辑自己维护；任务若演进到跨服务编排，需升级 ③。
 - **可回滚**：可平滑升级到 ③——检查点的字段设计（plan/completedSteps/budget/idempotencyKeys）与 Temporal 的事件历史语义同构，迁移是"换存储与调度器"，业务步骤不用重写。触发条件：出现跨主机自动恢复需求或巡检时长超小时级且频次密集。
 

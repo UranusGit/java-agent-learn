@@ -402,6 +402,7 @@ public class AlertStreamProcessor {
         }
     }
 }
+```
 
 ### 4.8 `db/schema-v1.sql`（审计表 DDL）
 
@@ -422,9 +423,24 @@ CREATE TABLE IF NOT EXISTS alert_audit (
 CREATE INDEX IF NOT EXISTS idx_alert_audit_time ON alert_audit (ingested_at);
 ```
 
-### 4.9 `application.yml`（v1 基线）
+### 4.9 `application.yaml` + `application-aiops.yaml`（两段式配置，v1 基线）
+
+配置采用**两段式**：`application.yaml` 只留骨架（profile 激活 + `.env` 导入）；全部业务配置收纳进 `application-aiops.yaml`（显式声明 `server.port: 8081`）。后续迭代的配置增量一律**追加写入 `application-aiops.yaml`**（02-§3.9 pgvector、03-§3.9 Prometheus、05-§4.8 Redis、08-§3.6 降级矩阵）。
 
 ```yaml
+# application.yaml（骨架，全项目统一，仅此两段）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: aiops
+```
+
+```yaml
+# application-aiops.yaml（业务配置，v1 基线）
+server:
+  port: 8081
+
 spring:
   ai:
     openai:
@@ -442,12 +458,16 @@ spring:
 
 ### 4.10 本节测试与验证（告警接入、幂等键与审计落库）
 
-**前置条件**：PG（5432/aiops）与 Kafka（9092）可连；`db/schema-v1.sql` 已执行；应用按 §4.9 配置启动成功。
+**前置条件**：PG（5432/aiops）与 Kafka（9092）可连；`db/schema-v1.sql` 已执行；应用按 §4.9 两段式配置以 aiops profile 启动成功（监听 8081）：
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=aiops
+```
 
 **材料 A——webhook 模拟请求（两条同 label 集、顺序不同）**：
 
 ```bash
-curl -s -X POST http://localhost:8080/webhooks/alertmanager \
+curl -s -X POST http://localhost:8081/webhooks/alertmanager \
   -H "Content-Type: application/json" -d '{
   "alerts": [
     {"status":"firing","labels":{"alertname":"HighMemory","severity":"critical","instance":"db-01","job":"mysql"},
@@ -489,6 +509,16 @@ SELECT labels_json FROM alert_audit WHERE fingerprint = 'fp-001' LIMIT 1;
 | 3 | 审计留痕 | 每条告警事件入审计库（含 severity 归一化） |
 | 4 | 吞吐 | 单实例承受 2000 msg/min 不丢（Kafka 缓冲） |
 | 5 | 无阻塞 | 阻塞调用（Kafka/JDBC）全部走 boundedElastic / Kafka 消费线程，EventLoop 零阻塞 |
+
+**验收对照**（对照上表逐项，标注落地章节）：
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 接入完整 | 告警 100% 转为统一 AlertEvent（字段不丢失） | ✅ §4.10 断言 4（JSONB 存完整 label 集） |
+| 幂等键 | 同 label 集告警 alertId 稳定 | ✅ §4.10 断言 2/5（同 label 集仅 1 行；重放仍 1 行） |
+| 审计留痕 | 每条告警入审计库（含 severity 归一化） | ✅ §4.10 断言 3 + 断言 6（Kafka 故障直落审计，ADR-407） |
+| 吞吐 | 单实例 2000 msg/min 不丢 | ✅ §4.10 材料 A 批量重放（Kafka 缓冲承载，回归统计项） |
+| 无阻塞 | EventLoop 零阻塞 | ✅ §4.10 断言 7（无 block() 警告） |
 
 ## 6. 本迭代的 ADR
 

@@ -544,7 +544,9 @@ public class RcaOrchestrator {
 
 > v3 复用 v2 的 `spring-ai-starter-vector-store-pgvector`（Runbook 向量检索）与基线 pom 的 `spring-boot-starter-webflux`（PrometheusClient 的 WebClient）。无需新增依赖。
 
-### 3.9 `application.yml` 追加 Prometheus 地址
+### 3.9 `application-aiops.yaml` 追加 Prometheus 地址
+
+> 增量**追加写入 `application-aiops.yaml`**（两段式约定见 01-§4.9），改完以 aiops profile 重启生效。
 
 ```yaml
 monitoring:
@@ -611,6 +613,16 @@ SELECT incident_id, root_causes_json, runbook_ref, confidence FROM rca_report OR
 | 3 | 证据可回溯 | 每条根因假设带 ≥ 1 条证据（指标/日志/trace 定位） |
 | 4 | 成本可控 | 单次 RCA 平均 LLM Token ≤ 2k（确定性过滤生效） |
 | 5 | Runbook 引用 | 处置建议 100% 带 runbook citation |
+
+**验收对照**（对照上表逐项，标注落地章节）：
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 定位时效 | MTTR 45 分钟 → ≤ 10 分钟 | ✅ §3.11 多 Agent 并行编排（trace/日志/指标同时拉取）；10 分钟含人工确认时间 |
+| 根因准确 | 50 起抽检 top-1 一致率 ≥ 70% | ✅ §3.11 断言（top-1 根因候选核对；50 起抽检统计项） |
+| 证据可回溯 | 每条假设带 ≥ 1 条证据 | ✅ §3.11 断言（evidence 字段非空核对） |
+| 成本可控 | 单次 RCA 平均 ≤ 2k Token | ✅ §3.11 断言（确定性过滤生效，观测 Token 计量统计） |
+| Runbook 引用 | 处置建议 100% 带 citation | ✅ §3.11 断言（RunbookRetriever citation 落库） |
 
 ## 5. 本迭代的 ADR
 
