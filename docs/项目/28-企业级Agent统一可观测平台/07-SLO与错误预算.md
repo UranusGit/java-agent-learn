@@ -44,6 +44,25 @@ enum AgentSlo {
 
 **材料——核对手段**：在玻璃板健康视图查看四类 SLO 的达成率与预算余量；构造燃烧率越界场景验证冻结与分级告警。
 
+**材料——核对命令**：
+
+```bash
+# 查询双层 SLO 达成率与错误预算余量（燃烧率越界时附 level 分级）
+curl "http://localhost:8081/obs/slo?window=30d"
+```
+
+预期输出示例（技术/业务双层四项，BIZ_SUCCESS 慢烧触发 P1）：
+
+```json
+{
+  "window": "30d",
+  "slos": [
+    { "name": "TECH_AVAIL",  "target": 0.995, "attained": 0.997, "budgetLeftPct": 62.0 },
+    { "name": "BIZ_SUCCESS", "target": 0.92,  "attained": 0.91,  "budgetLeftPct": 18.5, "burnRate6h": 6.8, "level": "P1" }
+  ]
+}
+```
+
 **步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |

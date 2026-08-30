@@ -51,7 +51,21 @@ public class ObsQuery {
 
 ```bash
 # 发起一次"带检索+2工具+LLM"的执行，随后按返回的 traceId/会话 ID 查询聚合
-curl "http://localhost:8080/obs/trace?traceId=<上一步返回的 traceId>"
+curl "http://localhost:8081/obs/trace?traceId=trace-abc123"
+```
+
+预期输出示例（节点按 startTs 升序，含耗时/kind/`gen_ai.*` 属性）：
+
+```json
+{
+  "traceId": "trace-abc123",
+  "nodes": [
+    { "name": "retrieval.vector_search", "durationMs": 38,  "kind": "RETRIEVAL", "status": "OK", "attrs": { "gen_ai.retrieval.top_k": 4 } },
+    { "name": "tool.search_docs",        "durationMs": 52,  "kind": "TOOL",      "status": "OK", "attrs": { "gen_ai.tool.name": "search_docs" } },
+    { "name": "tool.calc_total",         "durationMs": 7,   "kind": "TOOL",      "status": "OK", "attrs": { "gen_ai.tool.name": "calc_total" } },
+    { "name": "spring.ai.chat",          "durationMs": 812, "kind": "LLM",       "status": "OK", "attrs": { "gen_ai.request.model": "deepseek-v4-flash", "gen_ai.usage.total_tokens": 934 } }
+  ]
+}
 ```
 
 **步骤与断言**：

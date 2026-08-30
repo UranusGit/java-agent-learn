@@ -51,9 +51,23 @@ exporters:
 **材料——核对手段**：向管道发送含明文敏感字段（手机号/身份证/api_key）与正常/错误两条特征的 trace，再从三个后端存储侧抽查。
 
 ```bash
-# 从 Prometheus 侧核对指标导出正常
+# 从 Prometheus 侧核对指标导出正常（Prometheus 自身标准端口 9090，非应用端口）
 curl "http://prometheus:9090/api/v1/query?query=up"
 # 从 Trace 后端按 traceId 抽查采样与脱敏后字段
+```
+
+预期输出示例（`up=1` 表示 agent-metrics 指标通道存活，Collector 8889 导出正常）：
+
+```json
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      { "metric": { "instance": "otel-collector:8889", "job": "agent-metrics" }, "value": [ 1756500000, "1" ] }
+    ]
+  }
+}
 ```
 
 **步骤与断言**：
