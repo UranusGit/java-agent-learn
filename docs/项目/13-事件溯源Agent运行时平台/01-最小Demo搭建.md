@@ -95,7 +95,19 @@
 </project>
 ```
 
-### 3.2 `application.yml`
+### 3.2 配置文件（两段式）
+
+`application.yaml`（主配置，只做环境装载与 profile 激活）：
+
+```yaml
+spring:
+  config:
+    import: optional:file:.env[.properties]   # 环境变量从 .env 装载（可选文件，缺失不报错）
+  profiles:
+    active: eventsrc
+```
+
+`application-eventsrc.yaml`（业务配置，eventsrc profile 专属）：
 
 ```yaml
 spring:
@@ -108,8 +120,10 @@ spring:
       chat:
         model: deepseek-chat          # Spring AI 2.0.0：无 options 中缀，参数直挂
 server:
-  port: 8080
+  port: 8081
 ```
+
+> 启动命令统一 `mvn spring-boot:run -Dspring-boot.run.profiles=eventsrc -Dspring-boot.run.profiles=eventsrc`；后续各迭代的 yaml 增量一律追加到 `application-eventsrc.yaml`（v5 拆分后为各服务的 `application-eventsrc.yaml`，见 [06 §3.2] 端口矩阵），不动主配置。
 
 ### 3.3 `AgentRuntimeApplication.java`
 
@@ -270,23 +284,23 @@ public class ChatController {
 
 ```sh
 export DEEPSEEK_API_KEY=sk-xxx
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.profiles=eventsrc
 # 测试：
-# curl -X POST "http://localhost:8080/api/chat?sessionId=s1" -H "Content-Type: text/plain" -d "订单 ORD-001 金额多少"
-# curl -X POST "http://localhost:8080/api/chat/stream?sessionId=s1" -H "Content-Type: text/plain" -d "刚才那个订单状态呢"
+# curl -X POST "http://localhost:8081/api/chat?sessionId=s1" -H "Content-Type: text/plain" -d "订单 ORD-001 金额多少"
+# curl -X POST "http://localhost:8081/api/chat/stream?sessionId=s1" -H "Content-Type: text/plain" -d "刚才那个订单状态呢"
 ```
 
 ### 3.8 本节测试与验证（完整代码：对话 / 工具 / 流式）
 
-**前置条件**：按 §3.1~§3.7 手写 pom / yml / 启动类 / AgentConfig / OrderTools+OrderInfo+OrderRepository / ChatController；`DEEPSEEK_API_KEY` 已 export；应用 `mvn spring-boot:run` 启动成功（无 `BeanDefinitionOverrideException`）。
+**前置条件**：按 §3.1~§3.7 手写 pom / yml / 启动类 / AgentConfig / OrderTools+OrderInfo+OrderRepository / ChatController；`DEEPSEEK_API_KEY` 已 export；应用 `mvn spring-boot:run -Dspring-boot.run.profiles=eventsrc` 启动成功（无 `BeanDefinitionOverrideException`）。
 
 **材料——两个叠加测试的 curl**：
 
 ```bash
 # A：一次性对话（会话 s1）
-curl -X POST "http://localhost:8080/api/chat?sessionId=s1" -H "Content-Type: text/plain" -d "订单 ORD-001 金额多少"
+curl -X POST "http://localhost:8081/api/chat?sessionId=s1" -H "Content-Type: text/plain" -d "订单 ORD-001 金额多少"
 # B：流式 + 会话连续（同 sessionId=s1，第二问不带订单号）
-curl -X POST "http://localhost:8080/api/chat/stream?sessionId=s1" -H "Content-Type: text/plain" -d "刚才那个订单状态呢"
+curl -X POST "http://localhost:8081/api/chat/stream?sessionId=s1" -H "Content-Type: text/plain" -d "刚才那个订单状态呢"
 ```
 
 **步骤与断言**：
@@ -335,5 +349,14 @@ curl -X POST "http://localhost:8080/api/chat/stream?sessionId=s1" -H "Content-Ty
 
 - [ ] 验收四条（对话正确/会话连续/工具触发/流式可见）与 §2 验收表一致；已知痛点四条与 §2 的"明确不做"和 ADR 013-03 的三个换接口呼应（痛点 1→v1、痛点 2→v3、痛点 3→ToolCallingManager、痛点 4→v6）
 - [ ] 能说出每个痛点分别被哪篇迭代解决（02/03/05/07）
+
+## 6. 验收对照
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 对话 + 工具 | 一次「查订单」对话正确返回订单数据（§3.8 材料 A） | ☐ |
+| 会话连续 | 第二问「刚才那个订单金额多少」能答对（§3.8 材料 B） | ☐ |
+| 工具注册 | 「查订单」意图下正确触发 `@Tool`（§3.8 材料 A 含工具调用） | ☐ |
+| 流式 | 前端收到增量 token（§3.8 材料 B SSE） | ☐ |
 
 > **定位回顾**：v0 是「故意不完美」的地基。下一站 [02-事件溯源会话日志]——用事件溯源解决痛点 1。
