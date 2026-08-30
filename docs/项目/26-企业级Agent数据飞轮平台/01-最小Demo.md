@@ -56,6 +56,37 @@ public class FlywheelLoop {
 
 **前置条件**：`FlywheelLoop`+内存存储（lake/registry）可编译运行；测试差例与金标样例就绪。
 
+两段式配置（与代码仓习惯一致：主配置只管导入与 profile，环境差异进 profile 专属文件）：
+
+```yaml
+# src/main/resources/application.yaml —— 仅两件事：导入 .env + 激活 profile
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: flywheel
+```
+
+```yaml
+# src/main/resources/application-flywheel.yaml —— profile 专属：端口 + 模型
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+        timeout: 600s
+```
+
+```bash
+mvn clean compile                                        # 先编译通过
+mvn spring-boot:run -Dspring-boot.run.profiles=flywheel   # 以 flywheel profile 启动单体 FlywheelLoop（端口 8081）
+# 通过对话入口提交差例/触发评估（无固定端点名，按手写入口）
+```
+
 **步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
