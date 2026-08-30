@@ -1,6 +1,6 @@
 # 02-MCP 客户端集成
 
-> **定位**：在最小 Demo 基础上引入多 MCP Server 管理，构建 MCP Client 连接池、动态工具发现、全链路可观测性和审计日志，将网关从"单 Server 玩具"升级为"多 Server 生产级中间件"。本文给出**完整可手写代码**（一行不省略）——连接池、发现、健康检查、可观测、审计全部 Java 类 + `pom.xml` 新增依赖 + `application.yml` + SQL DDL。
+> **定位**：在最小 Demo 基础上引入多 MCP Server 管理，构建 MCP Client 连接池、动态工具发现、全链路可观测性和审计日志，将网关从"单 Server 玩具"升级为"多 Server 生产级中间件"。本文给出**完整可手写代码**（一行不省略）——连接池、发现、健康检查、可观测、审计全部 Java 类 + `pom.xml` 新增依赖 + `application.yaml` + SQL DDL。
 >
 > **读者画像**：已完成最小 Demo，需要让网关同时管理多个 MCP Server 并具备生产级可观测能力。
 >
@@ -112,11 +112,23 @@ graph TB
 </dependency>
 ```
 
-### 3.3 `application.yml`（完整版）
+### 3.3 两段式配置：`application.yaml` + `application-mcp.yaml`
+
+> **两段式约定**：`application.yaml` 只做 `.env` 引入与 profile 激活；业务配置在 `application-mcp.yaml`（端口 8081）。启动命令 `mvn -Dspring-boot.run.profiles=mcp spring-boot:run`。
 
 ```yaml
+# application.yaml（主配置：仅 .env 引入 + profile 激活）
+spring:
+  config:
+    import: optional:file:.env[.properties]   # .env 环境变量注入（密钥不进版本库）
+  profiles:
+    active: mcp                                # 激活业务配置 application-mcp.yaml
+```
+
+```yaml
+# application-mcp.yaml（业务配置，端口 8081）
 server:
-  port: 8080
+  port: 8081
   threads:
     virtual:
       enabled: true
@@ -181,7 +193,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.time.Duration;
 
 /**
- * 网关配置属性——绑定 application.yml 的 gateway.* 前缀。
+ * 网关配置属性——绑定 application-mcp.yaml 的 gateway.* 前缀。
  * 需在启动类加 @ConfigurationPropertiesScan 才会生效（见 §3.5）。
  */
 @ConfigurationProperties(prefix = "gateway")
@@ -231,8 +243,8 @@ public class McpGatewayApplication {
 
 ```bash
 export GITHUB_TOKEN=${GITHUB_TOKEN}
-./mvnw spring-boot:run
-curl http://localhost:8080/tools | jq '. | length'
+mvn -Dspring-boot.run.profiles=mcp spring-boot:run
+curl http://localhost:8081/tools | jq '. | length'
 ```
 
 **步骤与断言**：
@@ -448,6 +460,7 @@ package com.example.mcp.gateway.pool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.client.McpSyncClient;   // ⚠ MCP SDK 真实类型（附录 05-01）
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.io.ClassPathResource;
@@ -463,6 +476,7 @@ import java.util.List;
  * 不是虚构的 Map<String, McpClient>（附录 05-01 §2.1）。
  * serverName 从 mcp-servers.json 的键顺序解析（与 starter 的注入顺序一致）。
  */
+@Slf4j
 @Component
 public class PoolInitializer {
 
@@ -486,7 +500,9 @@ public class PoolInitializer {
                     ? serverNames.get(i)
                     : "server-" + i;
             pool.register(serverName, mcpClients.get(i));
+            log.info("注册 MCP Server '{}' 到连接池", serverName);
         }
+        log.info("连接池初始化完成，共 {} 个连接", mcpClients.size());
     }
 
     /**
@@ -515,11 +531,11 @@ public class PoolInitializer {
 **材料——跨 Server 调用探针**：
 
 ```bash
-curl -X POST http://localhost:8080/tools/call \
+curl -X POST http://localhost:8081/tools/call \
   -H "Content-Type: application/json" \
   -d '{"toolName": "postgres.query", "arguments": {"sql": "SELECT 1"}}'
 
-curl -X POST http://localhost:8080/tools/call \
+curl -X POST http://localhost:8081/tools/call \
   -H "Content-Type: application/json" \
   -d '{"toolName": "filesystem.read_file", "arguments": {"path": "/tmp/mcp-workspace/hello.txt"}}'
 ```
@@ -547,8 +563,7 @@ package com.example.mcp.gateway.registry;
 import com.example.mcp.gateway.model.ToolInfo;
 import com.example.mcp.gateway.pool.McpClientPool;
 import com.example.mcp.gateway.pool.McpConnection;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -563,10 +578,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * 定期从所有活跃 MCP Server 拉取工具列表，
  * 维护全局工具注册中心。
  */
+@Slf4j
 @Service
 public class ToolDiscoveryService {
-
-    private static final Logger log = LoggerFactory.getLogger(ToolDiscoveryService.class);
 
     private final McpClientPool pool;
     // globalId → ToolInfo
@@ -585,11 +599,11 @@ public class ToolDiscoveryService {
             try {
                 refreshConnection(conn);
             } catch (Exception e) {
-                log.warn("Failed to discover tools from '{}': {}",
+                log.warn("从 '{}' 发现工具失败: {}",
                         conn.getServerName(), e.getMessage());
             }
         }
-        log.debug("Tool discovery completed. Total tools: {}", globalRegistry.size());
+        log.debug("工具发现完成，共 {} 个工具", globalRegistry.size());
     }
 
     /**
@@ -656,8 +670,7 @@ public class ToolDiscoveryService {
 ```java
 package com.example.mcp.gateway.pool;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -667,10 +680,10 @@ import org.springframework.stereotype.Service;
  * 每 30 秒 ping 一次所有连接，
  * 连续 3 次失败标记为 DISCONNECTED。
  */
+@Slf4j
 @Service
 public class HealthChecker {
 
-    private static final Logger log = LoggerFactory.getLogger(HealthChecker.class);
     private static final int FAILURE_THRESHOLD = 3;
 
     private final McpClientPool pool;
@@ -686,7 +699,7 @@ public class HealthChecker {
             conn.recordHealthCheck(healthy);
 
             if (!healthy) {
-                log.warn("Health check failed for '{}': {} consecutive failures",
+                log.warn("'{}' 健康检查失败: 连续 {} 次",
                         conn.getServerName(), conn.getConsecutiveFailures());
             }
         }
@@ -843,7 +856,7 @@ public class ToolRouter {
 # 等 60s 观察发现日志
 grep "provides" logs/gateway.log
 # 健康观察
-watch -n 5 'curl -s http://localhost:8080/actuator/health | jq ".components.mcpPool.details"'
+watch -n 5 'curl -s http://localhost:8081/actuator/health | jq ".components.mcpPool.details"'
 # 故障注入：直接 kill 掉 postgres Server 子进程
 pkill -f server-postgres
 ```
@@ -969,6 +982,9 @@ package com.example.mcp.gateway.config;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;  // Boot 4.1.0 实证
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -976,9 +992,10 @@ import org.springframework.context.annotation.Configuration;
 import java.util.List;
 
 /**
- * 可观测性配置——统一给所有指标打上应用标签。
+ * 可观测性配置——统一给所有指标打上应用标签，并注册工具调用 Observation 处理器。
  * GatewayMetrics 本身是 @Component（见上），不在本配置重复声明 Bean。
  */
+@Slf4j
 @Configuration
 public class ObservationConfig {
 
@@ -986,6 +1003,31 @@ public class ObservationConfig {
     public MeterRegistryCustomizer<MeterRegistry> commonTags() {
         return registry -> registry.config().commonTags(
                 List.of(Tag.of("application", "mcp-tool-gateway")));
+    }
+
+    /**
+     * 工具调用 Observation 处理器——在 Span 开始/结束时打印中文日志，便于本地排障。
+     * 泛型用 ObservationHandler&lt;Observation.Context&gt;，supportsContext 按 name 匹配
+     * ToolRouter 创建的 "mcp.tool.call" Observation（正文 ToolRouter 用 createNotStarted 创建）。
+     */
+    @Bean
+    public ObservationHandler<Observation.Context> toolCallObservationHandler() {
+        return new ObservationHandler<>() {
+            @Override
+            public boolean supportsContext(Observation.Context context) {
+                return "mcp.tool.call".equals(context.getName());
+            }
+
+            @Override
+            public void onStart(Observation.Context context) {
+                log.info("工具调用开始: {}", context.getLowCardinalityKeyValues());
+            }
+
+            @Override
+            public void onStop(Observation.Context context) {
+                log.info("工具调用结束: {}", context.getLowCardinalityKeyValues());
+            }
+        };
     }
 }
 ```
@@ -1096,8 +1138,7 @@ package com.example.mcp.gateway.audit;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -1110,10 +1151,9 @@ import java.util.Map;
  * 使用 @Async 异步写入，不阻塞主调用链。
  * Java 21 虚拟线程让 @Async 不再需要额外的线程池配置。
  */
+@Slf4j
 @Service
 public class AuditService {
-
-    private static final Logger log = LoggerFactory.getLogger(AuditService.class);
 
     private final AuditRepository repository;
     private final ObjectMapper objectMapper;
@@ -1150,7 +1190,7 @@ public class AuditService {
             repository.save(entry);
         } catch (Exception e) {
             // 审计日志写入失败不能影响主业务
-            log.error("Failed to write audit log for tool '{}': {}",
+            log.error("写入工具 '{}' 的审计日志失败: {}",
                     toolName, e.getMessage());
         }
     }
@@ -1203,8 +1243,8 @@ CREATE INDEX idx_status    ON audit_logs (status);
 **材料——指标与审计核对命令**：
 
 ```bash
-curl -s http://localhost:8080/actuator/prometheus | grep -E "^mcp_tool"
-# H2 控制台（开发库）：http://localhost:8080/h2-console，JDBC URL jdbc:h2:mem:gateway
+curl -s http://localhost:8081/actuator/prometheus | grep -E "^mcp_tool"
+# H2 控制台（开发库）：http://localhost:8081/h2-console，JDBC URL jdbc:h2:mem:gateway
 ```
 
 ```sql
@@ -1315,7 +1355,7 @@ public class McpPoolHealthIndicator implements HealthIndicator {
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | `curl http://localhost:8080/actuator/health \| jq '.components.mcpPool.details'` | 每个 Server 一段 `{status, tools, failures}`，另有 totalServers=3 / availableServers 计数 |
+| 1 | `curl http://localhost:8081/actuator/health \| jq '.components.mcpPool.details'` | 每个 Server 一段 `{status, tools, failures}`，另有 totalServers=3 / availableServers 计数 |
 | 2 | 全部 CONNECTED 时 | 顶层 `status: UP`；`mcpPool` 组件 UP |
 | 3 | kill 一个 Server（复用 §5.4 剧本）等隔离完成 | 该 Server `status: DISCONNECTED`，整体 `mcpPool` 变 DOWN（`Health.down()` 分支） |
 
@@ -1414,13 +1454,13 @@ sequenceDiagram
 
 ## 10. ADR 演进决策
 
-### ADR 03-03：连接池用 `ConcurrentHashMap` 存连接，健康状态用 `volatile` + 渐进式失败计数
+### ADR 03-05：连接池用 `ConcurrentHashMap` 存连接，健康状态用 `volatile` + 渐进式失败计数
 
 - **决策**：`McpClientPool` 用 `ConcurrentHashMap`（多读少写，读近乎无锁）；`McpConnection.status` 用 `volatile`；健康检查连续 3 次失败才 DISCONNECTED
 - **备选方案**：A. `HashMap + synchronized`（全局锁，高并发 get() 吞吐低）；B. 一次失败即断开（网络瞬时抖动导致误判）
 - **取舍理由**：连接池是"多读少写"——`get()` 每次调用都执行，注册/移除只在启动和故障时发生，`ConcurrentHashMap` 无锁读完美匹配；渐进式失败给 Server 恢复机会，避免 GC 停顿/慢查询导致的误隔离
 
-### ADR 03-04：serverName 从 `mcp-servers.json` 键顺序解析，而非伪造注册机制
+### ADR 03-06：serverName 从 `mcp-servers.json` 键顺序解析，而非伪造注册机制
 
 - **决策**：`PoolInitializer` 注入 `List<McpSyncClient>`，serverName 从配置文件键顺序读取（与 starter 注入顺序一致），失败退化为 `server-i`
 - **备选方案**：A. 虚构 `Map<String, McpClient>` 注入（不存在的注册机制，附录 05-01 §2.3 明确禁止）；B. 直接注入聚合 `ToolCallbackProvider`（丢失按 Server 路由能力）
@@ -1428,8 +1468,8 @@ sequenceDiagram
 
 ### 10.1 本节核对（ADR 与代码现状）
 
-- [ ] ADR 03-03 的实现细节在 §4.2/§4.3 代码中逐条兑现（ConcurrentHashMap / volatile / 阈值 3）
-- [ ] ADR 03-04 的注入形态与 §4.4 构造器签名（`List<McpSyncClient>`）一致，未出现虚构 `Map<String, McpClient>`
+- [ ] ADR 03-05 的实现细节在 §4.2/§4.3 代码中逐条兑现（ConcurrentHashMap / volatile / 阈值 3）
+- [ ] ADR 03-06 的注入形态与 §4.4 构造器签名（`List<McpSyncClient>`）一致，未出现虚构 `Map<String, McpClient>`
 
 ---
 
@@ -1437,11 +1477,35 @@ sequenceDiagram
 
 **验收**：六项目标全部达成——多 Server 管理、动态发现（60s 感知）、健康检查（30s 降级、3 次隔离）、可观测指标、审计日志、P99 < 200ms。
 
+**验收对照**：
+
+| 验收项 | 达标标准 | 本迭代 |
+|--------|---------|--------|
+| 多 Server 管理 | 三 Server 全部注册进连接池，`/actuator/health` 显示各自状态与工具数 | ✅ |
+| 动态发现 | 新增 Server 工具后 60s 内被 `GET /tools` 感知 | ✅ |
+| 健康检查 | 手动停 Server：30s 内 DEGRADED，连续 3 次后 DISCONNECTED 并隔离 | ✅ |
+| 全链路可观测 | `curl /actuator/prometheus \| grep mcp_tool` 见 `mcp_tool_calls_total` / `mcp_tool_duration_seconds` | ✅ |
+| 审计日志 | 每次调用写 `audit_logs`（参数+结果+状态+耗时），不阻塞主调用链 | ✅ |
+| 性能不回退 | 多 Server 后 P99 工具调用 < 200ms（不含 Server 执行时间） | ✅ |
+
 **已知痛点（供迭代二决策）**：
 1. 无权限认证——任何调用方都能调任何工具，`agentId` 硬编码为 `anonymous`
 2. 无容错——下游 Server 慢/挂时调用直接失败，没有熔断、重试、降级
 3. 网关只消费工具——自身业务能力（订单/工单/审批）尚未暴露为 MCP Server
 4. 审计无关联身份——需要 Agent 认证后才能做按租户/Agent 的成本与安全归因
+
+### 11.2 全篇回归验证（迭代一端到端）
+
+**回归断言**（§4.5 / §5.4 / §6.5 均通过后，最终整体验收）：
+
+| # | 操作 | 预期（PASS 判据） |
+|---|------|------------------|
+| 1 | 重启网关，重跑 §3.6 工具清点 + §4.5 注册断言 | 三 Server 注册名与工具数稳定（注册幂等，重启不丢连接） |
+| 2 | 动态发现回归：向 filesystem 新增一个工具文件 | 60s 内 `GET /tools` 可见（增量刷新而非重启加载） |
+| 3 | 健康检查回归：停掉 postgres 再恢复 | 30s DEGRADED → 连续 3 次 DISCONNECTED → 恢复后回 CONNECTED |
+| 4 | 审计对账：记录调用次数后跑 10 次调用 | `audit_logs` 行数 = 调用次数（每条含参数/结果/状态/耗时） |
+
+**失败排查**：①重启后 Server 名退化为 `server-i`→`readServerNames` 解析失败（核 §4.4）；②审计少行→`@Async` 未生效或 save 异常被吞（查 error 日志）。
 
 > **定位回顾**：迭代一把网关升级为多 Server 生产级中间件。下一站 [03-自定义 MCP 服务端](03-自定义MCP服务端.md)——解决痛点 1（认证）、痛点 2（容错）、痛点 3（自建 Server）。
 

@@ -1,6 +1,6 @@
 # 01-最小 Demo 搭建
 
-> **定位**：从零搭建 MCP 工具网关的项目骨架，完成第一个 MCP Server（filesystem）的对接，实现"通过网关查询工具列表并调用工具"的最小闭环。这篇文档给出**完整可手写代码**（一行不省略）——`pom.xml`、`application.yml`、`mcp-servers.json`、全部 Java 类。聚焦于让代码跑起来，不涉及多 Server 管理、权限控制等高级特性。
+> **定位**：从零搭建 MCP 工具网关的项目骨架，完成第一个 MCP Server（filesystem）的对接，实现"通过网关查询工具列表并调用工具"的最小闭环。这篇文档给出**完整可手写代码**（一行不省略）——`pom.xml`、`application.yaml`、`mcp-servers.json`、全部 Java 类。聚焦于让代码跑起来，不涉及多 Server 管理、权限控制等高级特性。
 >
 > **读者画像**：已经了解 MCP 协议基础概念，准备动手写代码的开发者。
 >
@@ -23,7 +23,7 @@
 
 | # | 目标 | 验收 |
 |---|------|------|
-| 1 | 项目骨架可启动 | `mvn spring-boot:run` 后 `GET /actuator/health` 返回 UP |
+| 1 | 项目骨架可启动 | `mvn -Dspring-boot.run.profiles=mcp spring-boot:run` 后 `GET /actuator/health` 返回 UP |
 | 2 | 工具发现闭环 | `GET /tools` 返回 filesystem Server 的 4 个工具（read_file 等） |
 | 3 | 工具调用闭环 | `POST /tools/call` 调用 `read_file` 正确读回文件内容 |
 | 4 | 延迟达标 | 本地 stdio 调用 P99 < 200ms（实测约 42ms） |
@@ -125,11 +125,23 @@
 
 注意 `spring-ai-bom` 通过 `dependencyManagement` 统一管理 Spring AI 全家桶版本，后续添加 MCP Server 依赖时无需再指定版本号。
 
-### 3.2 `application.yml`
+### 3.2 两段式配置：`application.yaml` + `application-mcp.yaml`
+
+> **两段式约定**：`application.yaml` 只做 `.env` 引入与 profile 激活；业务配置在 `application-mcp.yaml`（端口 8081）。启动命令 `mvn -Dspring-boot.run.profiles=mcp spring-boot:run`。
 
 ```yaml
+# application.yaml（主配置：仅 .env 引入 + profile 激活）
+spring:
+  config:
+    import: optional:file:.env[.properties]   # .env 环境变量注入（密钥不进版本库）
+  profiles:
+    active: mcp                                # 激活业务配置 application-mcp.yaml
+```
+
+```yaml
+# application-mcp.yaml（业务配置，端口 8081）
 server:
-  port: 8080
+  port: 8081
   # Java 21 虚拟线程支持——同步代码获得异步性能
   threads:
     virtual:
@@ -556,6 +568,7 @@ public class ToolGatewayController {
 package com.example.mcp.gateway.config;
 
 import com.example.mcp.gateway.registry.ToolRegistry;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
@@ -563,6 +576,7 @@ import org.springframework.stereotype.Component;
 /**
  * 应用就绪后刷新工具注册中心。
  */
+@Slf4j
 @Component
 public class GatewayInitializer {
 
@@ -575,6 +589,7 @@ public class GatewayInitializer {
     @EventListener(ApplicationReadyEvent.class)
     public void onReady() {
         registry.refresh();
+        log.info("工具注册中心已刷新，共 {} 个工具", registry.listAll().size());
     }
 }
 ```
@@ -618,7 +633,7 @@ echo "Hello from MCP Gateway!" > /tmp/mcp-workspace/hello.txt
 
 ```bash
 # 编译并启动
-./mvnw spring-boot:run
+mvn -Dspring-boot.run.profiles=mcp spring-boot:run
 ```
 
 启动日志中会看到 MCP 客户端连接过程：
@@ -628,14 +643,14 @@ DEBUG o.s.ai.mcp.client - Starting MCP client for server: filesystem
 DEBUG o.s.ai.mcp.client - Sending initialize request...
 DEBUG o.s.ai.mcp.client - Server capabilities: {tools: {listChanged: true}}
 DEBUG o.s.ai.mcp.client - Discovered 4 tools: [read_file, write_file, list_directory, search_files]
-INFO  c.e.mcp.gateway.config.GatewayInitializer - Tool registry refreshed: 4 tools loaded
+INFO  c.e.mcp.gateway.config.GatewayInitializer - 工具注册中心已刷新，共 4 个工具
 ```
 
 ### 4.3 验证工具发现
 
 ```bash
 # 查询所有工具
-curl http://localhost:8080/tools
+curl http://localhost:8081/tools
 ```
 
 响应示例：
@@ -662,7 +677,7 @@ curl http://localhost:8080/tools
 
 ```bash
 # 调用 read_file 工具
-curl -X POST http://localhost:8080/tools/call \
+curl -X POST http://localhost:8081/tools/call \
   -H "Content-Type: application/json" \
   -d '{
     "toolName": "read_file",
@@ -727,13 +742,13 @@ sequenceDiagram
 
 ## 6. ADR 演进决策
 
-### ADR 03-01：v0 用"单 Client + 启动加载"验证闭环，但埋下三个换接口
+### ADR 03-03：v0 用"单 Client + 启动加载"验证闭环，但埋下三个换接口
 
 - **决策**：v0 只对接一个 filesystem Server，工具列表启动时一次性加载；但代码里为后续迭代留名——① 工具发现收敛到 `ToolRegistry` 接口（迭代一换 `ToolDiscoveryService` 动态发现）② 工具调用收敛到 `ToolRouter`（迭代二换 `ResilientToolRouter` 加熔断重试）③ 数据模型收敛到 `ToolInfo`/`ToolCallRequest`/`ToolCallResult` 三个 Record（全项目复用）
 - **备选方案**：A. 直接按最终版做多 Server 连接池（过早优化，握手/传输问题未暴露就上复杂度）；B. 只写 Controller 直连 Client（无路由抽象，迭代一无从下手）
 - **取舍理由**：先让 stdio 握手、JSON-RPC 编解码、Spring AI 自动装配这几条真实链路跑通，接口名先立、实现后换——让后续迭代有抓手又不破坏最小 demo
 
-### ADR 03-02：`inputSchema` 用 `Object` 原样透传而非强转 Map
+### ADR 03-04：`inputSchema` 用 `Object` 原样透传而非强转 Map
 
 - **决策**：`ToolInfo.inputSchema` 类型为 `Object`，直接透传 MCP SDK 的 `ToolInputSchema`
 - **备选方案**：A. 用 `Map<String, Object>`（需 Jackson 手动转换，且与 MCP SDK 真实类型不符）；B. 引入 SDK 的 `ToolInputSchema` 具体类型（与 SDK 版本强耦合）
@@ -741,14 +756,23 @@ sequenceDiagram
 
 ### 6.1 本节核对（ADR 与代码现状）
 
-- [ ] ADR 03-01 三个"换接口"（Registry→DiscoveryService / Router→ResilientToolRouter / 三 Record）在 02/03 篇确实被兑现
-- [ ] `inputSchema` 类型在 §3.5 Record 中确为 `Object`，与 ADR 03-02 一致
+- [ ] ADR 03-03 三个"换接口"（Registry→DiscoveryService / Router→ResilientToolRouter / 三 Record）在 02/03 篇确实被兑现
+- [ ] `inputSchema` 类型在 §3.5 Record 中确为 `Object`，与 ADR 03-04 一致
 
 ---
 
 ## 7. 验收与已知痛点
 
 **验收**：四项目标全部达成——骨架可启动、工具发现闭环、工具调用闭环、P99 < 200ms。
+
+**验收对照**：
+
+| 验收项 | 达标标准 | 本迭代 |
+|--------|---------|--------|
+| 骨架可启动 | `GET /actuator/health` 返回 UP | ✅ |
+| 工具发现闭环 | `GET /tools` 返回 filesystem 4 工具（read_file 等） | ✅ |
+| 工具调用闭环 | `POST /tools/call` 调 read_file 正确读回文件内容 | ✅ |
+| 延迟达标 | 本地 stdio 调用 P99 < 200ms（实测约 42ms） | ✅ |
 
 ### 7.1 全篇回归验证（v0 端到端）
 

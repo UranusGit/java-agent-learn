@@ -1,6 +1,6 @@
 # 03-自定义 MCP 服务端
 
-> **定位**：在网关中内建自研业务 MCP Server，将企业内部能力（订单查询、工单创建、审批流）暴露为 MCP 工具，同时叠加容错与弹性设计、安全与权限控制、多模型协作策略，使网关同时具备工具消费（Client）和工具提供（Server）双重能力。本文给出**完整可手写代码**（一行不省略）——业务服务、`@Tool` 工具、`ToolCallbackProvider` 暴露配置、熔断路由、认证安全、多模型策略全部 Java 类 + `pom.xml` 新增依赖 + `application.yml` 新增配置。
+> **定位**：在网关中内建自研业务 MCP Server，将企业内部能力（订单查询、工单创建、审批流）暴露为 MCP 工具，同时叠加容错与弹性设计、安全与权限控制、多模型协作策略，使网关同时具备工具消费（Client）和工具提供（Server）双重能力。本文给出**完整可手写代码**（一行不省略）——业务服务、`@Tool` 工具、`ToolCallbackProvider` 暴露配置、熔断路由、认证安全、多模型策略全部 Java 类 + `pom.xml` 新增依赖 + `application-mcp.yaml` 新增配置。
 >
 > **读者画像**：已完成迭代一，需要让网关对外暴露自研工具并达到生产级安全与弹性标准的开发者。
 >
@@ -23,7 +23,7 @@
 
 | # | 目标 | 验收 |
 |---|------|------|
-| 1 | 自建 Server | 外部 MCP 客户端（mcp-cli）连 `http://localhost:8080` 能看到 queryOrder / createTicket / queryTicket / submitApproval 四个工具 |
+| 1 | 自建 Server | 外部 MCP 客户端（mcp-cli）连 `http://localhost:8081` 能看到 queryOrder / createTicket / queryTicket / submitApproval 四个工具 |
 | 2 | 容错 | 停掉某个下游 Server，调用其工具返回降级结果（`degraded: true`）而非 5xx；连续失败后熔断器 OPEN |
 | 3 | 安全认证 | 无 `X-API-Key` → 401；白名单外工具 → SecurityException；STANDARD 单笔超 5000 → SecurityException |
 | 4 | 多模型策略 | `StrategySelector.selectModel("cost-first", tool, ctx)` 返回 deepseek-v3/gpt-4o/claude-sonnet-4 |
@@ -59,10 +59,10 @@
 
 > 版本说明：`spring-ai-starter-mcp-server-webflux` 是附录 05-01 §1 列的 WebFlux 服务端变体（本项目 WebFlux 栈，不用 Servlet 版的 `spring-ai-starter-mcp-server`）。
 
-### 3.2 `application.yml` 新增 MCP Server 配置
+### 3.2 `application-mcp.yaml` 新增 MCP Server 配置
 
 ```yaml
-# application.yml 新增 MCP Server 配置（追加到 spring.ai.mcp 下）
+# application-mcp.yaml 新增 MCP Server 配置（追加到 spring.ai.mcp 下）
 spring:
   ai:
     mcp:
@@ -94,7 +94,7 @@ graph LR
 先定义领域模型（Record）与业务服务（内存实现）：
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 import java.math.BigDecimal;
 
@@ -110,7 +110,7 @@ public record OrderDetail(
 ```
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 import org.springframework.stereotype.Service;
 
@@ -138,7 +138,7 @@ public class OrderService {
 ```
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 import java.time.Instant;
 
@@ -156,7 +156,7 @@ public record Ticket(
 ```
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 /**
  * 工单状态查询结果。
@@ -169,7 +169,7 @@ public record TicketStatus(
 ```
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 import org.springframework.stereotype.Service;
 
@@ -210,7 +210,7 @@ public class TicketService {
 ```
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 import java.time.Instant;
 
@@ -227,7 +227,7 @@ public record ApprovalResult(
 ```
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 import org.springframework.stereotype.Service;
 
@@ -257,7 +257,7 @@ public class ApprovalService {
 ### 3.4 业务工具定义 `OrderTools.java` / `TicketTools.java` / `ApprovalTools.java`
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -287,7 +287,7 @@ public class OrderTools {
 ```
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -324,7 +324,7 @@ public class TicketTools {
 ```
 
 ```java
-package com.example.mcp.gateway.tools;
+package com.example.mcp.gateway.tool;
 
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -362,9 +362,9 @@ public class ApprovalTools {
 ```java
 package com.example.mcp.gateway.config;
 
-import com.example.mcp.gateway.tools.ApprovalTools;
-import com.example.mcp.gateway.tools.OrderTools;
-import com.example.mcp.gateway.tools.TicketTools;
+import com.example.mcp.gateway.tool.ApprovalTools;
+import com.example.mcp.gateway.tool.OrderTools;
+import com.example.mcp.gateway.tool.TicketTools;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;   // Spring AI 2.0.0 真实包
 import org.springframework.ai.tool.ToolCallbackProvider;   // Spring AI 2.0.0 真实包
 import org.springframework.context.annotation.Bean;
@@ -396,7 +396,7 @@ public class McpServerConfig {
 }
 ```
 
-Spring AI 自动将这些 `@Tool` 方法注册到内建 MCP Server。外部 MCP 客户端连接 `http://gateway:8080` 后，通过 `tools/list` 就能看到 `queryOrder`、`createTicket`、`queryTicket`、`submitApproval` 四个工具。
+Spring AI 自动将这些 `@Tool` 方法注册到内建 MCP Server。外部 MCP 客户端连接 `http://gateway:8081` 后，通过 `tools/list` 就能看到 `queryOrder`、`createTicket`、`queryTicket`、`submitApproval` 四个工具。
 
 ### 3.6 本节测试与验证（自建 Server 工具暴露）
 
@@ -406,7 +406,7 @@ Spring AI 自动将这些 `@Tool` 方法注册到内建 MCP Server。外部 MCP 
 
 ```bash
 # 需要安装 mcp-cli: npm install -g @anthropic/mcp-cli
-mcp-cli connect http://localhost:8080
+mcp-cli connect http://localhost:8081
 # 在 mcp-cli 中执行：
 # > tools/list
 # 期望输出：queryOrder, createTicket, queryTicket, submitApproval
@@ -466,8 +466,7 @@ package com.example.mcp.gateway.resilience;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -477,10 +476,9 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 熔断器工厂——为每个 MCP Server 创建独立的熔断器。
  */
+@Slf4j
 @Component
 public class CircuitBreakerFactory {
-
-    private static final Logger log = LoggerFactory.getLogger(CircuitBreakerFactory.class);
 
     private final Map<String, CircuitBreaker> breakers = new ConcurrentHashMap<>();
 
@@ -506,7 +504,7 @@ public class CircuitBreakerFactory {
         // 注册状态变更监听
         breaker.getEventPublisher()
                 .onStateTransition(e ->
-                        log.warn("[CircuitBreaker] {}: {} → {}",
+                        log.warn("[熔断器] {}: {} → {}",
                                 serverName,
                                 e.getStateTransition().getFromState(),
                                 e.getStateTransition().getToState()));
@@ -689,11 +687,11 @@ sequenceDiagram
 
 ```bash
 pkill -f server-postgres   # 停掉下游 postgres Server
-curl -X POST http://localhost:8080/tools/call \
+curl -X POST http://localhost:8081/tools/call \
   -H "X-API-Key: key-admin-003" -H "Content-Type: application/json" \
   -d '{"toolName": "postgres.query", "arguments": {"sql": "SELECT 1"}}'
 # 连续调用 ≥11 次（触发 50% 失败率 × 滑动窗口 20）
-curl http://localhost:8080/actuator/health | jq '.components.mcpPool.details'
+curl http://localhost:8081/actuator/health | jq '.components.mcpPool.details'
 ```
 
 **步骤与断言**：
@@ -1026,22 +1024,22 @@ public class SecureToolGatewayController {
 
 ```bash
 # 1. 无 API Key
-curl -X POST http://localhost:8080/tools/call \
+curl -X POST http://localhost:8081/tools/call \
   -H "Content-Type: application/json" \
   -d '{"toolName": "queryOrder", "arguments": {"orderId": "ORD-001"}}'
 
 # 2. 白名单外工具（客服 Agent 调 postgres）
-curl -X POST http://localhost:8080/tools/call \
+curl -X POST http://localhost:8081/tools/call \
   -H "X-API-Key: key-customer-service-001" -H "Content-Type: application/json" \
   -d '{"toolName": "postgres.query", "arguments": {"sql": "SELECT 1"}}'
 
 # 3. STANDARD 单笔超 5000
-curl -X POST http://localhost:8080/tools/call \
+curl -X POST http://localhost:8081/tools/call \
   -H "X-API-Key: key-customer-service-001" -H "Content-Type: application/json" \
   -d '{"toolName": "submitApproval", "arguments": {"applicantId": "U001", "type": "报销", "amount": 10000, "reason": "test"}}'
 
 # 4. SQL 注入探测（admin 越过白名单后由注入检测拦）
-curl -X POST http://localhost:8080/tools/call \
+curl -X POST http://localhost:8081/tools/call \
   -H "X-API-Key: key-admin-003" -H "Content-Type: application/json" \
   -d '{"toolName": "postgres.query", "arguments": {"sql": "SELECT 1; DROP TABLE orders"}}'
 ```
@@ -1280,6 +1278,8 @@ flowchart TB
 
 **前置条件**：§3–§5 已通过；`ToolInfo` 里有真实工具可传入策略。
 
+**执行方式**：`mvn test -Dtest=StrategySelectorTest`（概念测试类）驱动表中断言；或启动网关后经 `POST /tools/call` 触发 `selectModel` 分支观察返回模型。
+
 **步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
@@ -1354,19 +1354,19 @@ sequenceDiagram
 
 ## 9. ADR 演进决策
 
-### ADR 03-05：`@Tool` 暴露为 MCP 工具必须显式 `ToolCallbackProvider` Bean
+### ADR 03-07：`@Tool` 暴露为 MCP 工具必须显式 `ToolCallbackProvider` Bean
 
 - **决策**：`McpServerConfig` 为每组工具显式声明 `MethodToolCallbackProvider.builder().toolObjects(...)` Bean
 - **备选方案**：A. 只写 `@Component + @Tool` 期待自动注册（**不生效**——附录 05-01 §3 审计教训）；B. 手写 `ToolCallback` 逐个注册（繁琐且易漏）
 - **取舍理由**：`MethodToolCallbackProvider` 是 Spring AI 2.0 官方装配路径；`spring-ai-starter-mcp-server-webflux` 启动时扫描所有 `ToolCallbackProvider` Bean 自动暴露
 
-### ADR 03-06：容错落在 `ResilientToolRouter`（数据面热路径），熔断按 Server 隔离
+### ADR 03-08：容错落在 `ResilientToolRouter`（数据面热路径），熔断按 Server 隔离
 
 - **决策**：熔断/重试/降级在路由引擎内用 Resilience4j `Decorators` 链式组合；每个 Server 独立熔断器
 - **备选方案**：A. 全局单一熔断器（一个 Server 故障拖垮全部工具）；B. 用 Spring AOP 拦 `@Tool`（附录 05-02 §1.3：框架反射调用绕过代理，收不到）
 - **取舍理由**：按 Server 隔离保证"单 Server 故障不影响其他 Server"（验收 #5）；热路径内联装饰避免引入 AOP 不可控性
 
-### ADR 03-07：认证白名单 + 注入检测在 Controller 层，HITL 留给 `ToolCallingManager`
+### ADR 03-09：认证白名单 + 注入检测在 Controller 层，HITL 留给 `ToolCallingManager`
 
 - **决策**：API Key 认证 + 白名单 + 注入检测放在 `SecureToolGatewayController` 调用前；HITL 人工审批**不在本迭代实现**
 - **备选方案**：A. 把审批放 Advisor（错误落点——[附录 05-00 §1] 明确 Advisor 管 Prompt 上下文）；B. 用 AOP 拦工具（附录 05-02 §1.3 不可行）
@@ -1374,15 +1374,25 @@ sequenceDiagram
 
 ### 9.1 本节核对（ADR 与代码现状）
 
-- [ ] ADR 03-05 的 Provider Bean 在 §3.5 逐工具组声明（三个 Bean），且 §3.6 断言 5 做过反证
-- [ ] ADR 03-06 的按 Server 隔离在 §4.2 `getOrCreate(serverName)` 与 §4.4 断言 5 验证过
-- [ ] ADR 03-07 的"本迭代不做 HITL"与 §2 明确不做、§10 痛点 3 三处一致
+- [ ] ADR 03-07 的 Provider Bean 在 §3.5 逐工具组声明（三个 Bean），且 §3.6 断言 5 做过反证
+- [ ] ADR 03-08 的按 Server 隔离在 §4.2 `getOrCreate(serverName)` 与 §4.4 断言 5 验证过
+- [ ] ADR 03-09 的"本迭代不做 HITL"与 §2 明确不做、§10 痛点 3 三处一致
 
 ---
 
 ## 10. 验收与已知痛点
 
 **验收**：五项目标全部达成——自建 Server 四工具可见、熔断降级、三层认证、策略选择、Server 故障隔离。
+
+**验收对照**：
+
+| 验收项 | 达标标准 | 本迭代 |
+|--------|---------|--------|
+| 自建 Server | 外部 mcp-cli 连网关可见 queryOrder / createTicket / queryTicket / submitApproval 四工具 | ✅ |
+| 容错降级 | 熔断打开时返回降级 Map（`degraded: true`），不抛 5xx | ✅ |
+| 三层认证 | API Key 认证 + 工具白名单 + 高危金额阈值（STANDARD 5000 / PREMIUM 50000） | ✅ |
+| 策略选择 | cost-first 与 quality-first 对同一工具各选一次，输出符合各自分支 | ✅ |
+| 故障隔离 | 单 Server 熔断不影响其他 Server（按 Server 独立熔断器） | ✅ |
 
 **已知痛点（供后续决策）**：
 1. `AgentAuthService` 用内存 Map——重启即失，多实例不一致；生产换数据库/配置中心

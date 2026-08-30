@@ -11,11 +11,11 @@
 | 问 | 答 |
 |----|----|
 | **新增了什么需求** | ① 传输升级 Streamable HTTP（单端点 POST+mixin 流式）② 网关→下游 MCP Server 的 OAuth 2.1 客户端凭证 ③ Agent→网关的资源服务器验证 ④ token 交换透传租户身份 |
-| **影响了哪些模块** | `McpClientConnections`（传输层）、新增 `auth/`（token 管理/资源服务器配置）、`application.yml`（连接配置+安全配置） |
+| **影响了哪些模块** | `McpClientConnections`（传输层）、新增 `auth/`（token 管理/资源服务器配置）、`application-mcp.yaml`（连接配置+安全配置） |
 | **架构如何演进** | 裸 HTTP 调用 → 带授权的 Streamable HTTP 全链路；身份从"网关自证"升级为"租户可追溯" |
 | **上一版痛点是什么** | ① 旧 HTTP+SSE 双端点传输已废弃 ② 下游调用无授权（内网裸奔）③ 租户身份在跨网关链路中断链 |
 
-**本迭代验收**：① 全部下游连接走 Streamable HTTP 单端点 ② 无 token 请求被网关 401 ③ 下游收到的调用带 Bearer token 且含租户 claim ④ token 过期自动刷新不中断服务。
+**本迭代验收**：① 100% 下游连接走 Streamable HTTP 单端点（双端点流量为 0）② 无 token/无效 token 请求一律 401（0 匿名放行）③ 下游收到的调用 100% 带 Bearer token 且含租户 claim ④ 60s TTL token 连续调用 5 分钟 0 次 401（自动刷新不中断）。
 
 **一句话核对**：四问与 03 篇遗留痛点衔接（传输/授权/身份断链），验收四条分别由 §2.4 / §3.4 覆盖。
 
@@ -70,12 +70,12 @@ spring:
 
 ### 2.4 本节测试与验证（Streamable HTTP 连接生效）
 
-**前置条件**：两个下游 MCP Server（order-mcp:8201 / sql-mcp:8202）以 Streamable HTTP 单端点 `/mcp` 运行；`application.yml` 已按 §2.2 配置（注意键结构是 `streamable-http.connections.<name>.url`，非连写形式）。
+**前置条件**：两个下游 MCP Server（order-mcp:8201 / sql-mcp:8202）以 Streamable HTTP 单端点 `/mcp` 运行；`application-mcp.yaml` 已按 §2.2 配置（注意键结构是 `streamable-http.connections.<name>.url`，非连写形式）。
 
 **材料——连接与发现核对**：
 
 ```bash
-curl http://localhost:8080/v1/tools | jq '[.[].serverName] | unique'
+curl http://localhost:8081/tools | jq '[.[].serverName] | unique'
 ```
 
 **步骤与断言**：
@@ -193,9 +193,9 @@ io.modelcontextprotocol.spec.McpSchema.CallToolResult result =
 
 ```bash
 # 无 token → 401
-curl http://localhost:8080/v1/tools/queryOrder -d '{}'
+curl http://localhost:8081/tools/queryOrder -d '{}'
 # 带过期 token → 401；带有效 token → 200
-curl http://localhost:8080/v1/tools/queryOrder \
+curl http://localhost:8081/tools/queryOrder \
   -H "Authorization: Bearer ${TOKEN}" -d '{"orderId": "ORD-001"}'
 ```
 
@@ -234,11 +234,11 @@ curl http://localhost:8080/v1/tools/queryOrder \
 
 | 验收项 | 达标标准 | 本迭代 |
 |--------|---------|--------|
-| Streamable HTTP | 全部下游单端点连接 | ✅ |
-| 资源服务器 | 无/无效 token 401 | ✅ |
-| 客户端凭证 | 下游调用带 Bearer | ✅ |
-| 身份透传 | 租户 claim 到下游审计 | ✅ |
-| 自动刷新 | 过期前预刷新无中断 | ✅ |
+| Streamable HTTP | 100% 下游连接单端点、双端点流量为 0 | ✅ |
+| 资源服务器 | 无/无效 token 一律 401（0 匿名放行） | ✅ |
+| 客户端凭证 | 下游调用 100% 带 Bearer | ✅ |
+| 身份透传 | 100% 调用含 tenant_id claim | ✅ |
+| 自动刷新 | 60s TTL 连续 5 分钟 0 次 401 | ✅ |
 
 **下一篇**：[06-工具市场与计费](06-工具市场与计费.md)——登记/评分/订阅计费与劣质工具治理。
 
