@@ -27,21 +27,53 @@
 ## 二、四端点设计
 
 ```java
-// 概念代码：解释 API（WebFlux）
+// Spring AI 2.0.0 / Java 21 —— 概念代码：解释 API（WebFlux，组装期零阻塞）
 @RestController
 public class ExplainApiController {
+    private final Explainer explainer;                    // 02 分层时间线 render(runId, aud)
+    private final AttributionEngine attributionEngine;    // 03 归因产物 + 04 两级校验 validate
+    private final ConfidenceScorer confidenceScorer;      // 05 分来源置信 score(a)
+    private final CounterfactualEngine cfEngine;          // 07 反事实 ruleCf(d, ctx)
+    private final DisclosureService disclosure;           // 08 披露审批记录（取证级入口）
+
     @GetMapping("/explain/{runId}/timeline")
     Flux<ExplainStep> timeline(@PathVariable String runId,
-                               @RequestParam Audience aud) { ... }      // 02 分层时间线
+                               @RequestParam Audience aud) {
+        return requireAccess(runId, aud)                              // 权限门先于任何数据读出
+            .thenMany(Flux.fromIterable(explainer.render(runId, aud).steps())); // 02: 折叠/概要/取证分层
+    }
 
     @GetMapping("/explain/{runId}/attributions")
-    Flux<ValidatedAttribution> attributions(@PathVariable String runId) { ... } // 03/04 归因+校验
+    Flux<ValidatedAttribution> attributions(@PathVariable String runId) {
+        return requireAccess(runId, Audience.OPERATOR)
+            .thenMany(Flux.fromIterable(attributionEngine.attributionsOf(runId))   // 03: 该 run 的归因产物
+                .map(c -> attributionEngine.validate(c,                            // 04: 存在性+相关性两级校验
+                        attributionEngine.givenEvidenceIds(runId))));
+    }
 
     @GetMapping("/explain/{runId}/confidence")
-    Flux<ConfidenceView> confidence(@PathVariable String runId) { ... }   // 05 置信
+    Flux<ConfidenceView> confidence(@PathVariable String runId) {
+        return requireAccess(runId, Audience.OPERATOR)
+            .thenMany(attributions(runId)                               // 复用已校验归因(04)
+                .map(a -> ConfidenceView.of(a, confidenceScorer.score(a)))); // 05: RULE_HIT 确定/FACT 证据相似/INFERENCE 采样一致
+    }
 
     @GetMapping("/explain/{runId}/counterfactual")
-    Mono<CounterfactualView> counterfactual(@PathVariable String runId) { ... } // 07 反事实
+    Mono<CounterfactualView> counterfactual(@PathVariable String runId) {
+        return requireAccess(runId, Audience.OPERATOR)
+            .then(Mono.justOrEmpty(attributionEngine.decisionOf(runId)) // 03 产物中的规则决策记录
+                .map(d -> cfEngine.ruleCf(d, d.context()))              // 07: 距阈值差(确定性,可承诺)
+                .map(CounterfactualView::of)
+                .switchIfEmpty(Mono.error(new ResponseStatusException(  // 07: 不可计算 → 诚实声明而非硬造
+                    HttpStatus.NOT_FOUND, "该 run 无规则决策，反事实不可计算"))));
+    }
+
+    // §四 权限路由：取证级不裸开放，监管调取须走 08 披露审批，否则 403
+    private Mono<Void> requireAccess(String runId, Audience aud) {
+        return (aud == Audience.REGULATOR && !disclosure.approved(runId))
+            ? Mono.error(new ResponseStatusException(HttpStatus.FORBIDDEN, "取证级须走披露审批(08)"))
+            : Mono.empty();
+    }
 }
 ```
 
@@ -50,6 +82,22 @@ public class ExplainApiController {
 **前置条件**：02-05 迭代产物（时间线/归因/校验/置信）可用；`Audience` 权限路由已实现；WebFlux 应用（WebFlux 铁律：Reactor 响应式，EventLoop 上不 block）。
 
 **材料——代码内含的旋钮**：四端点 `/explain/{runId}/timeline|attributions|confidence|counterfactual`；参数 `@RequestParam Audience aud`；返回 `Flux`/`Mono`（响应式）。
+
+**核对命令**（四端点与权限门自查）：
+
+```bash
+curl -s "http://localhost:8081/explain/run-20260830-001/timeline?aud=USER"
+# 预期输出（节选）：
+#   [{"kind":"evidence","title":"检索: 退货政策","digest":"命中 3 篇文档"}, ...]
+
+curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:8081/explain/run-20260830-001/timeline?aud=REGULATOR"
+# 预期输出：
+#   403        （取证级须走披露审批(08)，未审批一律 403）
+
+curl -s http://localhost:8081/explain/run-20260830-001/confidence
+# 预期输出（节选）：
+#   [{"text":"订单已退","kind":"FACT","confidence":0.87}, ...]
+```
 
 **步骤与断言**：
 
@@ -102,5 +150,28 @@ graph LR
 
 - [ ] 验收表三行（四端点 / 用户查取证级 403 / 证据源更新后快照不变）与 §二.1 步骤 1-4/5 及 §三 快照一一对应，无验收项落空
 - [ ] "证据源更新后查旧解释返回快照不变"有明确断言（§三 快照只读固化），非空许愿
+
+## 六、全篇回归验证
+
+> 各节断言已上移至 §二.1（四端点设计）；快照与权限在 §三.1/§四.1 核对；本表为整篇迭代的回归验收，不重复材料。
+
+| # | 验收项（断言） | 标准 | 复验方式 |
+|---|---------------|------|---------|
+| 1 | 四端点可用 | timeline/attributions/confidence/counterfactual 各返回对应产物 | 复验：执行 §二.1 核对命令 |
+| 2 | 取证级限权 | 无审批的 `aud=REGULATOR` 请求返回 403 | 复验：执行 §二.1 核对命令（403 一条） |
+| 3 | 响应式零阻塞 | 无 `.block()`，EventLoop 不被阻塞 | §二.1 步骤6 |
+| 4 | 快照稳定 | 证据源变更后历史解释仍返回当时快照 | §三（只读固化）/§三.1 |
+
+**回归失败排查**：按 §二.1 失败排查逐条回溯（路由未生效/权限校验位置错/block 违反 WebFlux 铁律/产物未生成）。
+
+## 七、验收对照
+
+> 00-需求分析量化验收④（监管数据包导出完整率 100%）的"取证级入口"在本迭代就位（未审批 403，导出闭环在 08）。
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 四端点可用 | 含受众路由的四个解释查询 | ✅（§二.1 步骤1-4） |
+| 取证级不裸开放 | 无权限受众拿不到取证级（403） | ✅（§二.1 步骤5/§四） |
+| 历史解释稳定 | 快照只读固化不随存储漂移 | ✅（§三/§三.1） |
 
 > **下一步**：解释可被消费了。07 迭代做**反事实边界**——回答"差多少会翻转"这一最难也最有价值的解释。
