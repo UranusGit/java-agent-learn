@@ -66,7 +66,7 @@ public class IndustrialToolConvention extends DefaultToolCallingObservationConve
     @Override
     protected KeyValue toolDefinitionName(ToolCallingObservationContext ctx) {
         // 例如把工具名统一加产线前缀，聚合时按产线分维度
-        return KeyValue.of("gen_ai.tool.call.name", "lineA:" + ctx.getToolDefinition().name());
+        return KeyValue.of("spring.ai.tool.definition.name", "lineA:" + ctx.getToolDefinition().name());
     }
 }
 ```
@@ -85,31 +85,40 @@ public class IndustrialToolConvention extends DefaultToolCallingObservationConve
 03 关才写完整的事件收集，这里先热身——写一个最小自定义 Handler，体会 `supportsContext` 认领机制：
 
 ```java
-// src/main/java/demo/demo01/obs/ToolCountHandler.java（完整文件）
-package demo.demo01.obs;
+// src/main/java/demo/demo01/config/ToolCountHandler.java（完整文件）
+package demo.demo01.config;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.observation.ToolCallingObservationContext;
-import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 import java.util.concurrent.atomic.AtomicLong;
 
-@Component   // 自动挂到 Registry，无需手工注册
-public class ToolCountHandler implements ObservationHandler<ToolCallingObservationContext> {
+@Slf4j
+@Configuration   // demo01 习惯：Handler 以 @Bean 形式挂到 Registry，无需手工注册
+public class ToolCountHandler {
 
     private final AtomicLong count = new AtomicLong();
 
-    @Override
-    public boolean supportsContext(Observation.Context context) {
-        return context instanceof ToolCallingObservationContext;   // 只认工具观测
-    }
+    @Bean
+    public ObservationHandler<ToolCallingObservationContext> toolCountObservationHandler() {
+        return new ObservationHandler<>() {
+            @Override
+            public boolean supportsContext(Observation.Context context) {
+                return context instanceof ToolCallingObservationContext;   // 只认工具观测
+            }
 
-    @Override
-    public void onStop(ToolCallingObservationContext context) {
-        System.out.println("[工具调用第 " + count.incrementAndGet() + " 次] "
-                + context.getToolDefinition().name()   // 真实 API：ToolDefinition#name()
-                + " 参数=" + context.getToolCallArguments());
+            @Override
+            public void onStop(ToolCallingObservationContext context) {
+                log.info("工具调用第 {} 次，工具名称：{}，工具参数：{}",
+                        count.incrementAndGet(),
+                        context.getToolDefinition().name(),   // 真实 API：ToolDefinition#name()
+                        context.getToolCallArguments());
+            }
+        };
     }
 }
 ```
@@ -121,11 +130,11 @@ public class ToolCountHandler implements ObservationHandler<ToolCallingObservati
 | 项 | 内容 |
 |---|---|
 | 方法 | `GET` |
-| URL | `http://localhost:8080/demo01/inspect?prompt=现在几点？当前是什么班次？` |
+| URL | `http://localhost:8081/demo01/chat?prompt=现在几点？当前是什么班次？` |
 
 **预期现象**：
 
-1. console 在 `ObservationTextPublisher` 的整段输出之外，多出两行 `[工具调用第 1 次] getCurrentTime 参数=null`、`[工具调用第 2 次] getCurrentShift 参数=null`——**两个 Handler 同时消费同一事件流**，验证广播机制（两个工具均无参数，参数为 null 属实）；
+1. 若临时注册了调试原型 `ObservationTextPublisher`（00 关提过、工程正式代码不采用），console 在它的整段输出之外，还会多出本关 Handler 的两行 `工具调用第 1 次，工具名称：getCurrentTime，工具参数：null`、`工具调用第 2 次，工具名称：getCurrentShift，工具参数：null`——**两个 Handler 同时消费同一事件流**，验证广播机制（两个工具均无参数，参数为 null 属实）；
 2. 连续调用三次接口，计数持续增长（进程内状态）——同时体会：Handler 里放内存状态在多实例部署下会各自为政，生产要用 Micrometer 计数器（07 关）；
 3. 问一个不触发工具的问题（`prompt=你好`），确认无该输出。
 

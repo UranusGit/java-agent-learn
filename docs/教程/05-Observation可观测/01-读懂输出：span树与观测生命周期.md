@@ -18,7 +18,7 @@
 |---|---|---|
 | **name（名称）** | 干了什么？ | `spring.ai.tool`、`shift.resolve` |
 | **start / end（起止时间戳）** | 什么时候开始、耗时多久？ | 第 2 次 LLM 调用从 10:00:01.200 到 10:00:03.850 |
-| **attributes / KeyValues（属性）** | 上下文是什么？ | `gen_ai.tool.call.name='getCurrentTime'` |
+| **attributes / KeyValues（属性）** | 上下文是什么？ | `spring.ai.tool.definition.name='getCurrentTime'` |
 | **parentId（父指针）** | 它是谁的一部分？ | 工具 span 的 parent 是 ChatClient span |
 
 来源：span 这个术语源自 Google 的分布式追踪论文 [Dapper](https://research.google/pubs/pub36356/)，后被 [OpenTelemetry](https://opentelemetry.io/docs/specs/otel/trace/api/#span) 定为行业标准。**一个 Trace（链路）= 从同一个根 span 出发、靠 parentId 串起来的一棵 span 树**。所以"traceId 贯穿全链路"（06 关）的意思是：同一次请求产生的所有 span 共享一个 traceId，但各有不同的 spanId。
@@ -29,18 +29,18 @@
 
 ```mermaid
 gantt
-    title 一次 inspect 请求的 span 时间轴（同一 traceId）
+    title 一次 chat 请求的 span 时间轴（同一 traceId）
     dateFormat HH:mm:ss.SSS
     axisFormat %H:%M:%S
     section http.server.requests
     HTTP 入口（根 span）           :a1, 10:00:01.000, 10:00:04.200
     section spring.ai.chat.client
     ChatClient 编排               :a2, 10:00:01.100, 10:00:04.100
-    section chat_model 第1次
+    section gen_ai.client.operation 第1次
     LLM 决策"该调 getCurrentTime"  :a3, 10:00:01.150, 10:00:02.100
     section spring.ai.tool
     getCurrentTime 执行           :a4, 10:00:02.150, 10:00:02.300
-    section chat_model 第2次
+    section gen_ai.client.operation 第2次
     LLM 拿到时间做总结            :a5, 10:00:02.350, 10:00:03.850
 ```
 
@@ -69,8 +69,8 @@ graph LR
 
 | 概念 | 粒度 | demo01 例子 | 数量关系 |
 |---|---|---|---|
-| **Trace** | 一次完整请求 | GET /demo01/inspect | 1 个 |
-| **Span** | 请求内的一段操作 | ChatClient、chat_model、tool | 1 个 Trace = N 个 Span |
+| **Trace** | 一次完整请求 | GET /demo01/chat | 1 个 |
+| **Span** | 请求内的一段操作 | ChatClient、gen_ai.client.operation、tool | 1 个 Trace = N 个 Span |
 | **Event** | span 内的瞬时事件点（无时长） | `onError` 时刻 | 1 个 Span = 0..N 个 Event |
 
 区分口诀：**有起点和终点的是 span，只有一个时间点的是 event**。"工具开始执行"是 span；"第 3 次重试在第 1.2 秒触发"是 event。
@@ -81,17 +81,17 @@ graph LR
 
 ```mermaid
 graph TD
-    A["http.server.requests<br/>GET /demo01/inspect"] --> B["spring.ai.chat.client<br/>ChatClient 层观测"]
-    B --> C["spring.ai.chat.client.chat_model<br/>第1次 LLM 调用（决策）"]
+    A["http.server.requests<br/>GET /demo01/chat"] --> B["spring.ai.chat.client<br/>ChatClient 层观测"]
+    B --> C["gen_ai.client.operation<br/>第1次 LLM 调用（决策）"]
     B --> D["spring.ai.tool<br/>getCurrentTime 执行"]
-    B --> E["spring.ai.chat.client.chat_model<br/>第2次 LLM 调用（总结）"]
+    B --> E["gen_ai.client.operation<br/>第2次 LLM 调用（总结）"]
 ```
 
 三件事值得体会：
 
 1. **观测是嵌套的，不是并列的**——工具观测是 ChatClient 观测的"孩子"。Micrometer 靠"当前观测入栈/出栈"（scope）自动建立父子；同线程内嵌套调用天然成树。
-2. **一轮工具调用 = 两次 LLM 调用**——第 1 次模型决定调工具，第 2 次拿到工具结果后生成答案。console 里看到两个 `chat_model` span 是正常的，不是 bug。
-3. **每段输出都带 KeyValues**——形如 `gen_ai.operation.name='chat'`、`gen_ai.system.provider='deepseek'`、`gen_ai.tool.call.name='getCurrentTime'`。这是 Spring AI 遵循的 **gen_ai 语义约定**（OpenTelemetry GenAI Semantic Conventions），换成任何遵循该约定的后端（Jaeger/Grafana/LangSmith 类）都能统一解读。
+2. **一轮工具调用 = 两次 LLM 调用**——第 1 次模型决定调工具，第 2 次拿到工具结果后生成答案。console 里看到两个 `gen_ai.client.operation` span 是正常的，不是 bug。
+3. **每段输出都带 KeyValues**——形如 `gen_ai.operation.name='chat'`、`gen_ai.system='deepseek'`、`spring.ai.tool.definition.name='getCurrentTime'`。这是 Spring AI 遵循的 **gen_ai 语义约定**（OpenTelemetry GenAI Semantic Conventions），换成任何遵循该约定的后端（Jaeger/Grafana/LangSmith 类）都能统一解读。
 
 > 「想深入 gen_ai 语义约定全景？→ [教程 04-企业级架构主干/02-全链路可观测性 §3]」
 
@@ -101,8 +101,8 @@ console 里标签分两类（javap 实证 `DefaultToolCallingObservationConventi
 
 | 类别 | 例子 | 能否进指标（Prometheus） | 工业含义 |
 |---|---|---|---|
-| LowCardinality | `tool.name`、`ai.operation.type`、`shift`（04 关加） | 能 | 按"工具名"聚合：getCurrentTime 平均耗时多少 |
-| HighCardinality | `tool.call.arguments`、`tool.call.id`、`tool.call.result` | **不能**（基数爆炸） | 只进 trace/日志：这次调用返回的具体时间戳 |
+| LowCardinality | `spring.ai.tool.definition.name`、`gen_ai.operation.name`、`shift`（04 关加） | 能 | 按"工具名"聚合：getCurrentTime 平均耗时多少 |
+| HighCardinality | `spring.ai.tool.call.arguments`、`spring.ai.tool.call.id`、`spring.ai.tool.call.result` | **不能**（基数爆炸） | 只进 trace/日志：这次调用返回的具体时间戳 |
 
 判据一句话：**取值可枚举且总数 < 数百 → 低基数；含业务流水号/自由文本 → 高基数**。工业场景设备编号动辄上万，`deviceId` 一律当高基数处理——这是 07 关基数熔断的伏笔。
 
@@ -132,25 +132,27 @@ stateDiagram-v2
 框架观测点只知道"有个工具被调了"，不知道你的业务阶段语义（如"班次判定要走排班表"）。给 `TimeTool` 长出第二个方法 `getCurrentShift`（当前班次），并给它的内部业务逻辑手动埋观测。本关后 `TimeTool` 的**完整文件**如下（v2：新增 `ObservationRegistry` 注入 + `getCurrentShift`）：
 
 ```java
-// src/main/java/demo/demo01/tools/TimeTool.java（本关完整版 v2）
-package demo.demo01.tools;
+// src/main/java/demo/demo01/tool/TimeTool.java（本关完整版 v2）
+package demo.demo01.tool;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 public class TimeTool {
 
-    @Autowired   // ★ demo01 习惯：字段注入；工具对象虽是 new 出来的，但作为 @Bean 方法参数注入容器后仍可被装配
-    private ObservationRegistry registry;   // Boot 自动装配的注册表（01 关起）
+    private final ObservationRegistry registry;   // ★ 由 ChatConfig 在 new 时通过构造器显式传入（见下方装配说明）
 
-    @Tool(description = "获取当前系统时间，格式 yyyy-MM-dd HH:mm:ss。巡检、工单、报告都需要时间戳时必须先调用此工具")
+    public TimeTool(ObservationRegistry registry) {
+        this.registry = registry;
+    }
+
+    @Tool(description = "获取系统的当前时间")
     public String getCurrentTime() {
-        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        return LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
     }
 
     @Tool(description = "获取当前班次（morning/afternoon/night），用于巡检排班和交接记录")
@@ -172,28 +174,29 @@ public class TimeTool {
 }
 ```
 
-> 装配说明（demo01 习惯的关键一环）：`new TimeTool()` 出来的对象默认**不会**被 Spring 处理 `@Autowired`——本关起 `ChatConfig` 升级，把 TimeTool 也声明为 Bean（Spring 会对 `@Bean` 返回的对象执行注解注入，registry 字段才生效）：
+> 装配说明（demo01 习惯的关键一环）：`new TimeTool()` 出来的对象默认**不会**被 Spring 处理 `@Autowired`——所以本关起 `ChatConfig` 先字段注入容器里的 `ObservationRegistry`，再在 `new TimeTool(registry)` 时通过构造器显式传入（registry 字段才生效）：
 >
 > ```java
 > // src/main/java/demo/demo01/config/ChatConfig.java（本关完整版 v2）
 > package demo.demo01.config;
 >
-> import demo.demo01.tools.TimeTool;
+> import demo.demo01.tool.TimeTool;
+> import io.micrometer.observation.ObservationRegistry;
 > import org.springframework.ai.chat.client.ChatClient;
+> import org.springframework.beans.factory.annotation.Autowired;
 > import org.springframework.context.annotation.Bean;
 > import org.springframework.context.annotation.Configuration;
 >
 > @Configuration
 > public class ChatConfig {
->     @Bean
->     public TimeTool timeTool() {
->         return new TimeTool();   // ★ @Bean 返回的对象会被 Spring 做注解注入，@Autowired registry 生效
->     }
+>
+>     @Autowired
+>     private ObservationRegistry registry;   // Boot 自动装配的注册表（demo01 习惯：字段注入）
 >
 >     @Bean
->     public ChatClient chatClient(ChatClient.Builder builder, TimeTool timeTool) {
+>     public ChatClient chatClient(ChatClient.Builder builder) {
 >         return builder
->                 .defaultTools(timeTool)   // ★ 用被容器处理过的同一个 Bean
+>                 .defaultTools(new TimeTool(registry))   // ★ new 出来的工具在创建那一刻就拿到 registry
 >                 .build();
 >     }
 > }
@@ -208,7 +211,7 @@ public class TimeTool {
 | 项 | 内容 |
 |---|---|
 | 方法 | `GET` |
-| URL | `http://localhost:8080/demo01/inspect?prompt=现在几点？当前是什么班次？给交接记录写一句总结` |
+| URL | `http://localhost:8081/demo01/chat?prompt=现在几点？当前是什么班次？给交接记录写一句总结` |
 
 **预期现象**：
 

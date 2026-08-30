@@ -10,7 +10,7 @@
 
 ```mermaid
 graph LR
-    R["ObservationRegistry"] --> H1["ObservationTextPublisher<br/>→ console"]
+    R["ObservationRegistry"] --> H1["ObservationContextHandler<br/>→ console"]
     R --> H2["AgentEventCollector<br/>→ 事件流/前端"]
     R --> H3["TracingObservationHandler<br/>（micrometer-tracing 提供）<br/>→ TraceContext入栈/span树"]
     H3 --> BR["TracingBridge(Brave/OTel)<br/>→ exporter(Zipkin/OTLP)"]
@@ -23,7 +23,7 @@ WebFlux 关键一环：跨线程的 Reactor 链要开启上下文自动传播（
 
 ## 6.2 依赖与配置
 
-> **需在 pom.xml 中添加依赖**（新 profile，遵守 demo01 习惯——建议并入 `observation` profile 或单独 `tracing` profile）：
+> **需在 pom.xml 中添加依赖**（demo01 的 pom 无 profile 机制，直接加到 `<dependencies>` 内，与 actuator 等依赖同级）：
 
 ```xml
 <dependency>
@@ -43,6 +43,7 @@ WebFlux 关键一环：跨线程的 Reactor 链要开启上下文自动传播（
 （Boot 4.1 管理版本。OTel 桥 `micrometer-tracing-bridge-otel` 同理可选——工业里若已定 OTel 栈就选后者。）
 
 ```yaml
+# application-demo01.yaml 追加（业务配置统一进 demo01 profile 文件，application.yaml 只留 .env import 与 profiles.active）
 management:
   tracing:
     sampling:
@@ -186,10 +187,10 @@ public class AgentEventCollector implements ObservationHandler<Observation.Conte
 
 > javap 实证补充：`Tracer.currentSpan()` 返回 `io.micrometer.tracing.Span`，`span.context().traceId()` 真实存在。**不要**试图从 `Observation.Context` 取 traceId——CLAUDE.md 铁律：`Observation.Context` 没有这个方法，链路身份只从 Tracer 取。
 
-**④ 日志带 traceId**（零代码，application.yaml 追加；与 6.2 的 management 段同文件）：
+**④ 日志带 traceId**（零代码，application-demo01.yaml 追加；与 6.2 的 management 段同文件）：
 
 ```yaml
-# application.yaml 追加（logging 段）
+# application-demo01.yaml 追加（logging 段）
 logging:
   pattern:
     level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-}]"
@@ -202,7 +203,7 @@ sequenceDiagram
     participant C as Postman/前端
     participant S as WebFlux 服务
     participant L as LLM(DeepSeek)
-    C->>S: GET /inspect (开启span: http.server.requests, traceId=T1)
+    C->>S: GET /chat (开启span: http.server.requests, traceId=T1)
     S->>S: chat-client span(T1)
     S->>L: chat-model span(T1) 第1次推理
     S->>S: tool span(T1) getCurrentTime/getCurrentShift
@@ -215,7 +216,7 @@ sequenceDiagram
 
 | 用例 | 操作 | 现象 |
 |---|---|---|
-| traceId 生成 | `GET /demo01/inspect?prompt=现在几点？当前是什么班次？` | ① `/demo01/events`（或 SSE 流）里所有事件携带**同一个** traceId；② console 日志行出现 `[app,64f...,c1a...]` 样式占位；③ 若起了 Zipkin（`docker run -p 9411:9411 openzipkin/zipkin`），打开 `http://localhost:9411` 能查到这条 trace 的 span 树 |
+| traceId 生成 | `GET /demo01/chat?prompt=现在几点？当前是什么班次？` | ① `/demo01/events`（或 SSE 流）里所有事件携带**同一个** traceId；② console 日志行出现 `[app,64f...,c1a...]` 样式占位；③ 若起了 Zipkin（`docker run -p 9411:9411 openzipkin/zipkin`），打开 `http://localhost:9411` 能查到这条 trace 的 span 树 |
 | 跨阶段贯穿验证 | 对比同一请求内 CHAT_CLIENT/LLM/TOOL 事件 | traceId 完全一致——"一条请求的一生"被串起来了 |
 | 日志定位演练 | 在 `getCurrentShift` 打一条 `log.info("解析班次完成")` | 该行日志自动带 traceId，用它去 Zipkin/事件流反查整条链路 |
 | 采样验证 | `probability` 改 0.0 重启再调 | 事件流 traceId 变 `no-trace`（无当前 span），日志占位为空——理解采样对观测面的影响 |

@@ -11,8 +11,8 @@
 不直接把 `Observation.Context` 塞给前端——Context 是框架对象（含不可序列化字段），且暴露面失控。正确做法：**在 Handler 里抽取领域字段，产出自己的 DTO**（这与 CLAUDE.md"存可序列化 Map、读时重建"的教训同源——凡跨边界传对象，先定义稳定契约）：
 
 ```java
-// src/main/java/demo/demo01/obs/AgentEvent.java
-package demo.demo01.obs;
+// src/main/java/demo/demo01/config/AgentEvent.java
+package demo.demo01.config;
 
 import java.time.Instant;
 
@@ -28,8 +28,8 @@ public record AgentEvent(
 ## 3.2 收集器：一个 Handler，认领三类 Context
 
 ```java
-// src/main/java/demo/demo01/obs/AgentEventCollector.java（完整文件，v1）
-package demo.demo01.obs;
+// src/main/java/demo/demo01/config/AgentEventCollector.java（完整文件，v1）
+package demo.demo01.config;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
@@ -106,14 +106,14 @@ public class AgentEventCollector implements ObservationHandler<Observation.Conte
 
 ## 3.3 暴露查询接口（为 05 关前端做准备）
 
-`InspectionController` 本关后的**完整文件**（v2：注入 `AgentEventCollector` + `/events`；ChatClient 仍由 `ChatConfig` 提供，demo01 风格纯注入）：
+`ChatController` 本关后的**完整文件**（v2：注入 `AgentEventCollector` + `/events`；ChatClient 仍由 `ChatConfig` 提供，demo01 风格纯注入）：
 
 ```java
-// src/main/java/demo/demo01/controller/InspectionController.java（本关完整版）
+// src/main/java/demo/demo01/controller/ChatController.java（本关完整版）
 package demo.demo01.controller;
 
-import demo.demo01.obs.AgentEvent;
-import demo.demo01.obs.AgentEventCollector;
+import demo.demo01.config.AgentEvent;
+import demo.demo01.config.AgentEventCollector;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -124,17 +124,20 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/demo01")
-public class InspectionController {
+public class ChatController {
 
     @Autowired
-    private ChatClient client;                 // ChatConfig v2 提供（TimeTool 已带观测）
+    private ChatClient client;                 // ChatConfig 提供（TimeTool 已带观测）
 
     @Autowired
     private AgentEventCollector eventCollector;
 
-    @GetMapping("/inspect")
-    public String inspect(String prompt) {
-        return client.prompt().user(prompt).call().content();
+    @GetMapping("/chat")
+    public String chat(String prompt) {
+        return client.prompt()
+                .user(prompt)
+                .call()
+                .content();
     }
 
     @GetMapping("/events")
@@ -193,7 +196,7 @@ graph LR
 
 ```mermaid
 graph TD
-    B["业务代码（TimeTool）<br/>Observation.start(name, ShiftContext::new, registry)"] -->|"start 时创建"| C["ShiftResolveObservationContext<br/>extends Observation.Context<br/>业务字段：shift/hour/resolvedBy"]
+    B["业务代码（TimeTool）<br/>Observation.start(name, ShiftResolveObservationContext::new, registry)"] -->|"start 时创建"| C["ShiftResolveObservationContext<br/>extends Observation.Context<br/>业务字段：shift/hour/resolvedBy"]
     C -->|"supportsContext instanceof"| H["自定义 Handler<br/>onStop 里 getShift() 取值"]
     C -->|"supportsContext instanceof"| V["自定义 Convention（可选）<br/>getLowCardinalityKeyValues(ctx)<br/>把 shift 变成标签"]
     H --> E["AgentEvent 流/审计"]
@@ -205,8 +208,8 @@ graph TD
 **① 领域 Context——业务字段的类型安全载体**（完整文件）：
 
 ```java
-// src/main/java/demo/demo01/obs/ShiftResolveObservationContext.java
-package demo.demo01.obs;
+// src/main/java/demo/demo01/config/ShiftResolveObservationContext.java
+package demo.demo01.config;
 
 import io.micrometer.observation.Observation.Context;
 
@@ -238,8 +241,8 @@ public class ShiftResolveObservationContext extends Context {
 **② Convention——把领域字段翻译成低基数标签**（完整文件；也可不写，见 3.5.3）：
 
 ```java
-// src/main/java/demo/demo01/obs/ShiftResolveObservationConvention.java
-package demo.demo01.obs;
+// src/main/java/demo/demo01/config/ShiftResolveObservationConvention.java
+package demo.demo01.config;
 
 import io.micrometer.common.KeyValue;
 import io.micrometer.common.KeyValues;
@@ -276,7 +279,7 @@ public class ShiftResolveObservationConvention implements ObservationConvention<
 **③ Handler 消费——AgentEventCollector 加一个认领分支**（v2 增量，加在类内即可）：
 
 ```java
-// AgentEventCollector 内新增（v2 增量；imports 补 demo.demo01.obs 同包无需，ChatModel 那段不变）
+// AgentEventCollector 内新增（v2 增量；imports 补 demo.demo01.config 同包无需，ChatModel 那段不变）
 @Override
 public boolean supportsContext(Observation.Context context) {
     return context instanceof ChatClientObservationContext
@@ -296,26 +299,28 @@ else if (context instanceof ShiftResolveObservationContext sr) {
 **④ 业务代码升级——start 时喂 Context，结果回填**（TimeTool v3 完整文件）：
 
 ```java
-// src/main/java/demo/demo01/tools/TimeTool.java（本关完整版 v3）
-package demo.demo01.tools;
+// src/main/java/demo/demo01/tool/TimeTool.java（本关完整版 v3）
+package demo.demo01.tool;
 
-import demo.demo01.obs.ShiftResolveObservationContext;
+import demo.demo01.config.ShiftResolveObservationContext;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 public class TimeTool {
 
-    @Autowired
-    private ObservationRegistry registry;
+    private final ObservationRegistry registry;   // ChatConfig 在 new 时通过构造器传入（01 关起）
 
-    @Tool(description = "获取当前系统时间，格式 yyyy-MM-dd HH:mm:ss。巡检、工单、报告都需要时间戳时必须先调用此工具")
+    public TimeTool(ObservationRegistry registry) {
+        this.registry = registry;
+    }
+
+    @Tool(description = "获取系统的当前时间")
     public String getCurrentTime() {
-        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        return LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
     }
 
     @Tool(description = "获取当前班次（morning/afternoon/night），用于巡检排班和交接记录")
@@ -339,7 +344,7 @@ public class TimeTool {
 }
 ```
 
-`ChatConfig` 不变（v2 已把 TimeTool 注册为 Bean）。`Observation.start(String, Supplier<T>, ObservationRegistry)` 与 `obs.getContext()` 均已 javap 实证存在。
+`ChatConfig` 不变（v2 已在 `new TimeTool(registry)` 时把 `ObservationRegistry` 传入）。`Observation.start(String, Supplier<T>, ObservationRegistry)` 与 `obs.getContext()` 均已 javap 实证存在。
 
 ### 3.5.3 关键机制与易错点
 
@@ -353,19 +358,19 @@ public class TimeTool {
 
 | 用例 | 方法/URL | 现象 |
 |---|---|---|
-| 触发班次判定 | `GET /demo01/inspect?prompt=现在是什么班次？` 后查 `GET /demo01/events` | 出现 `phase=BUSINESS, name=shift.resolve`，detail 含 `班次=... 来源=local-rule hour=...` |
+| 触发班次判定 | `GET /demo01/chat?prompt=现在是什么班次？` 后查 `GET /demo01/events` | 出现 `phase=BUSINESS, name=shift.resolve`，detail 含 `班次=... 来源=local-rule hour=...` |
 | Convention 生效 | 观察 console 的 `shift.resolve` span 输出 | KeyValues 含 `shift='...'`（低基数）与 `shift.resolve.hour='...'`（高基数通道） |
 
 ## 3.6 Postman 测试
 
 | 用例 | 方法/URL | 现象 |
 |---|---|---|
-| 触发一轮工具调用 | `GET http://localhost:8080/demo01/inspect?prompt=现在几点？当前是什么班次？给交接记录写一句总结` | 返回自然语言结论 |
-| 查看事件流 | `GET http://localhost:8080/demo01/events` | JSON 数组，按序出现 `CHAT_CLIENT` → `LLM` → `TOOL(getCurrentTime)` → `TOOL(getCurrentShift)` → `LLM`，与你 01 关看到的 span 树一一对应 |
+| 触发一轮工具调用 | `GET http://localhost:8081/demo01/chat?prompt=现在几点？当前是什么班次？给交接记录写一句总结` | 返回自然语言结论 |
+| 查看事件流 | `GET http://localhost:8081/demo01/events` | JSON 数组，按序出现 `CHAT_CLIENT` → `LLM` → `TOOL(getCurrentTime)` → `TOOL(getCurrentShift)` → `LLM`，与你 01 关看到的 span 树一一对应 |
 | 错误事件 | 在 `getCurrentShift` 里临时抛异常，重复上一用例，再查 `/events` | 数组中出现 `phase=ERROR` 条目，detail 含异常信息 |
-| 无工具对比 | `GET /demo01/inspect?prompt=你好` 后查 `/events` | 只有 `CHAT_CLIENT`+`LLM`，无 `TOOL` |
+| 无工具对比 | `GET /demo01/chat?prompt=你好` 后查 `/events` | 只有 `CHAT_CLIENT`+`LLM`，无 `TOOL` |
 
-**验证要点**：`/events` 的顺序与 `ObservationTextPublisher` 的输出顺序一致——同一事件流、两种消费形态，这就是 02 关广播机制的实证。
+**验证要点**：`/events` 的顺序与 console 各观测日志的输出顺序一致（若临时注册调试原型 `ObservationTextPublisher` 可做整段对照）——同一事件流、两种消费形态，这就是 02 关广播机制的实证。
 
 ## 3.7 本关沉淀
 

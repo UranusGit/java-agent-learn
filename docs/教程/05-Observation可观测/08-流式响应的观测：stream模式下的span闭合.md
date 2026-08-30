@@ -22,7 +22,7 @@ sequenceDiagram
     participant C as 前端/Postman
     participant S as 服务(Flux)
     participant L as LLM
-    C->>S: GET /inspect/stream (SSE)
+    C->>S: GET /chat/stream (SSE)
     S->>L: 发起流式请求
     loop 每个 token 块
         L-->>S: chunk
@@ -36,10 +36,10 @@ sequenceDiagram
 
 **认知要点**：观测是"段落级"的，token 是"字符级"的——**不要试图为每个 token 发观测事件**（那会把观测系统变成第二倍的流量），内容流与观测流分开推。
 
-## 8.2 代码：流式巡检接口（`InspectionController` v4 完整文件）
+## 8.2 代码：流式巡检接口（`ChatController` v4 完整文件）
 
 ```java
-// src/main/java/demo/demo01/controller/InspectionController.java（本关完整版 v4）
+// src/main/java/demo/demo01/controller/ChatController.java（本关完整版 v4）
 package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
@@ -58,7 +58,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/demo01")
-public class InspectionController {
+public class ChatController {
 
     @Autowired
     private ChatClient client;
@@ -69,9 +69,12 @@ public class InspectionController {
     @Autowired
     private ObservationRegistry registry;    // ★ 08 关起：手动埋"中断观测"用
 
-    @GetMapping("/inspect")
-    public String inspect(String prompt) {
-        return client.prompt().user(prompt).call().content();
+    @GetMapping("/chat")
+    public String chat(String prompt) {
+        return client.prompt()
+                .user(prompt)
+                .call()
+                .content();
     }
 
     @GetMapping("/events")
@@ -85,8 +88,8 @@ public class InspectionController {
                 .map(e -> ServerSentEvent.<AgentEvent>builder(e).event("agent-event").build());
     }
 
-    @GetMapping(value = "/inspect/stream", produces = "text/event-stream")
-    public Flux<ServerSentEvent<String>> inspectStream(String prompt) {
+    @GetMapping(value = "/chat/stream", produces = "text/event-stream")
+    public Flux<ServerSentEvent<String>> chatStream(String prompt) {
         String reqId = String.valueOf(System.nanoTime());   // demo 关联号；生产用 06 关 traceId
         return doStream(prompt)
                 .doOnCancel(() -> Observation
@@ -117,7 +120,7 @@ public class InspectionController {
 
 ## 8.3 中断与部分结果：观测的"如实记录"
 
-WebFlux 铁律场景：客户端断开 → 上游取消 → Flux 终止。上面 `inspectStream` 里的 `doOnCancel`/`doOnError` 就是观测的正确姿势——**记录中断本身**，而不是假装没发生。三个设计说明：
+WebFlux 铁律场景：客户端断开 → 上游取消 → Flux 终止。上面 `chatStream` 里的 `doOnCancel`/`doOnError` 就是观测的正确姿势——**记录中断本身**，而不是假装没发生。三个设计说明：
 
 1. `doOnCancel`/`doOnError` 是 Reactor 的生命周期钩子（[教程 08-架构师进阶/08-响应式错误处理]），在此处埋"中断 span"最贴切——它标记的是**流的死亡方式**，业务上区分"用户主动取消"（cancel）与"系统异常"（error）。
 2. `stream.req` 用高基数——它是流水号，只进 trace/事件流。
@@ -125,12 +128,12 @@ WebFlux 铁律场景：客户端断开 → 上游取消 → Flux 终止。上面
 
 ## 8.4 事件流与内容流的并轨（前端时间线升级）
 
-05 关的 `/observe/stream` 推观测事件，本关的 `/inspect/stream` 推内容。前端两条 EventSource 并联：
+05 关的 `/observe/stream` 推观测事件，本关的 `/chat/stream` 推内容。前端两条 EventSource 并联：
 
 ```mermaid
 graph LR
     subgraph 服务端
-        I["/inspect/stream<br/>内容流 delta/done"]
+        I["/chat/stream<br/>内容流 delta/done"]
         O["/observe/stream<br/>观测流 agent-event"]
     end
     I -->|EventSource A| F["React 页面<br/>左：时间线 右：打字机"]
@@ -143,7 +146,7 @@ graph LR
 
 | 用例 | 操作 | 现象 |
 |---|---|---|
-| 流式巡检 | `GET http://localhost:8080/demo01/inspect/stream?prompt=现在几点？当前什么班次？给交接记录写一句总结` | Postman 逐条收到 `event: delta` 的 token，最后 `event: done` |
+| 流式巡检 | `GET http://localhost:8081/demo01/chat/stream?prompt=现在几点？当前什么班次？给交接记录写一句总结` | Postman 逐条收到 `event: delta` 的 token，最后 `event: done` |
 | 观测滞后性验证 | 同时订阅 `/observe/stream`，再发上面请求 | LLM 相关观测事件在**流结束后**才出现（span 在流终止时 stop）——与 8.1 时序图一致 |
 | 中断观测 | 发起流式请求后，立即在 Postman 点 Cancel | console 出现 `agent.stream.cancelled` 观测；无 ERROR 事件（cancel 不是 error） |
 | 工具照常 | 流式 prompt 里要求查两台设备 | 内容流里能观察到"卡顿-恢复"节奏（工具执行时不吐 token），时间线出现 TOOL 事件——用户可感知的工具等待 |

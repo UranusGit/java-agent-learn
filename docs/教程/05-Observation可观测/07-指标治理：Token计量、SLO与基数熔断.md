@@ -20,9 +20,10 @@ Micrometer 是"指标的 SLF4J"：业务代码只面对 `MeterRegistry` 接口�
 
 ## 7.2 你已经免费拥有的：ChatModelMeterObservationHandler
 
-javap 实证：`org.springframework.ai.chat.observation.ChatModelMeterObservationHandler` 构造器接 `MeterRegistry`，在 `onStop` 里把 ChatResponse 的 usage/耗时转成 Micrometer 指标。只要 observation profile（actuator）在，它就自动装配——**不用写一行代码**，`/actuator/metrics` 里即可查到 LLM 相关指标（按 `gen_ai.*` 低基数标签分维度）。
+javap 实证：`org.springframework.ai.chat.observation.ChatModelMeterObservationHandler` 构造器接 `MeterRegistry`，在 `onStop` 里把 ChatResponse 的 usage/耗时转成 Micrometer 指标。只要 actuator 依赖在（demo01 已在 pom 直接引入 `spring-boot-starter-actuator`），它就自动装配——**不用写一行代码**，`/actuator/metrics` 里即可查到 LLM 相关指标（按 `gen_ai.*` 低基数标签分维度）。
 
 ```yaml
+# application-demo01.yaml（业务配置统一进 demo01 profile 文件）
 management:
   endpoints:
     web:
@@ -190,8 +191,8 @@ graph LR
 
 | 用例 | 操作 | 现象 |
 |---|---|---|
-| 指标清单 | `GET http://localhost:8080/actuator/metrics` | names 列表含 `agent.token.cost`、`agent.tool.latency` 及 Spring AI 内置 chat 指标 |
-| Token 增长 | 调 2 次 `/inspect`（一次带工具一次闲聊），再查 `GET /actuator/metrics/agent.token.cost` | `measurements` 里 COUNT 与 TOTAL 明显增长；`availableTags` 有 `type: prompt/completion` |
+| 指标清单 | `GET http://localhost:8081/actuator/metrics` | names 列表含 `agent.token.cost`、`agent.tool.latency` 及 Spring AI 内置 chat 指标 |
+| Token 增长 | 调 2 次 `/demo01/chat`（一次带工具一次闲聊），再查 `GET /actuator/metrics/agent.token.cost` | `measurements` 里 COUNT 与 TOTAL 明显增长；`availableTags` 有 `type: prompt/completion` |
 | 分维度查 | `GET /actuator/metrics/agent.token.cost?tag=type:prompt` | 只返回 prompt 侧 token 累计——成本归因成立 |
 | SLO 桶 | 多调几次后查 `GET /actuator/metrics/agent.tool.latency` | histogram 分桶计数（`getCurrentTime` 落 0.5s 桶内） |
 | 熔断演练 | 临时写 `meters.counter("test.cardinality","tool.timestamp","2026-08-24 14:03:22")` 调一次 | `/actuator/metrics` 里**没有** `test.cardinality`——deny 生效且不抛错 |

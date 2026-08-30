@@ -10,7 +10,7 @@
 
 观测是"系统的黑匣子"——黑匣子坏了往往没人知道（观测代码抛异常会被 Registry 吞掉，主业务不受影响，于是你安静地失去可观测性）。工业教训：**观测代码的 bug 是静默失效**。因此至少给两类代码配测试：自定义 Handler（标签算对没有、null 安全没有）、Convention（基数纪律没有滑坡）。
 
-> **需在 pom.xml 中添加依赖**（建议放 observation profile 或 test scope）：
+> **需在 pom.xml 中添加依赖，本篇不实际添加**（test scope，版本随 Spring Boot 4.1.0 parent/BOM 管理）：
 
 ```xml
 <dependency>
@@ -56,7 +56,7 @@ class ToolObservationTest {
         assertThat(reg)
                 .hasObservationWithNameEqualTo("spring.ai.tool")
                 .that()
-                .hasLowCardinalityKeyValue("gen_ai.tool.call.name", "getCurrentTime");   // 工具名标签算对了
+                .hasLowCardinalityKeyValue("spring.ai.tool.definition.name", "getCurrentTime");   // 工具名标签算对了
     }
 
     @Test
@@ -74,11 +74,11 @@ class ToolObservationTest {
 }
 ```
 
-（04 关的 `shift` 班次标签在 ChatModel 观测上、依赖观测发生时刻，单测里构造 `ChatModelObservationContext` 需要 Prompt 与 AiOperationMetadata，成本高于收益——它由 11 关的集成测试覆盖：跑一次 `/inspect` 后断言时间线事件的 shift 值合法。）
+（04 关的 `shift` 班次标签在 ChatModel 观测上、依赖观测发生时刻，单测里构造 `ChatModelObservationContext` 需要 Prompt 与 AiOperationMetadata，成本高于收益——它由 11 关的集成测试覆盖：跑一次 `/chat` 后断言时间线事件的 shift 值合法。）
 
 > 断言 API 以本地 `micrometer-observation-test` 1.17.0 jar 实证为准（`hasObservationWithNameEqualTo`/`hasLowCardinalityKeyValue` 等在 `TestObservationRegistryAssert` 及其内部类上）；Builder 细节（`ToolDefinition.builder()` 的参数集）写码时 javap 复核一次——测试代码同样守铁律 0。
 
-**另一个层次的测试**：集成测试用 `@SpringBootTest` + 注入真实 `ObservationRegistry`，替换为 TestObservationRegistry Bean（`@TestConfiguration`），跑一次 `/inspect` 后断言时间线里 `LLM → TOOL → LLM` 顺序——**把"事件顺序"当契约固化**，谁改坏了 Advisor/工具编排，测试先红。
+**另一个层次的测试**：集成测试用 `@SpringBootTest` + 注入真实 `ObservationRegistry`，替换为 TestObservationRegistry Bean（`@TestConfiguration`），跑一次 `/chat` 后断言时间线里 `LLM → TOOL → LLM` 顺序——**把"事件顺序"当契约固化**，谁改坏了 Advisor/工具编排，测试先红。
 
 ## 10.3 跨服务 trace 传播：W3C traceparent
 
@@ -123,8 +123,8 @@ if (span != null) {
 |---|---|---|
 | 单测跑通 | `mvn test` | 两条观测单测绿——工业标签与 null 安全被固化 |
 | 契约测试 | 改坏 Collector（如注释掉 TOOL 分支）再跑集成测试 | 事件顺序断言失败——观测契约先于线上事故报警 |
-| 跨服务验证（有下游时） | 下游起一个最小 Boot 服务接排班查询接口，两边都开 tracing；调 `/inspect` 问班次 | Zipkin 一条 trace 含两个服务的 span；两服务日志同一 traceId |
-| 手动传 traceparent | Postman 请求头加 `traceparent: 00-64f...-c1a...-01` 再调 `/inspect` | 该请求的日志/事件 traceId 变成你指定的值——理解"入口接续外部 trace"（排障时把前端报错的 traceId 手工重放） |
+| 跨服务验证（有下游时） | 下游起一个最小 Boot 服务接排班查询接口，两边都开 tracing；调 `/chat` 问班次 | Zipkin 一条 trace 含两个服务的 span；两服务日志同一 traceId |
+| 手动传 traceparent | Postman 请求头加 `traceparent: 00-64f...-c1a...-01` 再调 `/chat` | 该请求的日志/事件 traceId 变成你指定的值——理解"入口接续外部 trace"（排障时把前端报错的 traceId 手工重放） |
 
 ## 10.6 本关沉淀
 

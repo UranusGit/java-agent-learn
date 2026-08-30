@@ -23,7 +23,7 @@ graph TD
 
 ## 9.2 依赖与准备
 
-> **需在 pom.xml 中添加依赖**（demo01 已有 pgvector profile：`-Ddemo.pgvector=pgvector` 激活，含 vector-store + advisor）：
+> **需在 pom.xml 中添加依赖，本篇不实际添加**（RAG 属教学规划：`spring-ai-starter-vector-store-pgvector` + `spring-ai-vector-store-advisor`；demo01 现有 pom 无 profile 机制）：
 
 向量库用 PgVector（`spring-ai-starter-vector-store-pgvector` + `spring-ai-vector-store-advisor`）。**没有本地 PG 也能学**：本关核心是观测结构，VectorStore 换 `SimpleVectorStore`（内存实现，spring-ai-vector-store 自带）全部结论不变——学习第一，零安装（与 07 关同一原则）。新增两个配置类（完整文件）：
 
@@ -53,6 +53,7 @@ package demo.demo01.config;
 
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
@@ -69,7 +70,7 @@ public class KnowledgeBaseInitializer implements ApplicationRunner {
     }
 
     @Override
-    public void run(org.springframework.boot.ApplicationArguments args) {
+    public void run(ApplicationArguments args) {
         vectorStore.add(List.of(
                 new Document("CNC-001 主轴温度超过75度需停机检查冷却系统，常见原因是冷却液不足或散热器堵塞。"),
                 new Document("AGV-07 振动超过4说明导轮磨损，建议更换导轮并校准轨道。")));
@@ -77,7 +78,7 @@ public class KnowledgeBaseInitializer implements ApplicationRunner {
 }
 ```
 
-## 9.3 RAG Agent：Advisor 注入检索（`ChatConfig` v3 + `InspectionController` v5）
+## 9.3 RAG Agent：Advisor 注入检索（`ChatConfig` v3 + `ChatController` v5）
 
 RAG 的挂载点在 **ChatClient 构造处**——按 demo01 习惯就是升级 `ChatConfig`，controller 不动：
 
@@ -85,30 +86,22 @@ RAG 的挂载点在 **ChatClient 构造处**——按 demo01 习惯就是升级 
 // src/main/java/demo/demo01/config/ChatConfig.java（本关完整版 v3，RAG 版）
 package demo.demo01.config;
 
-import demo.demo01.tools.TimeTool;
+import demo.demo01.tool.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class ChatConfig {
 
-    @Autowired
-    private VectorStore vectorStore;   // 9.2 关的 SimpleVectorStore（或 pgvector 自动装配）
-
+    // 9.2 关的 SimpleVectorStore（或 pgvector 自动装配）
     @Bean
-    public TimeTool timeTool() {
-        return new TimeTool();
-    }
-
-    @Bean
-    public ChatClient chatClient(ChatClient.Builder builder, TimeTool timeTool) {
+    public ChatClient chatClient(ChatClient.Builder builder, VectorStore vectorStore) {
         return builder
-                .defaultTools(timeTool)
+                .defaultTools(new TimeTool())
                 .defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore)
                         .searchRequest(SearchRequest.builder()
                                 .topK(3)
@@ -120,10 +113,10 @@ public class ChatConfig {
 }
 ```
 
-`InspectionController` 本关**零改动**（仍是 08 关 v4）——Advisor 是 ChatClient 的默认配置，挂载对使用方完全透明；这也是"RAG 是 Advisor"这个设计的第一层红利。
+`ChatController` 本关**零改动**（仍是 08 关 v4）——Advisor 是 ChatClient 的默认配置，挂载对使用方完全透明；这也是"RAG 是 Advisor"这个设计的第一层红利。
 
 ```java
-// src/main/java/demo/demo01/controller/InspectionController.java（本关完整版 v5，与 v4 相同——列出以供对照）
+// src/main/java/demo/demo01/controller/ChatController.java（本关完整版 v5，与 v4 相同——列出以供对照）
 package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
@@ -142,7 +135,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/demo01")
-public class InspectionController {
+public class ChatController {
 
     @Autowired
     private ChatClient client;               // ★ ChatConfig v3：TimeTool + RAG Advisor
@@ -153,8 +146,8 @@ public class InspectionController {
     @Autowired
     private ObservationRegistry registry;
 
-    @GetMapping("/inspect")
-    public String inspect(String prompt) {
+    @GetMapping("/chat")
+    public String chat(String prompt) {
         return client.prompt().user(prompt).call().content();
     }
 
@@ -169,8 +162,8 @@ public class InspectionController {
                 .map(e -> ServerSentEvent.<AgentEvent>builder(e).event("agent-event").build());
     }
 
-    @GetMapping(value = "/inspect/stream", produces = "text/event-stream")
-    public Flux<ServerSentEvent<String>> inspectStream(String prompt) {
+    @GetMapping(value = "/chat/stream", produces = "text/event-stream")
+    public Flux<ServerSentEvent<String>> chatStream(String prompt) {
         String reqId = String.valueOf(System.nanoTime());
         return doStream(prompt)
                 .doOnCancel(() -> Observation
@@ -199,9 +192,11 @@ public class InspectionController {
 ## 9.4 观测侧：新增 Advisor 与 VectorStore 两个 Handler（完整文件）
 
 ```java
-// src/main/java/demo/demo01/obs/RagObservationHandlers.java（完整文件）
-package demo.demo01.obs;
+// src/main/java/demo/demo01/config/RagObservationHandlers.java（完整文件）
+package demo.demo01.config;
 
+import demo.demo01.obs.AgentEvent;
+import demo.demo01.obs.AgentEventCollector;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.tracing.Span;
@@ -209,8 +204,8 @@ import io.micrometer.tracing.Tracer;
 import org.springframework.ai.chat.client.advisor.observation.AdvisorObservationContext;
 import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 
@@ -218,58 +213,49 @@ import java.time.Instant;
 @Configuration
 public class RagObservationHandlers {
 
-    @Component
-    public static class AdvisorTraceHandler implements ObservationHandler<AdvisorObservationContext> {
+    @Autowired
+    private AgentEventCollector collector;
 
-        @Autowired
-        private AgentEventCollector collector;
+    @Autowired
+    private Tracer tracer;
 
-        @Autowired
-        private Tracer tracer;
+    @Bean
+    public ObservationHandler<AdvisorObservationContext> advisorTraceObservationHandler() {
+        return new ObservationHandler<>() {
+            @Override
+            public boolean supportsContext(Observation.Context context) {
+                return context instanceof AdvisorObservationContext;
+            }
 
-        @Override
-        public boolean supportsContext(Observation.Context ctx) {
-            return ctx instanceof AdvisorObservationContext;
-        }
-
-        @Override
-        public void onStop(AdvisorObservationContext ctx) {
-            collector.accept(new AgentEvent("ADVISOR", ctx.getAdvisorName(),
-                    "order=" + ctx.getOrder(), traceId(), Instant.now()));
-        }
-
-        private String traceId() {
-            Span span = tracer.currentSpan();
-            return span != null ? span.context().traceId() : "no-trace";
-        }
+            @Override
+            public void onStop(AdvisorObservationContext context) {
+                collector.accept(new AgentEvent("ADVISOR", context.getAdvisorName(),
+                        "order=" + context.getOrder(), traceId(), Instant.now()));
+            }
+        };
     }
 
-    @Component
-    public static class VectorStoreTraceHandler implements ObservationHandler<VectorStoreObservationContext> {
+    @Bean
+    public ObservationHandler<VectorStoreObservationContext> vectorStoreTraceObservationHandler() {
+        return new ObservationHandler<>() {
+            @Override
+            public boolean supportsContext(Observation.Context context) {
+                return context instanceof VectorStoreObservationContext;
+            }
 
-        @Autowired
-        private AgentEventCollector collector;
+            @Override
+            public void onStop(VectorStoreObservationContext context) {
+                String detail = "operation=" + context.getOperationName()
+                        + " topK=" + (context.getQueryRequest() != null ? context.getQueryRequest().getTopK() : "?")
+                        + " 命中=" + (context.getQueryResponse() != null ? context.getQueryResponse().size() : 0);
+                collector.accept(new AgentEvent("RETRIEVAL", context.getOperationName(), detail, traceId(), Instant.now()));
+            }
+        };
+    }
 
-        @Autowired
-        private Tracer tracer;
-
-        @Override
-        public boolean supportsContext(Observation.Context ctx) {
-            return ctx instanceof VectorStoreObservationContext;
-        }
-
-        @Override
-        public void onStop(VectorStoreObservationContext ctx) {
-            String detail = "operation=" + ctx.getOperationName()
-                    + " topK=" + (ctx.getQueryRequest() != null ? ctx.getQueryRequest().getTopK() : "?")
-                    + " 命中=" + (ctx.getQueryResponse() != null ? ctx.getQueryResponse().size() : 0);
-            collector.accept(new AgentEvent("RETRIEVAL", ctx.getOperationName(), detail, traceId(), Instant.now()));
-        }
-
-        private String traceId() {
-            Span span = tracer.currentSpan();
-            return span != null ? span.context().traceId() : "no-trace";
-        }
+    private String traceId() {
+        Span span = tracer.currentSpan();
+        return span != null ? span.context().traceId() : "no-trace";
     }
 }
 ```
@@ -282,7 +268,7 @@ public class RagObservationHandlers {
 
 ## 9.5 RAG 全链路的观测事件序列（预期）
 
-一次 `CNC-001 主轴温度高怎么办？` 的 `/ask` 请求：
+一次 `CNC-001 主轴温度高怎么办？` 的 `/chat` 请求：
 
 ```mermaid
 timeline
@@ -300,7 +286,7 @@ timeline
 
 | 用例 | 操作 | 现象 |
 |---|---|---|
-| RAG 问答 | `GET /demo01/inspect?prompt=CNC-001主轴温度高该怎么处理` | 回答含手册内容（冷却系统/散热器），而非泛泛建议 |
+| RAG 问答 | `GET /demo01/chat?prompt=CNC-001主轴温度高该怎么处理` | 回答含手册内容（冷却系统/散热器），而非泛泛建议 |
 | 检索事件 | 查 `/demo01/events` 或订阅 SSE | 出现 `ADVISOR(QuestionAnswerAdvisor)` 与 `RETRIEVAL(QUERY topK=3 命中=1)` 事件，位于两个 LLM 事件之间 |
 | 命中数变化 | 问一个知识库没有的问题（"食堂菜单"） | `命中=0`，回答退化为模型常识——用观测解释"为什么答得差" |
 | 工具 vs 检索对比 | `prompt=现在几点` | 无 RETRIEVAL 事件、有 TOOL 事件；RAG 问答反之——两种知识来源在时间线上一眼可辨 |

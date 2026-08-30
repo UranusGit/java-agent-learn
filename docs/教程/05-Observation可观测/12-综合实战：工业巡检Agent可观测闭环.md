@@ -17,7 +17,7 @@ Agent 能力：TimeTool（时间 + 班次两个方法）+ RAG 知识库（09 关
 ```mermaid
 graph TB
     subgraph 接入层["接入层（Data Plane）"]
-        HTTP["WebFlux<br/>/inspect /observe/stream /events"]
+        HTTP["WebFlux<br/>/chat /observe/stream /events"]
     end
     subgraph Agent层["Agent 运行时"]
         CC["ChatClient<br/>TimeTool + RAG Advisor"]
@@ -58,12 +58,11 @@ graph TB
 // src/main/java/demo/demo01/config/ChatConfig.java（终版 v4）
 package demo.demo01.config;
 
-import demo.demo01.tools.TimeTool;
+import demo.demo01.tool.TimeTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -78,16 +77,14 @@ public class ChatConfig {
             3. 设备相关建议优先参考知识库检索到的手册内容，检索不到就明说。
             """;
 
-    @Autowired
-    private VectorStore vectorStore;   // 09 关 SimpleVectorStore（或 pgvector 自动装配）
-
     @Bean
     public TimeTool timeTool() {
         return new TimeTool();   // 01 关确立：@Bean 才能让 TimeTool 的 @Autowired registry 生效
     }
 
+    // 09 关 SimpleVectorStore（或 pgvector 自动装配）——RAG 教学规划依赖
     @Bean
-    public ChatClient chatClient(ChatClient.Builder builder, TimeTool timeTool) {
+    public ChatClient chatClient(ChatClient.Builder builder, TimeTool timeTool, VectorStore vectorStore) {
         return builder
                 .defaultTools(timeTool)
                 .defaultSystem(SYSTEM_PROMPT)
@@ -102,10 +99,10 @@ public class ChatConfig {
 }
 ```
 
-**② `InspectionController` 终版（完整文件 v6，纯注入零构建）**：
+**② `ChatController` 终版（完整文件 v6，纯注入零构建）**：
 
 ```java
-// src/main/java/demo/demo01/controller/InspectionController.java（终版 v6，ChatConfig v4 提供 client）
+// src/main/java/demo/demo01/controller/ChatController.java（终版 v6，ChatConfig v4 提供 client）
 package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
@@ -124,7 +121,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/demo01")
-public class InspectionController {
+public class ChatController {
 
     @Autowired
     private ChatClient client;               // ChatConfig 终版：TimeTool + 系统契约 + RAG Advisor
@@ -135,8 +132,8 @@ public class InspectionController {
     @Autowired
     private ObservationRegistry registry;    // 手动埋"中断观测"用
 
-    @GetMapping("/inspect")
-    public String inspect(String prompt) {
+    @GetMapping("/chat")
+    public String chat(String prompt) {
         return client.prompt().user(prompt).call().content();
     }
 
@@ -151,8 +148,8 @@ public class InspectionController {
                 .map(e -> ServerSentEvent.<AgentEvent>builder(e).event("agent-event").build());
     }
 
-    @GetMapping(value = "/inspect/stream", produces = "text/event-stream")
-    public Flux<ServerSentEvent<String>> inspectStream(String prompt) {
+    @GetMapping(value = "/chat/stream", produces = "text/event-stream")
+    public Flux<ServerSentEvent<String>> chatStream(String prompt) {
         String reqId = String.valueOf(System.nanoTime());
         return doStream(prompt)
                 .doOnCancel(() -> Observation
@@ -180,23 +177,21 @@ public class InspectionController {
 **② 审计归档 Handler（完整文件）**：
 
 ```java
-// src/main/java/demo/demo01/obs/AuditArchiveHandler.java（完整文件）
-package demo.demo01.obs;
+// src/main/java/demo/demo01/config/AuditArchiveHandler.java（完整文件）
+package demo.demo01.config;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.observation.ToolCallingObservationContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+@Slf4j
 @Component
 public class AuditArchiveHandler implements ObservationHandler<ToolCallingObservationContext> {
-
-    private static final Logger log = LoggerFactory.getLogger(AuditArchiveHandler.class);
 
     @Autowired
     private Tracer tracer;   // demo01 习惯：字段注入（引入 06 关 tracing bridge 后自动装配）
@@ -232,7 +227,7 @@ sequenceDiagram
     participant S as 巡检Agent服务
     participant L as LLM
     participant FE as 观测大屏(SSE)
-    U->>S: /inspect 现在几点？什么班次？写交接总结
+    U->>S: /chat 现在几点？什么班次？写交接总结
     S->>FE: CHAT_CLIENT/LLM事件(traceId=T)
     S->>L: 第1次推理(决策调时间与班次工具)
     S->>FE: TOOL事件×2(getCurrentTime/getCurrentShift)
@@ -245,10 +240,10 @@ sequenceDiagram
 
 | # | 用例 | 操作 | 验收现象（全部命中才算闭环） |
 |---|---|---|---|
-| 1 | 多方法工具巡检 | `GET /demo01/inspect?prompt=现在几点？当前什么班次？给交接记录写一句总结` | 结论含真实时间戳 + 班次（工具返回，非编造） |
+| 1 | 多方法工具巡检 | `GET /demo01/chat?prompt=现在几点？当前什么班次？给交接记录写一句总结` | 结论含真实时间戳 + 班次（工具返回，非编造） |
 | 2 | 前端时间线 | 先订阅 `GET /demo01/observe/stream` 再发用例 1 | SSE 按序收到 ≥5 条事件（CHAT_CLIENT+2×LLM+TOOL(getCurrentTime)+TOOL(getCurrentShift)），同一 traceId |
 | 3 | 链路完整性 | 用例 1 的 traceId 去查 | console 日志行、审计 AUDIT 行、Zipkin span 树三处同一 traceId |
-| 4 | 班次标签合规 | 看 chat_model span 的 KeyValues | `shift` 取值仅 morning/afternoon/night 之一（低基数纪律落地） |
+| 4 | 班次标签合规 | 看 `gen_ai.client.operation` span 的 KeyValues | `shift` 取值仅 morning/afternoon/night 之一（低基数纪律落地） |
 | 5 | 成本计量 | 调用前后各查一次 `GET /actuator/metrics/agent.token.cost` | `measurements` 的 TOTAL 增量 ≈ 2 次 LLM 调用 token 之和；`availableTags` 含 `type` 维度 |
 | 6 | 错误韧性 | 临时让 `getCurrentShift` 抛异常再调 | 结论降级为"班次获取失败"；事件流出现 ERROR；指标照常；服务不崩 |
 | 7 | 断线重连 | 中途断开 SSE 再重连 | replay 补发近期事件后继续实时 |

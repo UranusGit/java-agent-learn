@@ -26,8 +26,8 @@ Convention 被框架回调时，拿到的是领域 Context——业务身份（�
 本关采用 **c**：给 **LLM 观测**追加 `shift`（班次）低基数标签——按观测发生时刻解析，morning/afternoon/night 恰好是**教科书级的低基数案例**（3 个可枚举取值），对照面就是"把完整时间戳当标签"的高基数灾难（时间戳无限取值，一枚标签炸掉指标系统）。演示的本质不变——**Convention 能基于领域数据动态生成标签**。本关新增文件 `ObsConventionConfig`（完整文件）：
 
 ```java
-// src/main/java/demo/demo01/obs/ObsConventionConfig.java（完整文件）
-package demo.demo01.obs;
+// src/main/java/demo/demo01/config/ObsConventionConfig.java（完整文件）
+package demo.demo01.config;
 
 import io.micrometer.common.KeyValue;
 import io.micrometer.common.KeyValues;
@@ -76,8 +76,8 @@ public class ObsConventionConfig {
 Filter 是**所有 Handler 收到 stop 事件前的最后一道加工口**。TimeTool 的时间/班次结果没有敏感字段，所以本关演示它最典型的另一种用法——**给 Context 附加审计标记**，供下游 Handler 统一消费；敏感字段脱敏是同一个结构（在 Filter 里对 `setToolCallResult(...)` 改写一次，处处生效），范式一并写清。本关新增文件 `ObsFilterConfig`（完整文件）：
 
 ```java
-// src/main/java/demo/demo01/obs/ObsFilterConfig.java（完整文件）
-package demo.demo01.obs;
+// src/main/java/demo/demo01/config/ObsFilterConfig.java（完整文件）
+package demo.demo01.config;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationFilter;
@@ -122,7 +122,7 @@ graph LR
     M --> CV["ShiftChatModelConvention<br/>追加 shift 标签"]
     T --> F1["ContentObservationFilter<br/>内置：注入内容"]
     F1 --> F2["ToolAuditFilter<br/>本关：审计标记/脱敏位"]
-    F2 --> H1["ObservationTextPublisher"]
+    F2 --> H1["自定义 Handler<br/>→ console"]
     F2 --> H2["AgentEventCollector<br/>03关事件流"]
     F2 --> H3["07关 MeterRegistry"]
 ```
@@ -146,10 +146,10 @@ flowchart TD
 
 | 用例 | 请求 | 预期现象 |
 |---|---|---|
-| 标签生效 | `GET /demo01/inspect?prompt=现在几点？当前什么班次？`，看 console 的 chat_model 观测 | 两次 LLM span 的 KeyValues 均出现 `shift='morning'`（按你本机时刻显示对应班次） |
+| 标签生效 | `GET /demo01/chat?prompt=现在几点？当前什么班次？`，看 console 的 `gen_ai.client.operation` 观测 | 两次 LLM span 的 KeyValues 均出现 `shift='morning'`（按你本机时刻显示对应班次） |
 | 标签可枚举验证 | 晚上 16 点后重复调用 | `shift='night'`——取值始终只有 3 种，低基数安全 |
 | 审计标记生效 | 同上，看 `AgentEventCollector` 输出或 `/demo01/events` | TOOL 事件处理时 Context 可读 `audit.complete=true`（在 Handler 的 onStop 里 `context.get(ObsFilterConfig.AUDIT_COMPLETE)` 验证） |
-| 默认行为保留 | 任意工具调用 | `gen_ai.operation.name`、`spring_ai.kind` 等默认标签仍在（继承的增量式覆写没推翻默认） |
+| 默认行为保留 | 任意工具调用 | `gen_ai.operation.name`、`spring.ai.kind` 等默认标签仍在（继承的增量式覆写没推翻默认） |
 | 事件流对照 | `GET /demo01/events` | Filter 先于 Handler 的加工顺序（标记在 Handler 读到时已写入） |
 
 ## 4.7 本关沉淀

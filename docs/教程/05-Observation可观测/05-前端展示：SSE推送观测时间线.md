@@ -104,10 +104,10 @@ public class AgentEventCollector implements ObservationHandler<Observation.Conte
 
 > 注意：`tryEmitNext` 在**多线程并发写**时会返回失败（`FAIL_NON_SERIALIZED`）。demo 单实例低并发下回调近似串行；若多请求并发明显，改用 `Sinks.many().multicast().onBackpressureBuffer()` 并对 emit 结果做 `EmitResult` 判断重试，或用 `sink.asFlux().publishOn(scheduler)` 收敛写入侧——这是 Reactor 的经典坑，工业落地时按实际并发模型选型。
 
-## 5.3 SSE 端点：`InspectionController` v3 完整文件
+## 5.3 SSE 端点：`ChatController` v3 完整文件
 
 ```java
-// src/main/java/demo/demo01/controller/InspectionController.java（本关完整版 v3）
+// src/main/java/demo/demo01/controller/ChatController.java（本关完整版 v3）
 package demo.demo01.controller;
 
 import demo.demo01.obs.AgentEvent;
@@ -124,7 +124,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/demo01")
-public class InspectionController {
+public class ChatController {
 
     @Autowired
     private ChatClient client;
@@ -132,9 +132,12 @@ public class InspectionController {
     @Autowired
     private AgentEventCollector eventCollector;
 
-    @GetMapping("/inspect")
-    public String inspect(String prompt) {
-        return client.prompt().user(prompt).call().content();
+    @GetMapping("/chat")
+    public String chat(String prompt) {
+        return client.prompt()
+                .user(prompt)
+                .call()
+                .content();
     }
 
     @GetMapping("/events")
@@ -181,13 +184,13 @@ export default function ObserveTimeline() {
 
 | 步骤 | 操作 | 现象 |
 |---|---|---|
-| 1 建订阅 | Postman 新建请求 `GET http://localhost:8080/demo01/observe/stream`，点 **Send**（Postman 会识别 event-stream 并保持连接） | Body 面板进入等待，可能先收到最近的历史事件回放（`replay().limit(64)`） |
-| 2 触发业务 | **另开一个请求标签页**：`GET http://localhost:8080/demo01/inspect?prompt=现在几点？当前是什么班次？给交接记录写一句总结` | 返回正常结论 |
+| 1 建订阅 | Postman 新建请求 `GET http://localhost:8081/demo01/observe/stream`，点 **Send**（Postman 会识别 event-stream 并保持连接） | Body 面板进入等待，可能先收到最近的历史事件回放（`replay().limit(64)`） |
+| 2 触发业务 | **另开一个请求标签页**：`GET http://localhost:8081/demo01/chat?prompt=现在几点？当前是什么班次？给交接记录写一句总结` | 返回正常结论 |
 | 3 看推送 | 回到步骤 1 的标签页 | 逐条实时出现 `event: agent-event`，`data` 为 AgentEvent JSON，顺序 `CHAT_CLIENT → LLM → TOOL(getCurrentTime) → TOOL(getCurrentShift) → LLM` |
 | 4 断线重连 | 手动断开再重发步骤 1 请求 | 先回放最近若干条再继续实时——验证 replay 语义 |
 | 5 脱敏回归 | 检查 TOOL 事件的 detail | `temp` 字段为 `***`（04 关 Filter 在 SSE 链路同样生效——**一次加工处处安全**的实证） |
 
-curl 等价：`curl -N "http://localhost:8080/demo01/observe/stream"`（`-N` 关闭缓冲）。
+curl 等价：`curl -N "http://localhost:8081/demo01/observe/stream"`（`-N` 关闭缓冲）。
 
 ## 5.6 工业落地提醒（何时该超越本关方案）
 
