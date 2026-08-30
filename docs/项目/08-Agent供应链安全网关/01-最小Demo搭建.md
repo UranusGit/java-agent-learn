@@ -1,6 +1,6 @@
 # 项目 08：Agent 供应链安全网关 — 01-最小 Demo 搭建
 
-> **定位**：代理模式网关起步——统一入口、Agent 身份识别、全量调用审计。本篇只做"收口"，安全能力从迭代二开始逐层叠加。**完整可手写代码**：v1 的全部 Java 类（含全部 import）、`application.yml`、SQL DDL。
+> **定位**：代理模式网关起步——统一入口、Agent 身份识别、全量调用审计。本篇只做"收口"，安全能力从迭代二开始逐层叠加。**完整可手写代码**：v1 的全部 Java 类（含全部 import）、两段式配置（`application.yaml` + `application-secgw.yaml`，§3.0）、SQL DDL。
 >
 > 「遇到阻塞？→ [教程 04-企业级架构主干/01-微服务拆分与Agent部署 §LLM 网关]、[教程 04-企业级架构主干/03-工具执行可观测与审计]」
 
@@ -36,6 +36,62 @@
 | 2 | 审计埋点四态齐全 | STARTED/COMPLETED/FAILED/CANCELLED 在 §3.5 代码路径中都有落点 |
 
 ## 3. 完整代码（照抄即可）
+
+### 3.0 `application.yaml` + `application-secgw.yaml`（两段式配置）
+
+全项目统一**两段式**：`application.yaml` 只留骨架（profile 激活 + `.env` 导入）两行核心；全部业务配置收纳进 `application-secgw.yaml`（内容 = 00-§5.3 的基线全文）。密钥类变量（`GATEWAY_KEYSTORE_PASSWORD`/`OPENAI_API_KEY`/`TOOL_WEATHER_APIKEY` 等）走 `.env`，经 `spring.config.import` 注入，不落仓库。
+
+```yaml
+# application.yaml（骨架，全项目统一，仅此两段）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: secgw
+```
+
+```yaml
+# application-secgw.yaml（业务配置基线 = 00-§5.3 全量收纳）
+server:
+  port: 8443
+  ssl:
+    enabled: true
+    client-auth: want                    # mTLS：请求 Agent 客户端证书（v1 的 Agent 身份来源）
+    key-store: ${GATEWAY_KEYSTORE:classpath:gateway.p12}
+    key-store-password: ${GATEWAY_KEYSTORE_PASSWORD}
+    key-alias: gateway
+  http2:
+    enabled: true
+
+spring:
+  application:
+    name: tool-sec-gateway
+  ai:
+    openai:
+      base-url: ${OPENAI_BASE_URL:https://api.deepseek.com}
+      api-key: ${OPENAI_API_KEY}
+    mcp:
+      client:
+        streamable-http:                 # v3 起逐个登记真实工具端点（这里仅示例）
+          connections:
+            example-tool:
+              url: https://tools.internal/example/mcp
+  r2dbc:
+    url: r2dbc:h2:mem:///secgw;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  tracing:
+    sampling:
+      probability: 1.0
+```
+
+> **约定**：后续迭代（03-§3.1 MCP/OAuth、06-§2.1 零信任策略、08-§3.5 降级矩阵）的配置增量一律**追加写入 `application-secgw.yaml`**，不再新建配置文件。启动命令统一带 profile：`mvn spring-boot:run -Dspring-boot.run.profiles=secgw`。
 
 ### 3.1 `db/schema-v1.sql`（审计表）
 
@@ -349,7 +405,11 @@ flowchart LR
 
 ### 3.8 本节测试与验证（收口代理与审计埋点）
 
-**前置条件**：工程按 00-§5 建好、§3.1 SQL 已在 H2/R2DBC 执行；`gateway.p12` 与 Agent 客户端证书 `ops-agent@production` 已生成（keytool 自签即可）；`TOOL_WEATHER_APIKEY` 等环境变量已设置。
+**前置条件**：工程按 00-§5 建好、§3.1 SQL 已在 H2/R2DBC 执行；`gateway.p12` 与 Agent 客户端证书 `ops-agent@production` 已生成（keytool 自签即可）；`TOOL_WEATHER_APIKEY` 等环境变量已设置。随后以 secgw profile 启动（两段式配置见 §3.0）：
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=secgw
+```
 
 **材料——调用与核对命令**：
 
@@ -401,7 +461,7 @@ SELECT trace_id, agent_id, tool_id, result_preview FROM audit_event ORDER BY ts 
 
 ### 4.1 本节测试与验证（量化验收全项）
 
-**前置条件**：§3.8 已全部 PASS（收口/身份/审计三断言已就位）；网络层 egress NetworkPolicy 已下发到测试集群；压测器 `hey` 已安装。
+**前置条件**：§3.8 已全部 PASS（收口/身份/审计三断言已就位），应用已以 secgw profile 运行（见 §3.8 启动命令）；网络层 egress NetworkPolicy 已下发到测试集群；压测器 `hey` 已安装。
 
 **材料——压测与迁移命令**：
 
@@ -451,7 +511,19 @@ curl -v --max-time 5 https://tools.internal/weather/mcp
 
 **失败排查**：重启后 403→证书文件路径/密码环境变量未持久化；混合轮审计缺条→FAILED 分支的 emit 未接回主链，回查 §3.5 `onErrorResume`。
 
-## 7. 总结
+## 7. 验收对照
+
+> 对照 §4 量化验收逐项；落地章节即该验收项的证据所在（验证步骤见对应 §）。
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 收口完整 | 业务 Agent 直连工具的路径全部被网络层阻断 | ✅ §4.1 断言 2（材料 F egress 阻断） |
+| 身份可信 | 所有调用带 Agent 身份；匿名流量 0 | ✅ §3.8 断言 2（材料 B 匿名 403）+ 断言 5（agent_id=ops-agent） |
+| 审计完整 | 调用审计覆盖率 100%（含失败与取消） | ✅ §3.8 断言 4（STARTED+COMPLETED / STARTED+FAILED 各成对） |
+| 代理透明 | 业务 Agent 迁移只需改 base-url | ✅ §4.1 断言 3（仅改 base-url 迁移成功） |
+| 延迟可接受 | 网关新增 P99 延迟 < 15ms | ✅ §4.1 断言 1（材料 E 压测对比直连基线） |
+
+## 8. 总结
 
 v1 完成「收口 + 身份 + 审计」三件事。遗留痛点（供 v2 决策）：
 

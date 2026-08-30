@@ -188,7 +188,7 @@ sequenceDiagram
 
 ### 4.4 本节测试与验证（全链 mTLS）
 
-**前置条件**：服务端 `application.yml` 已设为 `client-auth: need`（§4.1）；`MtlsWebClientFactory`（§4.2）编译通过；有 SPIRE 签发的 gateway/tool 的 SVID 证书链与根 bundle；`gateway.p12`+`spire-bundle.p12` 可被 Spring 加载。
+**前置条件**：服务端 `application-secgw.yaml` 已设为 `client-auth: need`（§4.1，两段式约定见 01-§3.0）；`MtlsWebClientFactory`（§4.2）编译通过；有 SPIRE 签发的 gateway/tool 的 SVID 证书链与根 bundle；`gateway.p12`+`spire-bundle.p12` 可被 Spring 加载。
 
 **材料——调用与握手核对命令**：
 

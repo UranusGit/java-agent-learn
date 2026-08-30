@@ -1,6 +1,6 @@
 # 项目 08：Agent 供应链安全网关 — 03-MCP 规范化接入
 
-> **定位**：统一接入协议——网关全面升级到 MCP Streamable HTTP + OAuth 2.1 授权体系，堵住协议层的收口裂缝，同时引入 MCP 规范的 Sampling/Elicitation 安全管控。**完整可手写代码**：MCP 客户端连接管理（`McpSyncClient`）、网关代理工具（`implements ToolCallback`）、按 Agent 动态目录、OAuth 2.1 资源服务器、`application.yml`。
+> **定位**：统一接入协议——网关全面升级到 MCP Streamable HTTP + OAuth 2.1 授权体系，堵住协议层的收口裂缝，同时引入 MCP 规范的 Sampling/Elicitation 安全管控。**完整可手写代码**：MCP 客户端连接管理（`McpSyncClient`）、网关代理工具（`implements ToolCallback`）、按 Agent 动态目录、OAuth 2.1 资源服务器、`application-secgw.yaml` 增量。
 >
 > 「遇到阻塞？→ [教程 02-SpringAI核心机制/01-MCP协议 §Streamable HTTP 与 OAuth]、[附录 05-01-MCP真实API与坐标]、[前沿 04-MCP生态全景]」
 
@@ -49,7 +49,9 @@ flowchart LR
 
 ## 3. 完整代码（照抄即可）
 
-### 3.1 `application.yml`（MCP 客户端 + OAuth 2.1）
+### 3.1 `application-secgw.yaml` 增量（MCP 客户端 + OAuth 2.1）
+
+> 以下增量**追加写入 `application-secgw.yaml`**（两段式约定见 01-§3.0），改完以 secgw profile 重启生效。
 
 需在 pom.xml 中添加依赖（v3）：
 ```xml
@@ -412,7 +414,7 @@ public class McpCapabilityPolicy {
 
 ### 3.9 本节测试与验证（双面 MCP 网关与动态目录）
 
-**前置条件**：§3.1 两个 MCP starter 依赖已加入 pom；三个工具端点（weather/filesystem/sandbox）以 MCP Streamable HTTP 可达；授权服务器 `https://id.internal` 可发 client_credentials token；`McpCapabilityPolicy`/`AgentScopedToolProvider`/`GatewayProxyTool` 已抄写编译通过。
+**前置条件**：应用已以 secgw profile 运行（`mvn spring-boot:run -Dspring-boot.run.profiles=secgw`，见 01-§3.8；§3.1 增量并入 application-secgw.yaml 后需重启生效）；§3.1 两个 MCP starter 依赖已加入 pom；三个工具端点（weather/filesystem/sandbox）以 MCP Streamable HTTP 可达；授权服务器 `https://id.internal` 可发 client_credentials token；`McpCapabilityPolicy`/`AgentScopedToolProvider`/`GatewayProxyTool` 已抄写编译通过。
 
 **材料——MCP 探测与调用命令**：
 
@@ -522,9 +524,22 @@ tcpdump -i any -A -s0 'host tools.internal' 2>/dev/null | grep -iE 'authorizatio
 | 1 | v1 链路（旧 `/api/v1/tool/invoke`）按 ADR-310 收紧后重试 | 旧入口应关闭或同样受 OAuth+mTLS 保护（无匿名可达路径） |
 | 2 | 重启网关，重跑 §3.9 断言 1–4 | 目录差异、调用链、鉴权行为不变；MCP 连接自动重建（starter 启动重连） |
 
-**失败排查**：旧入口仍可达→路由未摘除或 SecurityWebFilterChain 漏配 `anyExchange().authenticated()`；重启后 McpSyncClient 连接失败→工具端点 url 改动未同步 application.yml 的 connections 映射。
+**失败排查**：旧入口仍可达→路由未摘除或 SecurityWebFilterChain 漏配 `anyExchange().authenticated()`；重启后 McpSyncClient 连接失败→工具端点 url 改动未同步 application-secgw.yaml 的 connections 映射。
 
-## 7. 总结
+## 7. 验收对照
+
+> 对照 §4 量化验收逐项；落地章节即该验收项的证据所在。
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 协议统一 | 非 MCP 工具流量在网络层不可达 | ✅ §4.1 断言 1（材料 L 私接复测阻断） |
+| 动态目录 | 每 Agent 只看到被授权工具 | ✅ §3.9 断言 1/2（PRODUCTION 与 TESTING 目录差异） |
+| 描述防污染 | 描述漂移后 Agent 侧仍是审查通过版 | ✅ §3.9 断言 6（§3.3 getToolDefinition 用登记版） |
+| 凭证隔离 | Agent 侧无工具凭证；每工具独立凭证 | ✅ §4.1 断言 2/3（材料 M 抓包 + 网关侧核对） |
+| 高级能力管控 | Sampling/Elicitation 默认拒绝路径验证 | ✅ §3.9 断言 5（单测）+ §4.1 断言 5（白名单代理限额） |
+| OAuth 合规 | Token 15min、scope 最小化、mTLS 绑定 | ✅ §4.1 断言 4（Token payload 解码核对） |
+
+## 8. 总结
 
 v3 完成「协议统一 + OAuth 2.1 + 动态目录 + 高级能力管控」。遗留痛点（供 v4 决策）：
 
