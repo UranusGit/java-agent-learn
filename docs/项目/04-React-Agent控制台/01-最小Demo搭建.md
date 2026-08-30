@@ -26,7 +26,7 @@
 
 | # | 目标 | 验收 |
 |---|------|------|
-| 1 | 后端可启动 | `mvn spring-boot:run` 后 `curl` POST `/api/chat` 返回 SSE 事件流 |
+| 1 | 后端可启动 | `mvn spring-boot:run -Dspring-boot.run.profiles=console` 后 `curl` POST `/api/chat` 返回 SSE 事件流 |
 | 2 | 前端可启动 | `npm run dev` 打开页面无编译错误 |
 | 3 | 流式可见 | 发送"你好"，打字机逐帧出现（成组 token，非每字符一次） |
 | 4 | 取消生效 | 流式中点"停止"，输出立即定格，无错误横幅 |
@@ -46,7 +46,7 @@
 ## 3. 工程初始化
 
 ```bash
-# 参考后端（Maven 工程，pom.xml / application.yml 见 00 §6.1-6.2）
+# 参考后端（Maven 工程，pom.xml / 两段式配置见 00 §6.1-6.2）
 mkdir agent-console-backend && cd agent-console-backend
 
 # 前端（Vite 工程）
@@ -83,7 +83,7 @@ agent-console/src/
 agent-console-backend/src/main/java/com/agent/console/
 ├── AgentConsoleApplication.java
 ├── config/AgentConfig.java
-└── web/ChatController.java
+└── controller/ChatController.java
 ```
 
 ### 3.1 本节测试与验证（工程初始化）
@@ -144,13 +144,14 @@ public class AgentConfig {
 ### 4.3 参考后端：SSE Controller（v1 最小版）
 
 ```java
-package com.agent.console.web;
+package com.agent.console.controller;
 
 import com.agent.console.event.AgentEvent;
 import com.agent.console.event.ErrorEvent;
 import com.agent.console.event.RoundEnd;
 import com.agent.console.event.Token;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -166,11 +167,8 @@ import java.util.concurrent.atomic.AtomicLong;
 @RequestMapping("/api")
 public class ChatController {
 
-    private final ChatClient chatClient;
-
-    public ChatController(ChatClient chatClient) {
-        this.chatClient = chatClient;
-    }
+    @Autowired
+    private ChatClient chatClient;
 
     // POST /api/chat —— 流式对话（SSE）。事件数据是 AgentEvent 的 JSON（契约见 00 §6.5）
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -204,6 +202,8 @@ public class ChatController {
 ```
 
 > ⚠️ 上面的 `ChatController` 用到了 `AgentEvent`/`Token`/`RoundEnd`/`ErrorEvent`——这些类在 [00 §6.5](00-需求分析与架构设计.md#65-事件契约前后端共同的单一来源) 中完整定义，v1 只用其中三种事件。`TokenUsage` 是顶层 record，import 可用 `com.agent.console.event.TokenUsage`。v1 的 usage 是占位 0，迭代三接入真实计量。
+
+> **绑定风格说明**：`chat(@RequestBody ChatRequest request)` 保留显式绑定是刻意的——`/api/chat` 走 POST + JSON body（`sessionId`/`message`），无法用仓库示例的隐式参数绑定（`public String chat(String prompt)`，那只适用于 GET 查询参数/表单）。SSE 契约要求结构化请求体，故保留类级 `@RequestMapping("/api")` + 方法级 `@PostMapping` 的标准 Controller 形态，字段注入对齐 demo01 `src` 的 `ChatController`。
 
 ### 4.4 前端：事件类型（v1 最小契约）
 
@@ -522,7 +522,7 @@ createRoot(document.getElementById('root')!).render(
 
 ### 4.8 本节测试与验证（v1 完整代码）
 
-> **前置**：§3 两套工程已创建；`AgentEvent`/`Token`/`RoundEnd`/`ErrorEvent`/`TokenUsage` 已按 [00 §6.5] 手写；后端 `application.yml` 与 `pom.xml` 已按 [00 §6.1-6.2] 配好。
+> **前置**：§3 两套工程已创建；`AgentEvent`/`Token`/`RoundEnd`/`ErrorEvent`/`TokenUsage` 已按 [00 §6.5] 手写；后端两段式配置（`application.yaml` / `application-console.yaml`）与 `pom.xml` 已按 [00 §6.1-6.2] 配好。
 
 **材料**：`tsc --noEmit`（或 `npm run build`）做前端类型检查；后端 `mvn compile`；浏览器打开 `http://localhost:5173`。
 
@@ -543,14 +543,14 @@ createRoot(document.getElementById('root')!).render(
 # 终端 1：启动参考后端
 cd agent-console-backend
 export DEEPSEEK_API_KEY=sk-xxx
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.profiles=console
 
-# 终端 2：启动前端（vite.config.ts 已把 /api 代理到 localhost:8080，见 00 §6.4）
+# 终端 2：启动前端（vite.config.ts 已把 /api 代理到 localhost:8081，见 00 §6.4）
 cd agent-console
 npm run dev
 
 # 快速验证后端（不依赖前端）：
-curl -N -X POST "http://localhost:8080/api/chat" \
+curl -N -X POST "http://localhost:8081/api/chat" \
   -H "Content-Type: application/json" \
   -d '{"sessionId":"demo","message":"你好"}'
 ```
@@ -559,17 +559,17 @@ curl -N -X POST "http://localhost:8080/api/chat" \
 
 ### 5.1 本节测试与验证（运行与联调）
 
-> **前置**：§4 代码全部落盘；`DEEPSEEK_API_KEY` 已 export；后端 8080、前端 5173 端口空闲。
+> **前置**：§4 代码全部落盘；`DEEPSEEK_API_KEY` 已 export；后端 8081、前端 5173 端口空闲。
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | 终端 1 `mvn spring-boot:run` | 启动日志无异常，Tomcat/Netty 监听 8080 |
+| 1 | 终端 1 `mvn spring-boot:run -Dspring-boot.run.profiles=console` | 启动日志无异常，Tomcat/Netty 监听 8081 |
 | 2 | 终端 2 `npm run dev` 后访问 `http://localhost:5173` | Vite 欢迎页被替换为 Agent 控制台（有输入框） |
 | 3 | 执行本节 curl 命令 | 终端逐帧输出 `id: N` + `data: {"id":N,...,"type":"token"...}`，最后一帧 `type":"round_end"` |
 | 4 | 页面发送"你好"（走 Vite 代理） | Network 面板 `/api/chat` 为 POST + fetch 流式响应（EventStream/fetch streaming），打字机逐组出现 |
 | 5 | 停掉后端再发消息 | 页面出现错误横幅 + 重试按钮（fetch 抛 HTTP 错误路径生效） |
 
-**失败排查**：curl 无输出 → API Key 未 export 或模型端点配错（看后端日志）；页面 404/跨域 → vite.config.ts 没按 00 §6.4 配 `/api` 代理；curl 有输出但页面空白 → 前端 fetch 路径不是 `/api/chat`（写成了绝对 8080 地址会绕过代理）。
+**失败排查**：curl 无输出 → API Key 未 export 或模型端点配错（看后端日志）；页面 404/跨域 → vite.config.ts 没按 00 §6.4 配 `/api` 代理；curl 有输出但页面空白 → 前端 fetch 路径不是 `/api/chat`（写成了绝对 8081 地址会绕过代理）。
 
 ## 6. ADR 演进决策
 
@@ -599,6 +599,17 @@ curl -N -X POST "http://localhost:8080/api/chat" \
 | 3 | 发送含长中文的问题 | 无乱码（TextDecoder stream:true 生效） |
 | 4 | 流式中刷新页面 | 无报错残留（StrictMode 双连接被清理纪律吸收） |
 | 5 | 后端返回 500 | 显示错误横幅 + 重试按钮；重试重发上一条消息 |
+
+**验收对照**：
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 后端可启动 | `mvn spring-boot:run -Dspring-boot.run.profiles=console` 后 curl POST `/api/chat` 逐帧吐事件流（§5.1 第 3 条） | 待实测打钩 |
+| 前端可启动 | `npm run dev` 打开页面无编译错误（§5.1 第 2 条） | 待实测打钩 |
+| 流式可见 | 发送"你好"打字机逐组 token（非每字符一次），最后一帧 `round_end`（§5.1 第 4 条） | 待实测打钩 |
+| 取消生效 | 流式中点"停止"立即定格、无错误横幅（§7 第 2 条） | 待实测打钩 |
+| 无乱码 | 长中文完整输出，`TextDecoder stream:true` 生效（§7 第 3 条） | 待实测打钩 |
+| 失败可重试 | 后端停掉后错误横幅 + 重试按钮，重发上一条消息（§5.1 第 5 条） | 待实测打钩 |
 
 ## 8. v1 的痛点（驱动下一迭代）
 
