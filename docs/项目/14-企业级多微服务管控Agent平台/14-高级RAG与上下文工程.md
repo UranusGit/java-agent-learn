@@ -167,12 +167,27 @@ public class ContextCompressor {
         if (historyTokens <= MAX_HISTORY_TOKENS) {
             return prompt;   // 未超阈值不压缩
         }
-        // 摘要 Agent 压缩历史（概念代码：真实用 ChatClient 调摘要）
+        // 最小实现：规则式摘要（可编译可测）；生产演进：注入 ChatClient 以摘要提示词调用生成真摘要
         String summary = summarize(prompt);
         return new Prompt(List.of(new SystemMessage("历史对话摘要：" + summary)));
     }
 
-    private String summarize(Prompt prompt) { return "…"; }
+    /**
+     * 规则式摘要：拼接历史 → 首尾保留 + 中段截断（javap 实证：Prompt.getInstructions() 返回 List<Message>，
+     * Message.getText() 经 Content 接口，Spring AI 2.0.0）。
+     */
+    private String summarize(Prompt prompt) {
+        String joined = prompt.getInstructions().stream()
+                .map(Message::getText)
+                .reduce((a, b) -> a + "\n" + b)
+                .orElse("");
+        int maxChars = MAX_HISTORY_TOKENS * 2;   // 粗略换算：1 token ≈ 2 char（中文保守值）
+        if (joined.length() <= maxChars) {
+            return joined;
+        }
+        int keep = maxChars / 2;                 // 首尾各保留一半额度，中段截断
+        return joined.substring(0, keep) + "\n…[中段已截断]…\n" + joined.substring(joined.length() - keep);
+    }
 }
 ```
 

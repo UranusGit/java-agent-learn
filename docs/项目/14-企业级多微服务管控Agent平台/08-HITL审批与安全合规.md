@@ -97,11 +97,13 @@ public class ApprovalToolWrapper implements ToolCallback {
 ```java
 package com.example.toolexecutor.approval;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.util.concurrent.*;
 
 /** 审批服务——审批单 + 超时（本迭代同步阻塞；异步化迭代九）。 */
+@Slf4j
 @Service
 public class ApprovalService {
 
@@ -110,8 +112,8 @@ public class ApprovalService {
     public String request(String tool, String args, String tenantId) {
         String id = "ap-" + System.nanoTime();
         pending.put(id, new CompletableFuture<>());
-        // 通知审批端（admin-portal 弹审批卡）
-        System.out.printf("[APPROVAL_REQUEST] id=%s tool=%s tenant=%s%n", id, tool, tenantId);
+        // 通知审批端（admin-portal 弹审批卡）：本迭代 log 占位，后续迭代走事件流（审批事件入 Kafka 审计流，见 07 篇）
+        log.info("[APPROVAL_REQUEST] id={} tool={} tenant={}", id, tool, tenantId);
         return id;
     }
 

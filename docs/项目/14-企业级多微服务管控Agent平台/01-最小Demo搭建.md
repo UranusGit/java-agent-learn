@@ -86,7 +86,18 @@ flowchart LR
 ```
 
 ```yaml
-# application.yaml
+# src/main/resources/application.yaml —— 公共壳只做两件事：导入 .env + 激活 profile
+spring:
+  config:
+    import: optional:file:.env[.properties]   # 环境变量从项目根 .env 导入（可选文件，缺失不报错）
+  profiles:
+    active: platform
+```
+
+```yaml
+# src/main/resources/application-platform.yaml —— platform profile 专属：端口 + 模型
+server:
+  port: 8080
 spring:
   ai:
     openai:
@@ -97,6 +108,8 @@ spring:
 ```
 
 > **配置键实证**：`spring.ai.openai.base-url/api-key/chat.model`（javap 实证 `OpenAiChatProperties`，前缀 `spring.ai.openai.chat`）。密钥用 `${ENV_VAR}` 占位（CLAUDE.md 规则 9）。
+>
+> **两段式约定**：主配置只管导入与 profile，环境差异进 profile 专属文件。02 起拆出的各微服务**共用 `platform` 这一个 profile 名**（运维上同环境一键切换），端口差异在各服务自己的 `application-platform.yaml` 中区分——02 篇矩阵：agent-executor 8080 / model-gateway 8081 / tool-executor 8082。本篇单体先用 8080。
 
 ### 3.1 本节核对（技术栈与配置键）
 
@@ -212,7 +225,9 @@ public class ChatController {
 ## 五、启动与手工验证（可测试性①）
 
 ```bash
-mvn spring-boot:run -Dspring-boot.run.arguments=--OPENAI_API_KEY=sk-xxx
+# Key 统一走 shell 环境变量（与 §5.1 前置条件一致）；也可写入项目根 .env，经 application.yaml 的 spring.config.import 导入
+export OPENAI_API_KEY=sk-xxx
+mvn spring-boot:run -Dspring-boot.run.profiles=platform   # 显式以 platform profile 启动（application.yaml 已默认激活同名 profile）
 
 # 1. 同步提问
 curl "http://localhost:8080/chat?q=帮我查一下订单SO-1001"
@@ -249,7 +264,7 @@ sequenceDiagram
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
-| 1 | `mvn spring-boot:run` 启动 | 8080 端口就绪，无 EventLoop 阻塞告警 |
+| 1 | `mvn spring-boot:run -Dspring-boot.run.profiles=platform` 启动 | 8080 端口就绪，无 EventLoop 阻塞告警 |
 | 2 | `curl "http://localhost:8080/chat?q=帮我查一下订单SO-1001"` | Agent 调用 `queryOrder` 工具后回答 "订单 SO-1001 已发货，预计明日送达"，正确引用工具结果 |
 | 3 | `curl -N "http://localhost:8080/chat/stream?q=订单SO-1002状态"` | 逐字 SSE 回流，最终内容含工具查询结果（SO-1002="待支付"） |
 
@@ -335,11 +350,25 @@ graph LR
 ### 7.1 本节核对（本迭代痛点）
 
 - [ ] 四类痛点（模型写死/工具内联/会话无状态/不可扩缩）与 §七 flowchart 一一对应，且各自都能指到迭代一（02 微服务拆分）要解决的对应项
-- [ ] 痛点表述与 §八"未引入最终架构=刻意"定位不冲突（单体阶段发现隐患属预期，非缺陷）
+- [ ] 痛点表述与 §九"未引入最终架构=刻意"定位不冲突（单体阶段发现隐患属预期，非缺陷）
 
 ---
 
-## 八、验收对照
+## 八、全篇回归验证
+
+> 各节断言已分布于 §4.4（编译与工具语义）、§5.1（手工闭环）、§6.1（工具单测）；本表为整篇迭代的回归验收，不重复材料。
+
+| # | 验收项（断言） | 标准 | 复验方式 |
+|---|---------------|------|---------|
+| 1 | 编译与单测绿 | `mvn clean compile` / `mvn test` 均 `BUILD SUCCESS` | §4.4 步骤1 / §6.1 步骤1 |
+| 2 | 工具语义两分支 | `queryOrder("SO-1001")` 命中、`queryOrder("SO-9999")` 兜底 | §4.4 步骤2 / §6.1 步骤2 |
+| 3 | 同步闭环 | `/chat` 触发工具调用并引用结果 | §5.1 步骤2 |
+| 4 | 流式闭环 | `/chat/stream` SSE 逐字回流且含工具结果 | §5.1 步骤3 |
+| 5 | 架构未越界 | 无多租户/管控分离/多服务引入 | §1.1 / §2.1 口径核对 |
+
+**回归失败排查**：按对应小节失败排查逐条回溯（依赖坐标/API 签名→§4.4；Key 与配置键→§5.1；classpath 与断言口径→§6.1）。
+
+## 九、验收对照
 
 | 验收项 | 达标标准 | 本迭代 |
 |--------|---------|--------|
@@ -347,7 +376,7 @@ graph LR
 | 可测试 | 工具单测通过 + 手工验证步骤可复现 | ✅ |
 | 未引入最终架构 | 无多租户/管控分离/多服务 | ✅（刻意不引入） |
 
-### 8.1 本节核对（验收对照）
+### 9.1 本节核对（验收对照）
 
 - [ ] 三条验收项各自有前文对应验证章节支撑：最小闭环可运行→§5.1、可测试→§6.1、未引入最终架构→§2.1/§1.1 口径
 - [ ] "下一篇 02-微服务拆分"与 §七痛点"下一步要拆分"衔接到位，为迭代一的演进起点
