@@ -26,6 +26,7 @@
 
 ```java
 // Spring AI 2.0.0 / Java 21 —— 概念代码：记忆中枢最小骨架
+// 需 import org.springframework.ai.document.Document; org.springframework.ai.vectorstore.SearchRequest;
 @Component
 public class MemoryHub {
     private final ChatMemory shortMem;                // 官方 InMemory(短,实证)
@@ -43,7 +44,8 @@ public class MemoryHub {
     public MemoryPacket recall(String convId, String query) {
         List<Message> shortWin = shortMem.get(convId);                          // 工作记忆全窗口
         List<Message> longHit = longMem.semanticRecall(query, 3);               // 长期语义召回top3
-        List<Document> ragHit = vectorStore.similaritySearch(query, 3);         // RAG相似度top3
+        List<Document> ragHit = vectorStore.similaritySearch(
+                SearchRequest.builder().query(query).topK(3).build());   // RAG相似度top3（Spring AI 2.0.0，javap 实证）
         return new MemoryPacket(shortWin, longHit, ragHit);
     }
 }
@@ -55,9 +57,34 @@ public class MemoryHub {
 
 **材料——核对命令/调用**（按 §十 代码手写后执行，无外部 API）：
 
+两段式配置（与代码仓习惯一致：主配置只管导入与 profile，环境差异进 profile 专属文件）：
+
+```yaml
+# src/main/resources/application.yaml —— 仅两件事：导入 .env + 激活 profile
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: memoryhub
+```
+
+```yaml
+# src/main/resources/application-memoryhub.yaml —— profile 专属：端口 + 模型
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+        timeout: 600s
+```
+
 ```bash
-mvn clean compile                     # 先编译通过
-mvn spring-boot:run                   # 启动单体 MemoryHub
+mvn clean compile                                       # 先编译通过
+mvn spring-boot:run -Dspring-boot.run.profiles=memoryhub   # 以 memoryhub profile 启动单体 MemoryHub（端口 8081）
 # 通过对话入口依次触发 remember / recall（无固定端点名，按手写入口）
 ```
 

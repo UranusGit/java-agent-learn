@@ -83,7 +83,8 @@ public MemoryPacket recallBudgeted(String scope, String query, int tokenBudget) 
     int left = tokenBudget - estimateTokens(shortWin);
     List<MemoryRecord> longHit = hybridRecall(scope, query, budgetToTopK(left/2));       // 长期占 1/3
     int left2 = left - estimateTokens(longHit);
-    List<Document> ragHit = vectorStore.similaritySearch(query, budgetToTopK(left2));    // RAG 占 1/3
+    List<Document> ragHit = vectorStore.similaritySearch(
+            SearchRequest.builder().query(query).topK(budgetToTopK(left2)).build());   // RAG 占 1/3（Spring AI 2.0.0）
     return new MemoryPacket(shortWin, longHit, ragHit);
 }
 ```
