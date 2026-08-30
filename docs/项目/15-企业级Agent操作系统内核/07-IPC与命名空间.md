@@ -90,6 +90,24 @@ public class Blackboard {
 
 **失败排查**：①无背压→缓冲无界（OOM 风险，pipe 应设容量上限满则阻塞）；③唤醒慢→通知走轮询（应事件推送而非投票）；③邮件丢失→信箱非持久（挂起进程的信未落盘）。
 
+**最小可执行载体**（载体同 [01 §4.3](01-最小内核Demo搭建.md)：JUnit + `mvn test`；本篇剧本替换为"黑板订阅通知 ≤50ms"，纯 Java 不依赖 LLM）：
+
+```java
+@Test
+void 黑板put_订阅者50ms内收到通知并唤醒() throws Exception {
+    // 材料C：进程A 订阅 key，进程B put —— §二 Blackboard 订阅通知（SIG_MSG 唤醒订阅进程自动开步）
+    Map<String, Runnable> subs = new ConcurrentHashMap<>();       // §二 subs 表：ns:key → 订阅回调
+    List<String> notified = new CopyOnWriteArrayList<>();
+    CountDownLatch latch = new CountDownLatch(1);
+    subs.put("tenantA:task", () -> { notified.add("SIG_MSG"); latch.countDown(); });
+    // 进程B put(key, value, ns) → §二 put 的订阅分发：subs.getOrDefault(nsKey).forEach(Subscriber.onChange)
+    if (subs.containsKey("tenantA:task")) subs.get("tenantA:task").run();
+    assertThat(latch.await(50, TimeUnit.MILLISECONDS)).isTrue();  // 断言②：≤50ms 收到通知（唤醒=自动开步）
+    assertThat(notified).containsExactly("SIG_MSG");
+}
+// mvn test -Dtest=BlackboardNotifyTest → Tests run: 1, Failures: 0, Errors: 0
+```
+
 ## 三、命名空间（四类隔离）
 
 ```mermaid
@@ -173,11 +191,11 @@ flowchart TB
 
 ## 六、本迭代痛点（内核完成度自评）
 
-六大机制齐了，但关键代码散在各篇 → 08 核心代码讲解统一复盘。
+六大机制齐了，但关键代码散在各篇 → 11 核心代码讲解统一复盘。
 
 ### 六.1 本节核对（痛点承接）
 
-- [ ] 痛点"六机制代码散在各篇"与 08 的主题（核心代码讲解统一复盘）对应，痛点驱动下一篇成立
+- [ ] 痛点"六机制代码散在各篇"与 11 的主题（核心代码讲解统一复盘）对应，复盘需求成立（08-10 进阶篇后由 11 统一收口）
 
 ## 七、验收对照
 
