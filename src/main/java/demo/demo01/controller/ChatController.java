@@ -13,8 +13,8 @@ public class ChatController {
     @Autowired
     private ChatClient client;
 
-    @GetMapping("/stream")
-    public Flux<String> stream(String prompt) {
+    @GetMapping("/chat")
+    public Flux<String> chat(String prompt) {
         return client.prompt()
                 .user(prompt)
                 .stream()
