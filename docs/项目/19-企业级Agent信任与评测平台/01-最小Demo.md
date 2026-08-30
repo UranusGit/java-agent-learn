@@ -112,6 +112,90 @@ public class RegressionRunner {
 
 **失败排查**：①Judge 全 0.9+ 无区分度→judge Prompt 缺评分锚点（把 rubric 写进判分上下文）；②跑不通→EvaluationRequest 参数顺序/类型与已实证基准不符。
 
+### 三.2 可执行验证（mvn test）
+
+回归闭环可直接以 junit 断言（概念代码，断言仅覆盖本节）：
+
+```java
+package com.example.evalrunner;
+
+import java.util.List;
+import lombok.extern.slf4j.Slf4j;
+import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.evaluation.RelevancyEvaluator;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** 断言仅覆盖本节：金标 20 例 → 官方 Evaluator → 报告。 */
+@Slf4j
+class RegressionRunnerTest {
+
+    @Autowired private ChatClient agentUnderTest;       // 被测 Agent
+    @Autowired @Qualifier("judgeChatClientBuilder")
+    private ChatClient.Builder judgeBuilder;            // 裁判模型
+
+    @Test
+    void 金标二十例出报告且失败例可见() {
+        RegressionRunner runner = new RegressionRunner(agentUnderTest, judgeBuilder);
+        RegressionRunner.Report report = runner.run(loadGolden("golden-20.jsonl"));
+        assertEquals(20, report.total());
+        assertTrue(report.passRate() > 0 && report.passRate() <= 1.0);
+        assertTrue(report.results().stream().anyMatch(r -> !r.pass()));  // 失败例在报告中可见
+        log.info("报告：total={}, passed={}, passRate={}",
+                report.total(), report.passed(), String.format("%.2f", report.passRate()));
+    }
+}
+```
+
+命令与预期输出（3-5 行）：
+
+```bash
+mvn test -Dtest=RegressionRunnerTest
+```
+
+```text
+[INFO] Running com.example.evalrunner.RegressionRunnerTest
+10:15:30 INFO  com.example.evalrunner.RegressionRunnerTest - 报告：total=20, passed=16, passRate=0.80
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+判据：`passRate` 与 §三.1 断言 1 同口径（如 16/20=0.8）；报告中失败例（`pass=false`）含逐例分数与回答原文。
+
+### 三.3 运行配置与启动（两段式）
+
+```yaml
+# application.yaml（仅 .env import + 激活 profile）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: eval
+```
+
+```yaml
+# application-eval.yaml（端口 + 被测/裁判模型配置）
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+eval:
+  golden: golden-20.jsonl                         # 金标文件（材料 A）
+  judge-model: deepseek-v4-flash                  # 裁判模型（生产应与被测异模型，见 03 偏差纪律）
+```
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=eval
+```
+
 ## 四、全篇回归验证
 
 **回归断言**（§三.1 本节验证通过后的整体验收）：
