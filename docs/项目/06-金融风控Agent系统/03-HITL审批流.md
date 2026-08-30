@@ -92,7 +92,7 @@ stateDiagram-v2
 </dependency>
 ```
 
-`application.yml` 增加数据源（H2 文件库，`DB_CLOSE_DELAY=-1` 保持连接）：
+`application-bankrisk.yaml`（两段式配置的业务段，见 00 篇 §4.2）增加数据源（H2 文件库，`DB_CLOSE_DELAY=-1` 保持连接）：
 
 ```yaml
 spring:
@@ -196,6 +196,7 @@ package com.bank.risk.service;
 
 import com.bank.risk.domain.ApprovalCheckpoint;
 import com.bank.risk.domain.ApprovalStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -209,11 +210,8 @@ import java.util.Optional;
 @Repository
 public class JdbcPendingApprovalStore implements PendingApprovalStore {
 
-    private final JdbcTemplate jdbc;
-
-    public JdbcPendingApprovalStore(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
-    }
+    @Autowired
+    private JdbcTemplate jdbc;
 
     @Override
     public void save(ApprovalCheckpoint cp) {
@@ -301,28 +299,31 @@ import com.bank.risk.domain.ApprovalReceipt;
 import com.bank.risk.domain.ApprovalStatus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
 /** 审批通过后触发真正的终审提交（核心信贷系统）。 */
+@Slf4j
 @Component
 public class ApprovalExecutor {
 
-    private static final Logger log = LoggerFactory.getLogger(ApprovalExecutor.class);
+    private WebClient coreClient;
 
-    private final WebClient coreClient;
-    private final PendingApprovalStore store;
-    private final ObjectMapper objectMapper;
+    @Autowired
+    private WebClient.Builder webClientBuilder;
+    @Autowired
+    private PendingApprovalStore store;
+    @Autowired
+    private ObjectMapper objectMapper;
 
-    public ApprovalExecutor(WebClient.Builder webClientBuilder,
-                            PendingApprovalStore store,
-                            ObjectMapper objectMapper) {
+    /** 依赖注入完成后构建核心系统客户端（@PostConstruct 阶段 webClientBuilder 已注入）。 */
+    @PostConstruct
+    public void init() {
         this.coreClient = webClientBuilder.baseUrl("http://core-system").build();
-        this.store = store;
-        this.objectMapper = objectMapper;
     }
 
     public Mono<ApprovalReceipt> executeApproved(ApprovalCheckpoint cp, String approver, String remark) {
@@ -362,15 +363,13 @@ public class ApprovalExecutor {
 ```java
 package com.bank.risk.service;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /** 审批通知（多渠道：工作台/短信/IM）。demo 打日志，生产接消息队列。 */
+@Slf4j
 @Component
 public class ApproverNotifier {
-
-    private static final Logger log = LoggerFactory.getLogger(ApproverNotifier.class);
 
     public void notifyApprovers(String approvalId, String applicationId, String toolName) {
         log.info("审批挂起通知: approvalId={}, applicationId={}, toolName={}",
@@ -393,6 +392,7 @@ import com.bank.risk.domain.ApprovalStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
@@ -404,23 +404,17 @@ import java.util.UUID;
 @Service
 public class ApprovalService {
 
-    private final PendingApprovalStore store;
-    private final ApproverNotifier notifier;
-    private final ApprovalExecutor approvalExecutor;
-    private final ObjectMapper objectMapper;
+    @Autowired
+    private PendingApprovalStore store;
+    @Autowired
+    private ApproverNotifier notifier;
+    @Autowired
+    private ApprovalExecutor approvalExecutor;
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Value("${risk.prompt-version:v3.2}")
     private String promptVersion;
-
-    public ApprovalService(PendingApprovalStore store,
-                           ApproverNotifier notifier,
-                           ApprovalExecutor approvalExecutor,
-                           ObjectMapper objectMapper) {
-        this.store = store;
-        this.notifier = notifier;
-        this.approvalExecutor = approvalExecutor;
-        this.objectMapper = objectMapper;
-    }
 
     /** 挂起：保存 Checkpoint、通知审批员，返回 approvalId。 */
     public String suspend(String applicationId, List<Message> conversation, AssistantMessage.ToolCall call) {
@@ -705,10 +699,11 @@ public class RiskAgentConfig {
 ### 4.14 `ApprovalController.java`（审批工作台 API）
 
 ```java
-package com.bank.risk.web;
+package com.bank.risk.controller;
 
 import com.bank.risk.domain.ApprovalCheckpoint;
 import com.bank.risk.service.ApprovalService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -725,11 +720,8 @@ import java.util.List;
 @RequestMapping("/api/approvals")
 public class ApprovalController {
 
-    private final ApprovalService approvalService;
-
-    public ApprovalController(ApprovalService approvalService) {
-        this.approvalService = approvalService;
-    }
+    @Autowired
+    private ApprovalService approvalService;
 
     @GetMapping("/{approvalId}")
     public Mono<ApprovalCheckpoint> detail(@PathVariable String approvalId) {
@@ -756,10 +748,11 @@ public class ApprovalController {
 ### 4.15 调用方处理挂起（`PretrialChatController.java`）
 
 ```java
-package com.bank.risk.web;
+package com.bank.risk.controller;
 
 import com.bank.risk.tool.ApprovalPendingException;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -772,11 +765,11 @@ import java.util.Map;
 @RequestMapping("/api/pretrial")
 public class PretrialChatController {
 
-    private final ChatClient chatClient;
-
-    public PretrialChatController(ChatClient chatClient) {
-        this.chatClient = chatClient;
-    }
+    @Autowired
+    private ChatClient chatClient;
+    // 注：v3 时点容器内只有一个 ChatClient Bean，此注入无歧义。
+    // v5 引入双模型后须改为 @Autowired @Qualifier("modelAClient") ChatClient chatClient 精确注入，
+    // 见 05 篇 §3.3 改名提示，否则启动报 ChatClient 多 Bean 歧义。
 
     /** 对话入口：当模型触发终审工具时，装饰器抛出 ApprovalPendingException，这里转为审批挂起响应。 */
     @PostMapping("/chat")
@@ -825,7 +818,56 @@ CREATE TABLE IF NOT EXISTS approval_audit (
 );
 ```
 
-### 4.17 本节测试与验证（基础设施：依赖 / Store / DDL）
+### 4.17 `ApprovalTimeoutScanner.java`（审批超时扫描）
+
+审批挂起的超时治理（§3 状态机 24h/72h 两档）：定时扫描 PENDING，超 24h 升级通知主管、超 72h 置 EXPIRED 退回（失败安全：不自动通过/拒绝，ADR-110）。本地演示用 `@Scheduled`（需在主配置类加 `@EnableScheduling`）；生产换分布式调度或消息延迟队列。
+
+```java
+package com.bank.risk.service;
+
+import com.bank.risk.domain.ApprovalCheckpoint;
+import com.bank.risk.domain.ApprovalStatus;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+
+/** 审批超时扫描：PENDING 超 24h 升级通知主管；超 72h 置 EXPIRED（失败安全：退回重发起，不自动通过/拒绝，ADR-110）。 */
+@Component
+public class ApprovalTimeoutScanner {
+
+    @Autowired
+    private PendingApprovalStore store;
+    @Autowired
+    private ApproverNotifier notifier;
+
+    @Scheduled(fixedDelay = 300_000)   // 每 5 分钟扫一轮（演示粒度）
+    public void scan() {
+        List<ApprovalCheckpoint> pending = store.listPending();
+        for (ApprovalCheckpoint cp : pending) {
+            Duration age = Duration.between(cp.createdAt(), Instant.now());
+            if (age.toHours() >= 72) {
+                store.updateStatus(cp.approvalId(), ApprovalStatus.EXPIRED);
+                notifier.notifySubmitter(cp.approvalId(), "审批超时过期，请重新发起终审申请");
+            } else if (age.toHours() >= 24) {
+                notifier.notifyApprovers(cp.approvalId(), cp.applicationId(),
+                        "ESCALATION:" + cp.toolName());   // 升级通知审批主管
+            }
+        }
+    }
+}
+```
+
+**本节测试与验证（超时扫描两档）**：
+
+- 前置：向 `approval_checkpoint` 插入 `created_at` 为 73h 前与 25h 前的 PENDING 记录各一条。
+- 断言：`scan()` 后 73h 那条 `status=EXPIRED` 且提交方收到"审批超时过期"通知；25h 那条状态仍 PENDING、审批员收到 `ESCALATION:` 升级通知（单测 H2 真库 + mock `ApproverNotifier` 断言调用，或打日志核对）。
+- 边界核对：恰好 72h/24h 整点不触发、超出才触发（`age.toHours() >= 72` 的语义）——与 §3.1 核对"只出现在 24h/72h 两档"一致。
+
+### 4.18 本节测试与验证（基础设施：依赖 / Store / DDL）
 
 **前置条件**：00 篇骨架可用；v1/v2 代码未破坏。
 
@@ -846,9 +888,9 @@ mvn clean compile
 
 **失败排查**：①H2 报表已存在→DDL 未加 `IF NOT EXISTS`；②`Timestamp.from` NPE→decidedAt 为 null 时未走三目分支；③JDBC 阻塞告警→Store 调用未包 `Mono.fromCallable(...).subscribeOn(boundedElastic)`。
 
-### 4.18 本节测试与验证（审批引擎与装饰器闸门）
+### 4.19 本节测试与验证（审批引擎与装饰器闸门）
 
-**前置条件**：§4.17 通过；4.9–4.15 已手写。
+**前置条件**：§4.18 通过；4.9–4.15 已手写（4.17 扫描器的验证见 §4.17 内"本节测试与验证"）。
 
 **材料——闸门状态机断言样本**（单测，手写）：
 
@@ -872,7 +914,7 @@ mvn clean compile
 
 **失败排查**：①③无 Rejected 结果→switch 分支顺序错，REJECTED 必须在放行判断之前；②启动 bean 冲突→4.12 未用 builder 重建 delegate 而是注入了自身；④意外放行→statusFor 查错 applicationId（extractApplicationId 的 JSON path 不对）。
 
-### 4.19 本节测试与验证（端到端：挂起→批准/拒绝）
+### 4.20 本节测试与验证（端到端：挂起→批准/拒绝）
 
 **前置条件**：应用已启动；`DEEPSEEK_API_KEY` 已设。
 
@@ -880,15 +922,15 @@ mvn clean compile
 
 ```bash
 # ① 诱导触发终审工具（挂起）
-curl -X POST "http://localhost:8080/api/pretrial/chat" -H "Content-Type: text/plain" \
+curl -X POST "http://localhost:8081/api/pretrial/chat" -H "Content-Type: text/plain" \
   -d "申请 SO-0001 材料齐全，请提交终审决定 APPROVE"
 # ② 查看待审批列表
-curl "http://localhost:8080/api/approvals"
+curl "http://localhost:8081/api/approvals"
 # ③ 批准（需核心信贷系统可达；本地可用 mock 或观察失败日志）
-curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=APPROVE&approver=zhangsan" \
+curl -X POST "http://localhost:8081/api/approvals/{approvalId}/decide?decision=APPROVE&approver=zhangsan" \
   -H "Content-Type: text/plain" -d "材料核实无误"
 # ④ 再造一单后拒绝
-curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=REJECT&approver=lisi" \
+curl -X POST "http://localhost:8081/api/approvals/{approvalId}/decide?decision=REJECT&approver=lisi" \
   -H "Content-Type: text/plain" -d "流水异常未解释"
 ```
 
@@ -927,17 +969,17 @@ sequenceDiagram
 
 ### 5.1 本节测试与验证（跨重启恢复）
 
-**前置条件**：§4.19 材料① 已产生一条 PENDING 记录；H2 文件库（`jdbc:h2:file:./data/riskdb`）。
+**前置条件**：§4.20 材料① 已产生一条 PENDING 记录；H2 文件库（`jdbc:h2:file:./data/riskdb`）。
 
 **材料——重启剧本**：
 
 ```bash
-# ① 挂起一单（§4.19 材料①），记下 approvalId
+# ① 挂起一单（§4.20 材料①），记下 approvalId
 # ② 杀进程后重启
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.profiles=bankrisk
 # ③ 重启后处理该单
-curl "http://localhost:8080/api/approvals"
-curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=REJECT&approver=wangwu" \
+curl "http://localhost:8081/api/approvals"
+curl -X POST "http://localhost:8081/api/approvals/{approvalId}/decide?decision=REJECT&approver=wangwu" \
   -H "Content-Type: text/plain" -d "隔夜复核不通过"
 ```
 
@@ -946,11 +988,11 @@ curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=R
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
 | 1 | 重启后材料③第一步（列表） | 原 PENDING 记录仍在（H2 文件库未丢） |
-| 2 | 材料③决定 | 200，status 变 REJECTED，approver=王五、remark 回填——跨重启恢复闭环 |
+| 2 | 材料③决定 | 200，status 变 REJECTED，approver=wangwu、remark 回填——跨重启恢复闭环 |
 
 **失败排查**：①重启后库空→yml 误配了 `jdbc:h2:mem:`；②decide 400→`ApprovalDecision` 枚举参数只接受 APPROVE/REJECT。
 
-## 6. 验收标准
+## 6. 验收对照
 
 | # | 验收项 | 标准 |
 |---|--------|------|
@@ -960,7 +1002,7 @@ curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=R
 | 4 | 审批留痕 | 每次批准/拒绝带审批员身份+备注，不可篡改（对接 v4 审计） |
 | 5 | 拒绝语义 | 人工否决后工具返回"人工否决"，Agent 不得重试提交（防绕过） |
 
-> 本节验收与本篇章节验证的映射：验收 1=§4.18 断言 3、验收 2=§5.1、验收 3=§3.1 核对的超时路径（升级逻辑落地于 02 篇式的定时扫描，本篇未展开代码，作为规模化执行项）、验收 4=§4.17 断言 3+4 与 v4 审计对接、验收 5=§4.18 材料③ 与 §4.19 断言 4。本表不重复各节材料。
+> 本节验收与本篇章节验证的映射：验收 1=§4.19 断言 3、验收 2=§5.1、验收 3=§3.1 核对的超时路径（落地实现见 §4.17 ApprovalTimeoutScanner，规模化执行项）、验收 4=§4.18 断言 3+4 与 v4 审计对接、验收 5=§4.19 材料③ 与 §4.20 断言 4。本表不重复各节材料。
 
 ## 7. 本迭代的 ADR
 
@@ -974,7 +1016,7 @@ curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=R
 ### 7.1 本节核对（ADR-108~111）
 
 - [ ] ADR-108（受控异常中断）与 §4.4/§4.11 的 `ApprovalPendingException` 落点一致
-- [ ] ADR-109（拒绝封死）与 §4.11 的 REJECTED 分支、§4.19 断言 4 一致
+- [ ] ADR-109（拒绝封死）与 §4.11 的 REJECTED 分支、§4.20 断言 4 一致
 - [ ] ADR-110（EXPIRED 失败安全）与 §3 状态图"不自动通过/不自动拒绝"一致
 
 ## 8. v3 的痛点
@@ -995,7 +1037,7 @@ curl -X POST "http://localhost:8080/api/approvals/{approvalId}/decide?decision=R
 
 ## 10. 全篇回归验证
 
-**前置条件**：§4.17 / §4.18 / §4.19 / §5.1 均通过。
+**前置条件**：§4.18 / §4.19 / §4.20 / §5.1 均通过。
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|

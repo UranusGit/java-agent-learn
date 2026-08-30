@@ -111,6 +111,7 @@ package com.bank.risk.service;
 import com.bank.risk.domain.PreTrialOpinion;
 import com.bank.risk.domain.PreTrialOpinion.RiskLevel;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -118,11 +119,12 @@ import reactor.core.scheduler.Schedulers;
 @Service
 public class PreTrialService {
 
-    private final ChatClient chatClient;
-
-    public PreTrialService(ChatClient chatClient) {
-        this.chatClient = chatClient;
-    }
+    @Autowired
+    private ChatClient chatClient;
+    // 注：v1 时点容器内只有一个 ChatClient Bean，此注入无歧义。
+    // v5 引入双模型（modelAClient/modelBClient）后，本字段须改为
+    // @Autowired @Qualifier("modelAClient") ChatClient chatClient 精确注入（见 05 篇 §3.3 改名提示），
+    // 否则启动报 ChatClient 多 Bean 歧义。
 
     public Mono<PreTrialOpinion> preTrial(String applicationId, String materialText) {
         return Mono.fromCallable(() -> {
@@ -174,10 +176,11 @@ public class OpinionValidationException extends RuntimeException {
 ### 3.4 `PreTrialController.java`（WebFlux 入口）
 
 ```java
-package com.bank.risk.web;
+package com.bank.risk.controller;
 
 import com.bank.risk.domain.PreTrialOpinion;
 import com.bank.risk.service.PreTrialService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -189,11 +192,8 @@ import reactor.core.publisher.Mono;
 @RequestMapping("/api/pretrial")
 public class PreTrialController {
 
-    private final PreTrialService preTrialService;
-
-    public PreTrialController(PreTrialService preTrialService) {
-        this.preTrialService = preTrialService;
-    }
+    @Autowired
+    private PreTrialService preTrialService;
 
     @PostMapping
     public Mono<PreTrialOpinion> pretrial(
@@ -223,7 +223,7 @@ public class PreTrialController {
 **材料——单元断言（validate 语义校验）**：
 
 ```java
-// OpinionValidationException 触发样本（写入 src/test/java，手写）：
+// OpinionValidationException 触发样本（类名 PreTrialServiceValidationTest，写入 src/test/java，手写）：
 // ① opinion.confidence() = 1.5  → 期望抛 "confidence 越界"
 // ② riskLevel=HIGH 且 riskFactors 全为 medium → 期望抛 "HIGH 等级必须至少有一个 high 风险因子支撑"
 ```
@@ -233,7 +233,7 @@ public class PreTrialController {
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
 | 1 | 手写 3.1–3.4 四个类后 `mvn clean compile` | `BUILD SUCCESS` |
-| 2 | 材料① ② 的校验单测 `mvn test -Dtest=...` | 两个样本均按预期抛 `OpinionValidationException`，消息与 validate 中文案一致 |
+| 2 | 材料① ② 的校验单测 `mvn test -Dtest=PreTrialServiceValidationTest` | 两个样本均按预期抛 `OpinionValidationException`，消息与 validate 中文案一致 |
 | 3 | 核对 §3.6 三个错误姿势 | 本项目代码均采用"正确姿势"列：boundedElastic 桥接 / 无 `maxAttempts()` / validate 兜底 |
 
 **失败排查**：①`maxAttempts()` 编译不过→用的是臆造 API，回查 §3.6 第 2 行；②单测不抛异常→validate 未被调用（entity 之后漏了 return validate(opinion)）；③启动报 ChatClient bean 冲突→00 篇未定义其他 ChatClient bean，检查是否重复定义。
@@ -242,20 +242,20 @@ public class PreTrialController {
 
 ```sh
 export DEEPSEEK_API_KEY=sk-xxx
-mvn spring-boot:run
-# 测试：
-# curl -X POST "http://localhost:8080/api/pretrial?applicationId=SO-0001" \
+mvn spring-boot:run -Dspring-boot.run.profiles=bankrisk
+# 测试（端口 8081，见 00 篇两段式配置）：
+# curl -X POST "http://localhost:8081/api/pretrial?applicationId=SO-0001" \
 #   -H "Content-Type: text/plain" -d "营业执照: 广州XX贸易有限公司，注册资本500万元，经营范围为纺织服装批发，成立满3年。流水: 公账月均回款 50 万元，年末 3 个月骤降至不足10万元。征信: 无逾期记录，负债率约45%，近期有1笔经营贷申请。"
 ```
 
 ### 4.1 本节测试与验证（端到端预审请求）
 
-**前置条件**：应用已启动（`mvn spring-boot:run`，8080 端口）。
+**前置条件**：应用已启动（`mvn spring-boot:run -Dspring-boot.run.profiles=bankrisk`，8081 端口）。
 
 **材料——curl 探针**：
 
 ```bash
-curl -X POST "http://localhost:8080/api/pretrial?applicationId=SO-0001" \
+curl -X POST "http://localhost:8081/api/pretrial?applicationId=SO-0001" \
   -H "Content-Type: text/plain" \
   -d "营业执照: 广州XX贸易有限公司，注册资本500万元，经营范围为纺织服装批发，成立满3年。流水: 公账月均回款 50 万元，年末 3 个月骤降至不足10万元。征信: 无逾期记录，负债率约45%，近期有1笔经营贷申请。"
 ```
@@ -271,7 +271,7 @@ curl -X POST "http://localhost:8080/api/pretrial?applicationId=SO-0001" \
 
 **失败排查**：①404→`@RequestMapping("/api/pretrial")` 或 `@PostMapping` 路径写错；②entity 解析异常→DeepSeek 返回非 JSON（System Prompt 约束被材料文本淹没，可重试）；③EventLoop 告警/线程卡死→漏了 `subscribeOn(Schedulers.boundedElastic())`。
 
-## 5. 验收标准
+## 5. 验收对照
 
 | # | 验收项 | 标准 |
 |---|--------|------|
@@ -281,6 +281,17 @@ curl -X POST "http://localhost:8080/api/pretrial?applicationId=SO-0001" \
 | 4 | 无终审越权 | 输出中无"批准/拒绝"最终决定表述（只有建议等级） |
 
 > 本节即 §4.1 验证在 100 份样本上的规模化执行：每条验收项都有 §4.1 对应断言可复现（结构化成功率=断言 1/2、证据回溯=断言 2、缺失归位=断言 4、无越权=断言 3），本表不再单列操作步骤。
+
+### 5.1 本迭代的 ADR（v1 不新增编号，指向 12 总账）
+
+v1 的关键取舍已在 00 篇预录 ADR 中定型，本迭代是它们的**首次代码落地**，不新开编号（保持 12 篇总账 101-136 连续闭合）：
+
+| 关联 ADR | 在 v1 的落点 |
+|----------|-------------|
+| ADR-104（结构化结论比对） | 输出契约 `PreTrialOpinion` schema 先行（§2）——v5 字段级比对与 v4 回放全部消费此契约 |
+| ADR-101（终审人工） | System Prompt 规则 3「只做预审建议」（§3.1）+ §4.1 断言 3 的无越权核验 |
+
+完整总账见 [12-ADR架构决策记录.md](12-ADR架构决策记录.md)。
 
 ## 6. v1 的痛点
 

@@ -111,6 +111,7 @@ SELECT DISTINCT node_type, node_id FROM expand;
 ```java
 package com.bank.risk.service;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -123,11 +124,8 @@ import java.util.List;
 @Service
 public class GraphQueryService {
 
-    private final JdbcTemplate jdbc;
-
-    public GraphQueryService(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
-    }
+    @Autowired
+    private JdbcTemplate jdbc;
 
     /** 三跳关联子图：返回主体/设备/账号节点与边。 */
     public SubGraph expandSubgraph(String seedSubject) {
@@ -159,11 +157,95 @@ public class GraphQueryService {
 }
 ```
 
-### 2.4 本节测试与验证（递归 CTE 与假名一致性）
+### 2.4 `GraphEdgeService.java`（边写入与来源入链）+ 接入端点
+
+§2.3 是只读查询；写侧独立成服务——**每条边落 `graph_edge` 的同时，其来源事件（哪次申请/哪笔交易产生了这条边）入审计链**（ADR-136"边来源入链"的落点，防"图本身被污染"无据可查）。实体标识必须是 v6 假名（上游过脱敏管道后才允许调本服务）：
+
+```java
+// Spring AI 2.0.0 —— 关系图写入：边落库 + 来源事件入链（ADR-136）
+package com.bank.risk.service;
+
+import com.bank.risk.domain.AuditEvent;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Service
+public class GraphEdgeService {
+
+    @Autowired
+    private JdbcTemplate jdbc;
+    @Autowired
+    private AuditService auditService;
+
+    /** 写一条关系边并落链。sourceEventId 是产生该边的业务事件（申请/交易/审批）标识。 */
+    public void recordEdge(String srcType, String srcId, String dstType, String dstId,
+                           String relType, double weight, String sourceEventId) {
+        jdbc.update("""
+                INSERT INTO graph_edge (src_type, src_id, dst_type, dst_id, rel_type, weight, occurred_at)
+                VALUES (?,?,?,?,?,?,NOW())
+                """,
+                srcType, srcId, dstType, dstId, relType, weight);
+        // 来源入链：GRAPH_EDGE_APPENDED 事件携带边五元组 + 来源事件，图污染可回溯
+        auditService.record(new AuditEvent(
+                UUID.randomUUID().toString(),
+                AuditEvent.EventType.GRAPH_EDGE_APPENDED,
+                srcId,
+                "{\"src\":\"%s:%s\",\"dst\":\"%s:%s\",\"rel\":\"%s\",\"sourceEventId\":\"%s\"}"
+                        .formatted(srcType, srcId, dstType, dstId, relType, sourceEventId),
+                null,
+                Instant.now()));
+    }
+}
+```
+
+调试/演示用接入端点（生产由申请、交易管线在业务事件点调用 `recordEdge`，不暴露写接口）：
+
+```java
+// Spring AI 2.0.0 —— 边写入接入端点（演示/联调用；生产环境应关闭或限内网）
+package com.bank.risk.controller;
+
+import com.bank.risk.service.GraphEdgeService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/graph")
+public class GraphEdgeController {
+
+    @Autowired
+    private GraphEdgeService graphEdgeService;
+
+    public record EdgeRequest(String srcType, String srcId, String dstType, String dstId,
+                              String relType, Double weight, String sourceEventId) {}
+
+    @PostMapping("/edges")
+    public Mono<Map<String, Object>> addEdge(@RequestBody EdgeRequest req) {
+        return Mono.fromRunnable(() -> graphEdgeService.recordEdge(
+                        req.srcType(), req.srcId(), req.dstType(), req.dstId(),
+                        req.relType(), req.weight() == null ? 1.0 : req.weight(),
+                        req.sourceEventId() == null ? "MANUAL" : req.sourceEventId()))
+                .subscribeOn(Schedulers.boundedElastic())
+                .thenReturn(Map.of("recorded", true));
+    }
+}
+```
+
+### 2.5 本节测试与验证（递归 CTE 与假名一致性）
 
 **前置条件**：`graph_edge` DDL 已执行并插入测试拓扑。
 
-**材料——已知拓扑数据与断言**（从原 §6.1/§6.5 上移）：
+**材料——已知拓扑数据与断言**：
 
 ```sql
 -- 构造拓扑：A-B-C-D 链 + E 孤立点（SUBJECT 用假名 PSEUDO-A 等）
@@ -225,6 +307,7 @@ package com.bank.risk.service;
 import com.bank.risk.domain.GangHypothesis;
 import com.bank.risk.service.GraphQueryService.SubGraph;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -236,11 +319,8 @@ import reactor.core.scheduler.Schedulers;
 @Service
 public class GangAttributionService {
 
-    private final ChatClient modelAClient;
-
-    public GangAttributionService(ChatClient modelAClient) {
-        this.modelAClient = modelAClient;
-    }
+    @Autowired
+    private ChatClient modelAClient;
 
     public Mono<GangHypothesis> attribute(SubGraph subGraph) {
         return Mono.fromCallable(() -> modelAClient.prompt()
@@ -256,14 +336,114 @@ public class GangAttributionService {
     }
 }
 ```
-### 3.2 本节测试与验证（LLM 归因结构化输出）
 
-**前置条件**：`DEEPSEEK_API_KEY` 在位；§2.4 的子图可查。
+### 3.2 `GangCase.java` 与 `CaseOpeningService.java`（开案触发）
+
+§3 流程图的收尾落点：**归因成立 → 开调查案件，进入 §4 三路会签；归因不成立 → 归档且理由入链**（DROP2 分支也不能无痕）。案件记录与会签/定性（§5 状态机）共用 `CaseStatus`：
+
+```java
+package com.bank.risk.domain;
+
+import java.time.Instant;
+import java.util.List;
+
+/** 团伙调查案件：统计预筛 + 归因成立后开案，进入三 Agent 会签（§4）。 */
+public record GangCase(
+        String caseId,
+        List<String> memberSubjects,   // 分量内主体假名清单（v6 假名，无明文 PII）
+        String subgraphSummary,        // 子图摘要（节点/边计数，全文见调查工具取数）
+        GangHypothesis hypothesis,     // 开案依据：LLM 归因假说
+        CaseStatus status,
+        Instant openedAt
+) {
+    public enum CaseStatus { OPEN, CONFIRMED, DISMISSED, DESIGNATED, CANCELLED }
+}
+```
+
+```java
+// Spring AI 2.0.0 —— 开案触发：归因成立开案 + INVESTIGATION 事件入链；不成立归档且理由入链
+package com.bank.risk.service;
+
+import com.bank.risk.domain.AuditEvent;
+import com.bank.risk.domain.GangCase;
+import com.bank.risk.domain.GangHypothesis;
+import com.bank.risk.service.GraphQueryService.SubGraph;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+@Service
+public class CaseOpeningService {
+
+    @Autowired
+    private GangAttributionService gangAttributionService;
+    @Autowired
+    private AuditService auditService;
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    /**
+     * 开案触发（§3 流程图 T→LLM→H 节点的代码落点）：候选分量（连通分量 + 密度阈值预筛命中）
+     * 交 LLM 归因——成立则开案（OPEN，进三路会签），不成立则归档（理由入链，DROP2 分支无痕即漏）。
+     */
+    public Mono<GangCase> openIfPlausible(List<String> memberSubjects, SubGraph subGraph) {
+        return gangAttributionService.attribute(subGraph)
+                .flatMap(hypothesis -> {
+                    if (!hypothesis.plausible()) {
+                        // 归因不成立：归档理由入链（不静默丢弃）
+                        auditService.record(new AuditEvent(
+                                UUID.randomUUID().toString(),
+                                AuditEvent.EventType.INVESTIGATION,
+                                null,
+                                toJson(Map.of("action", "ARCHIVED",
+                                        "subjects", memberSubjects,
+                                        "missingEvidence", hypothesis.missingEvidence())),
+                                null, Instant.now()));
+                        return Mono.empty();
+                    }
+                    GangCase gangCase = new GangCase(
+                            "GC-" + UUID.randomUUID().toString().substring(0, 8),
+                            memberSubjects,
+                            "nodes=" + subGraph.nodes().size() + ",edges=" + subGraph.edges().size(),
+                            hypothesis,
+                            GangCase.CaseStatus.OPEN,
+                            Instant.now());
+                    auditService.record(new AuditEvent(
+                            UUID.randomUUID().toString(),
+                            AuditEvent.EventType.INVESTIGATION,
+                            null,
+                            toJson(Map.of("action", "CASE_OPENED", "caseId", gangCase.caseId())),
+                            null, Instant.now()));
+                    return Mono.just(gangCase);
+                });
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            throw new IllegalStateException("案件事件序列化失败", e);
+        }
+    }
+}
+```
+
+> 归因不成立走 `Mono.empty()`——预筛候选被 LLM 否决不是错误，不开案；但**归档动作必须入链**，否则"预筛命中却无下文"在监管问询时是空窗。
+
+### 3.3 本节测试与验证（LLM 归因结构化输出）
+
+**前置条件**：`DEEPSEEK_API_KEY` 在位；§2.5 的子图可查。
 
 **材料——归因探针**（手写集成测试或临时端点）：
 
 ```java
-// 用 §2.4 的四主体共设备子图调用 GangAttributionService.attribute(subGraph)
+// 用 §2.5 的四主体共设备子图调用 GangAttributionService.attribute(subGraph)
 ```
 
 **步骤与断言**：
@@ -319,17 +499,15 @@ import com.bank.risk.service.GraphQueryService;
 import com.bank.risk.service.GraphQueryService.SubGraph;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /** 图谱 Agent 的工具（全部只读——调查类工具最小权限，ADR-135）。 */
 @Component
 public class GraphInvestigationTools {
 
-    private final GraphQueryService graphQueryService;
-
-    public GraphInvestigationTools(GraphQueryService graphQueryService) {
-        this.graphQueryService = graphQueryService;
-    }
+    @Autowired
+    private GraphQueryService graphQueryService;
 
     @Tool(name = "expand_subgraph",
           description = "查询某主体的三跳关联子图（只读）：节点类型与边语义，用于团伙关联分析。")
@@ -355,7 +533,8 @@ public class BehaviorInvestigationTools {
           description = "查询某主体的行为特征画像（只读）：近 24h/7d 交易频次、设备数、渠道分布。")
     public String queryBehaviorFeatures(
             @ToolParam(description = "主体假名标识") String subjectId) {
-        // 演示桩：生产从特征仓/审计链重建行为画像（STREAM_DECISION 事件回放）
+        // 【演示桩】返回固定演示数据，非真实查询。生产实现：从特征仓/审计链重建行为画像
+        // （复用 v8 SlidingWindowFeatureService 或回放 STREAM_DECISION 事件聚合），接入前必须替换本方法体。
         return "{\"subjectId\":\"" + subjectId + "\",\"txn24h\":17,\"devices7d\":4,\"channels\":[\"app\",\"h5\"]}";
     }
 }
@@ -376,7 +555,8 @@ public class IntelInvestigationTools {
           description = "检索内部黑名单与历史反欺诈案件（只读）：按主体/设备/账号假名匹配。")
     public String searchIntel(
             @ToolParam(description = "检索关键词（假名标识或团伙类型）") String keyword) {
-        // 演示桩：生产接案件库检索服务
+        // 【演示桩】返回固定演示数据，非真实查询。生产实现：接黑名单库/历史案件库检索服务
+        // （本迭代未定义案件库存储，接入前必须先落案件检索服务再替换本方法体）。
         return "{\"keyword\":\"" + keyword + "\",\"blacklistHits\":0,\"similarCases\":1}";
     }
 }
@@ -473,6 +653,7 @@ package com.bank.risk.service;
 
 import com.bank.risk.domain.InvestigationReport;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -487,17 +668,12 @@ import java.util.Map;
 @Service
 public class InvestigationOrchestrator {
 
-    private final ChatClient graphAgentClient;
-    private final ChatClient behaviorAgentClient;
-    private final ChatClient intelAgentClient;
-
-    public InvestigationOrchestrator(ChatClient graphAgentClient,
-                                     ChatClient behaviorAgentClient,
-                                     ChatClient intelAgentClient) {
-        this.graphAgentClient = graphAgentClient;
-        this.behaviorAgentClient = behaviorAgentClient;
-        this.intelAgentClient = intelAgentClient;
-    }
+    @Autowired
+    private ChatClient graphAgentClient;
+    @Autowired
+    private ChatClient behaviorAgentClient;
+    @Autowired
+    private ChatClient intelAgentClient;
 
     public Mono<JointReport> investigate(String caseId, String hypothesis) {
         Mono<InvestigationReport> graph = run(graphAgentClient, "GRAPH", caseId, hypothesis);
@@ -541,7 +717,7 @@ public class InvestigationOrchestrator {
 
 **前置条件**：三 Agent Bean 已注册；`InvestigationOrchestrator` 已手写。
 
-**材料——聚合语义单测**（从原 §6.2/§6.3 上移，直接构造 InvestigationReport，不起 LLM）：
+**材料——聚合语义单测**（直接构造 InvestigationReport，不起 LLM）：
 
 ```java
 // ① 三报告 2 支持 1 反对（GRAPH/BEHAVIOR 支持、INTEL 反对）
@@ -555,7 +731,7 @@ public class InvestigationOrchestrator {
 |---|------|------------------|
 | 1 | 材料① | `JointReport.allSupport=false`，divergences 含 INTEL 视角条目 |
 | 2 | 材料② | allSupport=true 且 divergences 为空 |
-| 3 | 工具权限核对（原 §6.3） | 图谱 Agent 的 ChatClient 只解析到 `expand_subgraph`；三个工具类均无写方法（代码审查：无 INSERT/UPDATE/DELETE SQL、无 setter） |
+| 3 | 工具权限核对 | 图谱 Agent 的 ChatClient 只解析到 `expand_subgraph`；三个工具类均无写方法（代码审查：无 INSERT/UPDATE/DELETE SQL、无 setter） |
 | 4 | 并行核对 | investigate 用 `Mono.zip` 三路并行，各 run 均 boundedElastic（代码审查） |
 
 **失败排查**：①全支持仍出分歧→aggregate 的过滤条件写反；③工具串 Bean→`defaultTools` 参数名与三个 ToolCallbackProvider Bean 名不匹配。
@@ -602,13 +778,13 @@ public class GangDesignationTools {
 }
 ```
 
-审计事件：`INVESTIGATION`（会签报告入链）、`GANG_DESIGNATED`（名单标记动作入链）——EventType 再演进两个值。图数据的写入同样入链：每条 `graph_edge` 的来源事件（哪次申请/哪笔交易产生了这条边）可回溯，防止"图本身被污染"无据可查。
+审计事件：`INVESTIGATION`（开案/归档/会签报告入链）、`GANG_DESIGNATED`（名单标记动作入链）、`GRAPH_EDGE_APPENDED`（边写入来源入链，§2.4 GraphEdgeService）——EventType 再演进三个值。图数据的写入入链已在 §2.4 落地：每条 `graph_edge` 的来源事件（哪次申请/哪笔交易产生了这条边）可回溯，防止"图本身被污染"无据可查。
 
 ### 5.1 本节测试与验证（定性闸门复用）
 
 **前置条件**：v3 的 `HumanApprovalToolManager` 在位；`GangDesignationTools` 已手写。
 
-**材料——闸门核对**（从原 §6.4 上移）：
+**材料——闸门核对**：
 
 ```java
 // 代码级断言：HumanApprovalToolManager.DANGEROUS_TOOLS 集合的元素
@@ -622,18 +798,18 @@ public class GangDesignationTools {
 |---|------|------------------|
 | 1 | 材料①② | 两元素均在集合内 |
 | 2 | 闸门路径复验（复用 03 篇 §4.18 方法） | 绕过审批直接执行 `submit_gang_designation` 的路径不存在——NONE 状态触发即抛 ApprovalPendingException 挂起 |
-| 3 | 事件类型核对 | EventType 已新增 `INVESTIGATION` / `GANG_DESIGNATED`，老链事件反序列化不受影响 |
+| 3 | 事件类型核对 | EventType 已新增 `INVESTIGATION` / `GANG_DESIGNATED` / `GRAPH_EDGE_APPENDED`，老链事件反序列化不受影响 |
 
 **失败排查**：②名单标记被静默执行→工具未加入 DANGEROUS_TOOLS 或闸门 Bean 未生效；③老链断→枚举改名（只许新增）。
 
 ## 6. 全篇回归验证
 
-**前置条件**：§2.4 / §3.2 / §4.4 / §5.1 均通过。
+**前置条件**：§2.5 / §3.3 / §4.4 / §5.1 均通过。
 
 | # | 操作 | 预期（PASS 判据） |
 |---|------|------------------|
 | 1 | `mvn clean test` | 全部单测通过，`BUILD SUCCESS` |
-| 2 | 端到端：插边→预筛命中→归因成立→三路会签→人工定性→名单标记走闸门 | 全链贯通；`GET /api/audit/verify` intact，链上含 INVESTIGATION / GANG_DESIGNATED / APPROVAL_* 事件序列 |
+| 2 | 端到端：插边→预筛命中→归因成立→三路会签→人工定性→名单标记走闸门（前三步的 curl 落点见 §7 验证命令：POST /api/graph/edges → 预筛归因 → POST 开案） | 全链贯通；`GET /api/audit/verify` intact，链上含 GRAPH_EDGE_APPENDED / INVESTIGATION / GANG_DESIGNATED / APPROVAL_* 事件序列 |
 | 3 | 回归 v1-v9 | 预审/审批/审计/脱敏/流式链路不受多 Agent 新增 Bean 影响（ChatClient 多 Bean 按参数名注入无歧义） |
 
 **失败排查**：②某环节事件缺失→对应落链点漏写；③启动 Bean 歧义→参数名与 Bean 名不一致（对照 §4.2 命名）。
@@ -649,7 +825,25 @@ public class GangDesignationTools {
 | 5 | 审计闭环 | 会签报告/定性决定/名单标记 100% 入链；图边来源可回溯 |
 | 6 | 图数据合规 | 图实体全假名；还原仅授权角色且留痕（v6 复用） |
 
-> 与章节验证的映射：验收 1=§2.4 材料+§3.2 断言 1 的样本扩展（20 团伙）、验收 2=§4.4 断言 1/2、验收 3=§5.1 断言 2、验收 4=§4.4 断言 3、验收 5=§6 回归断言 2、验收 6=§2.4 断言 3（还原留痕复用 06 篇材料⑦）。本表不重复材料。
+> 与章节验证的映射：验收 1=§2.5 材料+§3.3 断言 1 的样本扩展（20 团伙）、验收 2=§4.4 断言 1/2、验收 3=§5.1 断言 2、验收 4=§4.4 断言 3、验收 5=§6 回归断言 2、验收 6=§2.5 断言 3（还原留痕复用 06 篇材料⑦）。本表不重复材料。
+
+**可执行验证命令**（应用已启动 8081 端口、Redis/H2 可用；覆盖 §6 回归链路前三步"插边→预筛→归因开案"的可执行化）：
+
+```bash
+# ① 插边：A、B 共用设备 DEV-1（§2.4 接入端点）
+curl -X POST "http://localhost:8081/api/graph/edges" -H "Content-Type: application/json" \
+  -d '{"srcType":"SUBJECT","srcId":"PSEUDO-A","dstType":"DEVICE","dstId":"DEV-1","relType":"USES_DEVICE","sourceEventId":"EVT-001"}'
+curl -X POST "http://localhost:8081/api/graph/edges" -H "Content-Type: application/json" \
+  -d '{"srcType":"SUBJECT","srcId":"PSEUDO-B","dstType":"DEVICE","dstId":"DEV-1","relType":"USES_DEVICE","sourceEventId":"EVT-002"}'
+# 预期：各返回 {"recorded":true}；audit_chain 新增两条 GRAPH_EDGE_APPENDED 事件
+
+# ② 边来源入链核对
+# SQL: SELECT event_json FROM audit_chain WHERE event_type='GRAPH_EDGE_APPENDED' ORDER BY seq DESC LIMIT 2;
+# 预期：payload 含边五元组与 sourceEventId（图污染可回溯，ADR-136）
+
+# ③ 开案触发（归因成立开案；归因不成立则链上出现 action=ARCHIVED 的 INVESTIGATION 事件——无痕即漏）
+# SQL: SELECT event_json FROM audit_chain WHERE event_type='INVESTIGATION' ORDER BY seq DESC LIMIT 1;
+```
 
 ## 8. 本迭代的 ADR
 
@@ -663,7 +857,7 @@ public class GangDesignationTools {
 ### 8.1 本节核对（ADR-133~136）
 
 - [ ] ADR-134"会签不投票"的理由（同源数据污染可欺骗多数投票）与 ADR-116 的关系能说出
-- [ ] ADR-135 与 §4.4 断言 3、ADR-136 与 §2.4 断言 3 分别对应
+- [ ] ADR-135 与 §4.4 断言 3、ADR-136 与 §2.5 断言 3 分别对应
 
 ## 9. v10 的痛点
 
