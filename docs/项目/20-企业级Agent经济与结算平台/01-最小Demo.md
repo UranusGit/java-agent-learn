@@ -123,6 +123,89 @@ flowchart LR
 
 **失败排查**：①超预算仍执行真实工具→包装未真正装饰原工具（校验 `ToolCallback` 调用链）；②拒绝无建议→拒绝信息只抛了金额差，没拼可行动文案。
 
+### 三.2 端到端预算拦截（curl，8081）
+
+把闸门挂上 HTTP（demo01 仓 controller 习惯：类级前缀 + `@Autowired` 字段注入）：
+
+```java
+// 概念代码：预算闸门的最小暴露
+package com.example.billing.controller;
+
+import java.math.BigDecimal;
+import java.util.Map;
+import com.example.billing.ledger.BudgetExceededException;
+import com.example.billing.ledger.BudgetLedger;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/budget")
+public class BudgetController {
+
+    @Autowired
+    private BudgetLedger ledger;
+
+    /** 花钱前闸门：预扣一笔，超预算当场拒绝（可行动信息） */
+    @GetMapping("/charge")
+    public ResponseEntity<Map<String, String>> charge(String sessionId, String toolName, String amount) {
+        try {
+            ledger.charge(sessionId, toolName, new BigDecimal(amount),
+                    java.util.UUID.randomUUID().toString());
+            return ResponseEntity.ok(Map.of(
+                    "status", "charged",
+                    "remaining", ledger.balance(sessionId).toPlainString()));
+        } catch (BudgetExceededException e) {
+            return ResponseEntity.status(402).body(Map.of("status", "rejected", "reason", e.getMessage()));
+        }
+    }
+}
+```
+
+前置：会话 `s1` 已按 §二 `grant` 授予预算 ¥1。预算拦截端 curl：
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' \
+  "http://localhost:8081/budget/charge?sessionId=s1&toolName=stock-quote&amount=6"
+```
+
+预期输出（超预算当场拦截，HTTP 402，拒绝信息可行动）：
+
+```text
+{"status":"rejected","reason":"剩余 ¥1.0，本次需 ¥6.0，可换免费数据源或申请追加预算"}
+HTTP 402
+```
+
+### 三.3 运行配置与启动（两段式）
+
+```yaml
+# application.yaml（仅 .env import + 激活 profile）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: billing
+```
+
+```yaml
+# application-billing.yaml（端口与模型配置）
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+```
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=billing
+```
+
 ## 四、全篇回归验证
 
 **回归断言**（§二.1 与 §三.1 本节验证均通过后，最终整体验收）：
