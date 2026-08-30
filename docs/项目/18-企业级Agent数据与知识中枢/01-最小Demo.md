@@ -112,6 +112,84 @@ public class KnowledgeService {
 
 **失败排查**：①0 块→分块阈值吃掉短段；②全命中同节→嵌入未生效（查 embed 调用日志）；③[n] 对不上→引用 id 与检索返回串号。
 
+### 三.2 可执行验证（mvn test）
+
+最小闭环可直接以 junit 断言（概念代码，断言仅覆盖本节）：
+
+```java
+package com.example.knowledgehub;
+
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** 断言仅覆盖本节：入库→检索→溯源（全真实 API）。 */
+class KnowledgeServiceTest {
+
+    @Autowired
+    private KnowledgeService service;
+
+    @Test
+    void 入库后检索命中且溯源正确() {
+        int chunks = service.ingest("manual.md", "产品手册");     // 材料 A 手册
+        assertTrue(chunks > 0);
+        List<Document> hits = service.search("退货政策是什么？", 3);
+        assertFalse(hits.isEmpty());
+        assertEquals("产品手册", hits.get(0).getMetadata().get("source")); // 溯源元数据
+    }
+}
+```
+
+命令与预期输出（3-5 行）：
+
+```bash
+mvn test -Dtest=KnowledgeServiceTest
+```
+
+```text
+[INFO] Running com.example.knowledgehub.KnowledgeServiceTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+### 三.3 运行配置与启动（两段式）
+
+```yaml
+# application.yaml（仅 .env import + 激活 profile）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: knowledge
+```
+
+```yaml
+# application-knowledge.yaml（端口 + 模型 + pgvector 数据源）
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+      embedding:
+        options:
+          model: text-embedding-v3
+  datasource:                                     # pgvector（依赖需在 pom.xml 添加，见 §三.1 前置条件）
+    url: ${PGVECTOR_URL}
+    username: ${PGVECTOR_USER}
+    password: ${PGVECTOR_PASSWORD}
+```
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=knowledge
+```
+
 ## 四、全篇回归验证
 
 回归断言（§三.1 本节验证通过后，最终整体验收）：
