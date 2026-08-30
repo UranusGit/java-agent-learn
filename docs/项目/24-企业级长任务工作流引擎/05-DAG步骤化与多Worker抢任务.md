@@ -34,7 +34,7 @@ public Flux<StepResult> schedule(DAG<StepSpec> dag, RunContext ctx) {
     return Flux.fromIterable(topologicalReadyList(dag, ctx))   // 当前所有"依赖已满足"的就绪步骤
         .flatMap(spec -> spec.run(ctx), parallelism(ctx.workerCount()))  // 并行执行(限并发)
         .doOnNext(res -> ctx.markDone(res, dag))                 // 完成后解锁下游
-        .repeatWhen(ready -> ready.delayElements(...))           // 一轮一轮，直到 DAG 全部完成
+        .repeatWhen(ready -> ready.delayElements(Duration.ofMillis(500)))  // 轮询间隔：每轮就绪步骤跑完并解锁下游后，等 500ms 再扫下一批就绪步骤——间隔过小空转耗 CPU，过大抬高下游步骤启动延迟
         .subscribeOn(Schedulers.boundedElastic());
 }
 ```
@@ -46,6 +46,15 @@ public Flux<StepResult> schedule(DAG<StepSpec> dag, RunContext ctx) {
 **前置条件**：`StepSpec`/`DAG`/`schedule` 按上文代码实现并可编译；构造一个 3 步 DAG：`pull`（无依赖）→ `clean`（依赖 pull）→ `write`（依赖 clean），另加一个可与 pull 并行的 `validate`（无依赖）。
 
 **材料——并行与依赖序列**：运行 `schedule`，在每步 `run` 里打点记录执行顺序与时间戳。
+
+```bash
+mvn test -Dtest=DagScheduleTest        # 按 §二 代码手写 4 步 DAG 并行/拓扑序用例后执行
+# 预期输出（节选）：
+#   Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
+#   pull/validate 并行计数 =2；clean 晚于 pull、write 晚于 clean
+#   BUILD SUCCESS
+```
+
 
 **步骤与断言**：
 
@@ -80,6 +89,15 @@ graph LR
 
 **材料——多 Worker 与崩溃注入**：启动 3 个 Worker；构造多个无依赖就绪步骤；模拟某 Worker 崩溃且其中一步已领取未完成。
 
+```bash
+mvn test -Dtest=WorkerStealTest        # 按 §三 手写领取唯一性/崩溃重拾/预算原子累加用例后执行
+# 预期输出（节选）：
+#   Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
+#   同一步骤领取 Worker 数 =1；崩溃步骤被其他 Worker 重拾
+#   BUILD SUCCESS
+```
+
+
 **步骤与断言**：
 
 | # | 操作 | 预期（PASS 判据） |
@@ -103,5 +121,30 @@ graph LR
 ### 四.1 本节核对（验收矩阵收口）
 
 > 本节核对（一句话）：验收表四行（无依赖并行/依赖拓扑序/3 Worker 吞吐/崩溃重拾）在 §二.1 步骤 1/3、§三.1 步骤 2/3 各有对应落地断言项，矩阵行无悬空即 PASS。
+
+## 五、全篇回归验证
+
+> 各节断言已上移至 §二.1（DAG 拓扑并行调度）与 §三.1（多 Worker 抢任务）；本表为整篇迭代的回归验收，不重复材料。
+
+| # | 验收项（断言） | 标准 | 复验方式 |
+|---|---------------|------|---------|
+| 1 | 无依赖步骤并行 | `pull`/`validate` 并发计数 =2 | 复验：执行 §二.1 核对命令 |
+| 2 | 依赖链严格拓扑序 | `clean` 晚于 `pull`、`write` 晚于 `clean` | §二.1 步骤2-3 |
+| 3 | 领取唯一性 | 同一就绪步骤只被 1 个 Worker 领取 | 复验：执行 §三.1 核对命令 |
+| 4 | 吞吐提升 | 3 Worker 吞吐接近 3 倍（受依赖约束） | §三.1 步骤2 |
+| 5 | 崩溃幂等重拾 | 崩溃 Worker 的步骤被其他 Worker 重拾 | §三.1 步骤3 |
+| 6 | 预算原子共享 | 多 Worker 累加无漏加/多 | §三.1 步骤4 |
+
+**回归失败排查**：按 §二.1/§三.1 失败排查逐条回溯（parallelism 缺失/markDone 解锁错/RPOPLPUSH 非原子/计数器非原子）。
+
+## 六、验收对照
+
+> 00-需求分析量化验收④（长任务 P95 可回放定位 ≤5s）的编排基础在本迭代奠定（步骤级 DAG 轨迹），①③为迭代自身收口。
+
+| 验收项 | 标准 | 状态 |
+|--------|------|------|
+| 无依赖并行执行 | DAG 中无依赖步骤并发跑 | ✅（§二.1 步骤1） |
+| 依赖按拓扑序 | 依赖链不提前、不乱序 | ✅（§二.1 步骤2-3） |
+| 多 Worker 横向扩展 | 抢任务唯一 + 吞吐提升 + 崩溃重拾 | ✅（§三.1 步骤1-3） |
 
 > **下一步**：任务可编排可并行了，但**多 Worker / 并发下的崩溃与孤儿**更复杂。06 迭代做**断点续跑 + 崩溃闭合**——把并发下的恢复一致性彻底做稳。
