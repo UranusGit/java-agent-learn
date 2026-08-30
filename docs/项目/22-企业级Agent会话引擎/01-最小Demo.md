@@ -88,6 +88,8 @@ public record Token(long id, long ts, String delta) implements AgentEvent {}
 
 ```java
 // 概念代码：单写者会话核
+package com.example.session.core;
+
 public class SessionCore {
     private final BlockingQueue<Op> commands = new ArrayBlockingQueue<>(512); // 有界=反压
     private final Sinks.Many<AgentEvent> events = Sinks.many().unicast().onOverflowBuffer(); // 无界=不丢
@@ -147,6 +149,34 @@ public class SessionCore {
 | 2 | 检查 `SessionHandle` 公开成员 | 仅有 `submit()/events()`，无 setter/公开可变字段（编译期验证封装边界） |
 
 **失败排查**：①sent 超限→队列非有界或 `submit` 写成 drop 语义；②handle 暴露状态→字段 `private final` + record 封装。
+
+### 三.2 运行配置与启动（两段式）
+
+```yaml
+# application.yaml（仅 .env import + 激活 profile）
+spring:
+  config:
+    import: optional:file:.env[.properties]
+  profiles:
+    active: session
+```
+
+```yaml
+# application-session.yaml（端口与模型配置）
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+```
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=session
+```
 
 ## 四、通道语义
 

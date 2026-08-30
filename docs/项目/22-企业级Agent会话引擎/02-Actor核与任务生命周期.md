@@ -28,6 +28,8 @@
 
 ```java
 // 概念代码：任务统一生命周期
+package com.example.session.task;
+
 public interface SessionTask {
     TaskKind kind();                       // DIALOG / COMPACT / REVIEW / SHELL
     Mono<Void> run(TaskContext ctx);
