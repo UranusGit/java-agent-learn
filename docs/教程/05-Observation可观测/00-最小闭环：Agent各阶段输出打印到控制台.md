@@ -350,7 +350,7 @@ spring:
 ```
 
 ```yaml
-# src/main/resources/application-demo01.yaml（完整文件）
+# src/main/resources/application-demo01.yaml（完整文件，与代码仓一致的最简配置）
 server:
   port: 8081
 spring:
@@ -361,14 +361,9 @@ spring:
       chat:
         model: deepseek-v4-flash
         timeout: 600s
-    chat:
-      observations:
-        log-prompt: true        # Prompt 内容进入观测上下文
-        log-completion: true    # 模型回复内容进入观测上下文
-    tools:
-      observations:
-        include-content: true   # 工具参数与结果进入观测上下文
 ```
+
+> **为什么没有 observations 配置键也能看到全部观测内容**：本地 console 观测走的是"自研 Handler 直接读 Context 对象"这条路，内容进 Context 是框架执行的无条件动作（`DefaultToolCallingManager` 字节码实证，见 11 关 §11.6.2 的三层结论）；`spring.ai.*.observations.*` 开关门控的是**内容导出到 span 属性/观测后端**的出口。学习期全关即可；要接 Jaeger/OTel 看正文时再开（全键版见 11 关）。
 
 ## 0.7 Step 4：跑起来，亲眼看
 
@@ -415,7 +410,7 @@ mvn spring-boot:run -Dspring-boot.run.profiles=demo01
 
 - Spring AI 2.0 已埋好五类观测点，你只需注册 Handler 消费；
 - 每类 Context 一个类型化 `ObservationHandler<T>` Bean，收拢在 `ObservationContextHandler`（`@Slf4j` 中文日志）；Actuator 提供 `ObservationRegistry`；
-- 三个配置键控制内容暴露（`log-prompt/log-completion/include-content`），默认全关——生产环境要谨慎打开（脱敏见 04 关）；
+- `spring.ai.*.observations.*` 配置键门控的是内容向 span 属性/后端的**导出出口**，本地 console 观测不依赖它们，学习期全关（要接后端时再开，全键版见 11 关、脱敏见 04 关）；
 - **ChatClient 层观测（`spring.ai.chat.client`，一次请求 1 个）与 ChatModel 层观测（`gen_ai.client.operation`，一次往返 1 个）是外层套内层**——前者管审计与总耗时，后者管 Token 与成本。
 
 **下一关**：这些输出每一行什么意思？`Observation.Context` 是什么？→ [教程 00-基础与核心/01-Spring-AI框架入门]

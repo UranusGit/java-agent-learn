@@ -146,7 +146,7 @@ graph TD
 
 运行：`mvn spring-boot:run -Dspring-boot.run.profiles=demo01`
 
-### 11.6.2 application-demo01.yaml（全键版，逐键对应 11.3 总表）
+### 11.6.2 application-demo01.yaml（最简底座 + 按需注释的内容开关，逐键对应 11.3 总表）
 
 ```yaml
 # src/main/resources/application-demo01.yaml（完整文件；application.yaml 只保留 .env import 与 profiles.active: demo01 两行）
@@ -163,27 +163,44 @@ spring:
       embedding:
         options:
           model: text-embedding-v3   # embedding 观测点需要（RAG 教学规划依赖，按实际可用的 embedding 端填写）
-    chat:
-      observations:
-        log-prompt: true             # ChatModel 层：完整 prompt 入观测
-        log-completion: true         # ChatModel 层：回复入观测
-        include-error-logging: true  # 错误信息入观测（排障期打开）
-    chat.client:
-      observations:
-        log-prompt: true             # ChatClient 层：请求侧内容
-        log-completion: true         # ChatClient 层：响应侧内容
-    tools:
-      observations:
-        include-content: true        # 工具参数+结果入观测
-    vectorstore:
-      observations:
-        log-query-response: true     # 检索命中文档入观测（RAG 排障用）
+    # ↓↓↓ 内容暴露开关：默认全注释（本地观测不需要，见下方实证说明）。
+    #    只有当正文要出现在后端 span 属性 / 框架自带日志时，才按场景解开对应行，生产开前先脱敏（04 关）
+    # chat:
+    #   observations:
+    #     log-prompt: true             # 需要：后端 span 上看完整 prompt / 框架日志打 prompt
+    #     log-completion: true         # 需要：后端 span 上看回复正文 / 框架日志打回复
+    #     include-error-logging: true  # 需要：排障期让错误信息进观测管道
+    # chat.client:
+    #   observations:
+    #     log-prompt: true             # 需要：ChatClient 层 span 上看请求侧内容（注意与 chat 层互相独立）
+    #     log-completion: true         # 需要：ChatClient 层 span 上看响应侧内容
+    # tools:
+    #   observations:
+    #     include-content: true        # 需要：工具参数+结果上后端 span（本地 Handler 不需要，Context 对象里本就有）
+    # vectorstore:
+    #   observations:
+    #     log-query-response: true     # 需要：RAG 排障（09 关框架注册的检索命中文档 Handler 依赖此开关）
 management:
   endpoints:
     web:
       exposure:
         include: health,metrics
 ```
+
+> **这些开关和 11.6.6 的 `ObservationContextHandler` 是什么关系？——常见误解是"不开开关 Handler 就读不到内容"，实证（字节码）恰恰相反**：
+>
+> ```mermaid
+> flowchart LR
+>     A["框架执行路径<br/>（无条件）"] -->|"参数/结果/响应写进<br/>Context 对象"| B["Observation.Context<br/>内存对象"]
+>     B -->|"自定义 Handler 直接读字段<br/>（不需要任何开关）"| C["ObservationContextHandler<br/>（11.6.6）"]
+>     B -->|"开关条件注册的 Filter/Handler<br/>把内容追加为高基数 KeyValues"| D["span 属性导出<br/>Jaeger/OTel/框架日志"]
+> ```
+>
+> 三层实证结论（`DefaultToolCallingManager` / `ToolCallingAutoConfiguration` / `ChatObservationAutoConfiguration` 字节码核对）：
+>
+> 1. **内容进 Context 对象是无条件的**：`DefaultToolCallingManager` 无分支地 `toolCallArguments(...)` + `setToolCallResult(...)`——所以自研 Handler **不开任何开关**也能 `getToolCallArguments()/getToolCallResult()` 打出参数与结果；
+> 2. **开关真正门控的是"内容出口"**：`include-content`/`log-completion` 等按 `@ConditionalOnProperty` 条件注册 `ToolCallingContentObservationFilter`、`ChatModelCompletionObservationHandler` 等框架组件，作用是把 Context 里的内容**追加为高基数 KeyValues**（即 span 属性）导出到观测后端，或用框架自带日志打正文（开启时会警告 sensitive information 风险）；
+> 3. **结论**：只在本地看 → 开关全关 + 自研 Handler 就够；要把正文带上后端（Zipkin/OTel span 属性）→ 才需要开对应开关，且生产开前先做 04 关的脱敏。
 
 ### 11.6.3 主类与观测配置
 
