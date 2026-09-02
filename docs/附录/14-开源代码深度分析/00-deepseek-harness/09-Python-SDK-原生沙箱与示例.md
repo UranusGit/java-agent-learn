@@ -256,3 +256,18 @@ flowchart LR
 本文拆解了 DeepSeek Harness 的 Python 面与原生面：**Python SDK** 以子进程 + stdio JSON-RPC 驱动运行时，`Session.run()` 定义了从 inbox 收据到整 agent 空闲的「运行区间」语义，子代理血缘通过父链回溯精确归位；**sdk-runtime** 是携带 exe 与默认配置的载体包，坚持显式配置、fail-closed；**landlock-run** 用约 300 行 C11 实现 Linux 内核级 allow-list 沙箱，ABI 协商、`--probe` 真强制、退出码 125 分类都是可复用的工程细节；**示例工程**展示了从 Python 无人值守到 ACP 服务器、headless 单次运行、MCP 记忆热拼的完整组合图谱。
 
 > **定位回顾**：本文是系列的「语言/原生边界」篇。下一站 [10-工程化体系与研发效能]，看这套庞大 monorepo 如何用脚本、门禁、生成器与测试矩阵守住质量。
+
+## 适用场景与选型建议
+
+**适用场景**：
+- 跨语言驱动同一 Agent 引擎（Python 子进程 + stdio 换行分隔 JSON-RPC，协议由 `dsh-sdk-protocol` 钉死、双 SDK 孪生）；
+- 引擎与调用方要进程隔离（Python 侧崩溃不影响引擎，引擎升级不重编客户端）；
+- Linux 生产环境要内核级沙箱（landlock-run 约 300 行 C11，allow-list、fail-closed、`--probe` 真强制探测）；
+- 要「骨架 + 叶子」的组合范例（agent-spine-demo 只给脊柱、叶子决定口味）。
+
+**不适用场景**：
+- 纯 Java 单进程内嵌（应直接用 Spring AI，无需进程间协议）；
+- 低延迟紧耦合调用（stdio JSON-RPC 有序列化与进程切换开销）；
+- 非 Linux 平台指望 Landlock（macOS 走 Seatbelt、Windows 走 windows-acl 且只限写）。
+
+**Spring AI Java 项目应优先抄哪一条**：优先抄「运行区间定义」——自动化调用方的活动区间是「从 durable inbox 收据到整 agent 空闲」，而非某条消息的因果完成，这一条直接消灭异步竞态；其次是「真强制探测」：能力探测用真执行（`--probe` 真 restrict）而非版本号判断，防「有 syscall 但拒绝强制」的内核漏网。

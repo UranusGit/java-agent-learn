@@ -302,3 +302,18 @@ Typert 是本框架的「跨进程类型系统」——把 TS 源码分析成编
 本文覆盖了模型接入到支撑体系的完整链路：`ctx.llm` 适配器缝用「单一必写 `stream()` + 共享 `BlockAssembler`」统一了多 Provider；`llm-deepseek` 演示了 OpenAI 兼容直连的完整工程细节（错误分类、SSE 语义、思考模式、凭据每请求解析）；`llm-retry` 把重试做成持久化边界；`token-meter` 用回放感知 + 启发式提供压力定价；`settings` 的三层解析与 path-op 脱敏写、`agent-presets` 的 standing mount、`typert` 的类型系统四件套、`util` 的七件工具箱，共同构成了生产级 Agent 框架的「模型与配置地基」。
 
 > **定位回顾**：本文是系列的「模型与类型系统」篇。下一站 [05-安全·沙箱·权限与凭证]，看这套框架如何把沙箱、审批、凭证与防御模式落到实处。
+
+## 适用场景与选型建议
+
+**适用场景**：
+- 要接多个模型 Provider 且「接新模型 = 配置而非改代码」（`LlmAdapter.stream()` 唯一必写 + 共享 `BlockAssembler`）；
+- 重试必须跨崩溃存活（`llm-retry` 挂 `agent/request-error`，计数基于会话日志）；
+- 密钥/配置频繁变化（凭据每请求解析 + settings 三层解析热发布）；
+- 无 provider usage 也要 Token 压力判定（token-meter 启发式回放计量）。
+
+**不适用场景**：
+- 单一固定模型、无多 Provider 诉求（适配器缝 + chunk 协议是净成本）；
+- 接受「发过 chunk 也整体重试」的语义（本设计坚持「未发任何 chunk 才是持久重试边界」，放宽即破坏可重放）；
+- 无构建流水线可挂生成器（Typert 四件套依赖生成器闭环才有编译期保障）。
+
+**Spring AI Java 项目应优先抄哪一条**：优先抄「持久化重试边界」——重试只挂在「请求未产出任何流」处、计数落库而非内存，进程重启语义不归零；其次是「path-op 脱敏写」，给看过脱敏视图的调用方一个 `{op,path}` 级写通道，杜绝整体 replace 静默删 secret。

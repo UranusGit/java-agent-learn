@@ -397,3 +397,18 @@ stateDiagram-v2
 核心引擎 = **事件溯源会话日志（session）+ 可替换的组装/执行管线（system-prompt/tools）+ 可替换的 Agent 驱动（agent/agent-loop）+ per-agent 作用域原语（scope）**，全部挂在 Cordis ctx 服务上，以 `agent/*`、`tools/*`、`system-prompt/*` 事件为扩展点，用「Model-visible means logged」铁律把可重建性做进运行时不变式。下一站 [03-会话·上下文·记忆与持久化]，看日志如何被持久化、压缩、投影、遥测。
 
 > **定位回顾**：本文是系列的「引擎」篇。读完你应能回答：一次用户输入如何变成一个 turn、一个 step 如何驱动模型与工具、per-agent 的能力世界如何被 scope 划界。
+
+## 适用场景与选型建议
+
+**适用场景**：
+- 会话需要「可重放、可审计、崩溃可恢复」（事件溯源 + `deriveMessages()` + invariants 运行时守护）；
+- 工具执行需要审批/沙箱/超时策略外置，且否决不可被翻回（pre/guards/execute/post 三段 + 单调守卫）；
+- 每个 Agent 需要独立的能力世界（scope + shadowing + restriction）；
+- 需要 fork 会话，或区分「模型看到的」与「用户看过的」（surface 层 append/replace）。
+
+**不适用场景**：
+- 单轮问答、无持久化诉求（`SessionEvent` 追加日志是仪式成本）；
+- 工具数量少且策略固定（四段管线的一层间接是净负担）；
+- 团队无力维护运行时不变式（invariants 失守后「日志即真相」只剩口号）。
+
+**Spring AI Java 项目应优先抄哪一条**：优先抄「Model-visible means logged」——用 `session_event` 追加表做唯一写入口，模型历史从日志投影重建；其次是工具执行的三阶段 waterfall（对应 Advisor 链），把审批与审计从工具实现里剥出来，做到「治理不污染执行」。

@@ -216,3 +216,18 @@ sequenceDiagram
 本文覆盖了接入面的全部组件：**apiproxy** 以传输无关的四象限消息服务所有客户端，**webserver** 提供纯 node:http 载体，**connection** 实现双流 RPC + trust 围栏 + 断线重连，**client modules + HMR** 支撑浏览器端插件热替换，**Typert gateway** 让类型系统驱动跨进程调用，**ACP/SDK** 提供标准协议接入，**动态 Cordis 运行器**让模型能现场定义插件。核心架构是「传输无关网关 + 多种物理载体 + 类型系统锁契约」的组合。
 
 > **定位回顾**：本文是系列的「接入面」篇。下一站 [10-工程化体系与研发效能]，看这套庞大 monorepo 如何守质量。
+
+## 适用场景与选型建议
+
+**适用场景**：
+- 一种引擎能力要同时服务浏览器/CLI/SDK/ACP 多种接入形态（传输无关网关 + 多种物理载体）；
+- 前端要实时事件流（downlink-only WebSocket + unary POST 上行，避免双向长连接的状态同步）；
+- 断线重连不能丢 pending 审批/问题（mux 打开推基线 + rpcId 原样复用）；
+- 配置组合要求「dump = 实际 boot」（同一 `applyEntryPatches` 实现，不漂移）。
+
+**不适用场景**：
+- 纯后端、无 UI 接入（契约层零 Node 依赖的抽象没有收益）；
+- 事件量小到一条双向 WebSocket 就够（downlink-only 的约束反而添麻烦）；
+- 单体单进程、无跨进程 RPC（Typert 生成器 + 构建集成的成本无从摊销）。
+
+**Spring AI Java 项目应优先抄哪一条**：优先抄「事件下行、unary 上行」——WebFlux SSE 下行 + REST 上行正好对应，「业务错误永远 200 + ServerResponse」避免传输层误判；其次是「冷会话从日志解析恢复、不信 header」（`storedPreset` 从日志来），与「日志即真相」一脉相承。
