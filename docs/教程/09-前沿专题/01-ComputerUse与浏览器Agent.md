@@ -1,5 +1,5 @@
 # 01 Computer Use 与浏览器 Agent
-> **定位**：本文讲 Computer Use（让模型操作真实计算机：屏幕截图→视觉理解→鼠标键盘动作）与浏览器 Agent（Browser Use：操作真实浏览器完成导航、表单、抓取）两类"具身化"Agent 的工程实现。读者画像：已完成阶段 5~7 学习、掌握工具调用与 MCP 协议的进阶开发者。前置阅读：[教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/01-MCP协议]、[教程 04-企业级架构主干/11-安全与权限控制]。想深入前沿视角，看 [前沿 07-ComputerUse与AgenticBrowser]、[前沿 08-Agent技能包Skills]。
+> **定位**：本文讲 Computer Use（让模型操作真实计算机：屏幕截图→视觉理解→鼠标键盘动作）与浏览器 Agent（Browser Use：操作真实浏览器完成导航、表单、抓取）两类"具身化"Agent 的工程实现。读者画像：已完成阶段 5~7 学习、掌握工具调用与 MCP 协议的进阶开发者。前置阅读：[教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/07-MCP协议]、[教程 04-企业级架构主干/11-安全与权限控制]。想深入前沿视角，看 [前沿 07-ComputerUse与AgenticBrowser]、[前沿 08-Agent技能包Skills]。
 
 ---
 
@@ -8,7 +8,7 @@
 Computer Use 不是新概念——2024 年 10 月 Anthropic 发布 Claude Computer Use 能力后，OpenAI 的 Operator、Google 的 Project Mariner 相继跟进。到 2026 年，它从"技术演示"进化为"生产系统"：
 
 - **RPA 的替代者**：传统 RPA（UiPath/影刀）靠选择器与坐标脚本，页面一改就崩；Computer Use 靠视觉理解，天然抗 UI 变更。企业里大量"最后一公里"的流程自动化（老系统无 API、内部审批页、跨系统搬运数据）只能靠它
-- **Agentic Browser 的标准化**：Playwright MCP、Browser Use 等开源方案把浏览器操作封装为标准工具，Agent 通过 MCP 调用——这正是你在 [教程 02-SpringAI核心机制/01-MCP协议] 学过的协议在"操作浏览器"场景的落地
+- **Agentic Browser 的标准化**：Playwright MCP、Browser Use 等开源方案把浏览器操作封装为标准工具，Agent 通过 MCP 调用——这正是你在 [教程 02-SpringAI核心机制/07-MCP协议] 学过的协议在"操作浏览器"场景的落地
 - **架构师视角**：Computer Use 把 Agent 的攻击面从"API 调用"扩展到"整个桌面/浏览器"，安全、沙箱、审计的设计复杂度上一个数量级（呼应 [教程 04-企业级架构主干/11-安全与权限控制]）
 
 **一句话**：工具调用让 Agent 能"说话"，Computer Use 让 Agent 能"动手"。动手能力是 2026 年 Agent 商业化的最大增量。
@@ -80,7 +80,7 @@ flowchart TB
     style mcp fill:#dff,color:#036
 ```
 
-「遇到阻塞？→ [教程 02-SpringAI核心机制/01-MCP协议 §客户端集成]」
+「遇到阻塞？→ [教程 02-SpringAI核心机制/07-MCP协议 §客户端集成]」
 
 ### 3.2 接入 Playwright MCP（真实坐标）
 
@@ -143,7 +143,7 @@ public class BrowserTaskService {
 
 ### 3.3 流式反馈循环
 
-长任务（如"在 10 个页面提取数据"）必须流式推送每步动作，让用户看到 Agent 在干什么（呼应 [教程 02-SpringAI核心机制/00-SSE流式通信]、[教程 03-React前端与AgenticUI/04-流式工具调用与事件协议]）：
+长任务（如"在 10 个页面提取数据"）必须流式推送每步动作，让用户看到 Agent 在干什么（呼应 [教程 02-SpringAI核心机制/06-SSE流式通信]、[教程 03-React前端与AgenticUI/04-流式工具调用与事件协议]）：
 
 ```java
 // Spring AI 2.0.0

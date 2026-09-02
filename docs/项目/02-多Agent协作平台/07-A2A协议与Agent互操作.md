@@ -6,7 +6,7 @@
 
 > **前置阅读**：[04-任务委派与路由](04-任务委派与路由.md)（DelegationTool 与路由评分）、[06-DAG工作流编排深化](06-DAG工作流编排深化.md)（节点状态机与事件流）。
 
-> **关联锚点**：[前沿 00-A2A协议](../../前沿/00-A2A协议.md)（协议调研与规范细节）、[教程 02-SpringAI核心机制/01-MCP协议](../../教程/02-SpringAI核心机制/01-MCP协议.md)、[教程 04-企业级架构主干/11-安全与权限控制](../../教程/04-企业级架构主干/11-安全与权限控制.md)、[附录 08-Agent安全深度](../../附录/08-Agent安全深度/)。
+> **关联锚点**：[前沿 00-A2A协议](../../前沿/00-A2A协议.md)（协议调研与规范细节）、[教程 02-SpringAI核心机制/07-MCP协议](../../教程/02-SpringAI核心机制/07-MCP协议.md)、[教程 04-企业级架构主干/11-安全与权限控制](../../教程/04-企业级架构主干/11-安全与权限控制.md)、[附录 08-Agent安全深度](../../附录/08-Agent安全深度/)。
 
 > **API 真实性**：Spring AI 2.0 **无官方 A2A SDK**——本篇 A2A 协议适配层（AgentCard / A2aClient / 报文形状）为**自研概念代码**，字段以 [前沿 00-A2A协议] 调研的规范草案为准；Spring 侧 API（`WebClient`、`ServerSentEvent`、`ReactiveRedisTemplate`、`JdbcClient`、`@Scheduled`）均为真实 API，与既有迭代一致。
 
@@ -1048,9 +1048,9 @@ psql -c "SELECT remote_agent, capability, decision FROM a2a_call_audit ORDER BY 
 | 契约单位 | `tools[]`（name + schema） | Agent Card（skills + capabilities + 端点） |
 | 交互形态 | 单次调用返回 | 任务生命周期（多轮、流式、长时运行） |
 | 对端内部 | 必须暴露实现语义（schema 即接口） | 黑箱（Prompt / 记忆 / 内部状态不外泄） |
-| 本项目落点 | 平台内 Agent 挂工具（[教程 02-SpringAI核心机制/01-MCP协议]） | 跨组织接入远端 Agent（本篇） |
+| 本项目落点 | 平台内 Agent 挂工具（[教程 02-SpringAI核心机制/07-MCP协议]） | 跨组织接入远端 Agent（本篇） |
 
-> 「遇到阻塞？→ [教程 02-SpringAI核心机制/01-MCP协议 §1]」——MCP 的三层架构（Host/Client/Server）与工具桥接机制。
+> 「遇到阻塞？→ [教程 02-SpringAI核心机制/07-MCP协议 §1]」——MCP 的三层架构（Host/Client/Server）与工具桥接机制。
 
 ### 7.2 组合矩阵：什么时候用哪座桥
 

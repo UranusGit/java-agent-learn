@@ -1,10 +1,10 @@
 # 05 MCP 服务端开发与治理
 
-> **定位**：本文是对 [教程 02-SpringAI核心机制/01-MCP协议] 的**服务端侧扩展**。教程 01 的主线是"协议是什么 + 客户端怎么消费"，服务端只讲到入门三件套（starter + 配置 + `ToolCallbackProvider` Bean）；本文把服务端这一半补成全景：三种能力原语（Tools/Resources/Prompts）的边界与选型、Spring AI 2.0 服务端的三条暴露路径（`@Tool` 自动聚合 / `@McpTool` 注解 / 编程式 API）、传输层选型（STDIO vs SSE vs Streamable HTTP，配置键全部经本地 jar 实证）、生产级治理四件套（命名空间与版本化、准入、鉴权、观测），以及多 MCP Server 的网关化统一接入面。读完本文，你能独立设计一个企业级 MCP 工具中台的服务端侧。
+> **定位**：本文是对 [教程 02-SpringAI核心机制/07-MCP协议] 的**服务端侧扩展**。教程 01 的主线是"协议是什么 + 客户端怎么消费"，服务端只讲到入门三件套（starter + 配置 + `ToolCallbackProvider` Bean）；本文把服务端这一半补成全景：三种能力原语（Tools/Resources/Prompts）的边界与选型、Spring AI 2.0 服务端的三条暴露路径（`@Tool` 自动聚合 / `@McpTool` 注解 / 编程式 API）、传输层选型（STDIO vs SSE vs Streamable HTTP，配置键全部经本地 jar 实证）、生产级治理四件套（命名空间与版本化、准入、鉴权、观测），以及多 MCP Server 的网关化统一接入面。读完本文，你能独立设计一个企业级 MCP 工具中台的服务端侧。
 >
 > **读者画像**：要把企业内部能力（订单、工单、风控、检索……）以标准协议暴露给任意 Agent 消费的中高级 Java 工程师与架构师；正在搭建工具中台/网关、需要回答"工具怎么管、怎么鉴权、怎么审计"的技术负责人。
 >
-> **前置阅读**：[教程 02-SpringAI核心机制/01-MCP协议]（协议架构与客户端消费）、[教程 00-基础与核心/03-工具调用]（`@Tool` 基础）。
+> **前置阅读**：[教程 02-SpringAI核心机制/07-MCP协议]（协议架构与客户端消费）、[教程 00-基础与核心/03-工具调用]（`@Tool` 基础）。
 >
 > **API 真实性基准**：本文所有 SDK 元素均经本地 Maven 仓库 jar `javap` 实证（Spring AI 2.0.0 / MCP SDK mcp-core 2.0.0）。核心实证结论：**服务端 starter 本地真实存在**——`spring-ai-starter-mcp-server`（STDIO 场景，仅依赖 `spring-boot-starter` 无 web 容器）与 `spring-ai-starter-mcp-server-webflux`（HTTP 场景，依赖 `spring-boot-starter-webflux` + `mcp-spring-webflux` + `spring-ai-mcp-annotations`）；服务端工厂与类型是 MCP SDK 的 `io.modelcontextprotocol.server.McpServer` / `McpSyncServer` / `McpAsyncServer`；`@McpTool`/`@McpToolParam` 注解在 `spring-ai-mcp-annotations-2.0.0.jar` 真实存在。本地 jar 中**不存在** `spring-ai-starter-mcp-server-webmvc` 构件。全文对照 [附录 05-SpringAI2-API基准/01-MCP真实API与坐标]。
 
@@ -672,7 +672,7 @@ flowchart TB
 
 ## 7. 总结
 
-本文把 [教程 02-SpringAI核心机制/01-MCP协议] 的服务端侧补成全景，核心结论按"实证—开发—传输—治理—网关"五层收拢：
+本文把 [教程 02-SpringAI核心机制/07-MCP协议] 的服务端侧补成全景，核心结论按"实证—开发—传输—治理—网关"五层收拢：
 
 1. **实证基线**：服务端 starter 本地真实存在（`spring-ai-starter-mcp-server` 走 STDIO、`spring-ai-starter-mcp-server-webflux` 走 HTTP 且自带 `@McpTool` 注解支持）；本地**无** `server-webmvc` 构件；`@McpTool/@McpToolParam` 属性、`McpSyncServer` 方法面、全部服务端配置键均经 javap/元数据实证；mcp-core 2.0.0 无内建观测埋点。
 2. **开发三条路**：`@Tool` + `ToolCallbackProvider`（自动聚合，一套实现进程内+协议双消费，SDK 层防工具回环）；`@McpTool` 注解（协议面专用，天然与进程内工具池隔离）；编程式 Specification Bean 与 `addTool/removeTool/notifyToolsListChanged` 动态治理。

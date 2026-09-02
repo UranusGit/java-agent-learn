@@ -228,7 +228,7 @@ public class CustomerServiceOrchestrator {
 | 策略 | 做法 | 适用 |
 |------|------|------|
 | **主意图优先** | Router 只输出一个主意图，处理完后把剩余意图作为追问交给用户确认 | 意图之间有主次依赖 |
-| **多标签拆分** | Router 用结构化输出返回 `List<部门>`（见 [教程 02-SpringAI核心机制/03-结构化输出]），Orchestrator 按顺序/并行逐个处理，最后汇总 | 意图彼此独立 |
+| **多标签拆分** | Router 用结构化输出返回 `List<部门>`（见 [教程 02-SpringAI核心机制/04-结构化输出]），Orchestrator 按顺序/并行逐个处理，最后汇总 | 意图彼此独立 |
 | **升级为多步编排** | Router 输出意图序列，交给 Plan-and-Execute 循环执行 | 意图之间有依赖顺序 |
 
 ```mermaid
@@ -1370,7 +1370,7 @@ public class TravelOrchestrator {
 | **安全边界** | 消息标界防间接注入、Agent 信任分级、工具权限构建期定死 |
 | **管控分离** | 管理面（策略/监控/注册）与数据面（Agent执行）分离 |
 
-**下一篇**：[10-SSE 流式通信](../02-SpringAI核心机制/00-SSE流式通信.md) — WebFlux + ChatClient.stream() 的流式响应实现。
+**下一篇**：[10-SSE 流式通信](../02-SpringAI核心机制/06-SSE流式通信.md) — WebFlux + ChatClient.stream() 的流式响应实现。
 
 ---
 

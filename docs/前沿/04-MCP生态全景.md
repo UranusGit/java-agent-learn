@@ -1,6 +1,6 @@
 # 04-MCP 生态全景：工具市场的兴起与治理
 
-> **定位**：本文调研 MCP（Model Context Protocol）生态的演进全景——从 MCP Server 注册中心到服务发现，从企业工具市场到治理框架。MCP 在 [教程 01-WebFlux与响应式编程/01-Reactor核心 协议](../教程/02-SpringAI核心机制/01-MCP协议.md) 中已有基础讲解，本文聚焦生态层面：MCP 如何从"协议"演化为"生态"，以及这个生态对 Java/Spring AI Agent 架构的影响。
+> **定位**：本文调研 MCP（Model Context Protocol）生态的演进全景——从 MCP Server 注册中心到服务发现，从企业工具市场到治理框架。MCP 在 [教程 01-WebFlux与响应式编程/01-Reactor核心 协议](../教程/02-SpringAI核心机制/07-MCP协议.md) 中已有基础讲解，本文聚焦生态层面：MCP 如何从"协议"演化为"生态"，以及这个生态对 Java/Spring AI Agent 架构的影响。
 >
 > **性质声明**：本文为调研性质，MCP 生态处于快速扩张期，具体注册中心和工具市场信息更新频繁。
 
@@ -10,7 +10,7 @@
 
 ### 1.1 MCP 协议回顾
 
-[教程 01-WebFlux与响应式编程/01-Reactor核心 协议](../教程/02-SpringAI核心机制/01-MCP协议.md) 中我们介绍了 MCP 的核心技术细节——它标准化了 AI Agent 与外部工具/数据源的连接方式。这里做一个简要回顾：
+[教程 01-WebFlux与响应式编程/01-Reactor核心 协议](../教程/02-SpringAI核心机制/07-MCP协议.md) 中我们介绍了 MCP 的核心技术细节——它标准化了 AI Agent 与外部工具/数据源的连接方式。这里做一个简要回顾：
 
 ```mermaid
 graph LR

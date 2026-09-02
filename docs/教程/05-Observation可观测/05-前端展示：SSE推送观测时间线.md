@@ -2,7 +2,7 @@
 
 > **定位**：你要的第三层——**展示到前端**。这一关把 03 关的事件收集升级为**实时推送**：`AgentEventCollector` 写入时同步发到 Sinks（进程内广播），新增 SSE 端点 `/demo01/observe/stream`，前端（React）订阅后渲染成"Agent 执行时间线"。工业价值：运维大屏上，工程师实时看到巡检 Agent 正在查哪台设备、等哪个 LLM 响应。
 >
-> **前置阅读**：[教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/00-SSE流式通信]、[教程 03-React前端与AgenticUI/02-React与SSE流式UI]。
+> **前置阅读**：[教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/06-SSE流式通信]、[教程 03-React前端与AgenticUI/02-React与SSE流式UI]。
 
 ---
 

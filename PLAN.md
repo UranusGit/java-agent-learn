@@ -1433,3 +1433,23 @@ docs 总计 386 篇（项目 248）；README/checkpoint 同步。
 **产出**：①新增 `03-三大Harness综合对比/08-设计哲学深度解析.md`（三家第一性原理"产品形态决定哲学"推导 + 40+ 子系统逐项"为什么/好处/代价/何时不学"六域大表 + 哲学张力地图（一致性vs可用性/抽象vs速度/安全vs体验）+ 八条元原则）；②四文件夹 38 篇全部内嵌哲学/场景小节——deepseek 11 篇补「适用场景与选型建议」（00/11 原有三要素齐全免补）、codex 5 篇补「设计哲学与适用边界」（四问结构）、claude-code 11 篇补「设计哲学小结与适用场景」、综合对比 8 篇补「设计哲学要点与场景推荐（本篇内嵌）」。覆盖统计：四目录 38/38 篇。
 
 **终验**：check-mermaid-audit.py 全目录 0 发现；追加均为纯文末节（0 删改原文）；claude-code 与综合对比追加节已统一标题格式。
+
+## 2026-09-03 第十批：教程 02-SpringAI核心机制 官网教程企业级全量补充 + 文件夹重排（用户指令）
+
+**指令**：学习 Spring AI 2.0 官网全部教程，补充到 教程/02-SpringAI核心机制（企业级样例、从零一行不省略）；已有文档可大改（内容/文件名/顺序）；记忆管理要覆盖数据库持久化工业级方案。
+
+### 执行结果（2026-09-03 收口）
+
+- **新增 7 篇**（均 javap+sources 双重实证、代码零省略完整 import、Mermaid 校验 0 发现、正文字数达标）：
+  - 00-ChatClient企业级全量样例（71,764 字符/4 图；含官网 vs 本地 jar 3 处签名漂移表）
+  - 05-工具调用进阶与ToolCallingManager（54,558/3 图；实证裁定：2.0.0 工具循环拥有者是 ToolCallingAdvisor 而非 ChatModel）
+  - 09-模块化RAG与RetrievalAugmentationAdvisor（55,027/4 图）
+  - 10-Embeddings与向量数据库全量样例（40,027/3 图；裁定：Filter 无 isLike/between、initialize-schema 非配置键）
+  - 11-评估测试Evaluation（38,003/2 图；评估器默认提示词源码摘译）
+  - 12-多模态与媒体能力（40,024/3 图；裁定：TTS stream() 为伪流式、图像默认模型 gpt-image-1-mini）
+  - 03-ChatMemory持久化与工业级记忆存储（45,103/2 图；自研 PgChatMemoryRepository+Redis 两级、窗口默认 20 字节码实锤、@ConditionalOnMissingBean 替换缝）
+- **文件夹重排 6→13 篇**（学习顺序：Client→Advisor→状态→记忆持久化→结构化→工具→SSE→MCP→MCP服务端→RAG→向量库→评估→多模态），git mv 保留历史
+- **全体系交叉引用改写**：132 个文件脚本化改写（带前缀引用+文件夹内裸引用+旧编号残留标签），修正 w-rag 错置引用（12-语音属 09-前沿专题）；残留 0、死链 0
+- **旧六篇 API 审计**（子代理逐元素 javap）：仅 03-结构化输出 2 处编译级错误（ChatClient.options(B) 只收 Builder）已修复并标注「2.0.0 实证修正」，其余 5 篇零错误
+- **docs/README.md**：02 夹表格重建为 13 篇新序、目录注释更新
+- 终验：check-mermaid-audit 全夹 0 发现；全 docs Markdown 相对链接 0 死链

@@ -2,7 +2,7 @@
 
 > **定位**：Agent 一旦上 RAG（工业场景：设备手册、维修知识库），"检索得好不好"直接决定回答质量——而检索是黑盒重灾区。这一关观测两条链路：**Advisor 链**（RAG 就是通过 Advisor 注入的）与**向量检索**（TopK、命中文档数、相似度阈值、耗时）。javap 实证载体：`AdvisorObservationContext`（`getAdvisorName/getOrder/getChatClientRequest`）与 `VectorStoreObservationContext`（`getQueryRequest/getQueryResponse/getDimensions/getSimilarityMetric`）。
 >
-> **前置阅读**：[教程 00-基础与核心/05-RAG检索增强生成]、[教程 02-SpringAI核心机制/04-Advisor链与拦截器]、[教程 00-基础与核心/02-ChatClient与对话模型]。
+> **前置阅读**：[教程 00-基础与核心/05-RAG检索增强生成]、[教程 02-SpringAI核心机制/01-Advisor链与拦截器]、[教程 00-基础与核心/02-ChatClient与对话模型]。
 
 ---
 
@@ -299,4 +299,4 @@ timeline
 - 内置 QueryResponse Handler 会把文档正文放高基数标签，生产用自建 Handler 只取聚合值；
 - RAG 排障先看时间线再怀疑模型——观测切开"检索问题"与"模型问题"。
 
-**下一关**：观测代码自己怎么测？trace 怎么跨服务传？→ [教程 02-SpringAI核心机制/00-SSE流式通信]
+**下一关**：观测代码自己怎么测？trace 怎么跨服务传？→ [教程 02-SpringAI核心机制/06-SSE流式通信]

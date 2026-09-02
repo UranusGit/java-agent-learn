@@ -142,7 +142,7 @@ auditFlux.subscribe(rec ->
 
 ```mermaid
 graph TB
-    subgraph CP["控制面（呼应教程 02-SpringAI核心机制/01-MCP协议]
+    subgraph CP["控制面（呼应教程 02-SpringAI核心机制/07-MCP协议]
         POL["策略/配额/租户配置"]
         REG["工具与模型注册表（CDC 分发）"]
     end

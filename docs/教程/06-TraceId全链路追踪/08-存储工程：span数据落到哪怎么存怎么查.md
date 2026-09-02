@@ -236,7 +236,7 @@ curl -s "http://localhost:8080/trace-api/$TID" | python3 -m json.tool | head -20
 
 适用场景：任何 span 要出 demo 的系统；多服务+多团队（Collector 脱敏统一执行点）；有"按租户查链路"运营需求的 SaaS（低基数租户列是钥匙）。
 
-不适用场景：单体+单人（Zipkin 内存都嫌重，日志 grep 足够）；合规禁止 span 含 prompt 内容的行业——先上脱敏管道再谈存储（`spring.ai.chat.observations.log-prompt` 保持关闭，[教程 02-SpringAI核心机制/01-MCP协议]）。
+不适用场景：单体+单人（Zipkin 内存都嫌重，日志 grep 足够）；合规禁止 span 含 prompt 内容的行业——先上脱敏管道再谈存储（`spring.ai.chat.observations.log-prompt` 保持关闭，[教程 02-SpringAI核心机制/07-MCP协议]）。
 
 ## 8.7 常见误区
 

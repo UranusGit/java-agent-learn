@@ -4,7 +4,7 @@
 >
 > **读者画像**：已了解 RAG 概念，需要动手搭建第一个 Spring AI RAG 应用的开发者。
 >
-> **前置阅读**：[00-需求分析与架构设计](00-需求分析与架构设计.md)、[教程 00-基础与核心/05-RAG检索增强生成 检索增强生成](../../教程/00-基础与核心/05-RAG检索增强生成.md)、[教程 02-SpringAI核心机制/03-结构化输出](../../教程/02-SpringAI核心机制/03-结构化输出.md)。API 真实性以 [附录 05-SpringAI2-API基准](../../附录/05-SpringAI2-API基准/00-Advisor与ChatMemory.md) 为准。
+> **前置阅读**：[00-需求分析与架构设计](00-需求分析与架构设计.md)、[教程 00-基础与核心/05-RAG检索增强生成 检索增强生成](../../教程/00-基础与核心/05-RAG检索增强生成.md)、[教程 02-SpringAI核心机制/04-结构化输出](../../教程/02-SpringAI核心机制/04-结构化输出.md)。API 真实性以 [附录 05-SpringAI2-API基准](../../附录/05-SpringAI2-API基准/00-Advisor与ChatMemory.md) 为准。
 
 ---
 
@@ -783,7 +783,7 @@ public record DocumentStatusResponse(
 
 Java 21 的 record 天然不可变、自带 equals/hashCode/toString、构造器简洁。在 RAG 场景中，问答响应是一次性数据对象，不需要可变性——record 是最合适的选择。
 
-> **结构化输出深入** → [教程 02-SpringAI核心机制/03-结构化输出](../../教程/02-SpringAI核心机制/03-结构化输出.md)：教程详细讲解了 Spring AI 2.0 的 `entity()` 方法、BeanOutputConverter 底层原理、JSON Schema 自动生成机制，以及如何通过结构化输出让 LLM 返回精确的 Java 对象。
+> **结构化输出深入** → [教程 02-SpringAI核心机制/04-结构化输出](../../教程/02-SpringAI核心机制/04-结构化输出.md)：教程详细讲解了 Spring AI 2.0 的 `entity()` 方法、BeanOutputConverter 底层原理、JSON Schema 自动生成机制，以及如何通过结构化输出让 LLM 返回精确的 Java 对象。
 
 ### 5.2 问答服务 `QaService.java`
 

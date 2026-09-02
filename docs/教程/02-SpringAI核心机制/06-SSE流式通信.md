@@ -325,7 +325,7 @@ sequenceDiagram
 
 ```java
 // Spring AI 2.0.0 — 概念代码：内容流与工具状态流多路复用
-// 状态事件的产生方式（自定义 StreamAdvisor / 工具回调侧发信号）见教程 02-SpringAI核心机制/00-SSE流式通信，
+// 状态事件的产生方式（自定义 StreamAdvisor / 工具回调侧发信号）见教程 02-SpringAI核心机制/06-SSE流式通信，
 // 真实 API 见附录 05-SpringAI2-API基准
 Flux<ServerSentEvent<String>> textStream = chatClient.prompt()
         .user(message)
@@ -1124,7 +1124,7 @@ public Flux<ServerSentEvent<String>> guardedStream(String userId, String message
 | **优雅停机** | 摘流量 → drain 存量流 → 收尾事件 + 部分结果落盘 → 释放资源 |
 | **vs WebSocket** | SSE 适合单向推送（LLM 输出），WebSocket 适合双向频繁通信 |
 
-**下一篇**：[20-MCP协议](01-MCP协议.md) — 用标准化协议把工具生态接入 Agent。
+**下一篇**：[07-MCP协议](07-MCP协议.md) — 用标准化协议把工具生态接入 Agent。
 
 ---
 

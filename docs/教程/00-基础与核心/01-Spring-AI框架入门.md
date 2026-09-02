@@ -333,7 +333,7 @@ ChatClient client = ChatClient.builder(chatModel)
 > </dependency>
 > ```
 
-> **遇到阻塞？→ [教程 02-SpringAI核心机制/04-Advisor链与拦截器]**：Advisor API 深入、自定义 Advisor、执行顺序。
+> **遇到阻塞？→ [教程 02-SpringAI核心机制/01-Advisor链与拦截器]**：Advisor API 深入、自定义 Advisor、执行顺序。
 
 ### 3.4 可观测性：开箱即用
 

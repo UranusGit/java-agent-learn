@@ -73,7 +73,7 @@ spring:
         transport: streamable-http
 ```
 
-> **MCP 服务端详解** → [教程 02-SpringAI核心机制/01-MCP协议](../../教程/02-SpringAI核心机制/01-MCP协议.md) 第 4 节讲解了 `spring-ai-starter-mcp-server` 的配置方式，以及外部 MCP 客户端如何连接和发现工具。
+> **MCP 服务端详解** → [教程 02-SpringAI核心机制/07-MCP协议](../../教程/02-SpringAI核心机制/07-MCP协议.md) 第 4 节讲解了 `spring-ai-starter-mcp-server` 的配置方式，以及外部 MCP 客户端如何连接和发现工具。
 > ⚠ 修正（审计 2026-08-14）: `@Tool` **不会**自动注册为 MCP 工具——必须显式声明 `ToolCallbackProvider` Bean（`MethodToolCallbackProvider.builder().toolObjects(...)`），见 §3.5（附录 05-01 §3）。
 
 ### 3.3 业务服务与领域模型

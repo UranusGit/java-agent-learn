@@ -191,7 +191,7 @@ public class ChatConfig {
 ## 0.6 常见误区
 
 - **以为要自己生成 traceId 再塞进 MDC**：不要。Brave 已经在 Observation 生命周期里管理 MDC，手工 set 会与自动清理打架，出现"日志串号"。
-- **以为 traceId 是 Spring AI 的功能**：它是 Micrometer Tracing 的；Spring AI 只负责产生 Observation（[教程 02-SpringAI核心机制/01-MCP协议] 的七个观测点），tracing 把观测变链路。
+- **以为 traceId 是 Spring AI 的功能**：它是 Micrometer Tracing 的；Spring AI 只负责产生 Observation（[教程 02-SpringAI核心机制/07-MCP协议] 的七个观测点），tracing 把观测变链路。
 - **在非请求线程（如自建线程池）里期待 traceId**：span 不随线程自动走，WebFlux 场景要开 `Hooks.enableAutomaticContextPropagation()`（[教程 00-基础与核心/06-向量数据库选型 §6.3]，05 关跨服务时同样关键）。
 
 ## 0.7 本关交付与下一关

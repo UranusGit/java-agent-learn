@@ -1,5 +1,5 @@
 # 00 React 入门与现代前端工程
-> **定位**：本文是 React 学习路线的第一篇——从 Java 开发者视角讲透 React 的核心心智模型与现代前端工程，为后续 Agent 前端（流式 UI、Agentic UI）打地基。读者画像：熟悉 Java/Spring 但前端经验有限或停留在 jQuery/JSP 时代的中高级开发者。前置阅读：无（本篇自包含）；后端衔接篇见 [教程 02-SpringAI核心机制/00-SSE流式通信 §5]。
+> **定位**：本文是 React 学习路线的第一篇——从 Java 开发者视角讲透 React 的核心心智模型与现代前端工程，为后续 Agent 前端（流式 UI、Agentic UI）打地基。读者画像：熟悉 Java/Spring 但前端经验有限或停留在 jQuery/JSP 时代的中高级开发者。前置阅读：无（本篇自包含）；后端衔接篇见 [教程 02-SpringAI核心机制/06-SSE流式通信 §5]。
 >
 > **为什么 Java 架构师要学 React**：2026 年的企业级 Agent 系统，前端不再是"一个聊天框"——工具调用中间态、审批流、多会话管理、流式思考过程展示，这些 Agentic UI 的复杂度已经接近一个中型前端应用。架构师若看不懂前端的数据流和状态模型，就无法设计出合理的前后端事件协议（这正是 [教程 03-React前端与AgenticUI/03-Agentic-UI设计] 的核心主题）。
 
@@ -436,7 +436,7 @@ flowchart TB
     style Backend fill:#fff9c4
 ```
 
-后端每部分的实现分别对应：SSE Controller（[教程 02-SpringAI核心机制/00-SSE流式通信 §4]）、跨页面会话管理（[教程 04-企业级架构主干/04-多页面流式响应与会话管理]）、前端事件协议设计（[教程 03-React前端与AgenticUI/03-Agentic-UI设计]）。本篇的组件/Hook 模型是这座桥的地基。
+后端每部分的实现分别对应：SSE Controller（[教程 02-SpringAI核心机制/06-SSE流式通信 §4]）、跨页面会话管理（[教程 04-企业级架构主干/04-多页面流式响应与会话管理]）、前端事件协议设计（[教程 03-React前端与AgenticUI/03-Agentic-UI设计]）。本篇的组件/Hook 模型是这座桥的地基。
 
 ---
 

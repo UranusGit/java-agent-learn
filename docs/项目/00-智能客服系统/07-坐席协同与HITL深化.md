@@ -39,7 +39,7 @@ flowchart TB
     style G fill:#fff3e0
 ```
 
-信号 2 复用 06 的结构化输出套路（[教程 02-SpringAI核心机制/03-结构化输出]）：
+信号 2 复用 06 的结构化输出套路（[教程 02-SpringAI核心机制/04-结构化输出]）：
 
 ```java
 package com.shop.customer.hitl;

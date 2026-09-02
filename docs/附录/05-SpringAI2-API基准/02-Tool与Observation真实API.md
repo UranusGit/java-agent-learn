@@ -1,6 +1,6 @@
 # 附录 05-02：Tool、结构化输出与 Observation 真实 API 基准
 
-> **定位**：本文是对 [教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/03-结构化输出]、[教程 04-企业级架构主干/02-全链路可观测性] 的深入展开，也是全体系的**工具/输出/可观测 API 真实性基准**：注解体系（`@Tool` 而非 `@ToolMethod`）、`entity()` 真实重载、ToolContext、Observation 真实扩展点。前置阅读：[教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/02-Agent状态管理]、[教程 03-React前端与AgenticUI/01-React状态管理]。
+> **定位**：本文是对 [教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/04-结构化输出]、[教程 04-企业级架构主干/02-全链路可观测性] 的深入展开，也是全体系的**工具/输出/可观测 API 真实性基准**：注解体系（`@Tool` 而非 `@ToolMethod`）、`entity()` 真实重载、ToolContext、Observation 真实扩展点。前置阅读：[教程 00-基础与核心/03-工具调用]、[教程 02-SpringAI核心机制/02-Agent状态管理]、[教程 03-React前端与AgenticUI/01-React状态管理]。
 
 ---
 
@@ -59,7 +59,7 @@ ToolCallback cb2 = FunctionToolCallback.builder("queryOrder",
 | Spring AOP `@Around("@annotation(Tool)")` | **理论拦截，实际收不到**——框架反射调用绕过代理 | （审计：项目 02 旧稿的方案无效） |
 | Observation（框架原生） | Span/指标 | 业务逻辑 |
 
-> HITL 审批要拦"工具意图已定、执行未发生"——`ToolCallingManager` 是唯一稳定层（[教程 02-SpringAI核心机制/03-结构化输出 §正确落点]、[项目 06 v3] 完整落地）。
+> HITL 审批要拦"工具意图已定、执行未发生"——`ToolCallingManager` 是唯一稳定层（[教程 02-SpringAI核心机制/04-结构化输出 §正确落点]、[项目 06 v3] 完整落地）。
 
 ## 2. 结构化输出：entity() 真实重载
 

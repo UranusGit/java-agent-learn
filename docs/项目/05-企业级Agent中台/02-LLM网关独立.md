@@ -475,7 +475,7 @@ public class LlmGatewayHandler {
 
     private void recordUsage(GatewayContext ctx, Usage usage, boolean complete) {
         if (usage != null) {
-            // gen_ai 语义约定（教程 02-SpringAI核心机制/03-结构化输出 §gen_ai 语义约定详解、教程 03-React前端与AgenticUI/03-Agentic-UI设计 §Token 计量指标体系）
+            // gen_ai 语义约定（教程 02-SpringAI核心机制/04-结构化输出 §gen_ai 语义约定详解、教程 03-React前端与AgenticUI/03-Agentic-UI设计 §Token 计量指标体系）
             // 网关本地 Usage record 只归因 input/output；若需把前缀缓存命中纳入成本归因，
             // 可对接 Spring AI 的 org.springframework.ai.chat.metadata.Usage（getCacheReadInputTokens()/getCacheWriteInputTokens()）
             meterRegistry.counter("gen_ai.client.token.usage",
@@ -582,7 +582,7 @@ sequenceDiagram
     GW->>Sup: 注入真实供应商 Key 转发
     Note over GW: 业务进程内存中永远没有供应商 Key
 
-    Note over Biz,Auth: 与教程 02-SpringAI核心机制/01-MCP协议 §Credential Vault 的区别：<br/>本方案签发的是网关私有凭证<br/>（不要求供应商认 JWT——真实 Key 只在网关出网时注入）
+    Note over Biz,Auth: 与教程 02-SpringAI核心机制/07-MCP协议 §Credential Vault 的区别：<br/>本方案签发的是网关私有凭证<br/>（不要求供应商认 JWT——真实 Key 只在网关出网时注入）
 ```
 
 ### 3.10 agent-platform 接入（零代码变更）
@@ -673,7 +673,7 @@ curl -N -X POST "http://localhost:9090/v1/chat/completions" \
 |---|------|------|
 | ADR-005 | 网关对外暴露 OpenAI 兼容协议 | 业务侧 chat-core 零代码变更完成迁移；未来换网关实现（LiteLLM/Higress）也平滑 |
 | ADR-006 | usage 计量以"流式尾包帧"为准，缺失时记丢失事件并告警 | 不做估算兜底——估算数据进入财务报表后无法审计 |
-| ADR-007 | 短期凭证 15 分钟 | 与教程 02-SpringAI核心机制/01-MCP协议 的 Credential Vault 方案闭环（本版本网关侧换取真实 Key），权衡安全时效与签发开销 |
+| ADR-007 | 短期凭证 15 分钟 | 与教程 02-SpringAI核心机制/07-MCP协议 的 Credential Vault 方案闭环（本版本网关侧换取真实 Key），权衡安全时效与签发开销 |
 
 ### 5.1 本节核对（ADR）
 

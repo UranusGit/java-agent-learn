@@ -44,7 +44,7 @@ graph LR
 工程要点：
 
 1. **本体先行（schema-first）**：先人工定实体类型（5-15 个起步）与关系类型（显式动词），抽取 Prompt 只允许输出本体内的类型——放任 LLM 自由抽类型，图谱三个月变垃圾场。最小可用本体：`(:Person/Doc/Org/Component/Policy/Event…)` + 关系如 `[:SUPPLIES][:MENTIONS][:CERTIFIED_BY][:LOCATED_IN]`。
-2. **抽取 Prompt 用结构化输出**（[教程 02-SpringAI核心机制/03-结构化输出]）——JSON Schema 约束三元组列表，解析失败重试，别用正则刮自由文本。
+2. **抽取 Prompt 用结构化输出**（[教程 02-SpringAI核心机制/04-结构化输出]）——JSON Schema 约束三元组列表，解析失败重试，别用正则刮自由文本。
 3. **成本是 GraphRAG 第一约束**：抽取 Token ≈ 文档 token ×（3~10）倍（带上下文与 schema）。1GB 语料抽取一遍可能花掉几百到几千元级——**先在 1% 样本上验证问答提升，再全量抽取**（[附录 11-评估与可观测生态/02] 的数据集切片正是验证工具）。
 4. **写图必须幂等**（Cypher `MERGE`）：同一文档重抽不产生重复节点——抽取管线天生 at-least-once（[教程 07-Kafka事件骨干/03-投递语义与事务] §5] 的幂等纪律平移到这里）。
 

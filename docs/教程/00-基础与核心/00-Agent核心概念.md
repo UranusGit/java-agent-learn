@@ -386,7 +386,7 @@ ChatClient client = ChatClient.builder(chatModel)
 每个能力（记忆、RAG、日志、工具）都是一个 Advisor，通过链式组装。增删能力只需增删一行 Advisor 配置。
 
 > **遇到阻塞？→ [教程 00-基础与核心/01-Spring-AI框架入门]**：从零搭建第一个 Spring AI 项目。
-> **遇到阻塞？→ [教程 02-SpringAI核心机制/04-Advisor链与拦截器]**：深入 Advisor API 和中间件模式。
+> **遇到阻塞？→ [教程 02-SpringAI核心机制/01-Advisor链与拦截器]**：深入 Advisor API 和中间件模式。
 
 ---
 
@@ -470,7 +470,7 @@ Flux<String> stream(@RequestParam String question) {
 }
 ```
 
-> **遇到阻塞？→ [教程 02-SpringAI核心机制/00-SSE流式通信]**：WebFlux SSE 流式响应、前端对接。
+> **遇到阻塞？→ [教程 02-SpringAI核心机制/06-SSE流式通信]**：WebFlux SSE 流式响应、前端对接。
 
 ### 4.3 成本模型变了
 

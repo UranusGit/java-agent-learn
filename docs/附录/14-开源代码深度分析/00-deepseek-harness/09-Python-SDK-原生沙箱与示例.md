@@ -204,7 +204,7 @@ flowchart LR
 | **mcp-memory** | 三个第三方 MCP 记忆服务 overlay（默认关闭） | 都通过 `@deepseek-ai/dsh-mcp-client` 以 stdio 启动，工具以 `mcp__<serverName>__<tool>` 暴露；`dsh web --patch "$PWD/examples/mcp-memory/memorix.cordis.yml"` 启用 |
 | **web-cordis / web-schedule** | 自指 agent 与 Web 提醒 overlay | 演示 Web 场景的 agent 组合 |
 
-> `mcp-memory` 展示了 MCP 插件化的**模型面命名约定** `mcp__<serverName>__<tool>`（对应 [教程 02-SpringAI核心机制/01-MCP协议]），以及 `--patch` 命令行 overlay 的用法——无需改任何配置，运行时热拼一个 overlay 就启用新能力。
+> `mcp-memory` 展示了 MCP 插件化的**模型面命名约定** `mcp__<serverName>__<tool>`（对应 [教程 02-SpringAI核心机制/07-MCP协议]），以及 `--patch` 命令行 overlay 的用法——无需改任何配置，运行时热拼一个 overlay 就启用新能力。
 
 ### 5.2 Demo 包（`packages/examples/`）
 

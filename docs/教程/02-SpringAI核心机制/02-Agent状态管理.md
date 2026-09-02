@@ -456,7 +456,7 @@ public class ContextCompressionAdvisor implements CallAdvisor {
 }
 ```
 
-> 两个实现要点：① `summarizeMessages` 在 Advisor 内又发起一次 LLM 调用——**压缩本身有成本与延迟**，只在超阈值时触发，且摘要客户端建议走便宜模型；② 该 Advisor 要排在记忆 Advisor **之后**（先生效记忆窗口、再压缩剩余消息），顺序控制见 [教程 02-SpringAI核心机制/04-Advisor链与拦截器]。
+> 两个实现要点：① `summarizeMessages` 在 Advisor 内又发起一次 LLM 调用——**压缩本身有成本与延迟**，只在超阈值时触发，且摘要客户端建议走便宜模型；② 该 Advisor 要排在记忆 Advisor **之后**（先生效记忆窗口、再压缩剩余消息），顺序控制见 [教程 02-SpringAI核心机制/01-Advisor链与拦截器]。
 
 ---
 
@@ -955,13 +955,13 @@ flowchart TB
 | **长任务持久化** | 检查点机制，每步完成后保存状态，支持中断恢复 |
 | **并发与集群** | 会话级串行化/乐观锁治竞态，分布式锁治 @Scheduled 重复执行，共享存储治多实例记忆一致性 |
 
-**下一篇**：[22-结构化输出](03-结构化输出.md) — entity() 映射、BeanOutputConverter 原理与 Schema 治理。
+**下一篇**：[04-结构化输出](04-结构化输出.md) — entity() 映射、BeanOutputConverter 原理与 Schema 治理。
 
 ---
 
 > **想深入？→ [教程 00-基础与核心/04-记忆与会话管理]**：ChatMemory API 的完整使用细节和持久化方案。
 > **遇到阻塞？→ [教程 08-架构师进阶/06-长任务持久化与中断恢复]**：检查点恢复、幂等设计、故障转移的完整方案。
-> **想深入？→ [教程 02-SpringAI核心机制/04-Advisor链与拦截器]**：Advisor 链的执行机制和自定义 Advisor 的完整实现。
+> **想深入？→ [教程 02-SpringAI核心机制/01-Advisor链与拦截器]**：Advisor 链的执行机制和自定义 Advisor 的完整实现。
 > **想深入？→ [附录 05-SpringAI2-API基准/00-Advisor与ChatMemory]**：Advisor 与 ChatMemory 的全部真实签名与虚构 API 对照。
 > **想深入？→ [教程 01-WebFlux与响应式编程/01-Reactor核心]**：Reactor Context 的传播原理（contextWrite/deferContextual）。
 > **想深入？→ [教程 07-Kafka事件骨干/04-日志存储与高可用复制]**：事件溯源日志的保留/压实策略——压实主题如何充当"每会话最新快照"的物化载体。

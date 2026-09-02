@@ -163,7 +163,7 @@ grep "$TID" logs/demo01.log
 ## 10.6 架构师下一步（走出本系列）
 
 - **导出与后端**：本系列刻意零额外安装（18 系列偏好）；生产接 Zipkin/Tempo 只加 `spring-boot-starter-zipkin`（05 关已给内部结构）+ endpoint 配置，代码零改——[附录 18-可观测平台实践]。
-- **gen_ai 语义约定**：LLM span 的模型/token tag 与 OTel 语义约定对齐，[教程 02-SpringAI核心机制/01-MCP协议] 与 [附录 11-评估与可观测生态]。
+- **gen_ai 语义约定**：LLM span 的模型/token tag 与 OTel 语义约定对齐，[教程 02-SpringAI核心机制/07-MCP协议] 与 [附录 11-评估与可观测生态]。
 - **评估闭环**：档案积累的 traceId 数据是离线评估样本来源（trace 抽样回放 → Prompt/工具优化 → 灰度验证），接 [教程 数据飞轮] 主题。
 - **项目演练**：把本系列能力带入 [项目 05-企业级Agent中台]（拆分+管控分离主战场）与 [项目 09-智能运维AIOps平台]（traceId 是 AIOps 自身的排障语言）。
 

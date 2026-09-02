@@ -32,7 +32,7 @@ public sealed interface Op permits UserInput, Interrupt, Shutdown {}
 public record UserInput(String text) implements Op {}
 public record Interrupt() implements Op {}
 
-// ⚠ 事件协议 = 完整的"过程可见性契约"（对照教程 02-SpringAI核心机制/00-SSE流式通信 的 12 事件类型）
+// ⚠ 事件协议 = 完整的"过程可见性契约"（对照教程 02-SpringAI核心机制/06-SSE流式通信 的 12 事件类型）
 // 不只有生命周期，还含工具调用与思考过程——这是前端渲染"Agent 在干什么"的全部信号源
 public sealed interface AgentEvent permits
         TurnStarted, ThoughtStart, ThoughtDelta, ThoughtEnd,
@@ -66,7 +66,7 @@ public record Token(long id, long ts, String delta) implements AgentEvent {}
 
 **为什么契约先行**：Op/Event 枚举就是引擎对外 API 的全部——前端、持久化、测试全部对着契约编程，引擎内部随便重构（对照 [教程 03-React前端与AgenticUI/04-流式工具调用与事件协议] 的事件协议，本项目把它下沉为"引擎级契约"）。
 
-**为什么事件必须含工具与思考过程**：企业级 Agent 的信任来自"看得见过程"。若事件只有 `Token`（最终文字），前端只能展示"一个黑盒在挤出文字"——用户不知道它查了哪个工具、检索了什么、为什么停顿。补上 `ThoughtDelta`（推理过程）、`ToolStart/ToolEnd`（调了什么、返回什么），前端才能渲染"Agent 正在查订单 → 已返回 3 条 → 正在组织回答"的完整过程。**这正是教程 02-SpringAI核心机制/00-SSE流式通信 定义的可见性标准，会话引擎作为过程载体必须内建**。
+**为什么事件必须含工具与思考过程**：企业级 Agent 的信任来自"看得见过程"。若事件只有 `Token`（最终文字），前端只能展示"一个黑盒在挤出文字"——用户不知道它查了哪个工具、检索了什么、为什么停顿。补上 `ThoughtDelta`（推理过程）、`ToolStart/ToolEnd`（调了什么、返回什么），前端才能渲染"Agent 正在查订单 → 已返回 3 条 → 正在组织回答"的完整过程。**这正是教程 02-SpringAI核心机制/06-SSE流式通信 定义的可见性标准，会话引擎作为过程载体必须内建**。
 
 ### 二.1 本节测试与验证（契约完整性：事件含工具与思考过程）
 

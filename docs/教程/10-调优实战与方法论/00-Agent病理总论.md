@@ -170,7 +170,7 @@ sequenceDiagram
 职责：控制流程——Advisor 链顺序、ReAct 循环边界、多 Agent 消息路由、并行结构。典型病因清单：
 
 - **循环不终止 / 最大轮次失当**：ReAct 循环过早截断（答一半）或过晚终止（烧 token）。
-- **Advisor 顺序错误**：如记忆 Advisor 在检索 Advisor 之后执行，导致检索结果被记忆覆盖（Advisor 链机制见 [教程 02-SpringAI核心机制/04-Advisor链与拦截器]）。
+- **Advisor 顺序错误**：如记忆 Advisor 在检索 Advisor 之后执行，导致检索结果被记忆覆盖（Advisor 链机制见 [教程 02-SpringAI核心机制/01-Advisor链与拦截器]）。
 - **多 Agent 消息丢失**：Agent 间传递的消息未序列化完整或超时未达。
 - **并行写入竞争**：多工具并行写同一会话记忆，互踩覆盖。
 - **分支条件写错**：路由条件与业务语义不符，请求进了错误的子流程。

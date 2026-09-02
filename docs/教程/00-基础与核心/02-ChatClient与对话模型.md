@@ -307,7 +307,7 @@ sequenceDiagram
     S-->>B: [连接关闭]
 ```
 
-> **遇到阻塞？→ [教程 02-SpringAI核心机制/00-SSE流式通信]**：WebFlux SSE 完整实现、断线重连、前端 EventSource 对接。
+> **遇到阻塞？→ [教程 02-SpringAI核心机制/06-SSE流式通信]**：WebFlux SSE 完整实现、断线重连、前端 EventSource 对接。
 
 ---
 
@@ -394,7 +394,7 @@ ChatClient client = ChatClient.builder(chatModel)
         .build();
 ```
 
-> **遇到阻塞？→ [教程 02-SpringAI核心机制/03-结构化输出]**：JSON Schema、BeanOutputConverter、Provider Native Structured Output。
+> **遇到阻塞？→ [教程 02-SpringAI核心机制/04-结构化输出]**：JSON Schema、BeanOutputConverter、Provider Native Structured Output。
 
 ---
 

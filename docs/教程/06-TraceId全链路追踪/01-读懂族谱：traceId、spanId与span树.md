@@ -70,7 +70,7 @@ public class TimeTool {
 }
 ```
 
-请求 `curl -X POST http://localhost:8080/chat -d "message=现在几点了"` 后，把日志里出现的**所有** `[app,traceId,spanId]` 抄下来画树（traceId 相同的行才算同一条链路！）。你会得到类似 1.1 图的结构：工具 span 的 parentId 正是 `spring.ai.chat.client` 那个 span 的 spanId——**工具是 ChatClient 的孩子**，这就是 Spring AI 观测点之间的真实父子关系（span 名实证见 [教程 02-SpringAI核心机制/01-MCP协议]）。
+请求 `curl -X POST http://localhost:8080/chat -d "message=现在几点了"` 后，把日志里出现的**所有** `[app,traceId,spanId]` 抄下来画树（traceId 相同的行才算同一条链路！）。你会得到类似 1.1 图的结构：工具 span 的 parentId 正是 `spring.ai.chat.client` 那个 span 的 spanId——**工具是 ChatClient 的孩子**，这就是 Spring AI 观测点之间的真实父子关系（span 名实证见 [教程 02-SpringAI核心机制/07-MCP协议]）。
 
 ## 1.3 W3C Trace Context：`traceparent` 报文逐位读
 

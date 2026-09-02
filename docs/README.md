@@ -19,7 +19,7 @@ docs/
 ├── 教程/                                ← 11 个分类子文件夹（00-10）、108 篇，文件夹与篇目各自从 00 计数
 │   ├── 00-基础与核心/                    # 10 篇：Agent概念 → Spring AI 核心 → 多Agent协作
 │   ├── 01-WebFlux与响应式编程/           # 9 篇：从零入门 → Reactor/背压/Sinks → 跨服务流
-│   ├── 02-SpringAI核心机制/              # 6 篇：SSE / MCP（客户端+服务端治理）/ 状态管理 / 结构化输出 / Advisor
+│   ├── 02-SpringAI核心机制/              # 13 篇：ChatClient 全量 / Advisor / 状态管理 / ChatMemory 持久化 / 结构化输出 / 工具调用进阶 / SSE / MCP（客户端+服务端治理）/ 模块化RAG / Embeddings与向量库 / 评估 / 多模态
 │   ├── 03-React前端与AgenticUI/          # 5 篇：React 入门/状态 → SSE 流式 UI → 事件协议（含 AG-UI 对齐）
 │   ├── 04-企业级架构主干/                # 15 篇：管控分离 → 可观测 → 多租户/成本/HITL/灰度 → 部署运维 → 护栏审核
 │   ├── 05-Observation可观测/             # 13 篇：最小闭环 → 机制/自定义/前端/Trace/指标 → 工业实战
@@ -91,11 +91,19 @@ docs/
 | 01-WebFlux与响应式编程 | 06 | [线程模型与调度器](教程/01-WebFlux与响应式编程/06-线程模型与调度器.md) | Scheduler 全家族、EventLoop 与阻塞、虚拟线程合流 |
 | 01-WebFlux与响应式编程 | 07 | [WebFlux 测试与性能调优](教程/01-WebFlux与响应式编程/07-WebFlux测试与性能调优.md) | StepVerifier、WebTestClient、吞吐调优 |
 | 01-WebFlux与响应式编程 | 08 | [跨服务流与 Redis Streams 背压](教程/01-WebFlux与响应式编程/08-跨服务流与RedisStreams背压.md) | 粘性路由 vs 广播、Redis Streams 消费组、三档背压 |
-| 02-SpringAI核心机制 | 00 | [SSE 流式通信](教程/02-SpringAI核心机制/00-SSE流式通信.md) | Server-Sent Events、流式输出、WebFlux |
-| 02-SpringAI核心机制 | 01 | [MCP 协议](教程/02-SpringAI核心机制/01-MCP协议.md) | Model Context Protocol、工具协议、Host/Client/Server |
+| 02-SpringAI核心机制 | 00 | [ChatClient 企业级全量样例](教程/02-SpringAI核心机制/00-ChatClient企业级全量样例.md) | 官网 ChatClient/Prompt 全样例、运行时 Options、多租户 mutate、官网 vs jar 差异表 |
+| 02-SpringAI核心机制 | 01 | [Advisor 链与拦截器](教程/02-SpringAI核心机制/01-Advisor链与拦截器.md) | CallAdvisor/StreamAdvisor、链式执行、AOP 式扩展 |
 | 02-SpringAI核心机制 | 02 | [Agent 状态管理](教程/02-SpringAI核心机制/02-Agent状态管理.md) | 状态机、会话状态、上下文管理 |
-| 02-SpringAI核心机制 | 03 | [结构化输出](教程/02-SpringAI核心机制/03-结构化输出.md) | JSON 输出、BeanOutputConverter、entity() |
-| 02-SpringAI核心机制 | 04 | [Advisor 链与拦截器](教程/02-SpringAI核心机制/04-Advisor链与拦截器.md) | Advisor、拦截器链、AOP 式扩展 |
+| 02-SpringAI核心机制 | 03 | [ChatMemory 持久化与工业级记忆存储](教程/02-SpringAI核心机制/03-ChatMemory持久化与工业级记忆存储.md) | 自研 Repository、PG JSONB + Redis 两级、Map round-trip、压缩归档、GDPR |
+| 02-SpringAI核心机制 | 04 | [结构化输出](教程/02-SpringAI核心机制/04-结构化输出.md) | JSON 输出、BeanOutputConverter、entity() |
+| 02-SpringAI核心机制 | 05 | [工具调用进阶与 ToolCallingManager](教程/02-SpringAI核心机制/05-工具调用进阶与ToolCallingManager.md) | ToolCallingManager 执行管线、toolContext、审批装饰器、ToolCallingAdvisor 循环 |
+| 02-SpringAI核心机制 | 06 | [SSE 流式通信](教程/02-SpringAI核心机制/06-SSE流式通信.md) | Server-Sent Events、流式输出、WebFlux |
+| 02-SpringAI核心机制 | 07 | [MCP 协议](教程/02-SpringAI核心机制/07-MCP协议.md) | Model Context Protocol、工具协议、Host/Client/Server |
+| 02-SpringAI核心机制 | 08 | [MCP 服务端开发与治理](教程/02-SpringAI核心机制/08-MCP服务端开发与治理.md) | 三原语选型、@McpTool/三条暴露路径、传输层与配置键全表、治理四件套、网关化 |
+| 02-SpringAI核心机制 | 09 | [模块化 RAG 与 RetrievalAugmentationAdvisor](教程/02-SpringAI核心机制/09-模块化RAG与RetrievalAugmentationAdvisor.md) | Query 变换/扩展/检索/合并/增强六模块、ETL 管道、多租户 filter |
+| 02-SpringAI核心机制 | 10 | [Embeddings 与向量数据库全量样例](教程/02-SpringAI核心机制/10-Embeddings与向量数据库全量样例.md) | EmbeddingModel 全 API、Filter DSL、pgvector 批量导入与索引、检索服务 |
+| 02-SpringAI核心机制 | 11 | [评估测试 Evaluation](教程/02-SpringAI核心机制/11-评估测试Evaluation.md) | Relevancy/FactChecking 评估器、badcase 回归集、CI 门禁、指标化 |
+| 02-SpringAI核心机制 | 12 | [多模态与媒体能力](教程/02-SpringAI核心机制/12-多模态与媒体能力.md) | Image/TTS/转写/Moderation 全 API、语音问答链路、审核门禁、配额治理 |
 | 03-React前端与AgenticUI | 00 | [React 入门与现代前端工程](教程/03-React前端与AgenticUI/00-React入门与现代前端工程.md) | Vite、TS、组件化、现代前端工程 |
 | 03-React前端与AgenticUI | 01 | [React 状态管理](教程/03-React前端与AgenticUI/01-React状态管理.md) | useState/useReducer、Context、状态提升 |
 | 03-React前端与AgenticUI | 02 | [React 与 SSE 流式 UI](教程/03-React前端与AgenticUI/02-React与SSE流式UI.md) | EventSource、流式渲染、打字机效果 |
@@ -180,7 +188,6 @@ docs/
 | 10-调优实战与方法论 | 04 | [工具调优下：执行与治理](教程/10-调优实战与方法论/04-工具调优下：执行与治理.md) | 执行模式选型（ToolCallingAdvisor）、并行工具调用、幂等/熔断、租户工具目录、版本灰度、调优飞轮 |
 | 10-调优实战与方法论 | 05 | [架构调优](教程/10-调优实战与方法论/05-架构调优.md) | L0-L4 调优阶梯、判病到升级映射、成本-效果帕累托、架构劣化识别、影子双跑与回滚 |
 | 10-调优实战与方法论 | 06 | [综合实战：一个效果差 Agent 的治愈全过程](教程/10-调优实战与方法论/06-综合实战：一个效果差Agent的治愈全过程.md) | 体检报告→三病因归因→三处方→回归灰度→复盘沉淀，全系列方法论串联实战 |
-| 02-SpringAI核心机制 | 05 | [MCP 服务端开发与治理](教程/02-SpringAI核心机制/05-MCP服务端开发与治理.md) | 三原语选型、@McpTool/三条暴露路径、传输层与配置键全表、治理四件套、网关化 |
 | 04-企业级架构主干 | 14 | [输入输出护栏与内容审核](教程/04-企业级架构主干/14-输入输出护栏与内容审核.md) | 四审查面、Moderation 审核闸、三档处置矩阵、双闸管线、流式句级审核、fail-open/closed |
 | 09-前沿专题 | 12 | [语音与实时多模态工程](教程/09-前沿专题/12-语音与实时多模态工程.md) | 级联 vs 端到端架构、WebFlux 全 Reactive 语音管线、延迟六段分解、打断三机制、transcript 回写 |
 
@@ -359,7 +366,7 @@ flowchart TD
 | 层 | 阅读顺序 | 说明 |
 |----|----------|------|
 | **项目主线** | 项目 03-MCP工具网关（00→04）→ 项目 04-React-Agent控制台（00→05） | MCP 协议 + 前端可视化双线 |
-| 配套教程 | 教程 02-SpringAI核心机制/01-MCP协议 | 前端零基础则 24-27 必读 |
+| 配套教程 | 教程 02-SpringAI核心机制/07-MCP协议 | 前端零基础则 24-27 必读 |
 | 下钻附录 | 附录 05-SpringAI2-API基准/01-MCP真实API与坐标、02-Tool与Observation真实API | MCP 坐标与真实签名 |
 
 ### 阶段 5｜企业级架构主干（4~6 周，第一里程碑）
@@ -398,7 +405,7 @@ flowchart TD
 
 | 层 | 阅读顺序 | 说明 |
 |----|----------|------|
-| 教程主线 | 教程 09-前沿专题/01-ComputerUse与浏览器Agent → 教程 09-前沿专题/02-多模态Agent开发 → 教程 09-前沿专题/12-语音与实时多模态工程 → 教程 09-前沿专题/03-Agent经济与支付集成 → 教程 02-SpringAI核心机制/05-MCP服务端开发与治理 → 教程 09-前沿专题/08-Agent间协作协议工程化 | 前沿锚点 + 语音/服务端/协作协议工程（2026-08-30 新增） |
+| 教程主线 | 教程 09-前沿专题/01-ComputerUse与浏览器Agent → 教程 09-前沿专题/02-多模态Agent开发 → 教程 09-前沿专题/12-语音与实时多模态工程 → 教程 09-前沿专题/03-Agent经济与支付集成 → 教程 02-SpringAI核心机制/08-MCP服务端开发与治理 → 教程 09-前沿专题/08-Agent间协作协议工程化 | 前沿锚点 + 语音/服务端/协作协议工程（2026-08-30 新增） |
 | 前沿全景 | 前沿 00-16 按编号通读 | 扩展视野，保持技术雷达 |
 | 下钻附录 | 附录 13-Agent交互设计/00-Agent用户体验设计 → 01-中间过程可见性设计（过程透明工程，呼应教程 00-基础与核心/03-工具调用 §31）；附录 16-Agent沙箱与执行环境/00-沙箱技术对比与选型（呼应教程 00-基础与核心/09-多Agent协作 §91）；附录 15-AIInfra与推理部署（教程 09-前沿专题/02-多模态Agent开发 成本模型） | Agent UX + 过程透明收官；边缘与沙箱纵深 |
 

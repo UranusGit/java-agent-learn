@@ -1,5 +1,5 @@
 # 02 React 与 SSE 流式 UI
-> **定位**：本文是前后端衔接的实战核心篇——React 前端如何消费 WebFlux 后端的 SSE 流式响应：连接管理、事件解析、断线重连、token 批量渲染、取消与清理。读者画像：已掌握 [教程 01-WebFlux与响应式编程/05-WebFlux进阶实战 组件/Hook]、[教程 01-WebFlux与响应式编程/06-线程模型与调度器 状态分层] 的开发者。前置阅读：[教程 02-SpringAI核心机制/00-SSE流式通信]（后端视角）、[教程 03-React前端与AgenticUI/01-React状态管理 §5 三层状态模型]。
+> **定位**：本文是前后端衔接的实战核心篇——React 前端如何消费 WebFlux 后端的 SSE 流式响应：连接管理、事件解析、断线重连、token 批量渲染、取消与清理。读者画像：已掌握 [教程 01-WebFlux与响应式编程/05-WebFlux进阶实战 组件/Hook]、[教程 01-WebFlux与响应式编程/06-线程模型与调度器 状态分层] 的开发者。前置阅读：[教程 02-SpringAI核心机制/06-SSE流式通信]（后端视角）、[教程 03-React前端与AgenticUI/01-React状态管理 §5 三层状态模型]。
 >
 > **与教程 01-WebFlux与响应式编程/00-WebFlux从零入门 的分工**：教程 01-WebFlux与响应式编程/00-WebFlux从零入门 讲后端如何"产出"SSE 流（WebFlux Controller、Flux、心跳、代理配置）；本篇讲前端如何"消费"它。两端在"事件协议"处会合（协议设计深化见 [教程 03-React前端与AgenticUI/03-Agentic-UI设计]、[教程 03-React前端与AgenticUI/04-流式工具调用与事件协议]）。
 
@@ -79,7 +79,7 @@ async function streamChat(
 
 1. **跨 chunk 拆分**：TCP 分块不保证对齐 SSE 事件边界，一个 `"data: {\"type\":\"to"` 可能断在 JSON 中间——必须用 buffer 暂存，凑齐完整事件再解析。
 2. **多字节字符**：中文 UTF-8 一个字符 3 字节，chunk 可能截断在字节中间——`TextDecoder` 的 `{ stream: true }` 专门解决这个问题，漏掉会产生乱码。
-3. **AbortController**：用户切换会话/关闭页签时调用 `controller.abort()`，同时后端 `Flux.doOnCancel()` 会感知断开（[教程 02-SpringAI核心机制/00-SSE流式通信 §5.5 取消传播]）。
+3. **AbortController**：用户切换会话/关闭页签时调用 `controller.abort()`，同时后端 `Flux.doOnCancel()` 会感知断开（[教程 02-SpringAI核心机制/06-SSE流式通信 §5.5 取消传播]）。
 
 ### 1.3 SSE 帧解析器
 
@@ -112,7 +112,7 @@ function parseSSE(buffer: string): ParsedEvents {
 }
 ```
 
-注释行（`: keep-alive`）就是后端的心跳（[教程 02-SpringAI核心机制/00-SSE流式通信 §10.3 心跳保活]）——前端解析时静默跳过，但它的存在维持了代理不掐断连接。
+注释行（`: keep-alive`）就是后端的心跳（[教程 02-SpringAI核心机制/06-SSE流式通信 §10.3 心跳保活]）——前端解析时静默跳过，但它的存在维持了代理不掐断连接。
 
 ---
 
@@ -198,7 +198,7 @@ export function useChatStream(sessionId: string) {
 
 ## 3. 断线重连与 Last-Event-ID
 
-网络抖动、Nginx 超时（[教程 02-SpringAI核心机制/00-SSE流式通信 §10.1 代理和超时]）、后端滚动发布，都会掐断连接。企业级前端必须有重连策略：
+网络抖动、Nginx 超时（[教程 02-SpringAI核心机制/06-SSE流式通信 §10.1 代理和超时]）、后端滚动发布，都会掐断连接。企业级前端必须有重连策略：
 
 ### 3.1 重连状态机
 
@@ -227,7 +227,7 @@ stateDiagram-v2
 
 ### 3.2 断点恢复的实现
 
-后端在每条事件上带递增序号 `id:` 字段（[教程 02-SpringAI核心机制/00-SSE流式通信 §2.2 SSE 的数据格式]、[教程 02-SpringAI核心机制/00-SSE流式通信 §7 断点续传]）。前端记录最新 id，重连时带上：
+后端在每条事件上带递增序号 `id:` 字段（[教程 02-SpringAI核心机制/06-SSE流式通信 §2.2 SSE 的数据格式]、[教程 02-SpringAI核心机制/06-SSE流式通信 §7 断点续传]）。前端记录最新 id，重连时带上：
 
 ```ts
 async function connectWithRecovery(sessionId: string, lastEventId: number) {
@@ -241,7 +241,7 @@ async function connectWithRecovery(sessionId: string, lastEventId: number) {
 }
 ```
 
-后端从 Redis/内存缓冲区重放 `lastEventId` 之后的事件（缓冲区设计见 [教程 02-SpringAI核心机制/00-SSE流式通信 §7.2]，多实例下经 Redis Stream 广播见 [教程 04-企业级架构主干/04-多页面流式响应与会话管理 §4.2]）。**前端恢复后要做去重**：丢弃 `event.id <= lastEventId` 的重放事件，从 `lastEventId + 1` 开始应用。
+后端从 Redis/内存缓冲区重放 `lastEventId` 之后的事件（缓冲区设计见 [教程 02-SpringAI核心机制/06-SSE流式通信 §7.2]，多实例下经 Redis Stream 广播见 [教程 04-企业级架构主干/04-多页面流式响应与会话管理 §4.2]）。**前端恢复后要做去重**：丢弃 `event.id <= lastEventId` 的重放事件，从 `lastEventId + 1` 开始应用。
 
 ```ts
 function handleRecoveredEvent(event: AgentEvent & { id: number }) {

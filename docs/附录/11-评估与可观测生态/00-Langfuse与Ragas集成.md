@@ -59,7 +59,7 @@ flowchart LR
 ## 4. promptfoo：Prompt 变更的回归测试
 
 ```yaml
-# promptfooconfig.yaml —— CI 中的提示词回归门禁（接 [教程 02-SpringAI核心机制/04-Advisor链与拦截器 §灰度] 的影子验证）
+# promptfooconfig.yaml —— CI 中的提示词回归门禁（接 [教程 02-SpringAI核心机制/01-Advisor链与拦截器 §灰度] 的影子验证）
 prompts: [prompts/cs-main-v3.2.txt, prompts/cs-main-v3.3.txt]   # 新旧对照
 providers: [deepseek:deepseek-chat]
 tests:
@@ -81,7 +81,7 @@ flowchart TB
     L1["在线: OTel→Langfuse<br/>(Trace/成本/用户反馈)"] --> L2["数据集: 生产 trace<br/>筛选→标注→评估集"]
     L2 --> L3["离线: Ragas+promptfoo<br/>(指标+回归)"]
     L3 --> L4["改进: Prompt/RAG/模型<br/>(微调决策框架, 教程 05-Observation可观测/03-自定义Handler：收集Agent阶段事件流)"]
-    L4 --> L5["灰度: 教程 02-SpringAI核心机制/04-Advisor链与拦截器<br/>(影子验证=先跑 promptfoo)"]
+    L4 --> L5["灰度: 教程 02-SpringAI核心机制/01-Advisor链与拦截器<br/>(影子验证=先跑 promptfoo)"]
     L5 --> L1
 ```
 

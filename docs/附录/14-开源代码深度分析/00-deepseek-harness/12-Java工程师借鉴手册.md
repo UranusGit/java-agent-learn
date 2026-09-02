@@ -78,7 +78,7 @@
 ### A4. 能力缝 = 端口-适配器
 - **取什么**：三角色通常三包；提供者注册「能力」而非工具；策略以事件门存在（删掉策略插件工具仍能裸跑）。
 - **为什么**：治理不污染执行，策略可独立装卸。
-- **Java 落地**：接口包 + 实现包 + 消费者包；策略用 Advisor 而非硬编码进工具（呼应 [教程 02-SpringAI核心机制/04-Advisor链与拦截器]）。
+- **Java 落地**：接口包 + 实现包 + 消费者包；策略用 Advisor 而非硬编码进工具（呼应 [教程 02-SpringAI核心机制/01-Advisor链与拦截器]）。
 
 ### A5. Control/Data 平面
 - **取什么**：配置/治理/编排（控制面）与执行/检索（数据面）分离；接入面是传输无关网关。
@@ -105,7 +105,7 @@
 | C2 | **inbox 双列表（next-turn/next-step）** | 两条有序待处理列表；`claim` 取全部 next-step + 边界时 1 条 next-turn | 每 Agent 一个 FIFO 队列 + 优先级（next-step > next-turn） |
 | C3 | **max-tokens sticky** | 一旦某步 max-tokens，后到的正常完成步不得降级 turn 结果 | 回合终态取「最差完成度」，不被后续步骤覆盖 |
 | C4 | **Data decides** | 工具结果带 `concludesTurn` 终止 turn；pre-step 用 `steer()` 续 turn——用数据而非 listener 顺序决定 | 结果 DTO 携带「是否结束回合」字段，决策由数据流驱动 |
-| C5 | **工具三阶段管线 + 单调守卫** | pre（策略）/guards（只拒绝不可翻回）/execute（执行）/post（结果改写） | 四个拦截器；guards 只允许拒绝，deny 不可被后续翻回（[教程 02-SpringAI核心机制/04-Advisor链与拦截器]） |
+| C5 | **工具三阶段管线 + 单调守卫** | pre（策略）/guards（只拒绝不可翻回）/execute（执行）/post（结果改写） | 四个拦截器；guards 只允许拒绝，deny 不可被后续翻回（[教程 02-SpringAI核心机制/01-Advisor链与拦截器]） |
 | C6 | **executionMode fail-closed** | 未知/未声明/无效一律 exclusive（串行），只有显式声明才 parallel | 并行工具调用默认关，显式声明（如自定义 `@ConcurrencySafe` 注解）才开（[教程 08-架构师进阶/04-Agent性能优化]） |
 | C7 | **取消语义分层** | `ABORTED_BEFORE_DISPATCH`（没跑）vs `ABORTED`（跑一半）；不 abandon 已启动 promise | 取消码区分「未启动/已启动」；启动后的任务 drain 而非丢弃 |
 | C8 | **深冻结不可变请求** | 请求对象 `deepFreeze`，监听器只读不可改写 | 请求 DTO 不可变（record + 防御性拷贝），拦截器只能包装 |
@@ -147,13 +147,13 @@
 | K1 | **Provider 注册能力而非工具** | 模型面 schema 唯一归属 tool-* 包；execute 细节永不漏到 wire | 工具 schema 与实现分离，模型只见干净调用面 |
 | K2 | **error-as-field 而非 rejection** | `ShellRunResult`/`CodeRunResult` 正交结果独立上报 | 结果 DTO 用独立字段（timedOut/aborted/denied），非嵌套 if |
 | K3 | **闭合判别联合 + assertNever** | 结果类型闭合联合，switch 后强制穷尽 | Java `sealed interface` + 穷尽 switch（Java 21）——新增变体编译器逼你处理全部分支 |
-| K4 | **策略以事件门存在** | fs 策略以 waterfall 存在，删掉策略插件工具仍能裸跑 | Advisor 拦截工具调用，策略可独立装卸（[教程 02-SpringAI核心机制/04-Advisor链与拦截器]） |
+| K4 | **策略以事件门存在** | fs 策略以 waterfall 存在，删掉策略插件工具仍能裸跑 | Advisor 拦截工具调用，策略可独立装卸（[教程 02-SpringAI核心机制/01-Advisor链与拦截器]） |
 | K5 | **hostile-peer 心态** | worker 消息逐字段重建、binding 名 null-prototype、env 先 scrub | 外部进程/消息默认不可信，解析代码防御式 |
 | K6 | **explicit > implicit** | spec 全必填，默认值属于实现 config | 请求 DTO 必填校验，禁止隐式魔法值 |
 | K7 | **env scrub** | 子进程环境剥 `KEY/PASSWORD/SECRET/TOKEN/DSH_*` | `ProcessBuilder` 默认 scrubbed，凭据显式 merge |
 | K8 | **kill 升级阶梯** | `SIGTERM → graceMs → SIGKILL` 树级，重探存活防 pid 复用 | 终止流程分级 + 重探进程树 |
 | K9 | **技能目录分层合并** | 全局 + scope 层链式合并，最近层遮蔽远层，层内 rank 裁决 | 多级技能目录（项目/用户/打包）按优先级合并 |
-| K10 | **MCP 工具命名约定** | `mcp__<server>__<tool>` 桥进工具注册表 | 与 Spring AI MCP 工具前缀约定同构（[教程 02-SpringAI核心机制/01-MCP协议]） |
+| K10 | **MCP 工具命名约定** | `mcp__<server>__<tool>` 桥进工具注册表 | 与 Spring AI MCP 工具前缀约定同构（[教程 02-SpringAI核心机制/07-MCP协议]） |
 | K11 | **LSP 无逃生舱闭合联合** | 语义导航只暴露四种操作，无 JSON-RPC 逃生舱 | 缝合口用闭合接口，防 provider 泄漏协议细节 |
 
 ---

@@ -1,6 +1,6 @@
 # 附录 05-00：Spring AI 2.0 Advisor 与 ChatMemory 真实 API 基准
 
-> **定位**：本文是对 [教程 02-SpringAI核心机制/04-Advisor链与拦截器 §API] 与 [教程 00-基础与核心/04-记忆与会话管理 §API] 的深入展开，也是**全文档体系的 API 真实性基准**——所有教程/项目中的 Advisor 与 ChatMemory 代码以本文为准。读者画像：任何要照抄本体系代码写实现的读者。前置阅读：[教程 02-SpringAI核心机制/04-Advisor链与拦截器]、[教程 00-基础与核心/04-记忆与会话管理]。
+> **定位**：本文是对 [教程 02-SpringAI核心机制/01-Advisor链与拦截器 §API] 与 [教程 00-基础与核心/04-记忆与会话管理 §API] 的深入展开，也是**全文档体系的 API 真实性基准**——所有教程/项目中的 Advisor 与 ChatMemory 代码以本文为准。读者画像：任何要照抄本体系代码写实现的读者。前置阅读：[教程 02-SpringAI核心机制/01-Advisor链与拦截器]、[教程 00-基础与核心/04-记忆与会话管理]。
 >
 > **为什么需要这篇**：2026-08 全量审计发现体系中存在三代 Advisor API 混用（1.0 式 `adviseRequest`/`chain.next()`/`AdvisedRequest` / 2.0 式 `adviseCall` 的正确与错误签名并存，且此前误以为 `BaseAdvisor.before/after` 为虚构——2026-08-16 本地 jar javap 实证其真实存在）。本篇以 Spring AI 2.0.0 本地 jar 为准统一口径，并给出错误写法对照表。
 
@@ -58,7 +58,7 @@ public class TenantTaggingAdvisor implements CallAdvisor, StreamAdvisor {
 }
 ```
 
-**三要点**：① 短路的实现是**不调用 `chain.nextCall()`** 直接返回（没有"标记跳过"这种 API）；② 同时实现两接口才能兼顾 `call()` 与 `stream()`；③ 顺序由 `Order`（Spring 的 `@Order`/`getOrder()`）控制，`SecurityAdvisor → PromptAdvisor → MemoryAdvisor → ...` 的通用顺序原则见 [教程 02-SpringAI核心机制/04-Advisor链与拦截器 §执行顺序]。
+**三要点**：① 短路的实现是**不调用 `chain.nextCall()`** 直接返回（没有"标记跳过"这种 API）；② 同时实现两接口才能兼顾 `call()` 与 `stream()`；③ 顺序由 `Order`（Spring 的 `@Order`/`getOrder()`）控制，`SecurityAdvisor → PromptAdvisor → MemoryAdvisor → ...` 的通用顺序原则见 [教程 02-SpringAI核心机制/01-Advisor链与拦截器 §执行顺序]。
 
 > **javap 实证**（`spring-ai-client-chat-2.0.0.jar`）：`ChatClientRequest.Builder` 的真实方法只有 `prompt(Prompt)`、`context(Map)`、`context(String, Object)`、`build()`——**没有 `from()` / `contextEntry()`**；正确的复制改写是 `request.mutate().context(k, v).build()`。流式下 Reactor Context 写法是 `contextWrite(ctx -> ctx.put(...))`，**没有 `ReactorContext.of(...)`** 这种 API。
 

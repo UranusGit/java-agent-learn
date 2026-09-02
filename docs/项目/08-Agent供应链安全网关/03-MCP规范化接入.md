@@ -2,7 +2,7 @@
 
 > **定位**：统一接入协议——网关全面升级到 MCP Streamable HTTP + OAuth 2.1 授权体系，堵住协议层的收口裂缝，同时引入 MCP 规范的 Sampling/Elicitation 安全管控。**完整可手写代码**：MCP 客户端连接管理（`McpSyncClient`）、网关代理工具（`implements ToolCallback`）、按 Agent 动态目录、OAuth 2.1 资源服务器、`application-secgw.yaml` 增量。
 >
-> 「遇到阻塞？→ [教程 02-SpringAI核心机制/01-MCP协议 §Streamable HTTP 与 OAuth]、[附录 05-01-MCP真实API与坐标]、[前沿 04-MCP生态全景]」
+> 「遇到阻塞？→ [教程 02-SpringAI核心机制/07-MCP协议 §Streamable HTTP 与 OAuth]、[附录 05-01-MCP真实API与坐标]、[前沿 04-MCP生态全景]」
 
 ---
 
@@ -309,7 +309,7 @@ public class GatewayMcpServerConfig {
 }
 ```
 
-> ⚠ **动态目录的接线说明（概念代码边界）**：`AgentScopedToolProvider.toolsFor(agent)` 是完整可编译的服务；把它挂到 MCP Server 的 `tools/list` 上时，真实 Spring AI Starter 的 Hook 深度因版本而异。若框架不支持"每会话目录"，就用网关自研 Streamable HTTP 端点（见 [教程 02-SpringAI核心机制/01-MCP协议 §服务端实现]），在 `tools/list` 用 mTLS 解析出的 Agent 过滤。**无论哪种接线，Agent 看到的目录永远来自登记库的审查通过版（ADR-308）**。
+> ⚠ **动态目录的接线说明（概念代码边界）**：`AgentScopedToolProvider.toolsFor(agent)` 是完整可编译的服务；把它挂到 MCP Server 的 `tools/list` 上时，真实 Spring AI Starter 的 Hook 深度因版本而异。若框架不支持"每会话目录"，就用网关自研 Streamable HTTP 端点（见 [教程 02-SpringAI核心机制/07-MCP协议 §服务端实现]），在 `tools/list` 用 mTLS 解析出的 Agent 过滤。**无论哪种接线，Agent 看到的目录永远来自登记库的审查通过版（ADR-308）**。
 
 ### 3.6 `security/OAuthResourceServerConfig.java`（OAuth 2.1 资源服务器）
 
