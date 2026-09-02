@@ -116,7 +116,7 @@ docs/
 
 ### 开源代码深度分析规范（附录 14 适用）
 
-`docs/附录/14-开源代码深度分析/` 承载对 GitHub 开源项目的全量代码分析（首个对象：DeepSeek Harness）。除通用附录规范外，还必须：
+`docs/附录/14-开源代码深度分析/` 承载对 GitHub 开源项目的全量代码分析（三个子文件夹：`00-deepseek-harness`、`01-codex-harness`、`02-claude-code源码架构`，各对象内部篇目从 00 计数）。除通用附录规范外，还必须：
 
 - **每篇 ≥ 6000 字符**，含 `file:line` 代码引用、真实签名/事件名/常量（不得编造 API）；未证实处显式标注
 - **每篇含多张 Mermaid 图**（64 块全量本地校验通过，用 mermaid@11.13.0 与 Typora 同款内核校验；另须通过 `scripts/check-mermaid-audit.py` 零发现）

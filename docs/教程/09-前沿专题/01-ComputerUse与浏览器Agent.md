@@ -215,4 +215,4 @@ Demo 与生产的差距全在治理。浏览器 Agent 上生产必须过四道�
 
 ## 6. 小结
 
-Computer Use 与浏览器 Agent 是 Agent 从"能说"到"能做"的关键一跃。工程主线：**优先结构化浏览器工具（Playwright MCP + Spring AI 工具调用），仅在非 Web 场景用截图循环**；生产四闸门（护栏/沙箱/审计/预算）缺一不可，其中间接注入防御是安全设计的重心。下一步可深入 [前沿 07-ComputerUse与AgenticBrowser]（协议与生态全景）与 [前沿 08-Agent技能包Skills]（把浏览器技能打包成可复用资产），再用 [附录 14-开源代码深度分析/12-Java工程师借鉴手册] 的视角审视开源实现。
+Computer Use 与浏览器 Agent 是 Agent 从"能说"到"能做"的关键一跃。工程主线：**优先结构化浏览器工具（Playwright MCP + Spring AI 工具调用），仅在非 Web 场景用截图循环**；生产四闸门（护栏/沙箱/审计/预算）缺一不可，其中间接注入防御是安全设计的重心。下一步可深入 [前沿 07-ComputerUse与AgenticBrowser]（协议与生态全景）与 [前沿 08-Agent技能包Skills]（把浏览器技能打包成可复用资产），再用 [附录 14-开源代码深度分析/00-deepseek-harness/12-Java工程师借鉴手册] 的视角审视开源实现。
