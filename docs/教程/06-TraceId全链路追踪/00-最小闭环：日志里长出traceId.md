@@ -65,7 +65,7 @@ graph LR
 
 ## 0.3 零代码验证：启动即生效
 
-加完依赖直接启动（`-Ddemo.demo=demo`，与 18 系列同一套 ChatController/TimeTool）：
+加完依赖直接启动（`-Ddemo.demo=demo`，与教程 05-Observation可观测 系列同一套 ChatController/TimeTool）：
 
 ```bash
 mvn clean spring-boot:run -Dspring-boot.run.profiles=demo -Ddemo.demo=demo
@@ -184,14 +184,14 @@ public class ChatConfig {
 }
 ```
 
-> 依赖注入语义说明：`@Bean` 方法返回的对象（这里是 `ChatClient` 内部持有的 `TimeTool`）其构造由你手动完成，所以 Tracer 走 `chatClient` Bean 方法的参数注入——这正是 18 系列"工具不挂 @Component、new 后经 @Bean 注册"风格的延续。
+> 依赖注入语义说明：`@Bean` 方法返回的对象（这里是 `ChatClient` 内部持有的 `TimeTool`）其构造由你手动完成，所以 Tracer 走 `chatClient` Bean 方法的参数注入——这正是教程 05-Observation可观测 系列"工具不挂 @Component、new 后经 @Bean 注册"风格的延续。
 
 再跑一次 0.3 的 curl，你会看到工具日志里打印的 traceId 与方括号里的完全一致——**日志侧和代码侧拿到的是同一个链路号**，最小闭环完成。
 
 ## 0.6 常见误区
 
 - **以为要自己生成 traceId 再塞进 MDC**：不要。Brave 已经在 Observation 生命周期里管理 MDC，手工 set 会与自动清理打架，出现"日志串号"。
-- **以为 traceId 是 Spring AI 的功能**：它是 Micrometer Tracing 的；Spring AI 只负责产生 Observation（[教程 02-SpringAI核心机制/07-MCP协议] 的七个观测点），tracing 把观测变链路。
+- **以为 traceId 是 Spring AI 的功能**：它是 Micrometer Tracing 的；Spring AI 只负责产生 Observation（[教程 05-Observation可观测/11-深度整合：SpringAI2与Observation的完整结合面 §11.2] 的七大观测点），tracing 把观测变链路。
 - **在非请求线程（如自建线程池）里期待 traceId**：span 不随线程自动走，WebFlux 场景要开 `Hooks.enableAutomaticContextPropagation()`（[教程 05-Observation可观测/06-Trace链路：traceId贯穿HTTP、LLM、工具与日志]，05 关跨服务时同样关键）。
 
 ## 0.7 本关交付与下一关

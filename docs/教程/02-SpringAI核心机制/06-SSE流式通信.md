@@ -1128,7 +1128,7 @@ public Flux<ServerSentEvent<String>> guardedStream(String userId, String message
 
 ---
 
-> → [教程 00-基础与核心/02-ChatClient与对话模型 与对话模型]：ChatClient 的完整 API、同步/流式调用的基础。
+> → [教程 00-基础与核心/02-ChatClient与对话模型]：ChatClient 的完整 API、同步/流式调用的基础。
 > → [教程 04-企业级架构主干/04-多页面流式响应与会话管理]：多标签页 SSE 连接管理、会话隔离。
 > 想深入？→ [附录 03-Spring-AI源码解析/02-流式执行链源码解析]：`stream()` 从 Advisor 链到 Reactor Netty 写出端的完整执行链源码。
 > 想深入？→ [教程 01-WebFlux与响应式编程/02-背压与流量控制]：request(n)、onBackpressure* 算子族与取消传播的底层机制。

@@ -4,7 +4,7 @@
 >
 > **读者画像**：已掌握 RAG 概念、会用 `VectorStore.similaritySearch` 手写检索增强问答的中高级 Java 开发者；需要把"胶水代码式 RAG"重构为可配置、可测试、可演进的生产级流水线的架构师。
 >
-> **前置阅读**：[00-RAG检索增强生成](../00-基础与核心/05-RAG检索增强生成.md)（RAG 概念与向量检索原理）、[00-ChatClient企业级全量样例](00-ChatClient企业级全量样例.md)（ChatClient 与 Advisor 基础）、[01-Advisor链与拦截器](01-Advisor链与拦截器.md)（Advisor 生命周期）。想了解 Agentic RAG、GraphRAG 等进阶形态，见 [教程 08-架构师进阶/01-高级RAG与AgenticRAG]。
+> **前置阅读**：[05-RAG检索增强生成](../00-基础与核心/05-RAG检索增强生成.md)（RAG 概念与向量检索原理）、[00-ChatClient企业级全量样例](00-ChatClient企业级全量样例.md)（ChatClient 与 Advisor 基础）、[01-Advisor链与拦截器](01-Advisor链与拦截器.md)（Advisor 生命周期）。想了解 Agentic RAG、GraphRAG 等进阶形态，见 [教程 08-架构师进阶/01-高级RAG与AgenticRAG]。
 
 ---
 

@@ -161,7 +161,7 @@ executorService.submit(() -> {
 ```mermaid
 flowchart TD
     Q{"想观测的代码段"} --> A{"已有自动观测点覆盖？<br/>HTTP/ChatClient/ChatModel/Tool"}
-    A -->|"是"| R["不要手动开<br/>用 Convention 加 tag（18系列04关）"]
+    A -->|"是"| R["不要手动开<br/>用 Convention 加 tag（教程 05-Observation可观测/04-自定义Convention与Filter）"]
     A -->|"否"| B{"在请求主链路上？"}
     B -->|"是"| C["startScopedSpan<br/>try-with-resources"]
     B -->|"否（异步/消息/批处理）"| D["nextSpan + withSpan + 手动 end<br/>（2.5 范式）"]

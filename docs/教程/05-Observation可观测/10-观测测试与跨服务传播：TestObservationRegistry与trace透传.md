@@ -2,7 +2,7 @@
 
 > **定位**：两个收尾进阶主题。① **观测代码自己怎么测**——Handler/Convention 也是代码，也要单测；用 `micrometer-observation-test` 的 `TestObservationRegistry` 断言 span 名/标签/顺序（实证：1.17.0 jar 含 `TestObservationRegistry`/`TestObservationRegistryAssert`）。② **trace 怎么跨服务传播**——巡检 Agent 迟早拆成 Agent 服务 + 工具服务 + 检索服务（[教程 02-SpringAI核心机制/02-Agent状态管理]），一条 trace 要穿过 HTTP 边界，靠的是 W3C `traceparent` 头。
 >
-> **前置阅读**：[教程 00-基础与核心/02-ChatClient与对话模型]、[教程 00-基础与核心/06-向量数据库选型]。 <!-- 待人工核：此引用可能需指向新结构篇目 -->
+> **前置阅读**：[教程 00-基础与核心/02-ChatClient与对话模型]、[教程 05-Observation可观测/06-Trace链路：traceId贯穿HTTP、LLM、工具与日志]（trace 贯穿与 Hooks 桥接——10.3/10.4 跨服务传播的前置）。
 
 ---
 

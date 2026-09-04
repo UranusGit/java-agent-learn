@@ -114,7 +114,7 @@ public class TenantBaggageFilter implements WebFilter {
             log.info("本工具执行于租户 {}", tenant);
 ```
 
-ApplicationDemo01 需要 Reactor 自动传播（18 系列 06 关同款，完整文件）：
+ApplicationDemo01 需要 Reactor 自动传播（教程 05-Observation可观测/06-Trace链路 同款，完整文件）：
 
 ```java
 // src/main/java/demo/demo01/ApplicationDemo01.java（本关完整版）
