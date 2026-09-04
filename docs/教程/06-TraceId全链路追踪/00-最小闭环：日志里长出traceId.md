@@ -4,7 +4,7 @@
 >
 > **读者画像**：已经跑通过 demo01 的 ChatClient + TimeTool（[教程 00-基础与核心/00-Agent核心概念]），见过 span 树，但还没让 traceId 出现在自己的日志里。
 >
-> **前置阅读**：[教程 00-基础与核心/00-Agent核心概念]、[教程 00-基础与核心/01-Spring-AI框架入门]（Observation 生命周期）。
+> **前置阅读**：[教程 00-基础与核心/00-Agent核心概念]、[教程 05-Observation可观测/01-读懂输出：span树与观测生命周期]（Observation 生命周期）。
 
 ---
 
@@ -35,7 +35,7 @@ graph LR
     B --> C["grep traceId<br/>一次召回全链路日志"]
 ```
 
-**与 Observation 系列的关系**（[教程 00-基础与核心/06-向量数据库选型] 已铺过一次）：Micrometer Tracing 不是另一套 API，它就是一组特殊的 `ObservationHandler`。你已有的全部 Observation 知识（Registry/Handler/Convention/Filter）原样有效，本系列专注 traceId 这条线打穿：**生成 → 编程 → Baggage → 记录 → 跨服务 → 展示 → 微服务架构 → 工业闭环**。
+**与 Observation 系列的关系**（[教程 05-Observation可观测/06-Trace链路：traceId贯穿HTTP、LLM、工具与日志] 已铺过一次）：Micrometer Tracing 不是另一套 API，它就是一组特殊的 `ObservationHandler`。你已有的全部 Observation 知识（Registry/Handler/Convention/Filter）原样有效，本系列专注 traceId 这条线打穿：**生成 → 编程 → Baggage → 记录 → 跨服务 → 展示 → 微服务架构 → 工业闭环**。
 
 ## 0.2 依赖：Boot 4.1 的坐标和 Boot 3 不一样（重要差异）
 
@@ -95,7 +95,7 @@ INFO [demo01,64f8a1c2b9d04e7a,64f8a1c2b9d04e7a] d.d.tools.TimeTool - 开始调�
 
 ## 0.4 为什么零代码就长出了 traceId：一条链路图
 
-你的 demo01 里**已经存在 Observation**（[教程 00-基础与核心/00-Agent核心概念] 埋的点）：ChatClient 调用、ChatModel 调用、Tool 调用、HTTP server 请求。tracing 依赖一加，自动装配把 `TracingObservationHandler` 挂进 `ObservationRegistry`，每个 Observation 的 `start/stop` 就被翻译成 span 的入栈/出栈，当前 span 的 traceId/spanId 同步写入 SLF4J MDC——你的日志就这样"免费"长出了链路号。
+你的 demo01 里**已经存在 Observation**（[教程 05-Observation可观测/00-最小闭环：Agent各阶段输出打印到控制台] 埋的点）：ChatClient 调用、ChatModel 调用、Tool 调用、HTTP server 请求。tracing 依赖一加，自动装配把 `TracingObservationHandler` 挂进 `ObservationRegistry`，每个 Observation 的 `start/stop` 就被翻译成 span 的入栈/出栈，当前 span 的 traceId/spanId 同步写入 SLF4J MDC——你的日志就这样"免费"长出了链路号。
 
 ```mermaid
 sequenceDiagram
@@ -192,7 +192,7 @@ public class ChatConfig {
 
 - **以为要自己生成 traceId 再塞进 MDC**：不要。Brave 已经在 Observation 生命周期里管理 MDC，手工 set 会与自动清理打架，出现"日志串号"。
 - **以为 traceId 是 Spring AI 的功能**：它是 Micrometer Tracing 的；Spring AI 只负责产生 Observation（[教程 02-SpringAI核心机制/07-MCP协议] 的七个观测点），tracing 把观测变链路。
-- **在非请求线程（如自建线程池）里期待 traceId**：span 不随线程自动走，WebFlux 场景要开 `Hooks.enableAutomaticContextPropagation()`（[教程 00-基础与核心/06-向量数据库选型 §6.3]，05 关跨服务时同样关键）。
+- **在非请求线程（如自建线程池）里期待 traceId**：span 不随线程自动走，WebFlux 场景要开 `Hooks.enableAutomaticContextPropagation()`（[教程 05-Observation可观测/06-Trace链路：traceId贯穿HTTP、LLM、工具与日志]，05 关跨服务时同样关键）。
 
 ## 0.7 本关交付与下一关
 
@@ -201,7 +201,7 @@ public class ChatConfig {
 | 日志带 `[app,traceId,spanId]` | 启动后任意请求，看控制台 |
 | 代码读出 traceId | `TimeTool` 日志输出与方括号一致 |
 
-下一关 [教程 00-基础与核心/01-Spring-AI框架入门]：把方括号里那串 16 进制**读透**——traceId/spanId/parentId 的族谱关系、W3C `traceparent` 报文格式、采样位怎么读、span 树怎么在脑中成像。
+下一关 [教程 06-TraceId全链路追踪/01-读懂族谱：traceId、spanId与span树]：把方括号里那串 16 进制**读透**——traceId/spanId/parentId 的族谱关系、W3C `traceparent` 报文格式、采样位怎么读、span 树怎么在脑中成像。
 
 ---
 

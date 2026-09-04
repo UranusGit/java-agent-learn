@@ -2,13 +2,26 @@
 
 > **定位**：两个收尾进阶主题。① **观测代码自己怎么测**——Handler/Convention 也是代码，也要单测；用 `micrometer-observation-test` 的 `TestObservationRegistry` 断言 span 名/标签/顺序（实证：1.17.0 jar 含 `TestObservationRegistry`/`TestObservationRegistryAssert`）。② **trace 怎么跨服务传播**——巡检 Agent 迟早拆成 Agent 服务 + 工具服务 + 检索服务（[教程 02-SpringAI核心机制/02-Agent状态管理]），一条 trace 要穿过 HTTP 边界，靠的是 W3C `traceparent` 头。
 >
-> **前置阅读**：[教程 00-基础与核心/02-ChatClient与对话模型]、[教程 00-基础与核心/06-向量数据库选型]。
+> **前置阅读**：[教程 00-基础与核心/02-ChatClient与对话模型]、[教程 00-基础与核心/06-向量数据库选型]。 <!-- 待人工核：此引用可能需指向新结构篇目 -->
 
 ---
 
 ## 10.1 为什么观测代码必须有测试
 
 观测是"系统的黑匣子"——黑匣子坏了往往没人知道（观测代码抛异常会被 Registry 吞掉，主业务不受影响，于是你安静地失去可观测性）。工业教训：**观测代码的 bug 是静默失效**。因此至少给两类代码配测试：自定义 Handler（标签算对没有、null 安全没有）、Convention（基数纪律没有滑坡）。
+
+三层验证各管一段——先定位要验证的层，再选工具与断言对象：
+
+```mermaid
+flowchart TD
+    Q{"要验证哪一层？"}
+    Q -->|"Handler/Convention 逻辑"| U["单元测试<br/>TestObservationRegistry + AssertJ 断言链<br/>span 名/低基数标签/null 安全"]
+    Q -->|"事件顺序与编排契约"| I["集成测试<br/>@SpringBootTest + TestRegistry Bean<br/>断言 LLM→TOOL→LLM 顺序"]
+    Q -->|"跨服务链路"| X["运维验证<br/>traceparent 头 + Zipkin<br/>两服务 span 同一 trace"]
+    U -->|"断言失败"| R["观测契约先红<br/>重构管线先改测试"]
+    I -->|"顺序错乱"| R
+    X -->|"traceId 对不上"| B["断链排查<br/>下游依赖两坐标/线程池包装/手写 SDK 注入"]
+```
 
 > **需在 pom.xml 中添加依赖，本篇不实际添加**（test scope，版本随 Spring Boot 4.1.0 parent/BOM 管理）：
 
@@ -139,4 +152,36 @@ if (span != null) {
 
 > 交叉引用：[教程 04-企业级架构主干/02-全链路可观测性]、[教程 04-企业级架构主干/03-工具执行可观测与审计]、[教程 04-企业级架构主干/10-容错与弹性设计]
 
-**下一关**：实战前最后一块拼图——Spring AI 2.0 与 Observation 的完整整合面地图。→ [教程 02-SpringAI核心机制/07-MCP协议]
+**下一关**：实战前最后一块拼图——Spring AI 2.0 与 Observation 的完整整合面地图。→ [教程 05-Observation可观测/11-深度整合：SpringAI2与Observation的完整结合面]
+
+## 10.8 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 给自定义 Handler/Convention 配单测——`TestObservationRegistry` + AssertJ 断言链验证 span 名/低基数标签/null 安全；
+- 把"事件顺序"当契约固化——`@SpringBootTest` + TestRegistry Bean 断言 LLM → TOOL → LLM 顺序，谁改坏编排测试先红；
+- 防观测代码静默失效——Registry 会吞 Handler 异常，测试是黑匣子唯一的报警器；
+- 跨服务链路打通验证——下游服务装齐同样 tracing 依赖后，Zipkin 一条 trace 含两个服务的 span、两服务日志同 traceId；
+- 手写 HTTP 客户端（如产线设备网关 SDK）的 traceparent 手动注入——绕过 WebClient/RestClient 观测装饰时的唯一通路。
+
+**❌ 不适用场景**：
+
+- 单测里构造 ChatModelObservationContext 断言 shift 标签——需 Prompt 与元数据，成本高于收益，交给集成测试覆盖；
+- 未引 tracing bridge 就写下游抽取代码——extractor 依赖 Brave/OTel 具体实现，铁律 0 禁止未实证代码；
+- 裸 `new Thread` / 未包装的自建线程池——进程内传播必断，用 ContextExecutorService 包装或 Boot 托管 Executor；
+- 把 TestObservationRegistry 用于生产——它是内存版测试替身，只活在 test scope；
+- 把 Postman 手填 traceparent 当传播机制——那是排障重放手段（把前端报错的 traceId 手工重放），不是自动传播。
+
+## 10.9 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| TestObservationRegistry | 内存版 Registry 测试替身 + TestObservationRegistryAssert 断言链（1.17.0 jar 实证） |
+| 观测契约测试 | 事件顺序/标签当契约固化：重构观测管线时测试先红、先改 |
+| 静默失效 | Handler 异常被 Registry 吞掉——观测 bug 不报错，只能靠测试拦截 |
+| traceparent | W3C Trace Context 头 00-{traceId}-{spanId}-01，跨 HTTP 边界的链路身份证 |
+| 零代码传播 | RestClient/WebClient 观测装饰自动注入/抽取，前提是下游也装同样 tracing 依赖 |
+| 手动注入场景 | 绕过标准客户端的 SDK：span.context().traceId()/spanId() 拼 traceparent 头 |
+| 进程内传播 | @Async/线程池用 ContextExecutorService 或 Boot 托管 Executor；Reactor 靠 Hooks 自动传播 |
+
+**下一篇**：[教程 05-Observation可观测/11-深度整合：SpringAI2与Observation的完整结合面]——实战前的完整地图：观测点/配置键/装配链/替换点全景。

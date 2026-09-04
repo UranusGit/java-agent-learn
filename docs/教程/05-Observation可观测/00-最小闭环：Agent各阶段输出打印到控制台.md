@@ -413,4 +413,37 @@ mvn spring-boot:run -Dspring-boot.run.profiles=demo01
 - `spring.ai.*.observations.*` 配置键门控的是内容向 span 属性/后端的**导出出口**，本地 console 观测不依赖它们，学习期全关（要接后端时再开，全键版见 11 关、脱敏见 04 关）；
 - **ChatClient 层观测（`spring.ai.chat.client`，一次请求 1 个）与 ChatModel 层观测（`gen_ai.client.operation`，一次往返 1 个）是外层套内层**——前者管审计与总耗时，后者管 Token 与成本。
 
-**下一关**：这些输出每一行什么意思？`Observation.Context` 是什么？→ [教程 00-基础与核心/01-Spring-AI框架入门]
+**下一关**：这些输出每一行什么意思？`Observation.Context` 是什么？→ [教程 05-Observation可观测/01-读懂输出：span树与观测生命周期]
+
+## 0.10 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 快速验证"框架观测点是否在发事件"——零新增依赖，注册 Handler 即在 console 看到五类观测点的事件流；
+- 排查"LLM 到底收到了什么、工具带了什么参数/返回了什么"——ChatModel 层看 Prompt 原文与 Token，ToolCalling 层看参数与结果留痕；
+- 演示/理解 Agent 内部工具执行循环——问时间 = 2 次 LLM 往返 + 1 次工具调用，`hasToolCalls()` 分流打印让"空响应假 bug"现形；
+- 作为整个系列的实验田——T1/T2 对照实验 + 观测计数断言（工具 : 模型 : 问答 = 1 : 2 : 1）是后续每关的验证基调；
+- 请求级审计的最小落点——ChatClient 层观测一次请求恰好 1 个，适合记整体耗时与生效 Advisor 数。
+
+**❌ 不适用场景**：
+
+- 需要真实 traceId/spanId 的跨阶段链路排查——console 观测没有链路身份，06 关引入 tracing 后才成立；
+- 生产环境的内容导出——`spring.ai.*.observations.*` 开关默认全关是合规设计，正文上 span 属性前必须先做 04 关的脱敏；
+- 聚合指标与成本治理——console 是"单次视角"，Token 计量/SLO 要走 MeterRegistry（07 关）；
+- 给前端/审计方的实时展示——散落文本无法订阅，需结构化事件流 + SSE（03/05 关）；
+- 流式 `.stream()` 场景的完整观测——span 闭合时机与中断记录是另一套行为（08 关）。
+
+## 0.11 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| ObservationHandler | 消费方：`@Bean` 即挂进 Registry，在 onStart/onStop/onError 回调里取数 |
+| ChatClientObservationContext | 编排层观测（`spring.ai.chat.client`）：一次业务请求恰好 1 个，管审计与总耗时 |
+| ChatModelObservationContext | 模型层观测（`gen_ai.client.operation`）：一次 LLM 往返 1 个，管 Prompt 原文与 Token |
+| ToolCallingObservationContext | 工具观测（`spring.ai.tool`）：工具名/参数/结果留痕，结果 stop 前才写入 |
+| 外层套内层 | ChatClient 套 ChatModel 套 Tool：stop 事件由内向外栈式打出 |
+| ObservationRegistry | Actuator 自动装配的事件总线，Handler/Filter/Convention 的挂载点 |
+| 内容开关门控出口 | `spring.ai.*.observations.*` 门控"内容向 span 属性/后端导出"，本地 Handler 读 Context 不受它影响 |
+| hasToolCalls() 分流 | 工具轮模型响应 content 为空串是协议正常表现，分流打印避免"假 bug" |
+
+**下一篇**：[教程 05-Observation可观测/01-读懂输出：span树与观测生命周期]——逐行读懂这些输出，拆开一次观测的一生。

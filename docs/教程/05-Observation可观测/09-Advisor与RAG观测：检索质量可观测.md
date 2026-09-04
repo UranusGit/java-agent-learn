@@ -299,4 +299,36 @@ timeline
 - 内置 QueryResponse Handler 会把文档正文放高基数标签，生产用自建 Handler 只取聚合值；
 - RAG 排障先看时间线再怀疑模型——观测切开"检索问题"与"模型问题"。
 
-**下一关**：观测代码自己怎么测？trace 怎么跨服务传？→ [教程 02-SpringAI核心机制/06-SSE流式通信]
+**下一关**：观测代码自己怎么测？trace 怎么跨服务传？→ [教程 05-Observation可观测/10-观测测试与跨服务传播：TestObservationRegistry与trace透传]
+
+## 9.8 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 回答 RAG 观测三问——"这次回答检索了吗（有无 db span）/检索回了什么（topK、命中数）/检索占多少时延（Advisor+Embedding span 嵌套）"；
+- 回答质量排障的黄金路径——答案胡说 → 查 RETRIEVAL 事件命中数 → 命中 0 或命中无关文档就调 topK/阈值/切库，切开"检索问题"与"模型问题"；
+- Advisor 编排观测——`AdvisorObservationContext` 的 getAdvisorName/getOrder 定位每个 Advisor 的执行与耗时；
+- 检索质量进事件流——自建 VectorStore Handler 只取 topK/命中数等聚合值，走 `collector.accept` 统一出口；
+- 辨析两种知识来源——时间线上 RETRIEVAL 与 TOOL 事件一眼可分（RAG 问答 vs 工具问答）。
+
+**❌ 不适用场景**：
+
+- 生产开 `log-query-response` 让文档正文进标签——基数灾难 + 内容泄露，内置 QueryResponse Handler 生产慎用；
+- 假定 `getQueryResponse()` 恒非 null——ADD 操作没有查询结果，null 容忍是这个 API 的真实状态机；
+- 不引向量库/embedding 依赖就等检索观测——观测点跟着能力 jar 走，依赖未引入则事件不发；
+- 用检索观测替代检索效果评估——观测回答"检索了吗/回了多少"，命中好坏要靠离线评估闭环（数据飞轮）；
+- 未做 06 关时硬注入 Tracer——去掉 Tracer 字段、traceId 传 `"no-trace"` 即可，结构不变。
+
+## 9.9 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| AdvisorObservationContext | 编排层观测：getAdvisorName / getOrder / getChatClientRequest(Response) |
+| VectorStoreObservationContext | 检索观测：getOperationName / getQueryRequest(topK) / getQueryResponse(size) |
+| 检索质量三要素 | 检索了吗（有无 span）、命中多少（size）、命中好坏（正文只进 trace） |
+| collector.accept 复用 | RAG Handler 走 03 关公共出口，前端时间线不区分事件来源 |
+| RETRIEVAL 事件判读 | 命中=0 或命中无关文档 = 检索问题；命中正常仍答错 = 模型/上下文问题 |
+| Embedding 观测 | query 向量化常是检索耗时大头，事件先于 RETRIEVAL 出现 |
+| QuestionAnswerAdvisor | RAG 即 Advisor：挂 ChatClient 默认配置，controller 零改动、对使用方透明 |
+
+**下一篇**：[教程 05-Observation可观测/10-观测测试与跨服务传播：TestObservationRegistry与trace透传]——观测代码自己怎么测、trace 怎么跨服务传。

@@ -2,7 +2,7 @@
 
 > **定位**：实战总装前的**深度基准篇**。00-10 你逐关学会了用观测，这一关把镜头拉远：Spring AI 2.0 到底在**哪些位置**埋了观测、每个位置**给你什么**、**全部配置键**长什么样、Boot **自动装配链**如何把它们串起来、你在**每个环节**的替换点在哪。全部结论来自本地 2.0.0 jar 的 javap/字节码实证（铁律 0），读完这一篇，Spring AI 2.0 的观测整合面在你手里没有盲区。
 >
-> **前置阅读**：[教程 00-基础与核心/00-Agent核心概念]~[10]。**读者画像**：准备把 Observation 用进生产、需要一张"完整地图"再动手的架构师。
+> **前置阅读**：[教程 05-Observation可观测/00-最小闭环：Agent各阶段输出打印到控制台]~[10-观测测试与跨服务传播：TestObservationRegistry与trace透传]。**读者画像**：准备把 Observation 用进生产、需要一张"完整地图"再动手的架构师。
 >
 > **版本基准**：Spring Boot 4.1.0 + Spring AI 2.0.0 + micrometer-observation 1.17.0。
 
@@ -562,4 +562,36 @@ public class ObservationContextHandler {
 - TracerPresent/NotPresent 双分支解释了 tracing bridge 的"零配置生效"；
 - Token 四件套（含缓存读/写）是成本治理的框架原生数据源。
 
-**下一关**：带着这张完整地图，进入总装配。→ [教程 02-SpringAI核心机制/02-Agent状态管理]
+**下一关**：带着这张完整地图，进入总装配。→ [教程 05-Observation可观测/12-综合实战：工业巡检Agent可观测闭环]
+
+## 11.10 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 动手前的"完整地图"核对——任何监控需求先到 11.2 七大观测点清单找对应 Context，表里没有的才自己埋业务观测；
+- 成本治理方案设计——ChatModel 层标签字典的 USAGE 四件套（含缓存读/写 token）是框架原生的成本数据源；
+- 判断"内容要不要上后端 span"——开关门控的是导出出口；本地自研 Handler 读 Context 无条件可用（11.6.2 三层实证）；
+- 装配冲突排查——`@ConditionalOnMissingBean` 退位规则、`@Primary` 解 Convention 歧义、TracerPresent/NotPresent 双分支；
+- 多租户/多环境标签规划——按 11.7 决策速查表选层：ChatClient 层 Convention 加会话/租户标签做多租户归因。
+
+**❌ 不适用场景**：
+
+- 混淆 `spring.ai.chat.client.observations.*` 与 `spring.ai.chat.observations.*`——两层观测、两套内容键，互相独立（11.3 细节 1）；
+- 把默认全关的内容键直接开到生产——高基数 + 潜在敏感，先做 04 关脱敏再开；
+- 表里没有的观测需求硬找框架点——如"模型排队时间"需按 01 关姿势自己埋业务观测；
+- 手动把 Registry 塞给 ChatClient——自动装配的 Builder 已内置，观测开关在 classpath（actuator 在不在），不在代码；
+- 凭 1.x 记忆猜 2.0.0 API——本篇全部结论以本地 jar javap/字节码实证为准（铁律 0），同名类签名可能完全不同。
+
+## 11.11 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| 三层结构 | 埋点层（框架不可改）→ 装配层（Boot 自动装配）→ 消费层（你的 Handler/指标/trace） |
+| 七大观测点 | ChatClient/ChatModel/Advisor/Tool/Embedding/Image/VectorStore，Context 跟能力 jar 走 |
+| 九个配置键 | 内容键默认全 false 是合规设计；chat.client 与 chat 两层互相独立 |
+| 六个 AutoConfiguration | 内置 Handler/Convention 按开关条件注册；Tracer 在场与否决定错误日志是否带 traceId |
+| 标签字典 | 三套 KeyNames 枚举：低基数可聚合、高基数只进 trace；USAGE 四件套是成本金矿 |
+| 替换点规则 | Convention 同类型 Bean 替换（必要时 @Primary）；Handler/Filter/Predicate @Bean 即挂 |
+| 选型口诀 | 改标签找 Convention、拿数据找 Handler、改内容找 Filter、砍流量找 Predicate、保指标找 MeterFilter |
+
+**下一篇**：[教程 05-Observation可观测/12-综合实战：工业巡检Agent可观测闭环]——带着地图进入总装配，收尾成完整闭环。

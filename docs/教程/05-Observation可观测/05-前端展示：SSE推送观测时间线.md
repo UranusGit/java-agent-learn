@@ -26,6 +26,32 @@ graph LR
 - **`replay().limit(N)` 而非 `multicast()`**：新订阅者先收到最近 N 条（进页面即可见"刚发生过什么"），之后实时推。工控大屏断线重连（EventSource 自动重连）后不丢上下文——呼应 [教程 04-企业级架构主干/04-多页面流式响应与会话管理] 的断线重连主题。
 - **buffer 保留不删**：SSE 是"看"，buffer 是"查/审计"——两种消费形态并存，别为了推把存砍了。
 
+一条完整的订阅-推送-重连时序（回放分支 + 实时循环 + 断线重连分支，对应 5.5 测试的步骤 1/3/4）：
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器(EventSource)
+    participant S as SSE端点
+    participant K as Sinks(replay 64)
+    participant C as AgentEventCollector
+    B->>S: GET /demo01/observe/stream
+    S->>K: 订阅 sink.asFlux()
+    alt 进程内已有历史事件
+        K-->>B: 先回放最近 64 条以内（replay 语义）
+    else 刚启动无历史
+        K-->>B: 无回放，直接等实时
+    end
+    loop 巡检请求进行中
+        C->>K: accept() 内 tryEmitNext(AgentEvent)
+        K-->>B: event: agent-event（实时推）
+    end
+    opt 断线（关页面/网络闪断）
+        B->>S: EventSource 自动重连
+        S->>K: 重新订阅
+        K-->>B: 再回放近期事件（上下文不丢）
+    end
+```
+
 ## 5.2 服务端代码：`AgentEventCollector` v2 完整文件
 
 本关只改一个类——在 03 关 `accept()` 入口处接入 Sinks 广播（`AgentEvent`、其余 Handler 均不动）：
@@ -208,4 +234,36 @@ curl 等价：`curl -N "http://localhost:8081/demo01/observe/stream"`（`-N` 关
 - `replay().limit(N)` 兼顾实时与断线重连；`tryEmitNext` 的串行化前提要清楚；
 - 观测数据出前端前的合规链路：Filter 脱敏 → Handler 抽取 → SSE 推送，层层收口。
 
-**下一关**：把所有观测用 traceId 串成一条跨阶段链路。→ [教程 00-基础与核心/06-向量数据库选型]
+**下一关**：把所有观测用 traceId 串成一条跨阶段链路。→ [教程 05-Observation可观测/06-Trace链路：traceId贯穿HTTP、LLM、工具与日志]
+
+## 5.8 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 运维大屏实时展示 Agent 执行过程——EventSource 订阅 `/demo01/observe/stream`，时间线随事件逐条点亮；
+- 断线重连不能丢上下文——`replay().limit(64)` 让新订阅者（含 EventSource 自动重连）先回放近期事件再接实时；
+- "实时看"与"事后查"双受众并存——SSE 推送 + buffer 兜底审计，两种消费形态互不替代；
+- 观测事件要合规出前端——Filter 脱敏 → Handler 抽取 → SSE 推送层层收口（04 关加工在 SSE 链路同样生效）；
+- 单实例低并发的进程内广播——Handler 回调近似串行，`tryEmitNext` 足够。
+
+**❌ 不适用场景**：
+
+- 多实例部署——Sinks 是进程内的，连到 B 实例看不到 A 实例的事件，需 Redis Pub/Sub 聚合（5.6）；
+- 高并发写入——`tryEmitNext` 并发时返回 `FAIL_NON_SERIALIZED`，需 multicast + EmitResult 重试或 publishOn 收敛写入侧；
+- 长时间巡检任务的完整回放——`replay(64)` 不够，需会话维度分组 + 按时间段查询（buffer 升级为存储）；
+- 受众需要权限分级——单一事件流无脱敏版/完整版之分，需按受众分 topic；
+- 为每个 token 发观测事件——内容流与观测流必须分离推送（08 关）。
+
+## 5.9 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| 推送三件套 | 收集器内嵌 Sinks → SSE 端点（text/event-stream）→ 前端 EventSource |
+| replay().limit(64) | 新订阅者先回放最近 N 条再实时推——断线重连不丢上下文 |
+| tryEmitNext 串行前提 | 并发写返回 FAIL_NON_SERIALIZED；单实例低并发近似串行，高并发换 multicast + 重试 |
+| accept() 双写 | 同一入口：入 buffer（留查/审计）+ 发 sink（实时看） |
+| 两条流分离 | /observe/stream 推观测事件，/chat/stream 推内容 token，绝不为每 token 发观测 |
+| 合规链路 | Filter 脱敏 → Handler 抽取 → SSE 推送，出前端前层层收口 |
+| 三层解耦不变式 | Handler → 广播通道 → SSE；换 Redis 不改 Handler，加大屏不改 SSE 协议 |
+
+**下一篇**：[教程 05-Observation可观测/06-Trace链路：traceId贯穿HTTP、LLM、工具与日志]——把所有观测用 traceId 串成一条跨阶段链路。

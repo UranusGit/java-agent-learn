@@ -133,7 +133,7 @@ flowchart LR
 
 你已经能：读懂三件套分工、手拼 span 树、逐位读 `traceparent`、识别采样位与"根 span 复用前缀"惯例。
 
-下一关 [教程 00-基础与核心/02-ChatClient与对话模型]：不再只"读"span，而是**用 Tracer 编程创建**——`startScopedSpan`/`withSpan`/`SpanInScope` 三兄弟的正确用法、tag/event/error 的工业语义、try-with-resources 为什么是铁律。
+下一关 [教程 06-TraceId全链路追踪/02-Tracer编程模型：手动开span]：不再只"读"span，而是**用 Tracer 编程创建**——`startScopedSpan`/`withSpan`/`SpanInScope` 三兄弟的正确用法、tag/event/error 的工业语义、try-with-resources 为什么是铁律。
 
 ---
 

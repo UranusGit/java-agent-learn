@@ -157,7 +157,7 @@ management:
         - tenant-id
 ```
 
-（配置元数据实证：`management.tracing.baggage.tag-fields` 真实存在。）`work-order-id` 就**不要**进 tag-fields——工单号近乎无限枚举，进 tag 就是基数爆炸（[教程 00-基础与核心/07-ReAct推理模式] 基数熔断同理）。
+（配置元数据实证：`management.tracing.baggage.tag-fields` 真实存在。）`work-order-id` 就**不要**进 tag-fields——工单号近乎无限枚举，进 tag 就是基数爆炸（[教程 05-Observation可观测/07-指标治理：Token计量、SLO与基数熔断] 基数熔断同理）。
 
 ## 3.5 代价与安全：Baggage 不是越多越好
 
@@ -183,7 +183,7 @@ management:
 | 任意层读 baggage | 工具日志打印租户 |
 | tenant-id 进每个 span | `tag-fields` 后导出可见（04 关导出后复查） |
 
-下一关 [教程 00-基础与核心/04-记忆与会话管理]：**记录与持久化**——traceId 回写响应头（前端报警有号可查）、结构化日志、以及把"链路档案"落库做审计——展示与记录的存储侧。
+下一关 [教程 06-TraceId全链路追踪/04-记录：traceId落日志、响应头与链路档案]：**记录与持久化**——traceId 回写响应头（前端报警有号可查）、结构化日志、以及把"链路档案"落库做审计——展示与记录的存储侧。
 
 ---
 

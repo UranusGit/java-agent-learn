@@ -1,10 +1,10 @@
 # 06 展示：SSE 推送 trace 时间线到前端
 
-> **定位**：traceId 至此都在后端（日志/响应头/档案）。本关把它**推到用户眼前**：SSE 流里每个 Agent 阶段事件都带 traceId，前端渲染成时间线——"看得见的 Agent"是工业产品的标配体验，也是 08 关综合实战的展示层。技术主线：`ObservationHandler` 收集事件（[教程 00-基础与核心/00-Agent核心概念 §05] 已建好的事件流设施）+ traceId 字段 + SSE 端点。
+> **定位**：traceId 至此都在后端（日志/响应头/档案）。本关把它**推到用户眼前**：SSE 流里每个 Agent 阶段事件都带 traceId，前端渲染成时间线——"看得见的 Agent"是工业产品的标配体验，也是 08 关综合实战的展示层。技术主线：`ObservationHandler` 收集事件（[教程 05-Observation可观测/03-自定义Handler：收集Agent阶段事件流] 已建好的事件流设施）+ traceId 字段 + SSE 端点。
 >
 > **读者画像**：完成 00-05 关；已了解 18 系列的 AgentEventCollector/SSE 推送（本关复用其结构，聚焦 traceId 注入）。
 >
-> **前置阅读**：[教程 00-基础与核心/05-RAG检索增强生成]、[教程 00-基础与核心/04-记忆与会话管理 §4.1]。
+> **前置阅读**：[教程 05-Observation可观测/05-前端展示：SSE推送观测时间线]（本关复用其结构）、[教程 05-Observation可观测/03-自定义Handler：收集Agent阶段事件流]。
 
 ---
 
@@ -53,7 +53,7 @@ public record TraceEvent(
 
 ## 6.3 收集器：Handler + Tracer 组合（完整文件）
 
-结构沿用 18 系列的 AgentEventCollector 思路，差异点：① 事件里带 traceId；② 计时用 `ctx.put/get`（`Observation.Context` 无 `getDuration()`，铁律，[教程 00-基础与核心/02-ChatClient与对话模型]）。
+结构沿用 18 系列的 AgentEventCollector 思路，差异点：① 事件里带 traceId；② 计时用 `ctx.put/get`（`Observation.Context` 无 `getDuration()`，铁律，[教程 05-Observation可观测/07-指标治理：Token计量、SLO与基数熔断]）。
 
 ```java
 // src/main/java/demo/demo01/obs/TraceEventCollector.java（本关完整版）
@@ -226,7 +226,7 @@ data:{"phase":"TOOL","name":"getCurrentTime","elapsedMillis":450,"traceId":"64f8
 ## 6.6 常见误区
 
 - **在 `onStop` 里拿不到 span（traceId=no-trace）**：stop 回调时 scope 可能已切换。稳妥法：`onStart` 时抓 traceId 存进 `context.put("traceId", id)`，`onStop` 从 `context.get` 取——与 18 系列计时同款 `ctx.put/get` 范式（铁律：`Observation.Context` 无 getDuration）。
-- **SSE 断线后事件丢失**：`onBackpressureBuffer(256)` 只是缓冲上限，重连需要业务层补偿（按 traceId 从 04 关档案拉快照）。工业断线重连方案见 [教程 00-基础与核心/05-RAG检索增强生成]。
+- **SSE 断线后事件丢失**：`onBackpressureBuffer(256)` 只是缓冲上限，重连需要业务层补偿（按 traceId 从 04 关档案拉快照）。工业断线重连方案见 [教程 04-企业级架构主干/04-多页面流式响应与会话管理]。
 - **把 traceId 暴露当风险**：traceId 是随机 id、不含业务语义，可给前端；但**档案查询接口必须鉴权**（04 关 /archive/list 不能裸奔到公网）。
 
 ## 6.7 本关交付与下一关
@@ -237,7 +237,7 @@ data:{"phase":"TOOL","name":"getCurrentTime","elapsedMillis":450,"traceId":"64f8
 | 阶段时间线 | AGENT/LLM/TOOL 顺序事件 |
 | 心跳保活 | 15s PING |
 
-下一关 [教程 00-基础与核心/07-ReAct推理模式]：**管控分离微服务落地**——网关/控制面/数据面三角色下的 traceId 架构、采样与留存策略、跨服务排障 SOP——进入架构师主战场。
+下一关 [教程 06-TraceId全链路追踪/07-管控分离微服务落地：traceId架构]：**管控分离微服务落地**——网关/控制面/数据面三角色下的 traceId 架构、采样与留存策略、跨服务排障 SOP——进入架构师主战场。
 
 ---
 

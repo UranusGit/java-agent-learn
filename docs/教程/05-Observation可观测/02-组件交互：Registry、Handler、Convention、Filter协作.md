@@ -16,6 +16,23 @@
 | `ObservationConvention` | **命名与打标签方**：决定 span 叫什么、带什么 KeyValues | 工单模板（统一字段） |
 | `ObservationFilter` | **收尾加工方**：stop 前最后修改 Context（脱敏/补全/删除） | 出厂前质检 |
 
+五个组件的职责分工可以浓缩成"一个事件、三种改法、N 种消费"——消费前想改什么，决定了你该实现哪个扩展点（什么都不改就直接写 Handler）：
+
+```mermaid
+flowchart TD
+    E["一次观测事件<br/>Observation.Context + 事件名"] --> Q{"消费前要改什么？"}
+    Q -->|"名字/标签（格式）"| CV["Convention<br/>getContextualName 定名<br/>低/高基数 KeyValues 分流"]
+    Q -->|"Context 内容（主线）"| F["Filter<br/>stop 前最后加工<br/>脱敏/审计标记"]
+    Q -->|"什么都不改，直接拿数据"| H["Handler<br/>onStart / onError / onStop"]
+    CV -->|"标签定型"| H2["全部 Handler 消费"]
+    F -->|"内容定型"| H2
+    E -->|"旁路直达"| H2
+    H2 --> O1["console 打印"]
+    H2 --> O2["事件流/前端"]
+    H2 --> O3["指标 MeterRegistry"]
+    H2 --> O4["trace span 树"]
+```
+
 ## 2.2 一次观测的完整旅程（核心图）
 
 ```mermaid
@@ -145,4 +162,37 @@ public class ToolCountHandler {
 - 类型化认领用 `supportsContext`；自定义 Convention 继承 `Default*Convention` 只覆写关心的方法；
 - WebFlux 下不要手玩 scope/ThreadLocal。
 
-**下一关**：正式做你要的第二层——把 Agent 各阶段输出**收集成结构化事件流**。→ [教程 00-基础与核心/03-工具调用]
+**下一关**：正式做你要的第二层——把 Agent 各阶段输出**收集成结构化事件流**。→ [教程 05-Observation可观测/03-自定义Handler：收集Agent阶段事件流]
+
+## 2.8 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 动手自定义之前先定位组件——改标签找 Convention、拿数据找 Handler、改内容找 Filter、砍流量找 Predicate，职责不混；
+- 验证多 Handler 并存互不干扰——广播机制下 `ObservationTextPublisher` 与自定义 Handler 同时消费同一事件流（2.6 实测）；
+- 零侵入扩展观测能力——`@Bean` 即自动挂 Registry，框架埋点零改动，这是开闭原则在观测层的形态；
+- 写自定义 Convention 前校准姿势——继承 `Default*Convention` 只覆写关心的方法，低/高基数方法分开实现；
+- WebFlux 工程的观测方案评审——识别"手玩 scope / ThreadLocal 传上下文"类反模式。
+
+**❌ 不适用场景**：
+
+- 想在 Handler 里改 span 名/标签——KeyValues 到 Handler 时已定型，那是 Convention 的职责；
+- 想在 Handler 里做脱敏——文本类 Handler 在 Filter 加工前已拿到原始内容，脱敏必须在 Filter（stop 前最后一道）；
+- 在 Reactor 链上手动 openScope 传业务上下文——ThreadLocal 跨线程必断，走 Reactor Context + Hooks；
+- 用 Handler 内 AtomicLong 做生产计数——多实例各自为政，指标必须走 MeterRegistry（07 关）；
+- 给单个观测点配"全局唯一 Handler"——Registry 是广播语义，过滤靠 supportsContext 而非独占注册。
+
+## 2.9 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| ObservationRegistry | 全局唯一事件总线：持有 Handler/Filter/Convention，生产者只依赖它 |
+| ObservationHandler | 消费方：supportsContext 类型化认领，onStop 是信息最全的主战场 |
+| ObservationConvention | 命名与打标方：决定 span 名与 KeyValues，继承 Default* 增量覆写 |
+| ObservationFilter | 收尾加工方：stop 前最后改 Context，一次加工处处可见 |
+| ObservationPredicate | 降噪方：观测产生处直接掐掉（07 关基数防线第一层） |
+| 广播机制 | 事件广播给所有 Handler，各自 supportsContext 判断认领，互不干扰 |
+| 自动装配 | Boot 收集容器里所有 Handler/Filter/GlobalConvention Bean 挂进 Registry，@Bean 即生效 |
+| 生产者不认识消费者 | 埋点只管发事件，消费方式可插拔——一行埋点不改换消费端 |
+
+**下一篇**：[教程 05-Observation可观测/03-自定义Handler：收集Agent阶段事件流]——正式把各阶段输出收集成结构化事件流。

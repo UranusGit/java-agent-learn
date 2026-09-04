@@ -2,7 +2,7 @@
 
 > **定位**：00 关你看到了一堆 console 输出，但"看不懂"等于没看见。这一关教你**逐行解读**：每段输出是一个 span（观测单元），span 之间的父子关系构成一棵树；再拆开 `observe()` 的生命周期，讲清 Handler 在什么时机被回调——这是后面自定义 Handler/Convention 的地基。
 >
-> **前置阅读**：[教程 00-基础与核心/00-Agent核心概念]（工程已能打印观测）。
+> **前置阅读**：[教程 05-Observation可观测/00-最小闭环：Agent各阶段输出打印到控制台]（工程已能打印观测）。
 
 ---
 
@@ -227,4 +227,37 @@ public class TimeTool {
 - 低/高基数分流是指标与 trace 的分水岭，工业编号一律高基数；
 - 生命周期 `start → openScope → (error) → stop`，`onStop` 信息最全，是 Handler 的主战场。
 
-**下一关**：Registry 如何把观测事件分发给 Handler？Convention 在哪个环节注入标签？→ [教程 00-基础与核心/02-ChatClient与对话模型]
+**下一关**：Registry 如何把观测事件分发给 Handler？Convention 在哪个环节注入标签？→ [教程 05-Observation可观测/02-组件交互：Registry、Handler、Convention、Filter协作]
+
+## 1.8 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 排障第一步"慢在哪一步"——span 时间轴（gantt 视角）把 HTTP/编排/LLM/工具各段耗时从猜测变成测量；
+- 判断 Agent 行为是否符合预期——span 树是行为指纹，"一轮工具调用 = 两次 LLM 调用"在树上一眼可辨、不是 bug；
+- 给框架不认识的手动埋业务阶段观测——start + openScope + (error) + stop 四步，try/finally 保证恰好 stop 一次；
+- 设计指标标签前做基数分诊——取值可枚举且总数有限进低基数；业务流水号/自由文本/设备编号一律高基数；
+- 决定 Handler 代码写在哪个回调——onStop 信息最全（响应侧已 set），是审计/收集 Handler 的主战场。
+
+**❌ 不适用场景**：
+
+- 没接 tracing 时想拿真实 spanId/traceId——Observation 只是"span 的投影源"，链路身份要等 06 关 Tracer；
+- 把高基数字段当指标维度——完整时间戳/设备编号进 Prometheus 是基数灾难（07 关熔断的伏笔）；
+- 在 Reactor 链上跨线程手玩 scope——scope 基于 ThreadLocal，WebFlux 下必断（02 关铁律）；
+- 给"无时长的瞬时点"建 span——那是 event 的职责（onError 时刻、第 3 次重试触发点）；
+- 用 Observation 替代日志或指标——它是"一次埋点三处受益"的门面，不是其中任何一种的替代品。
+
+## 1.9 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| span | 有起止时间的操作记录：name / 起止时间戳 / KeyValues / parentId 四要素 |
+| Trace / Span / Event | 1 Trace = N Span（同 traceId 的树）；1 Span = 0..N Event（无时长瞬时点） |
+| Observation 门面 | 接 tracing 投影为标准 span，不接也走同一生命周期——一次埋点三处受益 |
+| 生命周期 | start → openScope → (error) → stop；onStop 信息最全，onError 先于 onStop |
+| scope | openScope 入栈建立父子关系；同线程嵌套天然成树，跨线程靠 Reactor Context |
+| 低/高基数分界 | 可枚举且总数有限 → 低基数可进指标；流水号/自由文本 → 高基数只进 trace/日志 |
+| 行为指纹 | span 树 = 一次请求的行为指纹；对照实验（问/不问班次）验证观测不撒谎 |
+| 恰好 stop 一次 | try/catch + finally 结构保证，不靠查询状态（Observation 无 isStopped()） |
+
+**下一篇**：[教程 05-Observation可观测/02-组件交互：Registry、Handler、Convention、Filter协作]——看懂系统内部怎么转，知道该在哪个环节插自己的代码。

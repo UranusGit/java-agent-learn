@@ -104,7 +104,7 @@ public class TimeTool {
 
 | 方法 | 语义 | 工业用法 |
 |------|------|---------|
-| `tag(k, v)` | span 全程有效的键值对 | 业务属性：`tenant=plant-a`（注意基数！值必须有限可枚举，[教程 00-基础与核心/07-ReAct推理模式] 基数熔断同理） |
+| `tag(k, v)` | span 全程有效的键值对 | 业务属性：`tenant=plant-a`（注意基数！值必须有限可枚举，[教程 05-Observation可观测/07-指标治理：Token计量、SLO与基数熔断] 基数熔断同理） |
 | `event(name)` | 时间轴上的**点**事件 | 状态迁移：`llm-first-token`（首 token 到达时刻，流式场景定位 TTFT） |
 | `error(t)` | 异常标记 | catch 块里打，span 变红、异常摘要进 tag |
 
@@ -154,7 +154,7 @@ executorService.submit(() -> {
 });
 ```
 
-两个易错点：① `withSpan` 与 `end` **是两件事**——scope 管日志，end 管记录闭合，缺一个就漏一半；② WebFlux 主链路里**优先用** `Hooks.enableAutomaticContextPropagation()` + Reactor Context（[教程 00-基础与核心/06-向量数据库选型 §6.3]），手抓 span 只用于"逃出 Reactor 世界"的边界（如legacy 线程池）。
+两个易错点：① `withSpan` 与 `end` **是两件事**——scope 管日志，end 管记录闭合，缺一个就漏一半；② WebFlux 主链路里**优先用** `Hooks.enableAutomaticContextPropagation()` + Reactor Context（[教程 05-Observation可观测/06-Trace链路：traceId贯穿HTTP、LLM、工具与日志]），手抓 span 只用于"逃出 Reactor 世界"的边界（如legacy 线程池）。
 
 ## 2.6 该不该手动开 span：决策指南
 
@@ -179,7 +179,7 @@ flowchart TD
 | tag/event/error 三支笔 | 导出后看 span 详情（04 关起有导出） |
 | 跨线程范式 | 2.5 概念片段 + 05 关完整落地 |
 
-下一关 [教程 00-基础与核心/03-工具调用]：**Baggage**——tenantId 这类业务属性如何挂在 traceId 上、随整条链路（含跨服务）自动流动、并进 MDC 与日志同行——这是多租户架构（07 关）的关键地基。
+下一关 [教程 06-TraceId全链路追踪/03-Baggage：业务属性随链路传播]：**Baggage**——tenantId 这类业务属性如何挂在 traceId 上、随整条链路（含跨服务）自动流动、并进 MDC 与日志同行——这是多租户架构（07 关）的关键地基。
 
 ---
 

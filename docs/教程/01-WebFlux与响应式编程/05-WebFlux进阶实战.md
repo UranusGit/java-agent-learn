@@ -339,6 +339,25 @@ Flux<String> advancedChat(@RequestParam String q) {
 
 ---
 
+## 8. 适用场景与不适用场景
+
+### 适用场景 ✅
+
+- **请求上下文跨线程切换贯穿全链路**：traceId / 租户 ID 从 WebFilter 到深层 Service——用 Reactor Context 替代失灵的 ThreadLocal（§1.3）
+- **客户端要打断生成 / 双向交互**：WebSocket + `stop` 消息终止出站流；纯服务器单向推送保 SSE（§2 选型表）
+- **消费速率不可控且中间状态无意义**：进度推送用 `onBackpressureLatest`——页面恢复时直接看 78%，不补播 5%/23%/57%（§3）
+- **给 LLM 流上弹性护栏**：`timeout` 管间隔上限、`take(Duration)` 管总时长上限、`retryWhen` 只重试发送前失败（§4.1、§4.2）
+- **长连接的资源止损**：依赖取消传播中断已按 token 计费的 LLM 调用，自定义资源挂 `doFinally`（§4.3）
+
+### 不适用场景 ❌
+
+- **MVC 一请求一线程**：上下文传 ThreadLocal / 拦截器即可，§1.1 的失灵根因根本不存在
+- **单向推送硬上 WebSocket**：要自实现断线重连 + 代理兼容成本——Agent 默认 SSE，需要打断才升级（§2 选型表）
+- **审计流套用 latest/drop**：一条不能丢的流只能无界 buffer + 监控（§3 策略表——选错策略就是丢数据）
+- **对已产出 token 的流盲目 retry**：重新订阅 = LLM 重新计费，重试只允许作用于"发送前失败"（§4.2 铁律）
+
+---
+
 ## 7. 总结
 
 - **Context 是 ThreadLocal 的响应式替代**：不可变、随订阅向上游传播；`contextWrite` 写、`deferContextual` 读；管道内禁止 block 式读取

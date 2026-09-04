@@ -234,4 +234,36 @@ sequenceDiagram
 - traceId 只从 `Tracer.currentSpan().context()` 取；日志用 `%X{traceId}` 占位零代码接入；
 - Agent 服务采样策略与传统微服务相反：单请求价值高 → 高采样。
 
-**下一关**：观测变指标——Token 计量、SLO 与基数熔断。→ [教程 00-基础与核心/07-ReAct推理模式]
+**下一关**：观测变指标——Token 计量、SLO 与基数熔断。→ [教程 05-Observation可观测/07-指标治理：Token计量、SLO与基数熔断]
+
+## 6.8 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 报障时"从日志一行定位全链路"——`%X{traceId}` 占位让日志自动带链路号，零代码接入；
+- 跨阶段因果归因——CHAT_CLIENT/LLM/TOOL 事件与 Zipkin span 树用同一 traceId 串成"一条请求的一生"；
+- 审计反查——巡检记录表/审计表存 traceId，出质量问题（如 LLM 给错结论误导交接）可反查当时完整链路与 prompt；
+- 制定 Agent 服务的采样策略——单请求价值高 → 全采样/高采样（0.5+），与传统高 QPS 微服务 0.05 思路相反；
+- 既存观测管线的零改动升级——TracingObservationHandler 只是 Registry 上又一个消费者，事件流/Convention/Filter 原样工作。
+
+**❌ 不适用场景**：
+
+- 从 `Observation.Context` 取 traceId——铁律：Context 无此方法，只从 `Tracer.currentSpan().context()` 取；
+- `sampling.probability=0` 的容量演练——无当前 span 时事件流变 `no-trace`，链路面整体消失（观测与采样强耦合）；
+- Brave 桥与 OTel 桥混用——两套 bridge 并存没有意义，按既有监控栈二选一；
+- 高 QPS 通用微服务照搬全采样——非 Agent 服务仍适用 0.05~0.2 常规采样率；
+- Reactor 链不开 `Hooks.enableAutomaticContextPropagation()` 就指望跨线程串联——桥接不开，切换线程即断链。
+
+## 6.9 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| Trace = 特殊 Handler | TracingObservationHandler 挂进 Registry，观测事件投影为 span 树——不是另一套体系 |
+| micrometer-tracing-bridge-brave | Brave 桥依赖：引入即自动装配，既有 Handler/Convention/Filter 零改动受益 |
+| Hooks.enableAutomaticContextPropagation() | Reactor Context ↔ ThreadLocal 桥接，WebFlux 跨线程链路不断的关键开关 |
+| Tracer.currentSpan() | 取 traceId 的唯一正道：span.context().traceId()；无 span 时为 null → no-trace |
+| %X{traceId} 日志占位 | logging.pattern.level 一行配置，日志行免费带 [traceId,spanId] |
+| 采样率策略 | Agent 服务高采样（单请求价值高）；生产常规 0.05~0.2；0.0 → 全部 no-trace |
+| traceId 落库 | 巡检/审计记录存 traceId——质量问题时反查链路与 prompt 的钥匙（合规刚需） |
+
+**下一篇**：[教程 05-Observation可观测/07-指标治理：Token计量、SLO与基数熔断]——观测变指标，补上聚合视角。

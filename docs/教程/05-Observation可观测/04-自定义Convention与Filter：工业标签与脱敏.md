@@ -160,4 +160,36 @@ flowchart TD
 - 增量式覆写（继承 Default）优于推翻重写——默认行为是生态共识，别轻易丢；
 - 脱敏/标记必须在 Filter 层一次完成，正则只配 demo，生产用结构化白名单。
 
-**下一关**：事件流已合规，把它推到前端页面实时展示。→ [教程 00-基础与核心/05-RAG检索增强生成]
+**下一关**：事件流已合规，把它推到前端页面实时展示。→ [教程 05-Observation可观测/05-前端展示：SSE推送观测时间线]
+
+## 4.8 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 给 span 注入统一业务标签（班次/产线/租户）且取值可枚举——Convention 低基数通道，可直接进指标分维度聚合；
+- 观测内容含敏感字段需脱敏——Filter 在所有 Handler 消费前一次改写，console/事件流/SSE/审计全部拿到脱敏后内容；
+- 给 Context 补审计标记等派生字段——Filter 一次加工下游统一消费（`audit.complete` 范式），避免每个 Handler 重复计算；
+- 改 span 命名规范（如工具名加产线前缀）——Convention 的 getName/getContextualName 职责；
+- 业务身份要进观测——WebFlux 下从领域数据解析（本关姿势）或生产用 ToolContext/排班字典服务。
+
+**❌ 不适用场景**：
+
+- 标签取值不可枚举（完整时间戳/设备编号）——高基数禁区，只进 trace/日志，强行进标签会被 07 关 MeterFilter deny；
+- 在同步 `call()` 链路里指望 Reactor Context 传业务身份——取不到，需 `.stream()` 全响应式链路或改用 ToolContext；
+- 用正则对复杂嵌套 JSON 脱敏——不可靠，生产用 Jackson 解析后按字段白名单重建；
+- 想丢弃某类观测——Filter 是"改"，Predicate 才是"掐"（07 关）；
+- 推翻默认 Convention 重写全部标签——默认标签是生态共识，增量覆写（super...and(...)）优于推翻。
+
+## 4.9 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| Convention | 命名与标签的"格式"职责：继承 Default* 只覆写增量，@Primary 解决装配歧义 |
+| Filter | Context 内容的"主线"职责：所有 Handler stop 消费前最后一道加工口 |
+| ObservationPredicate | "掐"的职责：源头降噪，与 Filter 的"改"分工不同 |
+| 低基数判据 | 取值可枚举且总数有限才进标签：shift 3 值安全，时间戳/设备编号是禁区 |
+| 业务传值通道 | WebFlux 禁 ThreadLocal：领域数据解析（本关）/ ToolContext（生产推荐）/ Reactor Context（仅全响应式链路） |
+| 一次加工处处生效 | Filter 层 setToolCallResult 改写一次，console/事件流/SSE/审计全部拿到改写后内容 |
+| 增量式覆写 | super.getLowCardinalityKeyValues().and(...) 保留默认标签再追加，别推翻生态共识 |
+
+**下一篇**：[教程 05-Observation可观测/05-前端展示：SSE推送观测时间线]——把合规的事件流实时推给前端页面。

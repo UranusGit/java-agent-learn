@@ -2,7 +2,7 @@
 
 > **定位**：console、事件流、trace 都是"单次视角"。这一关补上"聚合视角"：用 Micrometer 把观测转成指标——**Token 成本计量**、工具耗时分桶（SLO）、以及工业系统必备的**基数熔断**（防一个标签打爆指标系统）。**本系列以学会知识点为第一目的，不装 Prometheus/Grafana**——全部指标用 Actuator 自带的 `/actuator/metrics` 端点直接看：知识点（MeterRegistry/Timer/基数纪律）一个不少，后端只是替换项，将来接 Prometheus 只需加一个依赖。
 >
-> **前置阅读**：[教程 00-基础与核心/01-Spring-AI框架入门 §低高基数]、[教程 04-企业级架构主干/07-成本治理与Token计量]。
+> **前置阅读**：[教程 05-Observation可观测/01-读懂输出：span树与观测生命周期 §1.3]（低高基数）、[教程 04-企业级架构主干/07-成本治理与Token计量]。
 
 ---
 
@@ -216,4 +216,37 @@ graph LR
 - Predicate 掐源头 + MeterFilter 兜登记 = 两级基数保险丝；
 - 四条观测出口（console/事件流/trace/指标）共用一套 Handler 机制。
 
-**下一关**：前端要打字机效果——流式模式下观测怎么闭合？→ [教程 00-基础与核心/08-Plan-and-Execute模式]
+**下一关**：前端要打字机效果——流式模式下观测怎么闭合？→ [教程 05-Observation可观测/08-流式响应的观测：stream模式下的span闭合]
+
+## 7.10 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- Token 成本归因——自定义 Handler 把 usage 按 `type=prompt/completion` 低基数标签进 counter，`/actuator/metrics` 直查、按维度分摊；
+- 工具耗时定达标线——Timer + `serviceLevelObjectives` + 直方图分桶，"P99 超 2s 告警、达标率 < 95% 排查"从口号变成可查指标；
+- 防高基数标签打爆指标系统——ObservationPredicate 掐源头 + MeterFilter 兜登记，两级保险丝缺一不可；
+- 零安装学指标本体——MeterRegistry + `/actuator/metrics` HTTP 直查，将来接 Prometheus 业务代码零改动；
+- 写计时类 Handler——Context 无 `getDuration()`（铁律），onStart 放 nanoTime、onStop 取差值的正确姿势。
+
+**❌ 不适用场景**：
+
+- 把设备编号/完整时间戳当指标标签——1 万台设备 × N 类工具 = 基数爆炸，deny 兜底之前先在源头遵守纪律；
+- 排查单次请求的因果细节——指标是聚合视角，单次排障走 console/事件流/trace 四出口中的另外三条；
+- usage 缺失时强行计量——流式中断/出错时 usage 可能为 null，观测代码必须先判空（不许崩）；
+- 用进程内 AtomicLong 做生产计数——多实例各自为政，"一处注册处处可查"必须走 MeterRegistry；
+- 本阶段强上 Prometheus+Grafana——零安装路线知识点一个不少，后端只是加一个 registry 依赖的可插拔替换。
+
+## 7.11 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| MeterRegistry | 指标本体：注册/聚合/导出，"指标的 SLF4J"，后端可插拔 |
+| ChatModelMeterObservationHandler | 免费内置：actuator 在即自动装配 LLM token/耗时指标，零代码 |
+| agent.token.cost | 成本归因计数器：type=prompt/completion 低基数分维度累计 |
+| Timer + SLO | 耗时达标线契约：publishPercentileHistogram + serviceLevelObjectives(0.5s, 2s) |
+| ObservationPredicate | 第一层熔断：观测产生处掐噪声（省 CPU），Boot 自动收集所有 Predicate Bean |
+| MeterFilter | 第二层熔断：maximumAllowableTags 基数天花板 + deny 高基数 meter |
+| Context 计时范式 | ctx.put(START_NANOS) / ctx.get() 差值——Context 无 getDuration()（铁律） |
+| 四条出口 | console 看单次、事件流看过程、trace 查因果、指标做治理——同一套 Handler 机制的四种投影 |
+
+**下一篇**：[教程 05-Observation可观测/08-流式响应的观测：stream模式下的span闭合]——前端要打字机效果，流式下观测怎么闭合。

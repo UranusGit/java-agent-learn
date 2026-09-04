@@ -379,4 +379,36 @@ public class TimeTool {
 - 自定义 Context 埋点（仿 ToolCallingObservationContext）：领域字段进 Context、Supplier 闭包喂初值、结果 stop 前回填、`supportsContext` 类型路由；Convention 可选，负责把领域字段翻译成标签；
 - "内存 buffer + REST 查询"是通往生产存储（Redis/MQ）的最小正确骨架。
 
-**下一关**：事件里想带班次等业务标签？想对观测内容做统一加工？→ Convention 与 Filter。[教程 00-基础与核心/04-记忆与会话管理]
+**下一关**：事件里想带班次等业务标签？想对观测内容做统一加工？→ Convention 与 Filter。[教程 05-Observation可观测/04-自定义Convention与Filter：工业标签与脱敏]
+
+## 3.8 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 把 Agent 过程给前端/审计/落库消费——自定义 Handler + 稳定 DTO（`AgentEvent` record）是标准姿势；
+- 业务操作需要被 Handler/Convention 类型化消费——仿 `ToolCallingObservationContext` 造领域 Context（`shift.resolve` 范式：字段进 Context、Supplier 喂初值、结果 stop 前回填）；
+- 多来源事件要统一管线——`accept()` 单一出口让 SSE/RAG Handler/审计复用同一条路，前端不区分事件来自哪个 Handler；
+- 长文本/大结果要进观测流——截断纪律 + ConcurrentHashMap/CopyOnWriteArrayList，观测系统自身不能成为内存泄漏源；
+- 错误也要留痕——`onError` 单独挂勾，ERROR 事件与业务事件同流归组。
+
+**❌ 不适用场景**：
+
+- 只是本地调试看过程——`ObservationTextPublisher` 原型够了，别写代码；
+- 只要 QPS/耗时/token 指标——不写 Handler，内置 `ChatModelMeterObservationHandler` + MeterRegistry（07 关）；
+- 想改标签/名称——不是 Handler 的职责，用 Convention（04 关）；
+- 把框架 `Observation.Context` 直接塞给前端——含不可序列化字段且暴露面失控，必须抽自己的 DTO；
+- 敏感/大文本放 Context 字段——Context 会流经所有 Handler（含未来 tracing 导出），违反 3.2 截断纪律。
+
+## 3.9 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| AgentEvent | 稳定事件契约：phase/name/detail/time，跨边界传自己的 DTO 而非框架对象 |
+| supportsContext | 唯一路由器：instanceof 认领 ChatClient/ChatModel/Tool/业务 Context |
+| accept() 单一出口 | 事件唯一入口：入 buffer + 发 SSE，多 Handler 复用同一管线 |
+| 截断纪律 | prompt/结果只存摘要（80/100 字符），防止观测系统成为内存泄漏源 |
+| 自定义 Context 范式 | 领域字段进 Context 子类 + Supplier 闭包喂初值 + 结果 stop 前回填 |
+| 结果回填时机 | Handler onStop 与 Convention 标签都在 stop 边界触发，stop 后 set 无人看见 |
+| 一源多消费者 | 埋点与消费解耦：buffer 换 Redis/MQ、drain 换 SSE，类边界不动 |
+
+**下一篇**：[教程 05-Observation可观测/04-自定义Convention与Filter：工业标签与脱敏]——给事件带上班次等业务标签，并统一做收尾加工。

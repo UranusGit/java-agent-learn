@@ -744,6 +744,26 @@ chatClient.call().content()
 
 ---
 
+## 11. 适用场景与不适用场景
+
+### 适用场景 ✅
+
+- **LLM 流式输出的消费与加工**：`ChatClient.stream()` 返回的 `Flux<String>` 需要 map/filter/merge/concat 等操作符逐 chunk 处理（§3.2、§3.6 的心跳合并管线）
+- **单次异步调用需要弹性链**：LLM 调用要同时挂超时、降级、指数退避重试——§2.4 的 `timeout + onErrorResume + retryWhen` 组合是标准形态
+- **一次副作用多方共享**：同一次 LLM 调用要同时进 SSE、日志、缓存三个消费者——先做 §6.1 的冷热流判断，再选 `share()/cache(ttl)`（§6.2）
+- **管线中织入横切逻辑**：token 计数、耗时记录、结束原因审计，用 `doOnNext/doFinally` 旁路完成而不污染主流程（§5）
+- **阻塞调用混入响应式链路**：JDBC/阻塞 SDK 用 `Mono.fromCallable + subscribeOn(boundedElastic)` 隔离，不拖垮 EventLoop（§4.1、§9.2）
+
+### 不适用场景 ❌
+
+- **简单一次性请求**：无组合、无流式的单次调用直接返回值即可，包成 Mono 只增加心智负担
+- **纯 CPU 密集的小数据集同步变换**：Java Stream 更直观，Flux 的异步/背压语义没有增益
+- **需要外部世界主动塞数据并广播**：操作符链是"框架推数据"，命令式入口该用 Sinks——§6.3 的分界线（→ [教程 01-WebFlux与响应式编程/03-Sinks详解]）
+- **需要精细消费速率治理**：本篇只铺垫了背压基础（§7），策略选型与限流要 → [教程 01-WebFlux与响应式编程/02-背压与流量控制]
+- **团队尚无响应式经验的生产项目**：§9 的三大陷阱（忘订阅、EventLoop 内阻塞、错误被吞）在无演练的团队是事故源，先补训练再上生产
+
+---
+
 ## 10. 总结
 
 Reactor 是 Spring WebFlux 和 Spring AI 流式 API 的基石。掌握 Mono / Flux 的操作符体系，是开发高性能 Agent 应用的前提：

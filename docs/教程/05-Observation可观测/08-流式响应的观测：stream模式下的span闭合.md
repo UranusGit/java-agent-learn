@@ -2,7 +2,7 @@
 
 > **定位**：真实工业 Agent 的前端几乎都是流式的（打字机效果，呼应 [教程 02-SpringAI核心机制/06-SSE流式通信]）。流式给观测带来三个新问题：**span 何时闭合？中断了怎么办？事件流和内容流怎么并行推送？** 这一关把巡检 Agent 升级为 `.stream()`，让观测体系跟上流式时代。
 >
-> **前置阅读**：[教程 00-基础与核心/00-Agent核心概念]~[05]。
+> **前置阅读**：[教程 05-Observation可观测/00-最小闭环：Agent各阶段输出打印到控制台]~[05-前端展示：SSE推送观测时间线]。
 
 ---
 
@@ -159,4 +159,36 @@ graph LR
 - `doOnCancel`/`doOnError` 是中断观测的正确挂点；cancel ≠ error，业务含义不同；
 - 埋点从 call 换 stream，Handler/Convention/Filter 零改动——架构红利的直接验证。
 
-**下一关**：Advisor 链与 RAG 检索的观测。→ [教程 00-基础与核心/09-多Agent协作]
+**下一关**：Advisor 链与 RAG 检索的观测。→ [教程 05-Observation可观测/09-Advisor与RAG观测：检索质量可观测]
+
+## 8.7 适用场景与不适用场景
+
+**✅ 适用场景**：
+
+- 流式 Agent 的观测补齐——`isStreaming()` 区分模式后，span 在流终止（完成/取消/错误）时才闭合，usage/completion 此刻才完整；
+- 中断的如实记录——`doOnCancel`/`doOnError` 埋"中断 span"，区分用户主动取消（cancel）与系统异常（error），cancel 不产生 ERROR 事件；
+- 断点续看的基础——前端把已收到的 delta 上报存"部分结果"，审计层用 traceId 拼回完整现场；
+- 双流并轨的前端体验——内容流（打字机）+ 观测流（时间线）两条 EventSource 并联，用户第一次"看见 Agent 思考"；
+- 验证架构红利——埋点从 `call()` 换 `stream()`，Handler/Convention/Filter 消费侧零改动。
+
+**❌ 不适用场景**：
+
+- 为每个 token 发观测事件——观测是段落级、token 是字符级，会造出第二倍流量；
+- 指望流式中途产出完整 completion/usage——span 未闭合前二者都不完整，中断则缺失；
+- 把 cancel 当 error 处理——业务含义不同（用户主动 vs 系统异常），事件流里混记会污染错误告警；
+- 同步 `call()` 场景套用流式结论——stop 时机、中断频率、聚合行为完全不同；
+- 在 `doOnNext` 里手动开 scope 传上下文——WebFlux 铁律禁止，跨线程上下文走 Reactor Context。
+
+## 8.8 本章总结
+
+| 核心概念 | 一句话要点 |
+|---|---|
+| isStreaming() | 框架埋点自区分流式：ChatModelObservationContext 真实方法（javap 实证） |
+| 流终止才闭合 | stream 模式下 span stop 在完成/取消/错误时；usage 挂流末 chunk，中断则缺失 |
+| doOnCancel / doOnError | 中断观测的正确挂点：标记"流的死亡方式"，cancel 与 error 分开记 |
+| stream.req 高基数 | 中断观测的流水号只进 trace/事件流，不进指标 |
+| 部分结果 | 中断前已见 token 由前端上报回存，审计层 traceId 拼回完整现场（断点续看基础） |
+| 双 EventSource 并联 | /chat/stream 推 delta/done，/observe/stream 推 agent-event，时间线与打字机并轨 |
+| 消费侧零改动 | 换 stream() 后 Handler/Convention/Filter 原样工作——"生产者不认识消费者"的直接验证 |
+
+**下一篇**：[教程 05-Observation可观测/09-Advisor与RAG观测：检索质量可观测]——把 Advisor 链与向量检索纳入观测面。
