@@ -135,6 +135,8 @@ public class ToolLatencyHandler implements ObservationHandler<ToolCallingObserva
 
 SLO 的意义不在看数字，在**把质量要求变成可告警的契约**：P99 超 2s → 告警；达标率 < 95% → 触发排查。这一步在本系列用 `/actuator/metrics` 肉眼验证即可，生产配 Grafana 告警规则——同样的指标，不同的展示端。
 
+> 告警契约签了之后，"拉响时怎么办"？→ [附录 18-可观测平台实践/01-AI事件响应工程 §5]——AI 特有告警源、指标底座与防疲劳分层，事件分级 P0-P3。
+
 ## 7.5 基数熔断：工业系统的保险丝
 
 反例：新手把设备号放进指标标签——1 万台设备 × N 类工具 = 指标系统（无论 Prometheus 还是别的）被高基数标签打爆。防线有两层，同放 `ObsGovernanceConfig`：

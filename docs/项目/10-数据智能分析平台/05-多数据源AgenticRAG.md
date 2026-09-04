@@ -56,6 +56,8 @@ flowchart TB
 
 **多源是最难的问题**：难点不是 LLM 质量，是 schema 冲突（Salesforce account_id vs ERP client_no vs 数仓 dim_customer_key）、上下文碎片化、join 顺序失败、指标口径漂移。**Data Catalog 是路由中枢**——路由决策必须 grounded in governed metadata。
 
+> 「多源路由之上还有一层"接进来"的工程现实：老接口脏模型翻译、超时降级、只读→受限写分阶段 → [教程 04-企业级架构主干/15-工具集成与防腐层 §4-§5、§8]」
+
 ### 3.1 本节核对（多源路由架构）
 
 - [ ] 图中三分支（订单/用户/跨库分解）与 §4.8 Router 输出的 `sources/decomposition/joinPaths` 字段对应
