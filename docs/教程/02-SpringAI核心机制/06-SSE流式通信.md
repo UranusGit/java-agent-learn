@@ -478,7 +478,8 @@ return chatClient.prompt()
         // 慢消费者消化不动就丢帧：UI 会少几个 chunk，
         // 换来 EventLoop 不被慢连接拖垮（打字机场景丢帧几乎无感）
         .onBackpressureDrop(dropped -> log.debug("dropped chunk: {}", dropped))
-        // 候选替代：onBackpressureLatest()（只保最新）或 onBackpressureBuffer(n, false)（有界缓冲，满则失败）
+        // 候选替代：onBackpressureLatest()（只保最新）或 onBackpressureBuffer(n, BufferOverflowStrategy.ERROR)（有界缓冲，满则失败）
+        // 注意：1.x 的 onBackpressureBuffer(n, boolean) 双参布尔重载在 reactor-core 3.x 已不存在（javap 3.8.6 实证）
         // 整流兜底：上游停顿超过 2 分钟视为异常，转 onError（§4.4 的 error 事件）
         .timeout(Duration.ofMinutes(2));
 ```
@@ -1083,7 +1084,256 @@ public Flux<ServerSentEvent<String>> guardedStream(String userId, String message
 
 ---
 
-## 11. 适用场景与不适用场景
+## 11. 自建网关层的 SSE 流式转发
+
+§10.1 的 Nginx 解决的是**反代层**的"透传不掐流"——它处理的是字节。但当接入面后面有多个 Agent 服务时，统一鉴权、租户配额、审计、灰度路由、并发流限流（§10.5）都需要在 **Java 可编程层**做——这就是自建 WebFlux 网关（或 Spring Cloud Gateway）。本节讲网关处理 SSE 的正确姿势：**非阻塞中继（relay）**——上游来一个 chunk，下游出一个 chunk，网关内存里不落地任何"完整回复"。
+
+> 遇到阻塞？→ 网关侧的连接池与超时选型见 [教程 08-架构师进阶/04-Agent性能优化]；WebFlux 线程模型约束见 [教程 01-WebFlux与响应式编程/06-线程模型与调度器]。
+
+### 11.1 第一戒律：不落地聚合
+
+普通 JSON 接口的转发习惯是"收完再转"——这个习惯搬到 SSE 上就是事故：
+
+```java
+// 反例（勿抄）：网关把上游 SSE 流聚合为完整字符串再返回
+Mono<String> aggregated = upstream.get()
+        .uri("/chat/stream?message=hi")
+        .retrieve()
+        .bodyToFlux(String.class)
+        .collect(StringBuilder::new, StringBuilder::append)
+        .map(StringBuilder::toString);
+// 三重恶果：
+// ① 内存：每条在途回复的全文都堆在网关堆里（并发数 × 回复全文长度），长回复 + 高并发 = OOM
+// ② 延迟：用户收到首字节的时刻 = LLM 全部生成完毕的时刻，流式效果在网关这一跳全部丢失
+// ③ 心跳失效：上游心跳/注释同样被聚合吞掉，下游代理等不到数据，聚合期间就把连接掐了（§10.3）
+```
+
+正确的语义是**中继**：网关持有的对象自始至终是一个 `Flux`（惰性、逐元素），不是 `String`（贪婪、全文）。
+
+### 11.2 非阻塞中继：WebClient 流式透传
+
+网关侧先准备一个面向上游的 `WebClient`——它决定了到上游这条半连接的超时行为（参数语义在 §11.3 逐个解释）：
+
+```java
+// Spring Boot 4.1 / WebFlux — javap 实证（spring-webflux 7.0.8 / reactor-netty-http 1.3.6 / netty-transport）
+import io.netty.channel.ChannelOption;
+import io.netty.handler.timeout.ReadTimeoutHandler;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.netty.http.client.HttpClient;
+
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+
+@Configuration
+public class GatewayWebClientConfig {
+
+    @Bean
+    WebClient upstreamWebClient() {
+        HttpClient httpClient = HttpClient.create()
+                // 建连超时：与流式读无关，管的是 TCP 握手阶段
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10_000)
+                // TTFB 兜底：从请求发完到收到上游响应头的等待上限——上游进程挂死时在这层发现
+                .responseTimeout(Duration.ofSeconds(30))
+                // 流中途读空闲检测：每次读到数据自动重置计时，只在"上游真的卡死"时触发；
+                // 阈值必须大于已知的合法空窗（如工具执行空窗，§4.5），否则会误杀正常流
+                .doOnConnected(conn -> conn.addHandlerLast(
+                        new ReadTimeoutHandler(60, TimeUnit.SECONDS)));
+
+        return WebClient.builder()
+                .baseUrl("http://agent-service")
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .build();
+    }
+}
+```
+
+转发端点用 `toEntityFlux` 一次拿到"响应头 + 元素流"——注意它返回的是 `ResponseEntity<Flux<T>>`，body 依然是流，`toEntityFlux` **不会**触发聚合：
+
+```java
+// Spring Boot 4.1 / WebFlux — 流式中继端点（javap 实证：toEntityFlux/ServerSentEvent）
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Flux;
+
+@RestController
+public class SseRelayController {
+
+    // ParameterizedTypeReference 构造器为 protected，匿名子类是其规定用法
+    private static final ParameterizedTypeReference<ServerSentEvent<String>> SSE_TYPE =
+            new ParameterizedTypeReference<>() {};
+
+    private final WebClient upstream;
+
+    public SseRelayController(WebClient upstreamWebClient) {
+        this.upstream = upstreamWebClient;
+    }
+
+    @GetMapping(value = "/gw/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> relay(@RequestParam String message) {
+        return upstream.get()
+                .uri(uri -> uri.path("/chat/stream").queryParam("message", message).build())
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .retrieve()
+                .toEntityFlux(SSE_TYPE)                 // headers + Flux 一并拿到，不聚合
+                .flatMapMany(entity -> {
+                    requireEventStream(entity.getHeaders());  // 上游必须真是 SSE，否则按错误处理
+                    return entity.getBody();            // 原样中继：来一个事件发一个事件
+                })
+                // 上游异常转成 error 事件下发（§4.4 的错误事件协议），而不是让连接裸断
+                .onErrorResume(e -> Flux.just(
+                        ServerSentEvent.<String>builder()
+                                .event("error")
+                                .data("upstream failure: " + e.getClass().getSimpleName())
+                                .build()));
+    }
+
+    private void requireEventStream(HttpHeaders upstreamHeaders) {
+        var contentType = upstreamHeaders.getContentType();
+        if (contentType == null || !contentType.isCompatibleWith(MediaType.TEXT_EVENT_STREAM)) {
+            throw new IllegalStateException("upstream is not an SSE stream: " + contentType);
+        }
+    }
+}
+```
+
+四个工程要点：
+
+1. **Content-Type 的两端处理不同**：对上游用 `.accept(MediaType.TEXT_EVENT_STREAM)` 协商、并在响应侧校验 `Content-Type` 确实兼容 `text/event-stream`（防上游把错误页 JSON 按流转发）；对下游由 `produces = TEXT_EVENT_STREAM_VALUE` 统一声明（§4.2），**不要**把上游响应头原样透传给下游——上游头里可能带内部实例地址、框架指纹，网关应重建自己的响应头，只透传业务头（如白名单里的 `X-Request-Id`）。
+2. **用 `ServerSentEvent` 接而不是 `String` 接**：上游事件的 `id:`/`event:`/`retry:` 字段都在 `ServerSentEvent` 上（§4.3），按 `String` 解码会把这些结构信息全部压扁，下游的 Last-Event-ID 续传（§7）随之失效。
+3. **`exchangeToFlux` 是需要完全控制响应时的替代**：`retrieve()` 对 4xx/5xx 会直接转 `WebClientResponseException`，若网关要把上游错误码映射成自己的错误事件体系，用 `exchangeToFlux(clientResponse -> ...)` 按 `statusCode()` 分支构造流（两者均已 javap 实证）。
+4. **网关是审计与限流的天然挂点**：租户配额检查（§10.5 的入口层闸门）、审计日志、灰度路由都在发起上游调用之前完成——这也是"反代层做不了、必须下沉到 Java 层"的原因。
+
+### 11.3 双半连接的心跳与超时重置
+
+网关的一条 SSE 转发其实是**两个半连接**：下游半连接（浏览器 ← Nginx ← 网关）和上游半连接（网关 ← Agent 服务 ← LLM）。两个半连接的超时机制互不相同、缺一不可：
+
+| 半连接 | 威胁 | 机制 | 关键参数 |
+|--------|------|------|---------|
+| 上游（网关→Agent 服务） | 上游进程卡死、LLM 连接僵死 | `ReadTimeoutHandler` 读空闲超时：**每次到达数据自动重置**，只有持续空闲才触发 | 阈值 > 最大合法空窗（工具执行可长达数十秒，§4.5） |
+| 上游（建连阶段） | 上游不回响应头 | `responseTimeout`（TTFB 兜底） | 30s 量级 |
+| 下游（浏览器→网关） | 中间代理对空闲连接掐流（§10.3） | 网关自己 merge 心跳注释流 | 15s 量级 comment 事件 |
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器
+    participant N as Nginx（反代层）
+    participant G as 自建网关
+    participant U as Agent 服务（上游）
+
+    B->>N: GET /gw/chat/stream（Accept: text/event-stream）
+    N->>G: proxy_pass（buffering off，§10.1）
+    G->>U: WebClient 请求（responseTimeout=30s，读空闲=60s）
+    U-->>G: 200 text/event-stream
+    G-->>B: 重建响应头后开始流
+
+    U-->>G: data chunk（读空闲计时被重置）
+    G-->>B: data chunk（中继转发）
+
+    Note over U,G: 工具执行空窗：上游 40s 无数据（读空闲计时持续走但未到 60s）
+    G-->>B: ": gw-keepalive"（网关心跳每 15s，保住下游半连接）
+
+    Note over G,U: 上游真卡死：60s 无任何数据 → ReadTimeoutException
+    G-->>B: event: error（超时按错误事件协议透传）
+
+    B->>N: 用户点停止，连接断开
+    N->>G: cancel
+    G->>U: 取消上游订阅（中止 LLM 生成，§5.5 取消传播）
+```
+
+下游心跳有一个必须写对的细节——**无限心跳流会让 merge 后的整体"永不完成"**：
+
+```java
+// Spring Boot 4.1 / WebFlux — 心跳 merge 与终态合成（接在 §11.2 relay() 返回的流上）
+import reactor.core.publisher.Mono;
+
+Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(15))
+        .map(i -> ServerSentEvent.<String>builder().comment("gw-keepalive").build());
+
+// 上游自然 complete 时未必发过 done 事件——补一个合成终态：
+// 若省略这一步，Flux.interval 的无限心跳流会让 merge 结果永不 complete，下游连接挂死
+Flux<ServerSentEvent<String>> withTerminal = relayed
+        .concatWith(Mono.just(ServerSentEvent.<String>builder().event("done").data("[DONE]").build()));
+
+return withTerminal.mergeWith(heartbeat)
+        // 终态事件（done/error 第一个到达者）发出后，cancel 同时传播给数据流与心跳流——两半连接一起收尾
+        .takeUntil(e -> "done".equals(e.event()) || "error".equals(e.event()));
+```
+
+`takeUntil` 的语义保证了 done 不会重复下发：上游真发过 `done` 时，`concatWith` 补的合成终态根本轮不到发出（订阅已被取消）。
+
+### 11.4 背压透传：天然传导与需要显式干预的场景
+
+**纯中继下，背压是天然端到端传导的**。下游消费慢（弱网、后台标签页）时：浏览器 TCP 窗口收缩 → Nginx 写不出去 → 网关 Netty 写缓冲积压 → Reactor 停止向上游 `request(n)` → WebClient 停止读上游 TCP 连接 → LLM 端感知背压放慢。整条链路不需要网关写任何"限速代码"——这是响应式中继相对"聚合-再转发"的根本优势：聚合点一旦存在，`request(n)` 链条就在那里断裂。
+
+需要**显式干预**的是三类场景，共性都是"网关在流上放了会积压的东西"：
+
+| 场景 | 背压为何被切断 | 对策 |
+|------|---------------|------|
+| 网关为审计/重试对事件做 `cache()` 或收集全文 | 聚合缓冲无界增长，背压传导在此断裂 | 审计用 `doOnNext` 旁路写（不改变流）；确需缓冲必须 `onBackpressureBuffer(int)` 显式有界 + 满溢策略 |
+| 多下游扇出（§11.5） | 共享热流下，最慢下游会拖累或错乱其他下游 | 策略放在**每个下游分支**上，不放共享上游 |
+| 已知下游处理能力低于上游产出 | 传导再快也消化不掉 | `onBackpressureDrop(Consumer)` 丢帧（打字机场景几乎无感，§5.5）或 `onBackpressureLatest()` 只保最新 |
+
+一条铁律：**`onBackpressureDrop` 放在共享上游会全局丢帧**（所有下游一起缺 chunk），放在每个下游分支只影响慢的那一支。扇出场景永远放分支。
+
+### 11.5 多下游扇出：网关层 Fan-out 与应用层的分工
+
+同一份生成结果要同时到达多个端（多标签页、多设备、旁路观察者如质检大屏）时，若每个端都独立打一次 LLM，成本是 N 倍（§10.5 的上游配额立刻见底）。网关层可以用 `share()` 做到"一条上游订阅，复制给 N 个下游"：
+
+```java
+// Spring Boot 4.1 / WebFlux — 网关层扇出（javap 实证：Flux.share()，reactor-core 3.8.6）
+// share() = publish().refCount()：第一个下游订阅才连上游，最后一个取消才断上游
+Flux<ServerSentEvent<String>> shared = relay(message).share();
+
+// 每个分支独立兜底慢消费者——丢帧只影响慢分支，不波及共享流
+Flux<ServerSentEvent<String>> downstreamA = shared
+        .onBackpressureDrop(d -> log.debug("slow downstream A, dropped: {}", d));
+Flux<ServerSentEvent<String>> downstreamB = shared
+        .onBackpressureDrop(d -> log.debug("slow downstream B, dropped: {}", d));
+```
+
+但网关层扇出有明确的能力边界——它**没有会话状态**。迟到加入的下游拿不到加入之前的 chunk，断线的下游重连后无法回放。这恰好是应用层 Fan-out（[教程 04-企业级架构主干/04-多页面流式响应与会话管理 §5.2]：`Sinks.Many` + 会话连接注册表 + Redis Stream 缓冲）的领域：
+
+| 能力 | 网关层 Fan-out（本节） | 应用层 Fan-out（教程 04-04 §5.2） |
+|------|----------------------|--------------------------------|
+| 状态 | 无状态（连接生命周期内） | 有状态（会话订阅注册表） |
+| 断线回放 | 不支持（迟到者只从当前进度开始） | Redis Stream 缓冲 + Last-Event-ID 差量回放 |
+| 多实例广播 | 不覆盖（单实例内） | Redis Pub/Sub 跨实例 Token 广播 |
+| 事件语义 | 原样透传上游事件 | 生成事件协议（`tool_status`/`done`/`error`，§4.5） |
+| 典型场景 | 旁路观察、质检大屏、纯实时多端镜像 | 会话主通道的多端同步（断线恢复是刚需） |
+
+```mermaid
+flowchart TB
+    UP["上游生成流（一次 LLM 调用）"] --> Q{"下游需要断线回放 /<br/>跨实例广播 / 事件协议？"}
+    Q -->|"否——纯在线镜像（旁路观察、大屏）"| GW["share() 单订阅复制"]
+    Q -->|"是——会话语义刚需"| APP["Sinks.Many + 会话连接注册表"]
+
+    subgraph GWL["网关层 Fan-out（无状态）"]
+        GW --> D1["下游 A（onBackpressureDrop）"]
+        GW --> D2["下游 B（onBackpressureDrop）"]
+    end
+
+    subgraph APPL["应用层 Fan-out（有状态，教程 04-04 §5.2）"]
+        APP --> BUF["Redis Stream 缓冲（断线回放）"]
+        APP --> E1["下游连接（事件 id 与协议）"]
+    end
+
+    style GWL fill:#e3f2fd
+    style APPL fill:#c8e6c9
+```
+
+选型口径一句话：**要历史的去应用层，只要实时的留网关层**。生产系统的会话主通道几乎总是落在应用层（断线恢复是刚需），网关层扇出留给"迟到无损失"的旁路流——两层不是互斥，而是同一份上游流在不同层级的两种服务形态。
+
+---
+
+## 12. 适用场景与不适用场景
 
 ### 适用场景
 
@@ -1092,6 +1342,7 @@ public Flux<ServerSentEvent<String>> guardedStream(String userId, String message
 - 长文本生成（报告、邮件、文章——边生成边显示）
 - 实时通知推送（任务完成、状态变更通知）
 - 多 Agent 协作过程的实时展示（显示每个 Agent 的输出进度）
+- 多服务统一接入面：自建网关层对多条 Agent 服务的 SSE 做鉴权/配额/审计/扇出中继（§11）
 
 ### 不适用场景
 
@@ -1103,7 +1354,7 @@ public Flux<ServerSentEvent<String>> guardedStream(String userId, String message
 
 ---
 
-## 12. 本章总结
+## 13. 本章总结
 
 | 概念 | 一句话 |
 |------|--------|
@@ -1122,6 +1373,10 @@ public Flux<ServerSentEvent<String>> guardedStream(String userId, String message
 | **部分结果处理** | 取消/异常时自己落盘已生成内容，续传/续写/截断标记三个出口 |
 | **容量治理** | 每用户并发流上限入口拦截 + 同会话串行 + 与 LLM 连接池对齐 |
 | **优雅停机** | 摘流量 → drain 存量流 → 收尾事件 + 部分结果落盘 → 释放资源 |
+| **网关中继** | 自建网关对上游 SSE 用 `toEntityFlux` 流式透传、不落地聚合——聚合反模式 = 内存爆炸 + TTFB 退化为总时长 |
+| **双半连接超时** | 上游半连接：`ReadTimeoutHandler` 读空闲（每次到达数据自动重置，阈值 > 工具空窗）+ `responseTimeout` 管 TTFB；下游半连接：网关心跳 comment 保活；心跳 merge 无限流必须 `concatWith` 合成终态否则永不完成 |
+| **背压透传** | 纯中继下 `request(n)` 端到端天然传导；`cache()`/聚合/扇出切断传导——`onBackpressureDrop` 放每个下游分支，放共享上游会全局丢帧 |
+| **扇出分工** | 网关层 `share()` 无状态复制省上游配额（迟到无损失场景）；断线回放/多实例/事件语义归应用层（要历史的去应用层） |
 | **vs WebSocket** | SSE 适合单向推送（LLM 输出），WebSocket 适合双向频繁通信 |
 
 **下一篇**：[07-MCP协议](07-MCP协议.md) — 用标准化协议把工具生态接入 Agent。

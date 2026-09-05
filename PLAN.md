@@ -1521,3 +1521,12 @@ docs 总计 386 篇（项目 248）；README/checkpoint 同步。
 - **实证沉淀**：api-baseline §28（Jackson 双轨/Boot 4.1 两处移包/1.0.0 GA adviseCall 已定型反直觉/HttpResources 全局池反模式/stream default 抛异常）
 - **裁定无缺口**：并发/状态/一致性/流式四大架构面（Saga/Outbox/CDC/背压/扇出/断点续传/幂等全深）；scan-b C/D 组（API产品化/团队协作）与 scan-c 各组（偏治理与流程）挂起待后续裁定
 - 终验：Mermaid 全仓 0 发现；新篇死链 0
+
+## 2026-09-05 第三波加节（架构技术深化续，7 节 5 文件）
+
+- **教程04/13**：§3.11 内嵌四子节（容器 JVM 内存账/G1 vs ZGC/GC 日志/流式内存驻留）+ §3.13 Namespace 配额与 LimitRange（与 04-06 业务配额分层）+ §9.2 蓝绿 vs 金丝雀 vs 滚动选型（SSE 排空特判）；**P0 修复：Dockerfile `-XX:+UseContainerSupport` JDK 21 已移除（实测启动失败）→ 换 MaxRAMPercentage+MaxDirectMemorySize+ZGenerational 组合**
+- **教程02/06**：§11 自建网关层 SSE 转发（不落地聚合/双半连接超时/背压透传/扇出分工）；顺手修正 §5.5 的 1.x 残留签名 onBackpressureBuffer(n,false)（javap 3.8.6 实证无此重载）
+- **教程04/05**：§7 会话数据冷热分层（三层/迁移触发器/回温 vs 只读/三层联动删除墓碑）
+- **附录15**：02 篇 §3 模型量化（中文+结构化输出影响/金标准准入门禁）+ 01 篇 §4 模型热加载与换版不重启
+- 实证沉淀：api-baseline §29（UseContainerSupport 移除/OpenAiApi 不存在/backpressure 重载/toEntityFlux）
+- 终验：Mermaid 全仓 0 发现；节号顺延均先 grep 外部引用，零破坏
