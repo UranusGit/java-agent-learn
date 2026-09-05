@@ -50,7 +50,7 @@
 - **Observation 基准**：领域上下文是 `ToolCallingObservationContext`（非 `ToolObservationContext`）；`Observation.Context` 无 `getDuration()/getTraceId()`（时长用 `ctx.put/get(Object)` 计时，TraceId 用 `Tracer.currentSpan()`）
 - **结构化输出**：`entity(Class, Consumer<EntityParamSpec>)` + `useProviderStructuredOutput()/validateSchema()` 是真实 API
 - **非官方/示意代码必须显式标注**："概念代码"或"伪代码，真实 API 见附录 05-SpringAI2-API基准"
-- **多态/抽象 SDK 对象不可 JSON 直接序列化（2026-08-22 教训）**：Spring AI 的 `Message` 及子类（`UserMessage`/`AssistantMessage`…）字段 `private final`、无 `@JsonCreator`/`@JsonProperty`——Jackson 无 property-based Creator，**任何 `GenericJacksonJsonRedisSerializer` 直接持久化 `Message` 都会在读取时失败（读回 `LinkedHashMap` 或 `no property-based Creator`）**。正确范式 = 存可序列化的 `Map`（type/content/metadata）+ 读取时按 `MessageType` 用 `.builder()` 重建（详见附录 00-Advisor与ChatMemory §2.3）。写"能否序列化某对象"方案前，必须对该**真实对象**做 round-trip，不能只 javap 看接口
+- **多态/抽象 SDK 对象不可 JSON 直接序列化（2026-08-22 教训）**：Spring AI 的 `Message` 及子类（`UserMessage`/`AssistantMessage`…）字段 `private final`、无 `@JsonCreator`/`@JsonProperty`——Jackson 无 property-based Creator，**任何 `GenericJacksonJsonRedisSerializer` 直接持久化 `Message` 都会在读取时失败（读回 `LinkedHashMap` 或 `no property-based Creator`）**。正确范式 = 存可序列化的 `Map`（type/content/metadata）+ 读取时按 `MessageType` 用 `.builder()` 重建（详见附录 05-SpringAI2-API基准/00-Advisor与ChatMemory §2.3）。写"能否序列化某对象"方案前，必须对该**真实对象**做 round-trip，不能只 javap 看接口
 - **官方 docs/main 分支 ≠ 本地锁版本，禁止超前照抄**：Spring 官方文档（含 GitHub `main` 分支）可能描述**更高版本**的 API（如 2.1 才有 `RedisChatMemoryRepository`/`JdbcChatMemoryRepository`），本地 pom 是 2.0.0 则此类类**不存在**。设计前先 `jar tf/javap` 本地仓库确认该类/模块是否有对应 2.0.0 版本，再决定"照抄官方"还是"自研并标注明确"
 
 ### 技术栈与依赖清单
