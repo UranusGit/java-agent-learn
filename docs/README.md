@@ -249,12 +249,12 @@ docs/
 | [04-测试策略（测试策略）](附录/04-测试策略/00-单元测试.md) | 单元测试、集成测试、Eval 评估、测试金字塔、混沌工程 | 5 |
 | [05-SpringAI2-API基准（SpringAI2 API 基准）](附录/05-SpringAI2-API基准/00-Advisor与ChatMemory.md) | Advisor/ChatMemory/MCP/Tool/Observation 真实 API 对照（全体系 ground truth） | 3 |
 | [06-企业级架构模式（企业级架构模式）](附录/06-企业级架构模式/00-ControlPlane设计模式.md) | ControlPlane 设计模式、Agent 沙箱、事件驱动、依赖与版本升级治理 | 4 |
-| [07-架构决策方法论（架构决策方法论）](附录/07-架构决策方法论/00-ADR架构决策记录.md) | ADR 架构决策记录、平台工程与组织采纳 | 2 |
+| [07-架构决策方法论（架构决策方法论）](附录/07-架构决策方法论/00-ADR架构决策记录.md) | ADR 架构决策记录、平台工程与组织采纳、工程协作流程 | 3 |
 | [08-Agent安全深度（Agent 安全深度）](附录/08-Agent安全深度/00-Prompt注入分类与案例.md) | Prompt 注入、Tool Poisoning、DLP、Agent 机器身份与 OAuth、红队与对抗测试方法论、用户身份联邦与企业权限传导、数据分类分级与密级传导 | 7 |
 | [09-语义缓存与性能（语义缓存与性能）](附录/09-语义缓存与性能/00-语义缓存实现.md) | 语义缓存、Prompt/KV Cache、批量推理、多级缓存架构 | 4 |
 | [10-知识图谱工程（知识图谱工程）](附录/10-知识图谱工程/00-Neo4j落地GraphRAG.md) | Neo4j 落地 GraphRAG、GraphRAG 工程化 | 2 |
-| [11-评估与可观测生态（评估与可观测生态）](附录/11-评估与可观测生态/00-Langfuse与Ragas集成.md) | Langfuse/Ragas、LLM-as-Judge、数据集版本化、A/B 统计 | 4 |
-| [12-AI治理与合规（AI 治理与合规）](附录/12-AI治理与合规/00-NIST-AI-RMF框架.md) | NIST AI RMF、模型卡片、数据隐私与偏见检测、AIGC 内容标识与数字水印 | 4 |
+| [11-评估与可观测生态（评估与可观测生态）](附录/11-评估与可观测生态/00-Langfuse与Ragas集成.md) | Langfuse/Ragas、LLM-as-Judge、数据集版本化、A/B 统计、标注平台与人工质检 | 5 |
+| [12-AI治理与合规（AI 治理与合规）](附录/12-AI治理与合规/00-NIST-AI-RMF框架.md) | NIST AI RMF、模型卡片、数据隐私与偏见检测、AIGC 内容标识、算法备案与监管报送、Agent 资产治理、供应商合同与 SLA | 7 |
 | [13-Agent交互设计（Agent 交互设计）](附录/13-Agent交互设计/00-Agent用户体验设计.md) | Agent 用户体验、中间过程可见性设计 | 2 |
 | [14-开源代码深度分析（开源代码深度分析）](附录/14-开源代码深度分析/00-deepseek-harness/00-总览与架构解析.md) | 四个子系列：00-deepseek-harness（12 篇）、01-codex-harness（5 篇）、02-claude-code源码架构（11 篇）、03-三大Harness综合对比（8 篇：总览/六维度深度对比/Java融合总手册） | 36 |
 | [15-AIInfra与推理部署（AIInfra 与推理部署）](附录/15-AIInfra与推理部署/00-vLLM推理服务与SpringAI集成.md) | vLLM 推理服务、GPU 调度、vLLM 调优与容量规划、微调与数据回流决策、Ollama 本地部署与 Spring AI 集成 | 5 |
