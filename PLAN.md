@@ -1530,3 +1530,10 @@ docs 总计 386 篇（项目 248）；README/checkpoint 同步。
 - **附录15**：02 篇 §3 模型量化（中文+结构化输出影响/金标准准入门禁）+ 01 篇 §4 模型热加载与换版不重启
 - 实证沉淀：api-baseline §29（UseContainerSupport 移除/OpenAiApi 不存在/backpressure 重载/toEntityFlux）
 - 终验：Mermaid 全仓 0 发现；节号顺延均先 grep 外部引用，零破坏
+
+## 2026-09-05 第四波：教程04/18-API版本管理与产品化（scan-b C组收口）
+
+- 新篇 37.8KB/13.7k 正文字/5 图：Framework 7 原生 API 版本化立骨（@GetMapping(version=)、ApiVersionStrategy 四 Resolver、WebFluxConfigurer DSL、StandardApiVersionDeprecationHandler 原生 RFC 8594 Sunset 头、RequestPredicates.version 字节码实证、Boot 4.1 apiversion 8 配置键）
+- 三方划界互引：04-09（内容版本 vs 接口契约）、附录06/03（消费侧 vs 供给侧）、04-07（对内归因 vs 对外计量）、04-11（鉴权 vs Key 生命周期）；产品化锚点 [项目 05-11-中台能力开放与API市场]
+- README 计数教程04=19；实证沉淀 baseline §30
+- 终验：Mermaid 全仓 0 发现
