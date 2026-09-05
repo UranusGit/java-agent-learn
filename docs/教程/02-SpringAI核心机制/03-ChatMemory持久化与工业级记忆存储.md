@@ -78,6 +78,8 @@ chatMemory(repo)        -> MessageWindowChatMemory.builder()
 
 这是本体系 2026-08-22 用真实 round-trip 代价换来的教训（附录 00-Advisor与ChatMemory §2.3 有完整剖析），本篇把它变成工程范式。
 
+这个铁律还有第二重风险敞口常被忽略：**SDK 大版本升级**。持久化格式与 SDK 类型体系耦合越深——哪怕走的是本篇的 Map 范式，Map 的键集也镜像了 `Message` 的字段结构——升级日"存量数据读不回"的风险就越大（`AssistantMessage` 在 2.0.0 中全部 public 构造器被封存，正是这类隐式契约被波及的实例）。升级前如何把"经序列化/反射触达 SDK 类型"的调用点单独拉清单核对，见 [附录 06-企业级架构模式/03-依赖与版本升级治理 §3.3]。
+
 ### 3.1 炸的机理
 
 Spring AI 的 `Message` 及其子类（`UserMessage`/`SystemMessage`/`AssistantMessage`）的字段是 `private final`，且**没有** Jackson 的 property-based Creator（`@JsonCreator`/`@JsonProperty` 构造器标注）。后果：

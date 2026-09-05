@@ -266,6 +266,8 @@ public class CachingEmbeddingModel implements EmbeddingModel {
 
 装饰器实现接口后，`VectorStore` 内部持有的 `embeddingModel.embed(query)` 自动走缓存——**检索服务的改动量为零**。缓存收益随问题重复度上升：客服 FAQ、报表查询类场景命中率可观；长尾开放问答场景收益有限，别为缓存而缓存。
 
+本节的天花板也要看清：单实例的 LRU/Redis 缓存挡住的只是"进程内重复"与"精确 key 重复"。当 Agent 服务水平扩容到多实例、缓存对象从 embedding 向量扩展到租户配置、工具 schema、会话态与 LLM 答案时，单层缓存就该升级为分层体系——L1 进程内 → L2 Redis → L3 语义缓存的分工、穿透/击穿/雪崩的 Agent 特化形态与跨层失效传播，见 [附录 09-语义缓存与性能/03-多级缓存架构]。
+
 ---
 
 ## 3. Document 与切分
