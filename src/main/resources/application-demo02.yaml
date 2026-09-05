@@ -1,0 +1,10 @@
+server:
+  port: 8081
+spring:
+  ai:
+    openai:
+      base-url: https://api.deepseek.com          # DeepSeek 兼容 OpenAI 协议
+      api-key: ${DEEPSEEK_API_KEY}                # 环境变量，不落明文
+      chat:
+        model: deepseek-v4-flash
+        timeout: 600s
